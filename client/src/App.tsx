@@ -1,253 +1,81 @@
-import { useState } from "react";
-import "./App.css";
-import { WebAuthnP256 } from "ox";
-import {
-	encodeAbiParameters,
-	createPublicClient,
-	http,
-	encodeFunctionData,
-	encodePacked,
-	type Hex,
-} from "viem";
-import { sepolia } from "viem/chains";
-import {
-	ENTRYPOINT_ADDRESS,
-	NFT_ADDRESS,
-	entryPointAbi,
-	myNftAbi,
-	accountWebAuthnAbi,
-} from "../../shared";
-import type { PackedUserOperation } from "viem/account-abstraction";
-import { serializeBigInts } from "./utils";
-
-const SERVER_URL = "http://localhost:8787";
-
-const publicClient = createPublicClient({
-	transport: http(),
-	chain: sepolia,
-});
+import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sileo";
+import { onAuthChange, type User } from "./firebase";
+import Login from "./pages/Login";
+import Home from "./pages/Home";
+import CreateLink from "./pages/CreateLink";
+import PayPage from "./pages/PayPage";
+import PaymentStatus from "./pages/PaymentStatus";
+import Settings from "./pages/Settings";
+import ScanQR from "./pages/ScanQR";
+import Logo from "./components/Logo";
 
 function App() {
-	const [isLoading, setIsLoading] = useState(false);
-	const [statusMessage, setStatusMessage] = useState("");
-	const [accountAddress, setAccountAddress] = useState<string | null>(null);
-	const [mintTxHash, setMintTxHash] = useState<string | null>(null);
+	const [user, setUser] = useState<User | null>(null);
+	const [loading, setLoading] = useState(true);
 
-	async function createAccount() {
-		try {
-			setIsLoading(true);
-			setStatusMessage("Creating WebAuthn credential...");
+	useEffect(() => {
+		const unsub = onAuthChange((u) => {
+			setUser(u);
+			setLoading(false);
+		});
+		return unsub;
+	}, []);
 
-			// Create WebAuthn credential
-			const credential = await WebAuthnP256.createCredential({
-				name: "wallet-user",
-			});
-
-			// Convert BigInt values to hex strings for serialization (with proper padding)
-			const publicKey = {
-				prefix: credential.publicKey.prefix,
-				x: `0x${credential.publicKey.x.toString(16).padStart(64, "0")}`,
-				y: `0x${credential.publicKey.y.toString(16).padStart(64, "0")}`,
-			};
-
-			setStatusMessage("Deploying WebAuthn account...");
-
-			// Send credential to server for account deployment
-			const response = await fetch(`${SERVER_URL}/account/create`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					credentialId: credential.id,
-					publicKey,
-				}),
-			});
-
-			if (!response.ok) {
-				const error = await response.json();
-				throw new Error(error.error || "Failed to create account");
-			}
-
-			const result = await response.json();
-
-			const deployedAddress = result.accountAddress;
-			setAccountAddress(deployedAddress);
-
-			setStatusMessage("Account deployed! Preparing NFT mint transaction...");
-
-			const nonce = await publicClient.readContract({
-				address: ENTRYPOINT_ADDRESS,
-				abi: entryPointAbi,
-				functionName: "getNonce",
-				args: [deployedAddress, 0n],
-			});
-
-			const incrementCallData = encodeFunctionData({
-				abi: myNftAbi,
-				functionName: "safeMint",
-				args: [deployedAddress],
-			});
-
-			const mode = encodePacked(
-				["bytes1", "bytes1", "bytes4", "bytes4", "bytes22"],
-				[
-					"0x01",
-					"0x00",
-					"0x00000000",
-					"0x00000000",
-					"0x00000000000000000000000000000000000000000000",
-				],
-			);
-
-			// Encode execution data as array of (address, uint256, bytes)[]
-			const executionData = encodeAbiParameters(
-				[
-					{
-						type: "tuple[]",
-						components: [
-							{ type: "address" },
-							{ type: "uint256" },
-							{ type: "bytes" },
-						],
-					},
-				],
-				[[[NFT_ADDRESS, 0n, incrementCallData]]],
-			);
-
-			// Encode the execute call on the account using ERC7821 format
-			const callData = encodeFunctionData({
-				abi: accountWebAuthnAbi,
-				functionName: "execute",
-				args: [mode, executionData],
-			});
-
-			const feeData = await publicClient.estimateFeesPerGas();
-
-			const userOp: PackedUserOperation = {
-				sender: deployedAddress,
-				nonce, // Already a BigInt from readContract
-				initCode: "0x",
-				callData,
-				accountGasLimits: encodePacked(
-					["uint128", "uint128"],
-					[
-						1_000_000n, // verificationGasLimit (high for P256 verification)
-						300_000n, // callGasLimit
-					],
-				),
-				preVerificationGas: 100_000n,
-				gasFees: encodePacked(
-					["uint128", "uint128"],
-					[
-						feeData.maxPriorityFeePerGas, // maxPriorityFeePerGas (1 gwei)
-						feeData.maxFeePerGas, // maxFeePerGas (2 gwei)
-					],
-				),
-				paymasterAndData: "0x",
-				signature: "0x" as Hex, // Placeholder, will be replaced
-			};
-
-			const userOpHash = await publicClient.readContract({
-				address: ENTRYPOINT_ADDRESS,
-				abi: entryPointAbi,
-				functionName: "getUserOpHash",
-				args: [userOp],
-			});
-
-			setStatusMessage("Signing transaction with WebAuthn...");
-
-			const { signature, metadata } = await WebAuthnP256.sign({
-				challenge: userOpHash,
-				credentialId: credential.id,
-			});
-
-			// Encode the signature in the format expected by OpenZeppelin SignerWebAuthn
-			// The contract expects an ABI-encoded WebAuthnAuth struct:
-			// struct WebAuthnAuth {
-			//   bytes32 r;
-			//   bytes32 s;
-			//   uint256 challengeIndex;
-			//   uint256 typeIndex;
-			//   bytes authenticatorData;
-			//   string clientDataJSON;
-			// }
-
-			// Prepare signature components
-			const rHex = `0x${signature.r.toString(16).padStart(64, "0")}` as Hex;
-			const sHex = `0x${signature.s.toString(16).padStart(64, "0")}` as Hex;
-
-			setStatusMessage("Submitting UserOperation to mint NFT...");
-
-			const mintRequest = await fetch(`${SERVER_URL}/account/mint`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					rHex,
-					sHex,
-					metadata,
-					userOp: serializeBigInts(userOp),
-					nonce: nonce.toString(),
-				}),
-			});
-
-			const mintResponse = await mintRequest.json();
-			console.log(mintResponse);
-
-			if (mintResponse.hash) {
-				setMintTxHash(mintResponse.hash);
-			}
-
-			setStatusMessage("Success! NFT minted to your account.");
-			setIsLoading(false);
-		} catch (err) {
-			console.error("Error creating account:", err);
-			setStatusMessage(
-				`Error: ${err instanceof Error ? err.message : "Unknown error occurred"}`,
-			);
-			setIsLoading(false);
-		}
+	if (loading) {
+		return (
+			<div className="flex items-center justify-center min-h-dvh">
+				<Logo className="w-20 animate-pulse" />
+			</div>
+		);
 	}
 
 	return (
-		<>
-			<h1>WebAuthn Account Abstraction</h1>
-			<div className="card">
-				<button type="button" onClick={createAccount} disabled={isLoading}>
-					{isLoading ? "Processing..." : "Create Account"}
-				</button>
-				{statusMessage && (
-					<div
-						className={`status-message ${statusMessage.startsWith("Error") ? "error" : statusMessage.startsWith("Success") ? "success" : ""}`}
-					>
-						{isLoading && <div className="spinner" />}
-						<p>{statusMessage}</p>
-					</div>
-				)}
-				{accountAddress && (
-					<div className="account-details">
-						<h3>Account Details</h3>
-						<div className="detail-row">
-							<span className="label">Address:</span>
-							<code className="value">{accountAddress}</code>
-						</div>
-						{mintTxHash && (
-							<div className="detail-row">
-								<span className="label">NFT Mint Transaction:</span>
-								<a
-									href={`https://sepolia.etherscan.io/tx/${mintTxHash}`}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="tx-link"
-								>
-									View on Etherscan ↗
-								</a>
-							</div>
-						)}
-					</div>
-				)}
-			</div>
-		</>
+		<BrowserRouter>
+			<Toaster
+				position="top-center"
+				theme="dark"
+				options={{
+					fill: "#1a1a1a",
+					roundness: 12,
+					styles: {
+						title: "text-white!",
+						description: "text-white/75!",
+						badge: "bg-white/10!",
+						button: "bg-white/10! hover:bg-white/15!",
+					},
+				}}
+			/>
+			<Routes>
+				<Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
+				<Route
+					path="/"
+					element={user ? <Home user={user} /> : <Navigate to="/login" />}
+				/>
+				<Route
+					path="/cobrar"
+					element={user ? <CreateLink user={user} /> : <Navigate to="/login" />}
+				/>
+				<Route
+					path="/pagar"
+					element={user ? <PayPage user={user} /> : <Navigate to="/login" />}
+				/>
+				<Route
+					path="/scan"
+					element={user ? <ScanQR /> : <Navigate to="/login" />}
+				/>
+				<Route path="/pay" element={<PayPage user={user} />} />
+				<Route path="/pay/status" element={<PaymentStatus />} />
+				<Route
+					path="/settings"
+					element={user ? <Settings user={user} /> : <Navigate to="/login" />}
+				/>
+				{/* Username-based payment routes like /daniel */}
+				<Route path="/:username" element={<PayPage user={user} />} />
+			</Routes>
+		</BrowserRouter>
 	);
 }
+
 export default App;

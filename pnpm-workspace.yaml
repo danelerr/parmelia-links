@@ -1,0 +1,9 @@
+packages:
+  - client
+  - server
+  - shared
+allowBuilds:
+  '@swc/core': false
+  esbuild: false
+  sharp: false
+  workerd: false

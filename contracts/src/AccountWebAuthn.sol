@@ -30,6 +30,21 @@ contract AccountWebAuthn is
         )
     {}
 
+    /*
+     * FUTURE V2 RECOVERY PLAN (preferably in a new deployment / network migration):
+     * 1. Replace the initializer-only signer model with explicit signer management in storage.
+     * 2. Add rotateWebAuthnSigner(bytes32 newQx, bytes32 newQy) restricted to self-call
+     *    through a valid UserOperation signed by the current signer.
+     * 3. Support more than one signer so the user can keep a primary passkey plus a backup
+     *    passkey from another ecosystem or device family.
+     * 4. Add a recovery path with guardians or a timelocked recovery signer so losing one
+     *    device does not permanently strand funds.
+     * 5. Emit signer change events and expose signer version metadata so the backend can keep
+     *    credential hints in sync without treating credentialId as a hard dependency.
+     *
+     * Current limitation: initializeWebAuthn uses `initializer`, so this implementation can
+     * only set the signer once and cannot rotate the passkey on the same wallet address.
+     */
     function initializeWebAuthn(bytes32 qx, bytes32 qy) public initializer {
         _setSigner(qx, qy);  // Set the P256 public key
     }
@@ -47,3 +62,4 @@ contract AccountWebAuthn is
              super._erc7821AuthorizedExecutor(caller, mode, executionData);
      }
 }
+

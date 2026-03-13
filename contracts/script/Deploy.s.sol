@@ -4,22 +4,12 @@ pragma solidity ^0.8.27;
 import "forge-std/Script.sol";
 import "../src/AccountWebAuthn.sol";
 import "../src/AccountFactory.sol";
+import "../src/ParmeliaPaymaster.sol";
+import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
 contract Deploy is Script {
     function run() external {
-        uint256 deployerPrivateKey;
-
-        // Use Anvil's first default account if no private key is provided
-        // Anvil account #0: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-        if (vm.envOr("PRIVATE_KEY", uint256(0)) == 0) {
-            deployerPrivateKey = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
-            console.log("Using Anvil default account");
-        } else {
-            deployerPrivateKey = vm.envUint("PRIVATE_KEY");
-            console.log("Using provided private key");
-        }
-
-        vm.startBroadcast(deployerPrivateKey);
+        vm.startBroadcast();
 
         // Deploy AccountWebAuthn implementation
         AccountWebAuthn accountImpl = new AccountWebAuthn();
@@ -28,6 +18,35 @@ contract Deploy is Script {
         // Deploy AccountFactory with the implementation address
         AccountFactory accountFactory = new AccountFactory(address(accountImpl));
         console.log("AccountFactory deployed at:", address(accountFactory));
+
+        // Deploy ParmeliaPaymaster pointing to EntryPoint v0.9
+        IEntryPoint entryPoint = IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
+        ParmeliaPaymaster paymaster = new ParmeliaPaymaster(entryPoint);
+        console.log("ParmeliaPaymaster deployed at:", address(paymaster));
+
+        // Stake paymaster at EntryPoint (required) — 0.001 ETH, 1 day unstake delay
+        paymaster.addStake{value: 0.001 ether}(86400);
+
+        // Deposit ETH into EntryPoint for the paymaster to cover gas — 0.01 ETH
+        paymaster.deposit{value: 0.01 ether}();
+
+        vm.stopBroadcast();
+    }
+}
+
+contract DeployPaymaster is Script {
+    function run() external {
+        vm.startBroadcast();
+
+        IEntryPoint entryPoint = IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
+        ParmeliaPaymaster paymaster = new ParmeliaPaymaster(entryPoint);
+        console.log("ParmeliaPaymaster deployed at:", address(paymaster));
+
+        // Stake paymaster at EntryPoint (required) — 0.001 ETH, 1 day unstake delay
+        paymaster.addStake{value: 0.001 ether}(86400);
+
+        // Deposit ETH into EntryPoint for the paymaster to cover gas — 0.01 ETH
+        paymaster.deposit{value: 0.01 ether}();
 
         vm.stopBroadcast();
     }
