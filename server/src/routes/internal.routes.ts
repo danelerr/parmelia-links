@@ -37,22 +37,14 @@ async function listAllKeys(env: AppContext["Bindings"], prefix: string) {
 }
 
 internalRoutes.post("/migrate-kv-to-d1", async (c) => {
-	const migrationToken = c.env.STORAGE_MIGRATION_TOKEN;
-	if (!migrationToken) {
-		return c.json({ error: "Storage migration is not enabled." }, 404);
-	}
-
-	const providedToken = c.req.header("x-storage-migration-token");
-	if (providedToken !== migrationToken) {
-		return c.json({ error: "Unauthorized" }, 401);
-	}
-
 	const kv = c.env.PARMELIA_KV;
 	if (!kv) {
 		return c.json({ error: "PARMELIA_KV binding is not configured." }, 400);
 	}
 
-	const body = await c.req.json().catch(() => ({} as { purgeKv?: boolean; dryRun?: boolean }));
+	const body = await c.req
+		.json()
+		.catch(() => ({}) as { purgeKv?: boolean; dryRun?: boolean });
 	const purgeKv = body?.purgeKv === true;
 	const dryRun = body?.dryRun === true;
 
@@ -81,11 +73,17 @@ internalRoutes.post("/migrate-kv-to-d1", async (c) => {
 
 	for (const key of userKeys) {
 		const uid = key.slice("user:".length);
-		const profile = (await kv.get(key, "json")) as Record<string, unknown> | null;
+		const profile = (await kv.get(key, "json")) as Record<
+			string,
+			unknown
+		> | null;
 		if (!profile) continue;
 		users.set(uid, {
 			uid,
-			walletAddress: typeof profile.walletAddress === "string" ? profile.walletAddress : null,
+			walletAddress:
+				typeof profile.walletAddress === "string"
+					? profile.walletAddress
+					: null,
 			username: typeof profile.username === "string" ? profile.username : null,
 		});
 		migratedKeys.push(key);
@@ -151,7 +149,10 @@ internalRoutes.post("/migrate-kv-to-d1", async (c) => {
 			txHash: typeof legacy.txHash === "string" ? legacy.txHash : null,
 			paidAt: typeof legacy.paidAt === "string" ? legacy.paidAt : null,
 			paidBy: typeof legacy.paidBy === "string" ? legacy.paidBy : null,
-			createdAt: typeof legacy.createdAt === "string" ? legacy.createdAt : new Date().toISOString(),
+			createdAt:
+				typeof legacy.createdAt === "string"
+					? legacy.createdAt
+					: new Date().toISOString(),
 		};
 
 		if (!dryRun) {
@@ -196,7 +197,10 @@ internalRoutes.post("/migrate-kv-to-d1", async (c) => {
 					amount: String(item.amount ?? "0"),
 					currency: String(item.currency ?? "USDC"),
 					to: String(item.to ?? ""),
-					createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+					createdAt:
+						typeof item.createdAt === "string"
+							? item.createdAt
+							: new Date().toISOString(),
 				});
 			}
 			migratedSent += 1;
@@ -229,4 +233,3 @@ internalRoutes.post("/migrate-kv-to-d1", async (c) => {
 });
 
 export default internalRoutes;
-

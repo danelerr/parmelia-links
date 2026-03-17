@@ -5,20 +5,20 @@
   "compatibility_date": "2026-03-16",
   "compatibility_flags": ["nodejs_compat"],
   "dev": {
-    "port": 8787
+    "port": 8787,
   },
 
   "vars": {
     // Non-sensitive runtime config only. Secrets like PRIVATE_KEY and RPC_URL
     // must be configured via `wrangler secret put` or local `.dev.vars`.
-    "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase"
+    "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
   },
 
   "observability": {
     "logs": {
-      "enabled": false,
-      "invocation_logs": true
-    }
+      "enabled": true,
+      "invocation_logs": true,
+    },
   },
 
   "d1_databases": [
@@ -27,8 +27,8 @@
       "database_name": "parmeliadb",
       "database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "preview_database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
-      "migrations_dir": "migrations"
-    }
+      "migrations_dir": "migrations",
+    },
   ],
 
   "kv_namespaces": [
@@ -36,7 +36,7 @@
       // Legacy fallback during the D1 migration window.
       "binding": "PARMELIA_KV",
       "id": "755adbb2a53c442dbf05de55e2423186",
-      "remote": true
-    }
-  ]
+      "remote": true,
+    },
+  ],
 }

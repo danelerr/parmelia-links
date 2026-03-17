@@ -10,15 +10,56 @@ import {
 
 const linksRoutes = new Hono<AppContext>();
 
+function normalizeLinkAmount(amount: unknown): { value?: string; error?: string } {
+	if (amount === undefined || amount === null) {
+		return { value: "0" };
+	}
+
+	const normalized = String(amount).trim();
+	if (!normalized) {
+		return { value: "0" };
+	}
+
+	const numeric = Number(normalized);
+	if (!Number.isFinite(numeric)) {
+		return { error: "Amount must be a valid number or empty" };
+	}
+	if (numeric < 0) {
+		return { error: "Amount cannot be negative" };
+	}
+
+	return { value: numeric === 0 ? "0" : normalized };
+}
+
+function normalizeCurrency(currency: unknown): "USDC" | "ETH" | null {
+	if (currency === undefined || currency === null || String(currency).trim() === "") {
+		return "USDC";
+	}
+
+	const normalized = String(currency).trim().toUpperCase();
+	if (normalized === "USDC" || normalized === "ETH") {
+		return normalized;
+	}
+
+	return null;
+}
+
+function normalizeReference(reference: unknown): string {
+	return typeof reference === "string" ? reference.trim() : "";
+}
+
 linksRoutes.post("/", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const { amount, currency, reference } = await c.req.json();
 
-	if (amount !== undefined && isNaN(Number(amount))) {
-		return c.json({ error: "Amount must be a valid number or empty" }, 400);
+	const normalizedAmount = normalizeLinkAmount(amount);
+	if (normalizedAmount.error) {
+		return c.json({ error: normalizedAmount.error }, 400);
 	}
-	if (amount && Number(amount) < 0) {
-		return c.json({ error: "Amount cannot be negative" }, 400);
+
+	const normalizedCurrency = normalizeCurrency(currency);
+	if (!normalizedCurrency) {
+		return c.json({ error: "Currency must be USDC or ETH" }, 400);
 	}
 
 	const profile = await getUserByUid(c.env, user.sub);
@@ -30,9 +71,9 @@ linksRoutes.post("/", requireAuth, async (c) => {
 
 	const link: PaymentLinkRecord = {
 		id: crypto.randomUUID(),
-		amount: amount ? String(amount) : "0",
-		currency: currency || "USDC",
-		reference: reference || "",
+		amount: normalizedAmount.value ?? "0",
+		currency: normalizedCurrency,
+		reference: normalizeReference(reference),
 		wallet: walletAddress,
 		ownerUid: user.sub,
 		status: "pending",

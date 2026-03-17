@@ -39,6 +39,7 @@ import {
 } from "../services/storage";
 
 const payRoutes = new Hono<AppContext>();
+const CLIENT_SIDE_PAYMENT_IDS = new Set(["direct", "username", "manual"]);
 
 function buildExecuteCalldata(target: `0x${string}`, value: bigint, data: Hex): Hex {
 	const mode = pad("0x01", { size: 32, dir: "right" }) as Hex;
@@ -62,11 +63,38 @@ function serializeBigInts(obj: any): any {
 	return obj;
 }
 
+function normalizePositiveAmount(amount: unknown): string | null {
+	if (amount === undefined || amount === null) return null;
+	const normalized = String(amount).trim();
+	if (!normalized) return null;
+	const numeric = Number(normalized);
+	if (!Number.isFinite(numeric) || numeric <= 0) return null;
+	return normalized;
+}
+
+function normalizeCurrency(currency: unknown): "USDC" | "ETH" | null {
+	if (typeof currency !== "string") return null;
+	const normalized = currency.trim().toUpperCase();
+	if (normalized === "USDC" || normalized === "ETH") return normalized;
+	return null;
+}
+
+function normalizeWalletAddress(wallet: unknown): `0x${string}` | null {
+	if (typeof wallet !== "string") return null;
+	const normalized = wallet.trim();
+	if (!/^0x[a-fA-F0-9]{40}$/.test(normalized)) return null;
+	return normalized as `0x${string}`;
+}
+
+function isStoredPaymentLink(linkId: unknown): linkId is string {
+	return typeof linkId === "string" && linkId.length > 0 && !CLIENT_SIDE_PAYMENT_IDS.has(linkId);
+}
+
 payRoutes.post("/prepare", requireAuth, async (c) => {
 	try {
 		const user = c.get("user")!;
-		const { linkId, wallet, amount, currency } = await c.req.json();
-		if (!wallet || !amount) return c.json({ error: "Missing wallet or amount" }, 400);
+		const body = (await c.req.json()) as Record<string, unknown>;
+		const linkId = body.linkId;
 
 		const profile = await getUserByUid(c.env, user.sub);
 		const senderAddress = profile?.walletAddress ?? undefined;
@@ -75,11 +103,52 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		const credentialId = profile?.credentialId ?? null;
 		const publicClient = createPublicClient({ chain: baseSepolia, transport: http(c.env.RPC_URL) });
 
-		const recipientAddress = wallet as `0x${string}`;
+		let recipientAddress: `0x${string}` | null = null;
+		let paymentAmount: string | null = null;
+		let paymentCurrency: "USDC" | "ETH" | null = null;
+		let pendingLinkId: string | null = typeof linkId === "string" ? linkId : null;
+
+		if (isStoredPaymentLink(linkId)) {
+			const link = await getPaymentLinkById(c.env, linkId);
+			if (!link) {
+				return c.json({ error: "Link de pago no encontrado" }, 404);
+			}
+			if (link.status === "paid") {
+				return c.json({ error: "Este link ya fue pagado" }, 400);
+			}
+
+			recipientAddress = normalizeWalletAddress(link.wallet);
+			paymentCurrency = normalizeCurrency(link.currency) ?? "USDC";
+			paymentAmount = Number(link.amount) > 0 ? link.amount : normalizePositiveAmount(body.amount);
+		} else {
+			recipientAddress = normalizeWalletAddress(body.wallet);
+			paymentCurrency = normalizeCurrency(body.currency);
+			paymentAmount = normalizePositiveAmount(body.amount);
+			if (!pendingLinkId) {
+				pendingLinkId = null;
+			}
+		}
+
+		if (!recipientAddress) {
+			return c.json({ error: "Wallet inválida" }, 400);
+		}
+		if (!paymentCurrency) {
+			return c.json({ error: "Currency must be USDC or ETH" }, 400);
+		}
+		if (!paymentAmount) {
+			return c.json({ error: "El monto debe ser mayor a 0" }, 400);
+		}
+
 		let executeCalldata: Hex;
 
-		if (currency === "USDC") {
-			const usdcAmount = parseUnits(String(amount), USDC_DECIMALS);
+		if (paymentCurrency === "USDC") {
+			let usdcAmount: bigint;
+			try {
+				usdcAmount = parseUnits(paymentAmount, USDC_DECIMALS);
+			} catch {
+				return c.json({ error: "Monto inválido para USDC" }, 400);
+			}
+
 			const usdcBalance = (await publicClient.readContract({
 				address: USDC_ADDRESS as `0x${string}`,
 				abi: erc20Abi,
@@ -92,7 +161,13 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			const transferData = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipientAddress, usdcAmount] });
 			executeCalldata = buildExecuteCalldata(USDC_ADDRESS as `0x${string}`, 0n, transferData);
 		} else {
-			const ethAmount = parseEther(String(amount));
+			let ethAmount: bigint;
+			try {
+				ethAmount = parseEther(paymentAmount);
+			} catch {
+				return c.json({ error: "Monto inválido para ETH" }, 400);
+			}
+
 			const ethBalance = await publicClient.getBalance({ address: senderAddress as `0x${string}` });
 			if (ethBalance < ethAmount) {
 				return c.json({ error: `Saldo ETH insuficiente (tienes ${formatEther(ethBalance)} ETH)` }, 400);
@@ -136,11 +211,11 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 		await createPendingPayment(c.env, {
 			userOpHash,
-			linkId: linkId || null,
+			linkId: pendingLinkId,
 			uid: user.sub,
-			amount: String(amount),
-			currency,
-			wallet,
+			amount: paymentAmount,
+			currency: paymentCurrency,
+			wallet: recipientAddress,
 			senderAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 		});
@@ -222,11 +297,12 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		});
 
 		const linkId = pending.linkId;
-		if (linkId && linkId !== "direct" && linkId !== "username" && linkId !== "manual") {
+		if (isStoredPaymentLink(linkId)) {
 			const link = await getPaymentLinkById(c.env, linkId);
 			if (link) {
 				await markPaymentLinkPaid(c.env, {
 					id: linkId,
+					amount: pending.amount || link.amount,
 					txHash,
 					paidAt: createdAt,
 					paidBy: pending.senderAddress || "",

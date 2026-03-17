@@ -378,14 +378,14 @@ export async function listPaidLinksByOwner(env: Bindings, ownerUid: string, limi
 
 export async function markPaymentLinkPaid(
 	env: Bindings,
-	params: { id: string; txHash: string; paidAt: string; paidBy: string },
+	params: { id: string; amount: string; txHash: string; paidAt: string; paidBy: string },
 ) {
 	await d1Run(
 		env,
 		`UPDATE payment_links
-		 SET status = 'paid', tx_hash = ?, paid_at = ?, paid_by = ?
+		 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?
 		 WHERE id = ?`,
-		[params.txHash, params.paidAt, params.paidBy, params.id],
+		[params.amount, params.txHash, params.paidAt, params.paidBy, params.id],
 	);
 }
 
@@ -486,3 +486,5 @@ export async function listSentTransactionsByUid(env: Bindings, uid: string, limi
 	);
 	return rows.map(mapSentRow);
 }
+
+
