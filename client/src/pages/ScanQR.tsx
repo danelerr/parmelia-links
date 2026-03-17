@@ -244,57 +244,58 @@ export default function ScanQR() {
       };
 
       try {
-        // Check if we already have labels (permission previously granted)
         let devices = await navigator.mediaDevices.enumerateDevices();
-        let videoDevices = devices.filter(
-          (d) => d.kind === "videoinput",
-        );
+        let videoDevices = devices.filter((d) => d.kind === "videoinput");
         const hasLabels = videoDevices.some((d) => d.label);
 
         if (!hasLabels) {
-          // Need permission first — get a temp stream
-          const tempStream =
-            await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: "environment" },
-              audio: false,
-            });
-          tempStream
-            .getTracks()
-            .forEach((t) => t.stop());
-          devices =
-            await navigator.mediaDevices.enumerateDevices();
-          videoDevices = devices.filter(
-            (d) => d.kind === "videoinput",
-          );
+          const tempStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+            audio: false,
+          });
+          tempStream.getTracks().forEach((t) => t.stop());
+          devices = await navigator.mediaDevices.enumerateDevices();
+          videoDevices = devices.filter((d) => d.kind === "videoinput");
         }
 
-        // Find back-facing cameras by label
         const backCameras = videoDevices.filter((d) => {
           const l = d.label.toLowerCase();
           return (
             l.includes("back") ||
             l.includes("rear") ||
             l.includes("trasera") ||
-            l.includes("environment")
+            l.includes("environment") ||
+            l.includes("posterior")
           );
         });
 
         if (backCameras.length > 1) {
-          // Multiple back cameras: prefer "camera2 0" pattern (main lens on Samsung/Android)
-          // Samsung labels: "camera2 0, facing back" = main, "camera2 1, facing back" = ultra-wide
-          const main =
-            backCameras.find((d) =>
-              /camera2?\s*0/i.test(d.label),
-            ) || backCameras[0];
+          // Samsung S23 and similar multi-lens phones:
+          // The main 1x lens is usually "camera2 0, facing back"
+          // Avoid the macro/ultrawide (camera2 2) or telephoto (camera2 1) if possible
+          const main = backCameras.find((d) => {
+            const label = d.label.toLowerCase();
+            return label.includes("0, facing back") || label.includes("camera2 0");
+          });
+
+          // Fallback: Avoid known bad lenses (macro/telephoto) if "0" is missing
+          const fallback = backCameras.find((d) => {
+            const label = d.label.toLowerCase();
+            return !label.includes("macro") && !label.includes("telephoto");
+          });
+
+          const selectedId = main?.deviceId || fallback?.deviceId || backCameras[0].deviceId;
+
           return {
-            deviceId: { exact: main.deviceId },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 30, max: 30 },
+            deviceId: { exact: selectedId },
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            // Slightly lower ideal framerate often helps old/buggy Android drivers allow continuous focus
+            frameRate: { ideal: 30, max: 60 },
           };
         }
       } catch {
-        // Could not enumerate, use default
+        // Enumerate failed
       }
 
       return defaultConstraints;

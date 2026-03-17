@@ -192,9 +192,14 @@ export default function PayPage({ user }: { user: User | null }) {
 
 	async function handlePay() {
 		if (!linkData || !user) return;
-		const amount = linkData.amount || payAmount;
-		const currency = linkData.amount ? linkData.currency : payCurrency;
-		if (!amount) return;
+		const isStoredLink = !["direct", "username", "manual"].includes(linkData.id);
+		const hasFixedAmount = Number(linkData.amount) > 0;
+		const amount = hasFixedAmount ? linkData.amount : payAmount;
+		const currency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
+		if (!amount || Number(amount) <= 0) {
+			sileo.error({ title: "Monto inválido", description: "El monto debe ser mayor a 0" });
+			return;
+		}
 		await executePay({
 			linkId: linkData.id,
 			wallet: linkData.wallet,
@@ -381,6 +386,9 @@ export default function PayPage({ user }: { user: User | null }) {
 
 	if (!linkData) return null;
 
+	const isStoredLink = !["direct", "username", "manual"].includes(linkData.id);
+	const hasFixedAmount = Number(linkData.amount) > 0;
+
 	// Username profile page — show profile card with transfer button
 	if (username && userProfile && !showPayForm) {
 		return (
@@ -461,8 +469,13 @@ export default function PayPage({ user }: { user: User | null }) {
 					<>
 						<p className="text-3xl mb-4">Pagado</p>
 						<p className="text-lg">{linkData.amount} {linkData.currency}</p>
+						{linkData.reference && (
+							<p className="text-muted text-sm text-center px-6 leading-relaxed mt-3">
+								{linkData.reference}
+							</p>
+						)}
 					</>
-				) : linkData.amount ? (
+				) : hasFixedAmount ? (
 					<>
 						<h2 className="text-4xl sm:text-5xl mb-6">Pagar</h2>
 						<p className="text-xl mb-4">{linkData.amount} {linkData.currency}</p>
@@ -472,10 +485,33 @@ export default function PayPage({ user }: { user: User | null }) {
 							</p>
 						)}
 					</>
+				) : isStoredLink ? (
+					<>
+						<h2 className="text-2xl sm:text-3xl mb-6">Pagar</h2>
+						<p className="text-sm text-muted mb-4">Moneda: {linkData.currency}</p>
+						<div className="w-full max-w-xs">
+							<label className="text-sm text-muted mb-2 block">Monto</label>
+							<input
+								type="number"
+								placeholder="0.00"
+								value={payAmount}
+								onChange={(e) => setPayAmount(e.target.value)}
+								step="any"
+								min="0"
+								inputMode="decimal"
+								className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
+							/>
+						</div>
+						{linkData.reference && (
+							<p className="text-muted text-sm text-center px-6 leading-relaxed mt-4">
+								{linkData.reference}
+							</p>
+						)}
+					</>
 				) : (
 					<>
 						<h2 className="text-2xl sm:text-3xl mb-6">
-							Transferir a @{linkData.username}
+							{linkData.username ? `Transferir a @${linkData.username}` : "Pagar"}
 						</h2>
 						<div className="w-full max-w-xs mb-4">
 							<label className="text-sm text-muted mb-2 block">Moneda</label>
@@ -522,7 +558,7 @@ export default function PayPage({ user }: { user: User | null }) {
 					) : (
 						<button
 							onClick={handlePay}
-							disabled={paying || (!linkData.amount && !payAmount)}
+							disabled={paying || (!hasFixedAmount && !payAmount)}
 							className="bg-parmelia-blue text-black px-10 py-3 rounded-full text-sm font-medium disabled:opacity-50 transition-opacity"
 						>
 							{paying ? (slowConnection ? "Conexión lenta..." : "Procesando...") : "Confirmar pago"}
@@ -533,5 +569,3 @@ export default function PayPage({ user }: { user: User | null }) {
 		</div>
 	);
 }
-
-

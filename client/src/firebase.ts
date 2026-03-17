@@ -18,15 +18,12 @@ const firebaseConfig = {
 	appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-console.log("Firebase config:", firebaseConfig);
-
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 const googleProvider = new GoogleAuthProvider();
 
 export async function signInWithGoogle() {
-	console.log(auth, googleProvider);
 	return signInWithPopup(auth, googleProvider);
 }
 

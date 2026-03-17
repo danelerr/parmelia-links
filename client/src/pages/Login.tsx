@@ -21,7 +21,11 @@ export default function Login() {
       <Logo className="w-24 sm:w-28 mb-6" />
       <h1 className="text-3xl sm:text-4xl mb-16">Parmelia</h1>
 
-      <div className="w-full max-w-sm px-4">
+      <div className="w-full max-w-sm px-4 flex flex-col items-center">
+
+        <p className="text-muted text-center mb-10 text-sm leading-relaxed max-w-xs">
+          Una Wallet para comprar, enviar y recibir dólares USDC sin pagar gas. Con la mejor UX
+        </p>
         <button
           onClick={handleLogin}
           className="w-full bg-surface hover:bg-surface-2 text-white text-base py-4 rounded-xl transition-colors"

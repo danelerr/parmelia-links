@@ -15,7 +15,15 @@ export default function PaymentStatus() {
 	async function captureCard() {
 		if (!cardRef.current) return null;
 		return toPng(cardRef.current, {
-			style: { flex: 'none' },
+			backgroundColor: '#000000',
+			width: cardRef.current.offsetWidth + 64,
+			height: cardRef.current.offsetHeight + 64,
+			style: {
+				flex: 'none',
+				padding: '32px',
+				margin: '0',
+				maxWidth: 'none'
+			},
 			pixelRatio: 2,
 		});
 	}
@@ -51,37 +59,39 @@ export default function PaymentStatus() {
 				</div>
 			</div>
 
-			{/* Success card */}
-			<div ref={cardRef} className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col items-center justify-center">
-				<Logo className="w-16 mb-8" />
+			{/* Success card container for download */}
+			<div ref={cardRef} className="flex-1 flex flex-col">
+				<div className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col items-center justify-center relative">
+					<Logo className="w-16 mb-8" />
 
-				<h2 className="text-4xl sm:text-5xl mb-4">Pagaste</h2>
+					<h2 className="text-4xl sm:text-5xl mb-4 text-center">Pagaste</h2>
 
-				{amount && (
-					<p className="text-xl mb-3">{amount} {currency}</p>
-				)}
+					{amount && (
+						<p className="text-xl mb-3 text-center">{amount} {currency}</p>
+					)}
 
-				{to && (
-					<p className="text-muted text-sm mb-8">A {to}</p>
-				)}
+					{to && (
+						<p className="text-muted text-sm mb-8 break-all text-center px-2 font-mono">A {to}</p>
+					)}
 
-				{/* Check icon */}
-				<div className="w-16 h-16 rounded-full bg-muted/30 flex items-center justify-center">
-					<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-						<polyline points="20 6 9 17 4 12" />
-					</svg>
+					{/* Check icon */}
+					<div className="w-16 h-16 rounded-full bg-muted/30 flex items-center justify-center">
+						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="20 6 9 17 4 12" />
+						</svg>
+					</div>
+
+					{txHash && (
+						<a
+							href={`https://base-sepolia.blockscout.com/tx/${txHash}`}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-parmelia-blue text-sm underline mt-4 text-center"
+						>
+							Comprobante onchain ↗
+						</a>
+					)}
 				</div>
-
-				{txHash && (
-					<a
-						href={`https://base-sepolia.blockscout.com/tx/${txHash}`}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="text-parmelia-blue text-sm underline mt-4"
-					>
-						Comprobante onchain ↗
-					</a>
-				)}
 			</div>
 
 			{/* Action buttons */}

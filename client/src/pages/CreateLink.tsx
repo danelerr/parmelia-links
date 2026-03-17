@@ -22,7 +22,6 @@ export default function CreateLink({ user }: { user: User }) {
 	const cardRef = useRef<HTMLDivElement>(null);
 
 	async function handleCreate() {
-		if (!amount) return;
 		setLoading(true);
 		try {
 			const res = await fetchWithAuth(user, `${SERVER_URL}/links`, {
@@ -53,38 +52,44 @@ export default function CreateLink({ user }: { user: User }) {
 			<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-8 w-full max-w-lg mx-auto">
 				{/* Header */}
 				<div className="flex items-center justify-between mb-6">
-					<div className="flex items-center gap-2">
-						<Logo className="w-7" />
-						<span className="text-sm text-parmelia-blue">Parmelia</span>
-					</div>
-					<button
-						onClick={() => navigate("/")}
-						className="w-10 h-10 rounded-full bg-parmelia-pink flex items-center justify-center text-black text-sm"
-					>
-						···
-					</button>
+				<button
+					onClick={() => navigate("/")}
+					className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
+				>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+						<path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
+					</svg>
+					Volver
+				</button>
 				</div>
 
 				{/* QR Card */}
-				<div ref={cardRef} className="bg-surface rounded-2xl p-6 sm:p-8 flex flex-col items-center flex-1">
-					<Logo className="w-14 mb-6" />
+				<div ref={cardRef} className="flex-1 flex flex-col">
+					<div className="bg-surface rounded-2xl p-6 sm:p-8 flex flex-col items-center flex-1 h-full relative">
+						<Logo className="w-14 mb-6" />
 
-					<div className="bg-white rounded-xl p-5 sm:p-6 mb-6 qr-card">
-						<QRCodeSVG
-							value={paymentUrl}
-							size={220}
-							bgColor="#ffffff"
-							fgColor="#000000"
-							level="M"
-						/>
+						<div className="bg-white rounded-xl p-5 sm:p-6 mb-6 qr-card">
+							<QRCodeSVG
+								value={paymentUrl}
+								size={220}
+								bgColor="#ffffff"
+								fgColor="#000000"
+								level="M"
+							/>
+						</div>
+
+						{Number(amount) > 0 ? (
+							<p className="text-xl sm:text-2xl mb-3">{amount} {currency}</p>
+						) : (
+							<p className="text-xl sm:text-2xl mb-3 text-parmelia-pink">Monto abierto</p>
+						)}
+
+						{reference && (
+							<p className="text-muted text-sm text-center px-6 leading-relaxed">
+								{reference}
+							</p>
+						)}
 					</div>
-
-					<p className="text-xl sm:text-2xl mb-3">{amount} {currency}</p>
-					{reference && (
-						<p className="text-muted text-sm text-center px-6 leading-relaxed">
-							{reference}
-						</p>
-					)}
 				</div>
 
 				{/* Action buttons */}
@@ -94,7 +99,15 @@ export default function CreateLink({ user }: { user: User }) {
 							if (!cardRef.current) return;
 							try {
 								const dataUrl = await toPng(cardRef.current, {
-									style: { flex: 'none' },
+									backgroundColor: '#000000',
+									width: cardRef.current.offsetWidth + 64,
+									height: cardRef.current.offsetHeight + 64,
+									style: { 
+										flex: 'none',
+										padding: '32px',
+										margin: '0',
+										maxWidth: 'none'
+									},
 									pixelRatio: 2,
 								});
 								const a = document.createElement("a");
@@ -123,6 +136,15 @@ export default function CreateLink({ user }: { user: User }) {
 						Compartir
 					</button>
 				</div>
+				<button
+					onClick={() => {
+						navigator.clipboard.writeText(paymentUrl);
+						sileo.success({ title: "Link copiado" });
+					}}
+					className="w-full text-center text-sm text-parmelia-blue underline mt-5"
+				>
+					Copiar link de pago
+				</button>
 			</div>
 		);
 	}
@@ -139,12 +161,6 @@ export default function CreateLink({ user }: { user: User }) {
 						<path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
 					</svg>
 					Volver
-				</button>
-				<button
-					onClick={() => navigate("/")}
-					className="w-10 h-10 rounded-full bg-parmelia-pink flex items-center justify-center text-black text-sm"
-				>
-					···
 				</button>
 			</div>
 
@@ -204,7 +220,7 @@ export default function CreateLink({ user }: { user: User }) {
 			<div className="flex justify-center">
 				<button
 					onClick={handleCreate}
-					disabled={loading || !amount}
+					disabled={loading}
 					className="bg-parmelia-pink text-black px-12 py-3 rounded-full text-sm font-medium disabled:opacity-50 transition-opacity"
 				>
 					{loading ? "Creando..." : "Cobrar"}
