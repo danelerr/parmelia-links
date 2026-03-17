@@ -2,29 +2,29 @@
 
 ## Resumen
 
-**Parmelia Links** es una plataforma de links de pago cripto sobre **Account Abstraction (ERC-4337)** en **Base Sepolia**.
+**Parmelia Links** es una web app de links de cobro y pagos cripto sobre **Account Abstraction (ERC-4337)** en **Base Sepolia**.
 
-- Login con Google (Firebase Auth)
-- Smart wallet por usuario con `AccountWebAuthn`
-- Firma de pagos con **passkey WebAuthn (P256)** en el dispositivo (huella/FaceID)
-- Links de cobro con QR y pagos directos por `/:username`
-- Escaneo de QR con camara del dispositivo (`jsqr`)
-- Historial de transacciones con links a block explorer
+El producto combina cuatro piezas principales:
 
-El backend construye y transmite UserOperations, pero **no custodia la clave privada de firma del usuario**.
+- **Firebase Auth + Google login** para identidad dentro de la app.
+- **Passkeys WebAuthn (P256)** para firmar operaciones de la wallet en el dispositivo.
+- **Smart accounts `AccountWebAuthn`** desplegadas por factory.
+- **Cloudflare Worker + KV** para API, orquestacion de pagos, persistencia ligera y bundling.
+
+El backend prepara y transmite UserOperations, pero **no custodia la clave privada de firma del usuario**. La autorizacion real de pagos ocurre con WebAuthn en el navegador del usuario.
 
 ---
 
 ## Stack Tecnologico
 
-| Capa | Tecnologia |
-|------|------------|
-| Contratos | Solidity 0.8.27, Foundry, OpenZeppelin v5 |
-| Cliente | React 19, TypeScript, Vite, Tailwind CSS v4, Firebase Auth, react-router-dom, qrcode.react, jsqr, html-to-image, sileo (toasts) |
-| Servidor | Hono, Cloudflare Workers, viem, jose, Cloudflare KV |
-| Shared | Modulo TypeScript compartido (ABIs, direcciones, constantes) |
-| Red | Base Sepolia (84532) |
-| Deploy | Cliente en Vercel, Servidor en Cloudflare Workers |
+| Capa      | Tecnologia                                                                                                                        |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Contratos | Solidity 0.8.27, Foundry, OpenZeppelin v5                                                                                         |
+| Cliente   | React 19, TypeScript 5.9, Vite 7, Tailwind CSS v4, Firebase Auth, SWR, react-router-dom, qrcode.react, jsqr, html-to-image, sileo |
+| Servidor  | Hono, Cloudflare Workers, viem, jose, Cloudflare KV                                                                               |
+| Shared    | Modulo TypeScript compartido para ABIs, direcciones y constantes                                                                  |
+| Red       | Base Sepolia (84532)                                                                                                              |
+| Deploy    | Cliente en Vercel, servidor en Cloudflare Workers                                                                                 |
 
 ---
 
@@ -36,306 +36,474 @@ parmelia-links/
 ├── package.json
 ├── pnpm-workspace.yaml
 ├── client/
-│   ├── vercel.json              # SPA rewrites (todas las rutas -> index.html)
+│   ├── package.json
 │   ├── vite.config.ts
-│   ├── index.html
-│   ├── src/
-│   │   ├── App.tsx              # Router principal, auth state
-│   │   ├── App.css
-│   │   ├── index.css            # Tailwind theme (@theme con colores Parmelia)
-│   │   ├── main.tsx
-│   │   ├── firebase.ts          # Firebase Auth (Google login)
-│   │   ├── webauthn.ts          # createPasskey + signWithPasskey
-│   │   ├── authFetch.ts         # Wrapper fetch con Firebase token
-│   │   ├── utils.ts
-│   │   ├── components/
-│   │   │   └── Logo.tsx         # SVG inline del logo Parmelia
-│   │   └── pages/
-│   │       ├── Login.tsx
-│   │       ├── Home.tsx         # Dashboard: balance, transacciones, menu QR
-│   │       ├── CreateLink.tsx   # Crear link de cobro + QR
-│   │       ├── PayPage.tsx      # Pagar link/username/manual
-│   │       ├── PaymentStatus.tsx # Comprobante de pago
-│   │       ├── ScanQR.tsx       # Escaner QR con camara
-│   │       └── Settings.tsx     # Username, wallet, passkey, faucet USDC
+│   ├── vercel.json
+│   └── src/
+│       ├── App.tsx
+│       ├── App.css
+│       ├── authFetch.ts
+│       ├── firebase.ts
+│       ├── index.css
+│       ├── main.tsx
+│       ├── webauthn.ts
+│       ├── components/
+│       │   └── Logo.tsx
+│       └── pages/
+│           ├── CreateLink.tsx
+│           ├── Home.tsx
+│           ├── Login.tsx
+│           ├── Onboarding.tsx
+│           ├── PaymentStatus.tsx
+│           ├── PayPage.tsx
+│           ├── ScanQR.tsx
+│           └── Settings.tsx
 ├── server/
-│   ├── src/
-│   │   └── index.ts             # API completa (Hono)
+│   ├── package.json
 │   ├── wrangler.jsonc
-│   └── iniciar.sh
+│   └── src/
+│       ├── index.ts
+│       ├── middlewares/
+│       │   └── auth.ts
+│       ├── routes/
+│       │   ├── account.routes.ts
+│       │   ├── links.routes.ts
+│       │   ├── pay.routes.ts
+│       │   ├── transactions.routes.ts
+│       │   └── user.routes.ts
+│       ├── controllers/
+│       ├── services/
+│       └── utils/
 ├── contracts/
 │   ├── src/
-│   │   ├── AccountWebAuthn.sol
 │   │   ├── AccountFactory.sol
+│   │   ├── AccountWebAuthn.sol
 │   │   └── ParmeliaPaymaster.sol
 │   ├── script/
-│   │   └── Deploy.s.sol
-│   └── lib/
-│       ├── forge-std/
-│       └── openzeppelin-contracts/
-├── shared/
-│   ├── index.ts                 # ABIs, direcciones, constantes
-│   └── EntrypointV08.ts
-└── pantallas/
+│   └── out/
+└── shared/
+    ├── EntryPointAbi.ts
+    └── index.ts
 ```
 
----
+Notas:
 
-## Direcciones (Base Sepolia)
-
-| Contrato | Direccion |
-|----------|-----------|
-| AccountWebAuthn (implementation) | `0xae77c3f3db27f688431372b41cfcddd4916386f0` |
-| AccountFactory | `0x8c91e55b11287c9c3970b64602fe50763fac0345` |
-| EntryPoint V09 | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
-| Paymaster | `0xa1DC7ad6f4d2d0ea20bF5668F132c38c4f3c172D` |
-| USDC (Base Sepolia) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+- El backend ya no vive en un solo `server/src/index.ts`; hoy esta modularizado por rutas.
+- Las carpetas `controllers/`, `services/` y `utils/` existen como base para una siguiente extraccion de logica, pero la mayor parte del comportamiento actual todavia esta en los route handlers.
 
 ---
 
-## Shared (`shared/`)
+## Direcciones On-Chain (Base Sepolia)
 
-`shared/index.ts` exporta:
+Desplegadas y compartidas desde `shared/index.ts`.
 
-- ABIs: `accountWebAuthnAbi`, `accountFactoryAbi`, `entryPointAbi`, `erc20Abi`
-- Direcciones: `FACTORY_ADDRESS`, `ENTRYPOINT_ADDRESS`, `PAYMASTER_ADDRESS`, `USDC_ADDRESS`
-- Constantes: `USDC_DECIMALS`
+| Contrato                          | Direccion                                    |
+| --------------------------------- | -------------------------------------------- |
+| AccountFactory                    | `0x8c91e55b11287c9c3970b64602fe50763fac0345` |
+| EntryPoint (`ENTRYPOINT_ADDRESS`) | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
+| ParmeliaPaymaster                 | `0xa1DC7ad6f4d2d0ea20bF5668F132c38c4f3c172D` |
+| USDC Base Sepolia                 | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+
+`shared/index.ts` tambien exporta:
+
+- `accountWebAuthnAbi`
+- `accountFactoryAbi`
+- `entryPointAbi`
+- `erc20Abi`
+- `USDC_DECIMALS`
+
+---
+
+## Arquitectura Logica
+
+### 1. Cliente (React/Vite)
+
+Responsabilidades principales:
+
+- Gestionar sesion con Google via Firebase.
+- Forzar onboarding cuando el usuario ya inicio sesion pero aun no tiene wallet.
+- Crear passkeys nuevas (`createPasskey`) y firmar UserOps (`signWithPasskey`).
+- Consumir la API del worker con `fetchWithAuth`.
+- Mostrar balance, historial, links de cobro, QR y ajustes de cuenta.
+
+### 2. Worker API (Hono/Cloudflare)
+
+Responsabilidades principales:
+
+- Verificar Firebase ID tokens con JWKS de Google.
+- Exponer la API de usuario, cuenta, links, pagos e historial.
+- Desplegar smart accounts a partir de la clave publica WebAuthn.
+- Preparar UserOperations ERC-4337 y enviarlas a `handleOps`.
+- Registrar estado minimo en KV para perfiles, links, pending ops e historial.
+
+### 3. Contratos y Account Abstraction (ERC-4337)
+
+El proyecto utiliza el estándar ERC-4337 de Account Abstraction, lo que significa que los usuarios no interactúan con la blockchain usando cuentas tradicionales (EOAs), sino a través de Smart Accounts.
+
+El flujo de transacciones y responsabilidades por contrato es:
+
+- **`AccountWebAuthn.sol` (Smart Account):** Es el código base de la wallet del usuario, diseñado para validar biometría (passkeys). Solo existe un despliegue "maestro" (Implementation) en cadena. No hace falta exportar su dirección en los clientes (`shared/index.ts`) porque la app nunca le pide crear cuentas directamente, sino que se lo pide a la Factory.
+- **`AccountFactory.sol`:** Es la fábrica de wallets. Despliega un "clon ligero" (Minimal Proxy) que apunta al `AccountWebAuthn` base, ahorrando muchísimo gas. Si Blockscout marca "22 transacciones" en la Factory, eso significa que la Factory fue invocada ~22 veces para crear las cuentas de los primeros 22 usuarios. Luego de esto, los usuarios interactúan directo con sus clones y no comunican más con la Factory.
+- **`ParmeliaPaymaster.sol`:** Cubre el gas para mejorar la UX de pagos. En ERC-4337, las operaciones las agrupa y envía un **Bundler** (cuya EOA normal y ajena paga el gas real a la red, y es quien aparece en el campo "From" de Blockscout en la transacción madre). El contrato maestro `EntryPoint` es llamado por este Bundler, y a su vez, consulta _internamente_ a este Paymaster si autoriza cubrir los gastos. Como son transacciones internas, el contador público de transacciones del Paymaster en exploradores suele mostrar solo la actividad de "administración" (ej: añadir _stake_ y _deposit_ de gas por parte del dueño), pero internamente está pagando el fee de cientos de operaciones.
+
+### 4. Cloudflare KV
+
+Se usa como almacenamiento ligero para:
+
+- perfiles de usuario,
+- usernames,
+- ultimo `credentialId` conocido,
+- links de cobro,
+- operaciones pendientes entre `prepare` y `submit`,
+- historial enviado/recibido,
+- control del faucet.
 
 ---
 
 ## Backend (`server/`)
 
-Runtime: Cloudflare Workers con Hono.
+### Entry point y middlewares
 
-Responsabilidades principales:
+`server/src/index.ts` ahora solo compone la API:
 
-1. Verificar Firebase ID Tokens con JWKS de Google (cache 1h)
-2. Gestionar perfiles, usernames y links en KV
-3. Crear cuentas smart account con clave publica P256 de passkey
-4. Consultar balance ETH/USDC on-chain
-5. Construir y enviar UserOperations (EntryPoint V09 + paymaster)
-6. Normalizar firma P256 (low-s) antes de enviar UserOp
-7. Fondear cuentas nuevas con 5 USDC de prueba (testnet faucet)
+- `cors()` global
+- `logger()` global
+- `authMiddleware` global
+- healthcheck `GET /`
+- montaje de rutas modulares:
+  - `/user/transactions`
+  - `/user`
+  - `/account`
+  - `/links`
+  - `/pay`
+
+`server/src/middlewares/auth.ts` define:
+
+- `Bindings` y `AppContext` del worker
+- cache de JWKS de Firebase por 1 hora
+- `authMiddleware`, que deja `c.set("user", user | null)`
+- `requireAuth`, que corta con `401` cuando no hay token valido
 
 ### Rutas API
 
-| Metodo | Ruta | Auth | Descripcion |
-|--------|------|------|-------------|
-| GET | `/` | NO | Health check |
-| GET | `/user/profile` | SI | Perfil del usuario (uid, walletAddress, username) |
-| PUT | `/user/username` | SI | Define username unico (validacion: `[a-z0-9_-]{3,30}`, palabras reservadas) |
-| GET | `/user/:username` | NO | Resuelve username publico (walletAddress) |
-| GET | `/user/balance` | SI | Balance ETH + USDC on-chain |
-| POST | `/account/create` | SI | Crea smart account desde passkey publica (credentialId, qx, qy) |
-| GET | `/account/passkey` | SI | Consulta si el usuario tiene passkey registrada |
-| PUT | `/account/passkey` | SI | Actualiza credentialId de passkey |
-| POST | `/account/fund` | SI | Fondea 5 USDC de prueba (una vez por usuario) |
-| GET | `/account/fund` | SI | Consulta si el usuario ya canjeo sus USDC de prueba |
-| POST | `/links` | SI | Crea link de cobro (status: `pending`) |
-| GET | `/links` | SI | Lista links del usuario (max 20) |
-| GET | `/links/:id` | NO | Obtiene link publico |
-| POST | `/pay/prepare` | SI | Arma UserOp sin firma, valida balance, devuelve `userOpHash` + `credentialId` |
-| POST | `/pay/submit` | SI | Recibe assertion WebAuthn, normaliza S, codifica firma y envia `handleOps` |
+| Metodo | Ruta                 | Auth | Descripcion                                                                                         |
+| ------ | -------------------- | ---- | --------------------------------------------------------------------------------------------------- |
+| GET    | `/`                  | NO   | Healthcheck (`Parmelia Links API (Modular)`)                                                        |
+| GET    | `/user/profile`      | SI   | Perfil actual (`uid`, `walletAddress`, `username`)                                                  |
+| PUT    | `/user/username`     | SI   | Define username unico y mantiene el indice inverso en KV                                            |
+| GET    | `/user/:username`    | NO   | Resuelve username publico a `walletAddress`                                                         |
+| GET    | `/user/balance`      | SI   | Balance on-chain de ETH y USDC de la wallet del usuario                                             |
+| GET    | `/user/transactions` | SI   | Historial agregado de enviados, cobrados por links y transferencias ERC-20 detectadas en Blockscout |
+| POST   | `/account/create`    | SI   | Crea la smart wallet desde `credentialId`, `qx`, `qy` y guarda la wallet en el perfil               |
+| GET    | `/account/passkey`   | SI   | Devuelve estado de passkey: `hasStoredCredential`, `hasWallet`, `recoveryMode`                      |
+| PUT    | `/account/passkey`   | SI   | Flujo legacy de migracion manual: puede desplegar otra wallet y reescribir `walletAddress`          |
+| POST   | `/account/fund`      | SI   | Envia 5 USDC de prueba una sola vez                                                                 |
+| GET    | `/account/fund`      | SI   | Consulta si el faucet ya fue canjeado                                                               |
+| POST   | `/links`             | SI   | Crea un link de cobro en estado `pending`                                                           |
+| GET    | `/links`             | SI   | Lista links del usuario (hasta 20)                                                                  |
+| GET    | `/links/:id`         | NO   | Obtiene los datos publicos de un link                                                               |
+| POST   | `/pay/prepare`       | SI   | Construye una UserOp sin firma, valida balance y devuelve `userOpHash` + `credentialId` opcional    |
+| POST   | `/pay/submit`        | SI   | Recibe la assertion WebAuthn, normaliza la firma P256, llama `handleOps` y persiste el resultado    |
 
-### Normalizacion P256 (low-s)
+### Notas importantes del backend
 
-En `/pay/submit`, el servidor normaliza el valor `s` de la firma P256:
-- Si `s > N/2`, se reemplaza por `N - s`
-- Esto es necesario porque OZ `P256.verify` rechaza firmas con `s` alto (proteccion contra maleabilidad)
+- `POST /account/create` guarda `credential:{uid}` y `user:{uid}.walletAddress`, y ademas intenta hacer auto-fund de 5 USDC de forma best-effort.
+- `GET /account/passkey` ya no solo responde si existe passkey; tambien indica si la cuenta esta en modo `stored` o `discoverable`.
+- `PUT /account/passkey` **no rota el signer dentro de la misma wallet**. Con el contrato actual puede terminar desplegando otra smart account y reemplazando `walletAddress` en el perfil.
+- `POST /pay/prepare` guarda una entrada `pending:{userOpHash}` para enlazar la firma biometrica con la UserOp exacta que despues se enviara on-chain.
+- `POST /pay/submit`:
+  - normaliza `s` a low-s para cumplir con OpenZeppelin P256,
+  - envia `handleOps` desde el EOA del servidor,
+  - refresca `credential:{uid}` si el cliente reporta el `credentialId` usado,
+  - registra transacciones enviadas en `sent:{uid}`,
+  - marca links como `paid` cuando aplica.
+- `GET /user/transactions` mezcla tres fuentes:
+  - pagos enviados guardados en KV,
+  - links cobrados guardados en KV,
+  - transferencias ERC-20 encontradas en Blockscout,
+    y deduplica por `txHash`.
 
-### KV keys
+---
 
-| Key | Valor |
-|-----|-------|
-| `user:{uid}` | Perfil (walletAddress, username, etc.) |
-| `username:{name}` | uid (mapeo inverso) |
-| `credential:{uid}` | credentialId de passkey |
-| `link:{id}` | Datos del link (amount, currency, reference, wallet, status, txHash, etc.) |
-| `userlinks:{uid}` | Array de ids de links del usuario (max 100) |
-| `pending:{userOpHash}` | UserOp pendiente entre prepare y submit |
-| `funded:{uid}` | Timestamp de cuando se fondearon 5 USDC al usuario (control de faucet) |
+## Modelo de Datos en KV
+
+| Key                    | Valor                                                                                               |
+| ---------------------- | --------------------------------------------------------------------------------------------------- |
+| `user:{uid}`           | Perfil del usuario (`uid`, `walletAddress`, `username`, etc.)                                       |
+| `username:{name}`      | `uid` asociado al username                                                                          |
+| `credential:{uid}`     | Ultimo `credentialId` conocido para ayudar a seleccionar la passkey correcta                        |
+| `link:{id}`            | Link de cobro (`amount`, `currency`, `reference`, `wallet`, `status`, `txHash`, `paidAt`, `paidBy`) |
+| `userlinks:{uid}`      | Lista de ids de links del usuario (se recorta a 100)                                                |
+| `pending:{userOpHash}` | UserOp serializada y contexto del pago entre `prepare` y `submit`                                   |
+| `sent:{uid}`           | Historial propio de pagos enviados                                                                  |
+| `funded:{uid}`         | Timestamp del faucet ya canjeado                                                                    |
+
+Punto importante:
+
+- `credential:{uid}` es una **pista de UX**, no la fuente de verdad del signer. La autoridad criptografica real sigue siendo la clave publica P256 registrada on-chain en la smart account.
 
 ---
 
 ## Frontend (`client/`)
 
-### Despliegue
+### Ruteo y proteccion
 
-- **Vercel** con `client/vercel.json` que reescribe todas las rutas a `index.html` (SPA)
-- Esto permite que rutas como `/:username` funcionen sin 404
+`client/src/App.tsx` mantiene dos estados globales relevantes:
 
-### Tema y Estilos
+- `user`: sesion Firebase actual
+- `hasWallet`: si el perfil ya tiene wallet creada
 
-Todo el styling es via **Tailwind CSS v4**. Los colores del tema se definen en `client/src/index.css`:
+Con eso, el frontend aplica este esquema:
 
-```css
-@theme {
-  --color-parmelia-blue: #A7D4DE;
-  --color-parmelia-pink: #DEA6BC;
-  --color-parmelia-gold: #DED9A6;
-  --color-surface: #1a1a1a;
-  --color-surface-2: #2a2a2a;
-  --color-muted: #888;
-  --font-family-brand: "Shippori Antique", system-ui, sans-serif;
-}
-```
+| Ruta          | Requiere login | Requiere wallet      | Componente      | Comportamiento                             |
+| ------------- | -------------- | -------------------- | --------------- | ------------------------------------------ |
+| `/login`      | NO             | NO                   | `Login`         | Inicio de sesion con Google                |
+| `/onboarding` | SI             | Debe no tener wallet | `Onboarding`    | Crea passkey + wallet inicial              |
+| `/`           | SI             | SI                   | `Home`          | Dashboard principal                        |
+| `/cobrar`     | SI             | SI                   | `CreateLink`    | Crear link de cobro                        |
+| `/pagar`      | SI             | SI                   | `PayPage`       | Pago manual autenticado                    |
+| `/scan`       | SI             | SI                   | `ScanQR`        | Escaneo QR con camara                      |
+| `/settings`   | SI             | SI                   | `Settings`      | Perfil, username, wallet, passkey y faucet |
+| `/pay`        | NO             | NO                   | `PayPage`       | Ruta publica/compartida para pagar un link |
+| `/pay/status` | NO             | NO                   | `PaymentStatus` | Comprobante de pago                        |
+| `/:username`  | NO             | NO                   | `PayPage`       | Ruta publica para pagar por username       |
 
-- Fondo body: `#000` (negro)
-- Texto: `#fff` (blanco)
-- Toasts: libreria `sileo` configurada en App.tsx
+Notas:
 
-### Rutas de app
+- Si un usuario inicia sesion pero aun no tiene wallet, las rutas internas lo redirigen a `/onboarding`.
+- Las rutas publicas de pago siguen siendo accesibles sin wallet propia, pero para pagar de verdad el usuario debe iniciar sesion y tener una wallet operativa; de lo contrario `POST /pay/prepare` devolvera error.
 
-| Ruta | Componente | Auth | Descripcion |
-|------|------------|------|-------------|
-| `/login` | Login | NO | Login con Google |
-| `/` | Home | SI | Dashboard principal |
-| `/cobrar` | CreateLink | SI | Crear link de cobro |
-| `/pagar` | PayPage | SI | Pagar (redirige desde menu) |
-| `/scan` | ScanQR | SI | Escanear QR con camara |
-| `/pay` | PayPage | Publica | Pagar link (query: `?id=`) |
-| `/pay/status` | PaymentStatus | NO | Comprobante de pago |
-| `/settings` | Settings | SI | Configuracion de cuenta |
-| `/:username` | PayPage | Publica | Pagar a un usuario por username |
+### Paginas principales
 
-### Paginas
+#### `Onboarding.tsx`
 
-#### Home.tsx
-- **Balance**: Muestra saldo USDC y ETH con selector de moneda
-- **Transacciones**: Solo muestra links con `status === "paid"` (los pendientes no aparecen)
-- **Block explorer**: Cada transaccion pagada es un link a `https://base-sepolia.blockscout.com/tx/{txHash}`
-- **Menu QR**: Boton flotante con 2 opciones: **Cobrar** (`/cobrar`) y **Pagar** (`/scan`)
-- **Crear wallet**: Si no tiene wallet, muestra boton para crear cuenta con passkey
+- Crea la passkey en el dispositivo con biometria.
+- Llama `POST /account/create`.
+- Si la wallet se crea con exito, marca `hasWallet = true` y redirige al dashboard.
 
-#### CreateLink.tsx
-- Formulario: red, moneda (USDC/ETH), monto, referencia
-- Resultado: Muestra QR con el link de pago
-- **Descargar**: Captura el card QR como imagen PNG usando `html-to-image` (identico a la app)
-- **Compartir**: Usa `navigator.share` con URL del link, o copia al clipboard
+#### `Home.tsx`
 
-#### PayPage.tsx
-- Carga link por `?id=`, o perfil por `/:username`, o muestra formulario manual
-- Flujo de pago en 2 pasos: `prepare` → firma biometrica → `submit`
-- Feedback de latencia: muestra "Conexion lenta" despues de 5 segundos
+- Usa **SWR** para traer perfil, balance e historial.
+- Refresca balance cada 10s e historial cada 15s.
+- Mezcla pagos enviados y recibidos en una sola lista ordenada por fecha.
+- Muestra modal de detalle con link a Blockscout y descarga de comprobante como PNG.
+- El menu flotante inferior abre las acciones de **Cobrar** y **Pagar**.
 
-#### PaymentStatus.tsx
-- Muestra comprobante: "Pagaste", monto, destinatario, icono check
-- **Descargar**: Captura el card como imagen PNG usando `html-to-image` (identico a la app)
-- **Compartir**: Genera imagen del comprobante y la comparte via `navigator.share` con archivo PNG
+#### `CreateLink.tsx`
 
-#### ScanQR.tsx
-- Escaneo QR con camara usando `jsqr`
-- Usa `requestVideoFrameCallback` con fallback a `requestAnimationFrame`
-- Constraints de calidad: resolucion ideal 1920x1080, facingMode environment
-- Feedback: vibracion + sonido al detectar QR
-- Throttle: analisis cada 120ms, downscale a max 960px ancho
-- Validacion: solo navega si la URL es del mismo origen
-- Boton manual para ingresar wallet directamente
+- Crea links de cobro con monto, moneda y referencia.
+- Genera el QR con `qrcode.react`.
+- Permite descargar el card como PNG y compartir el link.
 
-#### Settings.tsx
-- **Perfil**: Foto y nombre de Google
-- **Username**: Campo para definir/cambiar username unico
-- **Wallet**: Direccion con boton de copiar
-- **Passkey**: Estado de passkey (registrada/no registrada), boton para registrar/cambiar
-- **USDC de prueba**: Boton "Obtener 5 USDC gratis" (una vez por usuario, muestra estado canjeado)
+#### `PayPage.tsx`
 
-### WebAuthn en cliente
+Soporta tres modos:
 
-Archivo: `client/src/webauthn.ts`
+- pago de link (`/pay?id=...`),
+- pago a username (`/:username`),
+- pago manual a wallet o username (`/pagar`).
 
-- `createPasskey(username)`
-  - Crea credencial de plataforma (`navigator.credentials.create`)
-  - Extrae `qx` y `qy` desde SPKI (clave publica P256)
-  - Devuelve `credentialId`, `qx`, `qy`
+El flujo operativo es siempre de dos pasos:
 
-- `signWithPasskey(credentialId, challenge)`
-  - Dispara biometria (`navigator.credentials.get`)
-  - Extrae `authenticatorData`, `clientDataJSON`, firma DER
-  - Convierte DER a `r` y `s`
+1. `POST /pay/prepare`
+2. firma con `signWithPasskey()`
+3. `POST /pay/submit`
+
+Tambien muestra feedback de conexion lenta despues de 5 segundos.
+
+#### `PaymentStatus.tsx`
+
+- Muestra comprobante de exito.
+- Permite descargarlo como PNG.
+- Permite compartir imagen o link on-chain si el dispositivo lo soporta.
+
+#### `ScanQR.tsx`
+
+- Usa `jsqr` para analizar frames de camara.
+- Intenta usar `requestVideoFrameCallback`, con fallback a `requestAnimationFrame`.
+- Selecciona camara trasera preferente y trata de activar enfoque continuo cuando el navegador lo soporta.
+- Emite vibracion y sonido al detectar QR.
+- Solo navega automaticamente si la URL pertenece al mismo origen de la app.
+
+#### `Settings.tsx`
+
+Actualmente centraliza:
+
+- informacion del perfil Google,
+- username publico,
+- direccion de wallet,
+- estado de passkey,
+- faucet de 5 USDC,
+- link al faucet externo de Circle.
+
+Estado actual importante:
+
+- **Hoy existe un boton temporal de "Restablecer passkey temporalmente"**.
+- Ese boton llama `PUT /account/passkey`.
+- Esta expuesto como herramienta de migracion/manual support y **puede cambiar la wallet del usuario**.
+- No debe entenderse como rotacion segura del signer dentro de la misma direccion.
 
 ---
 
-## Contratos
+## WebAuthn y Gestion de Passkeys
 
-### AccountWebAuthn.sol
+### Creacion de passkey
 
-Smart account con:
+`client/src/webauthn.ts` crea passkeys con:
 
-- `Account` (ERC-4337)
-- `SignerWebAuthn` / `SignerP256` (verificacion P256 WebAuthn)
-- `ERC7821` (ejecucion por lotes)
-- `ERC7739`
-- `Initializable`
+- `authenticatorAttachment: "platform"`
+- `residentKey: "required"`
+- `userVerification: "required"`
+- algoritmo ES256 / P256
 
-Inicializacion:
+Desde la attestation se extraen `qx` y `qy`, que son la clave publica que el contrato usara para validar firmas.
 
-- `initializeWebAuthn(qx, qy)`
+### Firma de pagos
 
-Ejecucion:
+`signWithPasskey(challenge, credentialId?)` funciona asi:
 
-- `execute(bytes32 mode, bytes executionData)`
-- El servidor usa `CALLTYPE_BATCH` (`0x01`) y manda un solo item en el array
+- si el servidor tiene un `credentialId` conocido, el cliente intenta usar **ese** primero con `allowCredentials`;
+- se permiten transportes `internal` y `hybrid`;
+- si no existe pista guardada, se usa el flujo discoverable sin `allowCredentials`.
 
-### AccountFactory.sol
+Esto busca evitar un problema de UX importante: cuando varias passkeys del mismo RP estan sincronizadas en un dispositivo, el navegador puede ofrecer credenciales de otra cuenta si no se le da una pista concreta.
 
-- `cloneAndInitialize(bytes initCallData)` → despliega clone minimal proxy
-- `predictAddress(bytes initCallData)` → predice direccion con CREATE2
+### `credentialId` guardado vs passkey real
 
-### ParmeliaPaymaster.sol
+El `credentialId` en KV no reemplaza la seguridad on-chain. Sirve para:
 
-- Paymaster que paga gas por los usuarios
-- Fondeado por el EOA del servidor
+- acotar la seleccion de la passkey correcta,
+- mejorar UX cuando el usuario tiene varias cuentas,
+- refrescar la referencia despues de una firma exitosa.
+
+La validacion final sigue ocurriendo contra la clave publica P256 registrada en la smart account.
+
+### Recuperacion y cambio de dispositivo
+
+Sin modificar contrato, el sistema actual soporta principalmente dos escenarios:
+
+- **Passkey sincronizada**: el usuario conserva la misma wallet si su passkey esta disponible en el nuevo dispositivo dentro de su ecosistema de passkeys.
+- **Modo discoverable**: si no hay `credentialId` reciente guardado, el navegador puede intentar descubrir una passkey compatible.
+
+Esto mejora la portabilidad, pero **no equivale a recuperacion fuerte a nivel contrato**.
+
+### Flujo legacy de `PUT /account/passkey`
+
+El endpoint actual existe como camino de migracion manual y no como feature final de producto.
+
+Comportamiento real:
+
+1. recibe `credentialId`, `qx`, `qy`,
+2. calcula/predice la cuenta asociada a esa nueva clave publica,
+3. despliega el clone si todavia no existe,
+4. actualiza `credential:{uid}`,
+5. reescribe `user:{uid}.walletAddress` con la nueva direccion.
+
+Consecuencias:
+
+- **No transfiere automaticamente los fondos de la wallet anterior**.
+- **Puede cambiar la direccion operativa del usuario**.
+- Debe tratarse como migracion legacy y no como "cambio de passkey" normal.
 
 ---
 
 ## Flujos Principales
 
-### 1) Crear wallet
+### 1. Login y onboarding
 
-1. Usuario inicia sesion con Google
-2. Cliente llama `createPasskey()` → prompt biometrico → obtiene `credentialId`, `qx`, `qy`
-3. Cliente envia `POST /account/create` con las claves publicas
-4. Servidor despliega cuenta via `factory.cloneAndInitialize()` con `qx`, `qy`
-5. Servidor guarda `credential:{uid}` y `walletAddress` en KV
-6. Servidor auto-fondea 5 USDC de prueba a la nueva cuenta (best-effort, no bloquea creacion)
+1. El usuario inicia sesion con Google.
+2. `App.tsx` consulta `/user/profile`.
+3. Si no existe `walletAddress`, se redirige a `/onboarding`.
+4. El cliente crea una passkey nueva.
+5. El worker despliega la smart account y guarda el perfil.
+6. El usuario entra al dashboard ya con wallet operativa.
 
-### 2) Cobrar (crear link)
+### 2. Crear link de cobro
 
-1. Usuario llena formulario (monto, referencia)
-2. `POST /links` crea link con `status: "pending"` en KV
-3. Se muestra QR con URL del link
-4. El link aparece en el historial solo cuando alguien lo pague (`status: "paid"`)
+1. El usuario completa monto, moneda y referencia.
+2. `POST /links` guarda el link con `status: "pending"`.
+3. El frontend construye la URL publica y genera el QR.
+4. El usuario puede descargar o compartir el link.
 
-### 3) Pagar (no-custodial)
+### 3. Pagar un link o username
 
-1. Cliente hace `POST /pay/prepare` con linkId, wallet, amount, currency
-2. Servidor valida balance suficiente (USDC o ETH on-chain)
-3. Servidor construye UserOp y devuelve `userOpHash` + `credentialId`
-4. Cliente firma `userOpHash` con `signWithPasskey()` (prompt biometrico)
-5. Cliente envia assertion a `POST /pay/submit`
-6. Servidor normaliza `s` (low-s), codifica `WebAuthnAuth` struct
-7. Servidor envia `handleOps` al EntryPoint V09
-8. Servidor verifica `UserOperationEvent.success === true`
-9. Si el pago fue a un link, se actualiza `status: "paid"` con `txHash`
+1. El cliente resuelve destino y monto.
+2. `POST /pay/prepare` valida balance, arma la UserOp y responde con `userOpHash`.
+3. El navegador firma ese hash con WebAuthn.
+4. `POST /pay/submit` normaliza la firma y envia `handleOps`.
+5. Si aplica, el link queda marcado como `paid` y se registra la transaccion.
 
-### 4) Escanear QR para pagar
+### 4. Ver historial
 
-1. `/scan` abre camara con constraints de calidad
-2. `jsqr` analiza frames cada 120ms
-3. Al detectar QR: vibracion + sonido, valida que URL sea del mismo origen
-4. Navega automaticamente a la URL del link de pago
+1. `Home.tsx` pide `/user/transactions`.
+2. El backend une enviados, cobrados por link y ERC-20 detectados en Blockscout.
+3. El frontend los presenta en una sola linea de tiempo.
 
-### 5) Gestionar passkey
+### 5. Faucet de prueba
 
-1. `GET /account/passkey` → verifica si hay passkey registrada
-2. `PUT /account/passkey` → registra nueva passkey (crea nueva credencial en dispositivo, actualiza `credential:{uid}` en KV)
+1. Al crear wallet, el servidor intenta enviar 5 USDC una sola vez.
+2. Si no ocurrio en onboarding, el usuario puede intentar canjearlo desde `Settings`.
+3. El worker usa la key del servidor para transferir desde el EOA de soporte y marca `funded:{uid}`.
 
-### 6) Faucet de prueba (testnet)
+---
 
-- Al crear wallet nueva, el servidor transfiere automaticamente 5 USDC desde el EOA bundler
-- Para usuarios existentes que no recibieron fondos: boton en Settings "Obtener 5 USDC gratis"
-- Limitado a 1 vez por usuario (controlado por `funded:{uid}` en KV)
-- El EOA bundler debe tener USDC suficiente para fondear usuarios
+## Contratos
+
+### `AccountWebAuthn.sol`
+
+El contrato mezcla:
+
+- `Account`
+- `EIP712`
+- `ERC7739`
+- `ERC7821`
+- `SignerWebAuthn`
+- `SignerP256`
+- holders para ERC721/ERC1155
+
+La inicializacion actual es:
+
+- `initializeWebAuthn(bytes32 qx, bytes32 qy)`
+
+Limitacion actual:
+
+- `initializeWebAuthn` usa `initializer`, por lo que el signer solo puede definirse una vez por wallet desplegada.
+- La version actual del contrato **no permite rotar passkey en la misma direccion**.
+
+### Plan v2 ya documentado en comentarios del contrato
+
+`contracts/src/AccountWebAuthn.sol` ya contiene un comentario de referencia para una futura v2 con:
+
+- signer management en storage,
+- `rotateWebAuthnSigner(...)` via self-call firmado por el signer actual,
+- soporte para multiples passkeys,
+- recovery con guardians o timelock,
+- eventos y metadata de version para sincronizar mejor las pistas del backend.
+
+Hasta que esa v2 exista, cualquier reset de passkey sigue siendo una **migracion de wallet**, no una rotacion segura del signer.
+
+---
+
+## Seguridad y Modelo de Custodia
+
+- El login con Google autentica a la persona dentro de la app; **no firma pagos por si solo**.
+- La autorizacion on-chain ocurre con la passkey WebAuthn del usuario.
+- El servidor **no guarda** la clave privada de esa passkey.
+- El EOA del servidor puede:
+  - desplegar cuentas,
+  - enviar el faucet,
+  - pagar gas/bundling,
+  - llamar `handleOps`.
+- El EOA del servidor **no puede** mover fondos de la smart account sin una firma valida que el contrato acepte.
+- El backend guarda `credentialId` solo como ayuda para seleccionar credencial; no como mecanismo custodial.
+- Las firmas P256 se normalizan a low-s para cumplir con la verificacion de OpenZeppelin.
+- Los usernames se validan server-side con regex y lista de palabras reservadas.
+- El worker usa verificacion real de Firebase ID tokens con JWKS publicas de Google.
+- CORS esta abierto (`*`), pero la autorizacion real depende del token Firebase y del signer WebAuthn.
+
+Riesgo/limitacion vigente:
+
+- El flujo temporal de `PUT /account/passkey` puede cambiar la wallet activa del usuario y dejar fondos en la direccion anterior si se usa sin migracion manual de saldo.
 
 ---
 
@@ -343,59 +511,36 @@ Ejecucion:
 
 ### Cliente (`client/.env`)
 
-| Variable | Descripcion |
-|----------|-------------|
-| `VITE_FIREBASE_API_KEY` | Firebase API key |
-| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase auth domain |
-| `VITE_FIREBASE_PROJECT_ID` | Firebase project ID |
-| `VITE_FIREBASE_APP_ID` | Firebase app ID |
-| `VITE_SERVER_URL` | URL del backend (default: `https://server.parmelia.workers.dev`) |
-| `VITE_APP_URL` | URL del frontend (default: `https://parmelia.vercel.app`) |
+| Variable                    | Descripcion              |
+| --------------------------- | ------------------------ |
+| `VITE_FIREBASE_API_KEY`     | Firebase API key         |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase auth domain     |
+| `VITE_FIREBASE_PROJECT_ID`  | Firebase project ID      |
+| `VITE_FIREBASE_APP_ID`      | Firebase app ID          |
+| `VITE_SERVER_URL`           | URL del backend          |
+| `VITE_APP_URL`              | URL publica del frontend |
 
-### Servidor (`wrangler.jsonc` + secrets)
+### Servidor (`server/wrangler.jsonc` + secrets)
 
-| Variable | Tipo | Descripcion |
-|----------|------|-------------|
-| `FIREBASE_PROJECT_ID` | var | ID del proyecto Firebase |
-| `RPC_URL` | secret | RPC de Base Sepolia |
-| `PRIVATE_KEY` | secret | Clave privada del EOA bundler |
-| `PARMELIA_KV` | binding | Cloudflare KV namespace |
-
----
-
-## Seguridad y Modelo de Custodia
-
-- El servidor **no guarda** la clave privada P256 de firma de usuario.
-- El servidor guarda solo `credentialId` para identificar que passkey usar.
-- La firma se hace en el autenticador del dispositivo (passkey).
-- Si el usuario no tiene passkey registrada para esa cuenta, no puede firmar hasta registrar una.
-- El EOA del servidor paga gas/bundle; no autoriza por si solo mover fondos de la smart account.
-- Las firmas P256 se normalizan a low-s para cumplir con la validacion de OZ.
-- Username validado server-side: regex `[a-z0-9_-]{3,30}` + lista de palabras reservadas.
-- Firebase token verificado con JWKS publicas de Google.
-- CORS abierto (`*`) — la autenticacion real es via Firebase token.
-
-### Limitacion actual (importante)
-
-- El backend hoy maneja **1 passkey por usuario** (`credential:{uid}`).
-- Si una cuenta fue creada antes del flujo passkey (wallet existente pero sin `credentialId`), `POST /pay/prepare` falla con "Passkey not found".
-- En ese estado, `POST /account/create` devuelve `409 Account already exists`, por lo que se requiere una ruta de migracion/registro de passkey para cuentas legacy.
-- En otro dispositivo, el pago solo funciona si la passkey ya esta sincronizada (por ejemplo, llavero en la nube). Si no esta sincronizada, la firma falla hasta registrar una passkey valida para esa cuenta.
-- `PUT /account/passkey` actualmente solo actualiza el `credentialId` en KV, no cambia la clave publica on-chain (requeriria UserOp firmada con la passkey actual).
+| Variable              | Tipo    | Descripcion                                      |
+| --------------------- | ------- | ------------------------------------------------ |
+| `FIREBASE_PROJECT_ID` | var     | Proyecto Firebase usado para validar ID tokens   |
+| `RPC_URL`             | secret  | RPC de Base Sepolia                              |
+| `PRIVATE_KEY`         | secret  | EOA del worker para deploy, faucet y `handleOps` |
+| `PARMELIA_KV`         | binding | Namespace KV de Cloudflare                       |
 
 ---
 
 ## Estado Actual
 
-- Contratos desplegados y en uso en Base Sepolia (EntryPoint V09)
-- Backend en Cloudflare Workers con flujo `prepare/submit`
-- Cliente en Vercel con SPA rewrites
-- Firma WebAuthn real con biometria (no-custodial)
-- Normalizacion low-s de firmas P256
-- Historial de transacciones filtrado (solo pagadas) con links a block explorer
-- Descarga de QR y comprobante como imagen identica a la app (`html-to-image`)
-- Escaner QR con camara, vibracion y audio feedback
-- Gestion de passkey en Settings
-- Feedback de conexion lenta (5s timeout)
-- Flujo consolidado: Cobrar + Pagar (escanear QR o manual)
-- Faucet testnet: 5 USDC gratis al crear wallet o desde Settings (una vez por usuario)
+Snapshot de la arquitectura hoy:
+
+- Backend modularizado en middlewares y rutas.
+- Onboarding obligatorio para usuarios autenticados sin wallet.
+- Home basado en SWR para balance e historial.
+- Historial enriquecido con datos propios en KV y transferencias de Blockscout.
+- Flujo de pago en dos pasos (`prepare` -> firma WebAuthn -> `submit`).
+- Manejo de passkeys mas conservador: primero intenta el `credentialId` conocido para evitar mezclar passkeys de otras cuentas sincronizadas.
+- `GET /account/passkey` distingue entre modo `stored` y `discoverable`.
+- `Settings` todavia expone un boton temporal de restablecimiento/migracion manual.
+- El contrato v1 no soporta rotacion del signer en la misma direccion; una futura v2 debera resolver recovery y multiples passkeys a nivel on-chain.
