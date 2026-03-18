@@ -152,6 +152,8 @@ export default function Settings({ user }: { user: User }) {
 		}
 	}
 
+	console.log(new URL(APP_URL).host);
+
 	return (
 		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
 			<div className="flex items-center justify-between mb-6">
@@ -300,7 +302,7 @@ export default function Settings({ user }: { user: User }) {
 						href="https://faucet.circle.com"
 						target="_blank"
 						rel="noopener noreferrer"
-						className="inline-block !text-black bg-parmelia-blue px-6 py-2 rounded-full text-xs font-medium"
+						className="inline-block text-black! bg-parmelia-blue px-6 py-2 rounded-full text-xs font-medium"
 					>
 						Ir a faucet.circle.com
 					</a>
