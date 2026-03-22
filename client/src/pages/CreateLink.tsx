@@ -8,7 +8,7 @@ import Logo from "../components/Logo";
 import { fetchWithAuth } from "../authFetch";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
-const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.vercel.app";
+const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 export default function CreateLink({ user }: { user: User }) {
 	const navigate = useNavigate();
@@ -229,3 +229,4 @@ export default function CreateLink({ user }: { user: User }) {
 		</div>
 	);
 }
+

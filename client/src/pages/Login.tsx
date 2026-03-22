@@ -1,16 +1,12 @@
 import { signInWithGoogle } from "../firebase";
-import { useNavigate } from "react-router-dom";
 import { sileo } from "sileo";
 import Logo from "../components/Logo";
 
 export default function Login() {
-  const navigate = useNavigate();
-
   async function handleLogin() {
     try {
       const credential = await signInWithGoogle();
       await credential.user.getIdToken(true);
-      navigate("/");
     } catch (err) {
       sileo.error({ title: "Error al iniciar sesion" });
     }
@@ -22,7 +18,6 @@ export default function Login() {
       <h1 className="text-3xl sm:text-4xl mb-16">Parmelia</h1>
 
       <div className="w-full max-w-sm px-4 flex flex-col items-center">
-
         <p className="text-muted text-center mb-10 text-sm leading-relaxed max-w-xs">
           Una Wallet para comprar, enviar y recibir dólares USDC sin pagar gas. Con la mejor UX
         </p>

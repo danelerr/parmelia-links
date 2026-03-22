@@ -6,7 +6,7 @@ import { fetchWithAuth } from "../authFetch";
 import { createPasskey } from "../webauthn";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
-const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.vercel.app";
+const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 export default function Settings({ user }: { user: User }) {
 	const navigate = useNavigate();
@@ -19,8 +19,11 @@ export default function Settings({ user }: { user: User }) {
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [faucetClaimed, setFaucetClaimed] = useState<boolean | null>(null);
 	const [claimingFaucet, setClaimingFaucet] = useState(false);
+	const [initialLoading, setInitialLoading] = useState(true);
 
 	useEffect(() => {
+		let cancelled = false;
+
 		async function fetchProfile() {
 			try {
 				const res = await fetchWithAuth(user, `${SERVER_URL}/user/profile`);
@@ -59,9 +62,24 @@ export default function Settings({ user }: { user: User }) {
 			}
 		}
 
-		fetchProfile();
-		fetchPasskeyStatus();
-		fetchFaucetStatus();
+		async function loadSettings() {
+			setInitialLoading(true);
+			await Promise.allSettled([
+				fetchProfile(),
+				fetchPasskeyStatus(),
+				fetchFaucetStatus(),
+			]);
+
+			if (!cancelled) {
+				setInitialLoading(false);
+			}
+		}
+
+		void loadSettings();
+
+		return () => {
+			cancelled = true;
+		};
 	}, [user]);
 
 	async function handleSaveUsername() {
@@ -152,7 +170,31 @@ export default function Settings({ user }: { user: User }) {
 		}
 	}
 
-	console.log(new URL(APP_URL).host);
+	if (initialLoading) {
+		return (
+			<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
+				<div className="flex items-center justify-between mb-6">
+					<button
+						onClick={() => navigate("/")}
+						className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
+					>
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M19 12H5" />
+							<path d="M12 19l-7-7 7-7" />
+						</svg>
+						Volver
+					</button>
+				</div>
+
+				<h2 className="text-2xl mb-8">Configuración</h2>
+
+				<div className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col items-center justify-center gap-4">
+					<div className="w-8 h-8 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
+					<p className="text-sm text-muted text-center">Cargando configuración...</p>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
@@ -243,6 +285,9 @@ export default function Settings({ user }: { user: User }) {
 							<p className="text-xs text-muted mb-3 leading-relaxed">
 								En Android y Chrome normalmente se recupera desde Google Password Manager. En Apple normalmente se recupera desde iCloud Keychain.
 							</p>
+							<p className="text-xs text-parmelia-pink mb-3 leading-relaxed">
+								Si tu passkey fue creada cuando Parmelia estaba en parmelia.vercel.app, el navegador puede no mostrarla en parmelia.me porque WebAuthn la liga al dominio donde se registro.
+							</p>
 							{hasStoredCredential ? (
 								<p className="text-xs text-parmelia-blue mb-3 leading-relaxed">
 									Tenemos una referencia reciente de tu passkey. Al firmar, la app intentara primero usar la passkey asociada a esta cuenta para evitar mezclar passkeys de otras cuentas sincronizadas.
@@ -311,4 +356,5 @@ export default function Settings({ user }: { user: User }) {
 		</div>
 	);
 }
+
 

@@ -1,11 +1,13 @@
 import { initializeApp } from "firebase/app";
 
 import {
+	browserLocalPersistence,
 	getAuth,
 	GoogleAuthProvider,
+	onAuthStateChanged,
+	setPersistence,
 	signInWithPopup,
 	signOut,
-	onAuthStateChanged,
 	type User,
 } from "firebase/auth";
 
@@ -20,6 +22,10 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+void setPersistence(auth, browserLocalPersistence).catch((error) => {
+	console.error("Failed to set Firebase auth persistence", error);
+});
 
 const googleProvider = new GoogleAuthProvider();
 

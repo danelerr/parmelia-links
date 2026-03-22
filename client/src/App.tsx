@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sileo";
 import { onAuthChange, type User } from "./firebase";
@@ -20,37 +20,102 @@ function App() {
 	const [user, setUser] = useState<User | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [hasWallet, setHasWallet] = useState<boolean | null>(null);
+	const [walletCheckError, setWalletCheckError] = useState("");
 
-	// Check if user has a wallet
-	const checkWallet = async (u: User) => {
+	const checkWallet = async (currentUser: User) => {
 		try {
-			const res = await fetchWithAuth(u, `${SERVER_URL}/user/profile`);
-			if (res.ok) {
-				const data = await res.json();
-				setHasWallet(!!data.walletAddress);
-			} else {
-				setHasWallet(false);
+			const res = await fetchWithAuth(currentUser, `${SERVER_URL}/user/profile`);
+
+			if (!res.ok) {
+				throw new Error(`Profile request failed with status ${res.status}`);
 			}
-		} catch {
-			setHasWallet(false);
+
+			const data = await res.json();
+			setHasWallet(!!data.walletAddress);
+			setWalletCheckError("");
+		} catch (error) {
+			console.error("Wallet check failed", error);
+			setHasWallet(null);
+			setWalletCheckError(
+				"No pudimos validar tu cuenta todavía. Reintenta en un momento.",
+			);
 		} finally {
 			setLoading(false);
 		}
 	};
 
 	useEffect(() => {
-		const unsub = onAuthChange((u) => {
-			setUser(u);
-			console.log("user", u);
-			if (u) {
-				checkWallet(u);
+		const unsub = onAuthChange((nextUser) => {
+			setUser(nextUser);
+			console.log("user", nextUser);
+
+			if (nextUser) {
+				setLoading(true);
+				setWalletCheckError("");
+				void checkWallet(nextUser);
 			} else {
 				setHasWallet(null);
+				setWalletCheckError("");
 				setLoading(false);
 			}
 		});
 		return unsub;
 	}, []);
+
+	function renderAccountState() {
+		return (
+			<div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center">
+				<Logo className="w-20 animate-pulse" />
+				<p className="text-sm text-muted mt-5 max-w-xs">
+					{walletCheckError || "Cargando tu cuenta..."}
+				</p>
+				{walletCheckError && user && (
+					<button
+						onClick={() => {
+							setLoading(true);
+							setWalletCheckError("");
+							void checkWallet(user);
+						}}
+						className="mt-5 bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-sm font-medium"
+					>
+						Reintentar
+					</button>
+				)}
+			</div>
+		);
+	}
+
+	function renderProtectedRoute(content: ReactNode) {
+		if (!user) {
+			return <Navigate to="/login" />;
+		}
+
+		if (hasWallet === false) {
+			return <Navigate to="/onboarding" />;
+		}
+
+		if (hasWallet === true) {
+			return content;
+		}
+
+		return renderAccountState();
+	}
+
+	function renderOnboardingRoute() {
+		if (!user) {
+			return <Navigate to="/login" />;
+		}
+
+		if (hasWallet === true) {
+			return <Navigate to="/" />;
+		}
+
+		if (hasWallet === false) {
+			return <Onboarding user={user} onComplete={() => setHasWallet(true)} />;
+		}
+
+		return renderAccountState();
+	}
 
 	if (loading) {
 		return (
@@ -78,83 +143,23 @@ function App() {
 			/>
 			<Routes>
 				<Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
-
-				<Route
-					path="/onboarding"
-					element={
-						user && hasWallet === false ? (
-							<Onboarding user={user} onComplete={() => setHasWallet(true)} />
-						) : (
-							<Navigate to="/" />
-						)
-					}
-				/>
-				{/* Protected Routes that require both Login AND Wallet */}
-				<Route
-					path="/"
-					element={
-						!user ? (
-							<Navigate to="/login" />
-						) : !hasWallet ? (
-							<Navigate to="/onboarding" />
-						) : (
-							<Home user={user} />
-						)
-					}
-				/>
+				<Route path="/onboarding" element={renderOnboardingRoute()} />
+				<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
 				<Route
 					path="/cobrar"
-					element={
-						!user ? (
-							<Navigate to="/login" />
-						) : !hasWallet ? (
-							<Navigate to="/onboarding" />
-						) : (
-							<CreateLink user={user} />
-						)
-					}
+					element={renderProtectedRoute(user ? <CreateLink user={user} /> : null)}
 				/>
 				<Route
 					path="/pagar"
-					element={
-						!user ? (
-							<Navigate to="/login" />
-						) : !hasWallet ? (
-							<Navigate to="/onboarding" />
-						) : (
-							<PayPage user={user} />
-						)
-					}
+					element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
 				/>
-				<Route
-					path="/scan"
-					element={
-						!user ? (
-							<Navigate to="/login" />
-						) : !hasWallet ? (
-							<Navigate to="/onboarding" />
-						) : (
-							<ScanQR />
-						)
-					}
-				/>
+				<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
 				<Route
 					path="/settings"
-					element={
-						!user ? (
-							<Navigate to="/login" />
-						) : !hasWallet ? (
-							<Navigate to="/onboarding" />
-						) : (
-							<Settings user={user} />
-						)
-					}
+					element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
 				/>
-
-				{/* Public or shared payment routes */}
 				<Route path="/pay" element={<PayPage user={user} />} />
 				<Route path="/pay/status" element={<PaymentStatus />} />
-				{/* Username-based payment routes like /daniel */}
 				<Route path="/:username" element={<PayPage user={user} />} />
 			</Routes>
 		</BrowserRouter>

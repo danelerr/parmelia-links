@@ -35,7 +35,7 @@ type WindowWithBarcodeDetector = Window & {
   BarcodeDetector?: BarcodeDetectorConstructorLike;
 };
 
-const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.vercel.app";
+const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const SCAN_INTERVAL_MS = 180;
 const MAX_LIVE_ANALYSIS_WIDTH = 1280;
 const MAX_IMAGE_ANALYSIS_WIDTH = 1600;
@@ -753,3 +753,4 @@ export default function ScanQR() {
     </div>
   );
 }
+

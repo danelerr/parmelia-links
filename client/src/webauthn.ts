@@ -20,6 +20,31 @@ function bytesToHex(bytes: Uint8Array): string {
 	return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function getConfiguredAppHost() {
+	const appUrl = import.meta.env.VITE_APP_URL;
+	if (!appUrl) return null;
+
+	try {
+		return new URL(appUrl).hostname;
+	} catch {
+		return null;
+	}
+}
+
+function getRelyingPartyId() {
+	const currentHost = window.location.hostname;
+	const configuredHost = getConfiguredAppHost();
+
+	if (
+		configuredHost &&
+		(currentHost === configuredHost || currentHost.endsWith(`.${configuredHost}`))
+	) {
+		return configuredHost;
+	}
+
+	return currentHost;
+}
+
 /** Create a new P256 passkey. Returns the credentialId and public key (qx, qy). */
 export async function createPasskey(username: string): Promise<{
 	credentialId: string;
@@ -27,17 +52,18 @@ export async function createPasskey(username: string): Promise<{
 	qy: string;
 }> {
 	const challenge = crypto.getRandomValues(new Uint8Array(32));
+	const rpId = getRelyingPartyId();
 
 	const credential = (await navigator.credentials.create({
 		publicKey: {
-			rp: { name: "Parmelia", id: window.location.hostname },
+			rp: { name: "Parmelia", id: rpId },
 			user: {
 				id: new TextEncoder().encode(username),
 				name: username,
 				displayName: username,
 			},
 			challenge,
-			pubKeyCredParams: [{ alg: -7, type: "public-key" }], // ES256 = P256
+			pubKeyCredParams: [{ alg: -7, type: "public-key" }],
 			authenticatorSelection: {
 				authenticatorAttachment: "platform",
 				residentKey: "required",
@@ -51,8 +77,6 @@ export async function createPasskey(username: string): Promise<{
 	if (!credential) throw new Error("No se pudo crear la credencial");
 
 	const attestation = credential.response as AuthenticatorAttestationResponse;
-
-	// Extract the P256 public key from the COSE key in attestationObject
 	const { qx, qy } = extractP256PublicKey(attestation);
 
 	return {
@@ -64,12 +88,10 @@ export async function createPasskey(username: string): Promise<{
 
 /** Extract P256 public key (qx, qy) from AuthenticatorAttestationResponse */
 function extractP256PublicKey(attestation: AuthenticatorAttestationResponse): { qx: string; qy: string } {
-	// getPublicKey() returns the SubjectPublicKeyInfo (SPKI) DER-encoded key
 	const spkiDer = attestation.getPublicKey();
 	if (!spkiDer) throw new Error("No se pudo obtener la clave publica");
 
 	const spki = new Uint8Array(spkiDer);
-	// P256 SPKI: 26 bytes header + 65 bytes uncompressed point (0x04 || x || y)
 	const uncompressedOffset = spki.length - 65;
 	if (spki[uncompressedOffset] !== 0x04) {
 		throw new Error("Formato de clave publica inesperado");
@@ -85,6 +107,7 @@ async function requestAssertion(
 ): Promise<PublicKeyCredential | null> {
 	const publicKey: PublicKeyCredentialRequestOptions = {
 		challenge: challenge.buffer as ArrayBuffer,
+		rpId: getRelyingPartyId(),
 		userVerification: "required",
 		timeout: 60000,
 	};
@@ -143,8 +166,6 @@ export async function signWithPasskey(
 	const authenticatorData = new Uint8Array(response.authenticatorData);
 	const clientDataJSON = new TextDecoder().decode(response.clientDataJSON);
 	const signature = new Uint8Array(response.signature);
-
-	// Parse DER-encoded P256 signature to (r, s)
 	const { r, s } = parseDERSignature(signature);
 
 	return {
@@ -158,11 +179,9 @@ export async function signWithPasskey(
 
 /** Parse a DER-encoded ECDSA signature into r and s hex strings */
 function parseDERSignature(der: Uint8Array): { r: string; s: string } {
-	// DER: 0x30 <len> 0x02 <r_len> <r> 0x02 <s_len> <s>
 	if (der[0] !== 0x30) throw new Error("Invalid DER signature");
 	let offset = 2;
 
-	// Read r
 	if (der[offset] !== 0x02) throw new Error("Invalid DER r tag");
 	offset++;
 	const rLen = der[offset];
@@ -172,7 +191,6 @@ function parseDERSignature(der: Uint8Array): { r: string; s: string } {
 	if (rBytes[0] === 0x00 && rBytes.length > 32) rBytes = rBytes.slice(1);
 	const r = bytesToHex(rBytes);
 
-	// Read s
 	if (der[offset] !== 0x02) throw new Error("Invalid DER s tag");
 	offset++;
 	const sLen = der[offset];
@@ -183,4 +201,3 @@ function parseDERSignature(der: Uint8Array): { r: string; s: string } {
 
 	return { r, s };
 }
-

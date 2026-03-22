@@ -7,6 +7,8 @@ import { fetchWithAuth } from "../authFetch";
 import { signWithPasskey } from "../webauthn";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
+const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
+const APP_HOST = new URL(APP_URL).hostname;
 
 interface LinkData {
 	id: string;
@@ -179,8 +181,15 @@ export default function PayPage({ user }: { user: User | null }) {
 		if (msg.includes("AA21")) return "Fondos insuficientes para gas.";
 		if (msg.includes("AA25")) return "Datos de firma inválidos.";
 		if (msg.includes("Saldo USDC insuficiente") || msg.includes("Saldo ETH insuficiente")) return msg;
-		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) return "No se encontro una passkey compatible para esta wallet.";
-		if (msg.includes("NotAllowedError") || msg.includes("Firma cancelada")) return "No se encontro una passkey compatible o la autorizacion fue cancelada.";
+		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) {
+			return "No se encontro una passkey compatible para esta wallet.";
+		}
+		if (msg.includes("No passkeys available") || msg.includes(`No passkeys available for ${APP_HOST}`)) {
+			return `No hay passkeys disponibles para ${APP_HOST} en este dispositivo. Si tu passkey fue creada en otro dominio de Parmelia, como parmelia.vercel.app, el navegador no la puede usar aqui.`;
+		}
+		if (msg.includes("NotAllowedError") || msg.includes("timed out or was not allowed") || msg.includes("Firma cancelada")) {
+			return `La firma fue cancelada o este dispositivo no encontro una passkey utilizable para ${APP_HOST}. Si la passkey se creo bajo otro dominio de Parmelia, aqui no aparecera.`;
+		}
 		if (msg.includes("insufficient") || msg.includes("Insufficient")) return "Saldo insuficiente.";
 		if (msg.includes("FailedOp")) {
 			const match = msg.match(/FailedOp\([^,]+,\s*"?([^"\)]+)/);
@@ -569,3 +578,4 @@ export default function PayPage({ user }: { user: User | null }) {
 		</div>
 	);
 }
+
