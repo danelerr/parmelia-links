@@ -189,7 +189,7 @@ export default function CreateLink({ user }: { user: User }) {
 						className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
 					>
 						<option value="USDC">USDC</option>
-						<option value="ETH">ETH</option>
+						<option value="ETH">{activeNetwork.nativeTokenSymbol}</option>
 					</select>
 				</div>
 

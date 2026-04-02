@@ -186,7 +186,11 @@ export default function PayPage({ user }: { user: User | null }) {
 		if (msg.includes("Missing qx/qy")) {
 			return "No pudimos identificar la passkey usada en este dispositivo. Intenta de nuevo desde el mismo navegador donde la registraste en Parmelia.";
 		}
-		if (msg.includes("Saldo USDC insuficiente") || msg.includes("Saldo ETH insuficiente")) return msg;
+		if (
+			msg.includes("Saldo USDC insuficiente") ||
+			msg.includes(`Saldo ${activeNetwork.nativeTokenSymbol} insuficiente`) ||
+			msg.includes("Saldo ETH insuficiente")
+		) return msg;
 		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) {
 			return "No se encontro una passkey compatible para esta wallet.";
 		}
@@ -355,7 +359,7 @@ export default function PayPage({ user }: { user: User | null }) {
 								className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
 							>
 								<option value="USDC">USDC</option>
-								<option value="ETH">ETH</option>
+								<option value="ETH">{activeNetwork.nativeTokenSymbol}</option>
 							</select>
 						</div>
 
@@ -551,7 +555,7 @@ export default function PayPage({ user }: { user: User | null }) {
 								className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
 							>
 								<option value="USDC">USDC</option>
-								<option value="ETH">ETH</option>
+								<option value="ETH">{activeNetwork.nativeTokenSymbol}</option>
 							</select>
 						</div>
 						<div className="w-full max-w-xs">

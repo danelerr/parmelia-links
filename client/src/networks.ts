@@ -1,3 +1,4 @@
+// Keep the client self-contained so Vercel builds work even when deploying from `client/`.
 export type SupportedChainKey = "base-sepolia" | "monad-testnet";
 
 export type NetworkConfig = {
@@ -49,5 +50,6 @@ export function getNetworkConfig(chainKey?: string): NetworkConfig {
 	if (chainKey && isSupportedChainKey(chainKey)) {
 		return NETWORKS[chainKey];
 	}
+
 	return NETWORKS[DEFAULT_CHAIN_KEY];
 }

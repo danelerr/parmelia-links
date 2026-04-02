@@ -34,6 +34,14 @@ interface PasskeyStatusResponse {
 	recoveryExecutableAfter: string | null;
 }
 
+interface WalletMigrationResponse {
+	accountAddress: string;
+	previousWalletAddress: string;
+	transactionHash: string;
+	updatedPendingLinks: number;
+	manualMigrationRequired: boolean;
+}
+
 function formatAddress(address: string) {
 	return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
@@ -55,6 +63,7 @@ export default function Settings({ user }: { user: User }) {
 		RememberedPasskey[]
 	>([]);
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
+	const [migratingWallet, setMigratingWallet] = useState(false);
 	const [faucetClaimed, setFaucetClaimed] = useState<boolean | null>(null);
 	const [claimingFaucet, setClaimingFaucet] = useState(false);
 	const [initialLoading, setInitialLoading] = useState(true);
@@ -248,6 +257,53 @@ export default function Settings({ user }: { user: User }) {
 			});
 		} finally {
 			setUpdatingPasskey(false);
+		}
+	}
+
+	async function handleMigrateWallet() {
+		if (!walletAddress) return;
+
+		const confirmed = window.confirm(
+			"Esta migracion crea una nueva wallet V2 y actualiza tu perfil a esa nueva direccion. Los links pendientes se moveran a la nueva wallet, pero los fondos de la wallet anterior no se transfieren solos. ¿Quieres continuar?",
+		);
+		if (!confirmed) return;
+
+		setMigratingWallet(true);
+		try {
+			const uid = user.uid || "parmelia-user";
+			const nextPasskey = await createPasskey(uid);
+
+			const res = await fetchWithAuth(user, `${SERVER_URL}/account/migrate`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(nextPasskey),
+			});
+			if (!res.ok) {
+				const data = await res
+					.json()
+					.catch(() => ({ error: "Error al migrar la wallet" }));
+				throw new Error(data.error || "Error al migrar la wallet");
+			}
+
+			const data = (await res.json()) as WalletMigrationResponse;
+			await refreshSettings();
+			sileo.success({
+				title: "Wallet migrada",
+				description:
+					data.updatedPendingLinks > 0
+						? `La nueva wallet V2 ya esta activa y ${data.updatedPendingLinks} link(s) pendiente(s) fueron actualizados.`
+						: "La nueva wallet V2 ya esta activa. Si necesitas fondos, podras reclamarlos de nuevo desde esta pantalla.",
+			});
+		} catch (err) {
+			sileo.error({
+				title: "Error",
+				description:
+					err instanceof Error ? err.message : "Error al migrar la wallet",
+			});
+		} finally {
+			setMigratingWallet(false);
 		}
 	}
 
@@ -535,10 +591,30 @@ export default function Settings({ user }: { user: User }) {
 										Tu wallet actual todavía no soporta multi-passkey seguro en
 										la misma dirección.
 									</p>
+									<p className="text-xs text-muted mb-3 leading-relaxed">
+										La migración a V2 crea una nueva wallet en {activeNetwork.name},
+										actualiza tu perfil y mueve tus links pendientes a la nueva
+										dirección.
+									</p>
+									<p className="text-xs text-muted mb-4 leading-relaxed">
+										Los fondos de la wallet anterior no se transfieren
+										automáticamente. Si una passkey fue creada bajo otro dominio
+										de Parmelia, el navegador puede no mostrarla aquí porque
+										WebAuthn la liga al RP ID original.
+									</p>
+									<button
+										onClick={handleMigrateWallet}
+										disabled={migratingWallet}
+										className="bg-parmelia-gold text-black px-6 py-2 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity mb-3"
+									>
+										{migratingWallet
+											? "Migrando..."
+											: "Migrar wallet a V2"}
+									</button>
 									<p className="text-xs text-muted leading-relaxed">
-										Si una passkey fue creada bajo otro dominio de Parmelia, el
-										navegador puede no mostrarla aquí porque WebAuthn la liga al
-										RP ID original.
+										Después de migrar, esta pantalla te dejará agregar nuevas
+										passkeys en la misma wallet V2. Si la nueva cuenta queda sin
+										fondos, podrás pedir tokens de prueba otra vez.
 									</p>
 								</>
 							)}

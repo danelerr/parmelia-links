@@ -1,4 +1,4 @@
-import { DEFAULT_CHAIN_KEY, getNetworkConfig, isSupportedChainKey } from "../../shared/networks";
+import { DEFAULT_CHAIN_KEY, getNetworkConfig, isSupportedChainKey } from "./networks";
 
 function trimTrailingSlash(value: string) {
 	return value.replace(/\/+$/, "");

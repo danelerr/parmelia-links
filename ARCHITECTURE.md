@@ -215,8 +215,9 @@ Se usa como almacenamiento ligero para:
 | GET    | `/user/balance`      | SI   | Balance on-chain de ETH y USDC de la wallet del usuario                                             |
 | GET    | `/user/transactions` | SI   | Historial agregado de enviados, cobrados por links y transferencias ERC-20 detectadas en Blockscout |
 | POST   | `/account/create`    | SI   | Crea la smart wallet desde `credentialId`, `qx`, `qy` y guarda la wallet en el perfil               |
-| GET    | `/account/passkey`   | SI   | Devuelve estado de passkey: `hasStoredCredential`, `hasWallet`, `recoveryMode`                      |
-| PUT    | `/account/passkey`   | SI   | Flujo legacy de migracion manual: puede desplegar otra wallet y reescribir `walletAddress`          |
+| GET    | `/account/passkey`   | SI   | Devuelve estado de passkey: `hasStoredCredential`, `hasWallet`, `recoveryMode`, version de cuenta   |
+| POST   | `/account/migrate`   | SI   | Migra una wallet legacy a V2, actualiza `walletAddress` y reescribe links pendientes                |
+| PUT    | `/account/passkey`   | SI   | Agrega una nueva passkey a una wallet V2 existente sin cambiar de direccion                         |
 | POST   | `/account/fund`      | SI   | Envia 5 USDC de prueba una sola vez                                                                 |
 | GET    | `/account/fund`      | SI   | Consulta si el faucet ya fue canjeado                                                               |
 | POST   | `/links`             | SI   | Crea un link de cobro en estado `pending`                                                           |
@@ -229,7 +230,10 @@ Se usa como almacenamiento ligero para:
 
 - `POST /account/create` guarda `credential:{uid}` y `user:{uid}.walletAddress`, y ademas intenta hacer auto-fund de 5 USDC de forma best-effort.
 - `GET /account/passkey` ya no solo responde si existe passkey; tambien indica si la cuenta esta en modo `stored` o `discoverable`.
-- `PUT /account/passkey` **no rota el signer dentro de la misma wallet**. Con el contrato actual puede terminar desplegando otra smart account y reemplazando `walletAddress` en el perfil.
+- `POST /account/migrate` crea una wallet V2 nueva cuando detectamos una cuenta legacy y reescribe `walletAddress` en el perfil.
+- Durante la migracion, los links `pending` del usuario se actualizan para apuntar a la nueva wallet.
+- La migracion **no transfiere automaticamente fondos** desde la wallet anterior.
+- `PUT /account/passkey` solo funciona sobre wallets V2 y prepara el calldata para agregar un signer adicional en la misma direccion.
 - `POST /pay/prepare` guarda una entrada `pending:{userOpHash}` para enlazar la firma biometrica con la UserOp exacta que despues se enviara on-chain.
 - `POST /pay/submit`:
   - normaliza `s` a low-s para cumplir con OpenZeppelin P256,
@@ -407,17 +411,17 @@ Sin modificar contrato, el sistema actual soporta principalmente dos escenarios:
 
 Esto mejora la portabilidad, pero **no equivale a recuperacion fuerte a nivel contrato**.
 
-### Flujo legacy de `PUT /account/passkey`
+### Flujo legacy de `POST /account/migrate`
 
-El endpoint actual existe como camino de migracion manual y no como feature final de producto.
+El endpoint actual existe como camino de migracion explicita para cuentas legacy y no como feature final de producto.
 
 Comportamiento real:
 
 1. recibe `credentialId`, `qx`, `qy`,
-2. calcula/predice la cuenta asociada a esa nueva clave publica,
-3. despliega el clone si todavia no existe,
-4. actualiza `credential:{uid}`,
-5. reescribe `user:{uid}.walletAddress` con la nueva direccion.
+2. despliega o recupera una wallet V2 asociada a esa nueva clave publica,
+3. actualiza `credential:{uid}`,
+4. reescribe `user:{uid}.walletAddress` con la nueva direccion,
+5. actualiza los links `pending` del usuario para que cobren en la nueva wallet.
 
 Consecuencias:
 
@@ -523,7 +527,7 @@ Hasta que esa v2 exista, cualquier reset de passkey sigue siendo una **migracion
 
 Riesgo/limitacion vigente:
 
-- El flujo temporal de `PUT /account/passkey` puede cambiar la wallet activa del usuario y dejar fondos en la direccion anterior si se usa sin migracion manual de saldo.
+- El flujo temporal de `POST /account/migrate` puede cambiar la wallet activa del usuario y dejar fondos en la direccion anterior si se usa sin migracion manual de saldo.
 
 ---
 
@@ -562,5 +566,5 @@ Snapshot de la arquitectura hoy:
 - Flujo de pago en dos pasos (`prepare` -> firma WebAuthn -> `submit`).
 - Manejo de passkeys mas conservador: primero intenta el `credentialId` conocido para evitar mezclar passkeys de otras cuentas sincronizadas.
 - `GET /account/passkey` distingue entre modo `stored` y `discoverable`.
-- `Settings` todavia expone un boton temporal de restablecimiento/migracion manual.
+- `Settings` y `Home` exponen una CTA explicita para migrar wallets legacy a V2.
 - El contrato v1 no soporta rotacion del signer en la misma direccion; una futura v2 debera resolver recovery y multiples passkeys a nivel on-chain.

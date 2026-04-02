@@ -19,6 +19,14 @@ interface Transaction {
 	createdAt: string;
 }
 
+interface PasskeyStatus {
+	hasWallet: boolean;
+	accountVersion: "unknown" | "legacy" | "v2";
+	signerCount: number | null;
+	threshold: number | null;
+	guardian: string | null;
+}
+
 export default function Home({ user }: { user: User }) {
 	const navigate = useNavigate();
 	const [showMenu, setShowMenu] = useState(false);
@@ -53,7 +61,7 @@ export default function Home({ user }: { user: User }) {
 		{ refreshInterval: 15000, keepPreviousData: true }
 	);
 
-	const { data: passkeyStatus } = useSWR(
+	const { data: passkeyStatus } = useSWR<PasskeyStatus>(
 		profile?.walletAddress ? `${SERVER_URL}/account/passkey` : null,
 		fetcher,
 		{ refreshInterval: 30000, keepPreviousData: true }
@@ -170,7 +178,7 @@ export default function Home({ user }: { user: User }) {
 							: "bg-surface-2 text-muted"
 							}`}
 					>
-						ETH
+						{activeNetwork.nativeTokenSymbol}
 					</button>
 				</div>
 
@@ -187,7 +195,7 @@ export default function Home({ user }: { user: User }) {
 							<span className="text-3xl sm:text-4xl font-mono mb-1">
 								{ethBalance !== null ? ethBalance : "0"}
 							</span>
-							<span className="text-xs text-muted">ETH</span>
+							<span className="text-xs text-muted">{activeNetwork.nativeTokenSymbol}</span>
 						</>
 					)}
 				</div>
@@ -227,10 +235,19 @@ export default function Home({ user }: { user: User }) {
 							.
 						</p>
 					) : (
-						<p className="text-sm text-muted leading-relaxed">
-							Esta wallet todavía no expone multi-passkey on-chain. Los
-							detalles de migración y seguridad están en Configuración.
-						</p>
+						<div>
+							<p className="text-sm text-muted leading-relaxed mb-3">
+								Esta wallet todavía no expone multi-passkey on-chain en{" "}
+								{activeNetwork.name}. Necesita migración a V2 para agregar
+								passkeys y recovery moderno.
+							</p>
+							<button
+								onClick={() => navigate("/settings")}
+								className="bg-parmelia-gold text-black px-4 py-2 rounded-full text-xs font-medium"
+							>
+								Migrar desde Configuración
+							</button>
+						</div>
 					)}
 				</div>
 			)}
