@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { createPublicClient, http, formatEther, formatUnits, erc20Abi } from "viem";
-import { baseSepolia } from "viem/chains";
 import { USDC_ADDRESS, USDC_DECIMALS } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
+import { getActiveChain } from "../chain";
 import { getUserByUid, getUserByUsername, saveUser } from "../services/storage";
 
 const userRoutes = new Hono<AppContext>();
@@ -64,7 +64,7 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	if (!walletAddress) return c.json({ error: "No wallet" }, 404);
 
 	const publicClient = createPublicClient({
-		chain: baseSepolia,
+		chain: getActiveChain(c.env.CHAIN_KEY),
 		transport: http(c.env.RPC_URL),
 	});
 

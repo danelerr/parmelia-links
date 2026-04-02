@@ -5,6 +5,7 @@ import { signInWithGoogle, type User } from "../firebase";
 import Logo from "../components/Logo";
 import { fetchWithAuth } from "../authFetch";
 import { signWithPasskey } from "../webauthn";
+import { activeNetwork } from "../network";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
@@ -147,6 +148,8 @@ export default function PayPage({ user }: { user: User | null }) {
 					r: assertion.r,
 					s: assertion.s,
 					credentialId: assertion.credentialId,
+					qx: assertion.qx,
+					qy: assertion.qy,
 				}),
 			});
 			if (!submitRes.ok) {
@@ -180,6 +183,9 @@ export default function PayPage({ user }: { user: User | null }) {
 		if (msg.includes("AA24")) return "Error de firma. Prueba con tu passkey sincronizada o usa autenticacion desde otro dispositivo.";
 		if (msg.includes("AA21")) return "Fondos insuficientes para gas.";
 		if (msg.includes("AA25")) return "Datos de firma inválidos.";
+		if (msg.includes("Missing qx/qy")) {
+			return "No pudimos identificar la passkey usada en este dispositivo. Intenta de nuevo desde el mismo navegador donde la registraste en Parmelia.";
+		}
 		if (msg.includes("Saldo USDC insuficiente") || msg.includes("Saldo ETH insuficiente")) return msg;
 		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) {
 			return "No se encontro una passkey compatible para esta wallet.";
@@ -311,6 +317,9 @@ export default function PayPage({ user }: { user: User | null }) {
 				{/* Manual pay form */}
 				<div className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col">
 					<h2 className="text-2xl sm:text-3xl mb-8 text-center">Pagar</h2>
+					<p className="text-xs text-muted text-center mb-8">
+						Red activa: {activeNetwork.name}
+					</p>
 
 					<div className="space-y-4 w-full max-w-xs mx-auto">
 						<div>
@@ -422,6 +431,9 @@ export default function PayPage({ user }: { user: User | null }) {
 					<h2 className="text-2xl sm:text-3xl mb-1">
 						@{userProfile.username}
 					</h2>
+					<p className="text-xs text-muted text-center">
+						Recibir en {activeNetwork.name}
+					</p>
 
 					<p className="text-xs text-muted font-mono break-all text-center px-4 leading-relaxed mt-4">
 						{userProfile.walletAddress}
@@ -487,6 +499,9 @@ export default function PayPage({ user }: { user: User | null }) {
 				) : hasFixedAmount ? (
 					<>
 						<h2 className="text-4xl sm:text-5xl mb-6">Pagar</h2>
+						<p className="text-xs text-muted mb-4 text-center">
+							Red activa: {activeNetwork.name}
+						</p>
 						<p className="text-xl mb-4">{linkData.amount} {linkData.currency}</p>
 						{linkData.reference && (
 							<p className="text-muted text-sm text-center px-6 leading-relaxed mt-1">
@@ -497,6 +512,9 @@ export default function PayPage({ user }: { user: User | null }) {
 				) : isStoredLink ? (
 					<>
 						<h2 className="text-2xl sm:text-3xl mb-6">Pagar</h2>
+						<p className="text-xs text-muted mb-4 text-center">
+							Red activa: {activeNetwork.name}
+						</p>
 						<p className="text-sm text-muted mb-4">Moneda: {linkData.currency}</p>
 						<div className="w-full max-w-xs">
 							<label className="text-sm text-muted mb-2 block">Monto</label>
@@ -522,6 +540,9 @@ export default function PayPage({ user }: { user: User | null }) {
 						<h2 className="text-2xl sm:text-3xl mb-6">
 							{linkData.username ? `Transferir a @${linkData.username}` : "Pagar"}
 						</h2>
+						<p className="text-xs text-muted mb-4 text-center">
+							Red activa: {activeNetwork.name}
+						</p>
 						<div className="w-full max-w-xs mb-4">
 							<label className="text-sm text-muted mb-2 block">Moneda</label>
 							<select
@@ -578,4 +599,3 @@ export default function PayPage({ user }: { user: User | null }) {
 		</div>
 	);
 }
-

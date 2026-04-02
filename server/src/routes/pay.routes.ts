@@ -18,15 +18,18 @@ import {
 	parseEther,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { getNetworkConfig } from "../../../shared/networks";
 import {
 	ENTRYPOINT_ADDRESS,
 	PAYMASTER_ADDRESS,
+	VERIFIER_ADDRESS,
+	accountWebAuthnV2Abi,
 	entryPointAbi,
 	erc20Abi,
 	USDC_ADDRESS,
 	USDC_DECIMALS,
 } from "../../../shared";
+import { getActiveChain } from "../chain";
 import {
 	createPendingPayment,
 	deletePendingPayment,
@@ -37,6 +40,7 @@ import {
 	recordSentTransaction,
 	saveUser,
 } from "../services/storage";
+import { buildSignedPaymasterAndData } from "../services/paymaster";
 
 const payRoutes = new Hono<AppContext>();
 const CLIENT_SIDE_PAYMENT_IDS = new Set(["direct", "username", "manual"]);
@@ -90,6 +94,16 @@ function isStoredPaymentLink(linkId: unknown): linkId is string {
 	return typeof linkId === "string" && linkId.length > 0 && !CLIENT_SIDE_PAYMENT_IDS.has(linkId);
 }
 
+function wrapMultiSignerSignature(
+	signer: Hex,
+	webAuthnSignature: Hex,
+): Hex {
+	return encodeAbiParameters(
+		parseAbiParameters("bytes[] signers, bytes[] signatures"),
+		[[signer], [webAuthnSignature]],
+	);
+}
+
 payRoutes.post("/prepare", requireAuth, async (c) => {
 	try {
 		const user = c.get("user")!;
@@ -101,7 +115,9 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		if (!senderAddress) return c.json({ error: "You need a wallet to pay. Create one first." }, 400);
 
 		const credentialId = profile?.credentialId ?? null;
-		const publicClient = createPublicClient({ chain: baseSepolia, transport: http(c.env.RPC_URL) });
+		const activeChain = getActiveChain(c.env.CHAIN_KEY);
+		const nativeTokenSymbol = getNetworkConfig(c.env.CHAIN_KEY).nativeTokenSymbol;
+		const publicClient = createPublicClient({ chain: activeChain, transport: http(c.env.RPC_URL) });
 
 		let recipientAddress: `0x${string}` | null = null;
 		let paymentAmount: string | null = null;
@@ -170,7 +186,9 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 			const ethBalance = await publicClient.getBalance({ address: senderAddress as `0x${string}` });
 			if (ethBalance < ethAmount) {
-				return c.json({ error: `Saldo ETH insuficiente (tienes ${formatEther(ethBalance)} ETH)` }, 400);
+				return c.json({
+					error: `Saldo ${nativeTokenSymbol} insuficiente (tienes ${formatEther(ethBalance)} ${nativeTokenSymbol})`,
+				}, 400);
 			}
 			executeCalldata = buildExecuteCalldata(recipientAddress, ethAmount, "0x");
 		}
@@ -188,8 +206,6 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 		const accountGasLimits = concat([pad(toHex(500000n), { size: 16 }), pad(toHex(300000n), { size: 16 })]) as Hex;
 		const gasFees = concat([pad(toHex(maxPriorityFeePerGas), { size: 16 }), pad(toHex(maxFeePerGas), { size: 16 })]) as Hex;
-		const paymasterAndData = encodePacked(["address", "uint128", "uint128"], [PAYMASTER_ADDRESS as `0x${string}`, 100000n, 50000n]);
-
 		const userOp = {
 			sender: senderAddress as `0x${string}`,
 			nonce,
@@ -198,9 +214,19 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			accountGasLimits,
 			preVerificationGas: 100000n,
 			gasFees,
-			paymasterAndData,
+			paymasterAndData: "0x" as Hex,
 			signature: "0x" as Hex,
 		};
+
+		const chainId = await publicClient.getChainId();
+		const paymasterSignerPrivateKey = (c.env.PAYMASTER_SIGNER_PRIVATE_KEY ||
+			c.env.PRIVATE_KEY) as `0x${string}`;
+		userOp.paymasterAndData = await buildSignedPaymasterAndData({
+			chainId,
+			paymasterAddress: PAYMASTER_ADDRESS as `0x${string}`,
+			userOp,
+			signerPrivateKey: paymasterSignerPrivateKey,
+		});
 
 		const userOpHash = (await publicClient.readContract({
 			address: ENTRYPOINT_ADDRESS as `0x${string}`,
@@ -230,7 +256,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 payRoutes.post("/submit", requireAuth, async (c) => {
 	try {
 		const user = c.get("user")!;
-		const { userOpHash, authenticatorData, clientDataJSON, r, s, credentialId } = await c.req.json();
+		const { userOpHash, authenticatorData, clientDataJSON, r, s, credentialId, qx, qy } = await c.req.json();
 		if (!userOpHash || !authenticatorData || !clientDataJSON || !r || !s) {
 			return c.json({ error: "Missing signature data" }, 400);
 		}
@@ -238,6 +264,8 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		const pending = await getPendingPayment(c.env, userOpHash);
 		if (!pending) return c.json({ error: "No pending payment found" }, 404);
 		if (pending.uid !== user.sub) return c.json({ error: "Unauthorized" }, 403);
+		const activeChain = getActiveChain(c.env.CHAIN_KEY);
+		const publicClient = createPublicClient({ chain: activeChain, transport: http(c.env.RPC_URL) });
 
 		const typeIndex = (clientDataJSON as string).indexOf('"type"');
 		const challengeIndex = (clientDataJSON as string).indexOf('"challenge"');
@@ -247,10 +275,55 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		if (normalizedS > P256_N / 2n) normalizedS = P256_N - normalizedS;
 		const normalizedSHex = ("0x" + normalizedS.toString(16).padStart(64, "0")) as Hex;
 
-		const signature = encodeAbiParameters(
+		// Inner signature: WebAuthn authentication assertion (same as V1)
+		const webAuthnSignature = encodeAbiParameters(
 			parseAbiParameters("bytes32 r, bytes32 s, uint256 challengeIndex, uint256 typeIndex, bytes authenticatorData, string clientDataJSON"),
 			[r as Hex, normalizedSHex, BigInt(challengeIndex), BigInt(typeIndex), authenticatorData as Hex, clientDataJSON as string],
 		);
+
+		let signature: Hex;
+
+		if (qx && qy) {
+			const signerBytes = encodePacked(
+				["address", "bytes32", "bytes32"],
+				[VERIFIER_ADDRESS as `0x${string}`, qx as `0x${string}`, qy as `0x${string}`],
+			);
+			signature = wrapMultiSignerSignature(signerBytes, webAuthnSignature);
+		} else {
+			try {
+				const signerCount = (await publicClient.readContract({
+					address: pending.senderAddress as `0x${string}`,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getSignerCount",
+				})) as bigint;
+
+				if (signerCount !== 1n) {
+					return c.json({
+						error:
+							"Missing qx/qy for a multi-passkey wallet. Sign again from a device that knows this passkey.",
+					}, 400);
+				}
+
+				const signers = (await publicClient.readContract({
+					address: pending.senderAddress as `0x${string}`,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getSigners",
+					args: [0, 1],
+				})) as Hex[];
+
+				const signerBytes = signers[0];
+				if (!signerBytes) {
+					return c.json({ error: "No signer found for this wallet." }, 400);
+				}
+
+				signature = wrapMultiSignerSignature(signerBytes, webAuthnSignature);
+			} catch {
+				return c.json({
+					error:
+						"Missing qx/qy and we could not infer the signer on-chain. Sign again from the same device where this passkey was created.",
+				}, 400);
+			}
+		}
 
 		const raw = pending.userOp;
 		const userOp = {
@@ -265,9 +338,12 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			signature,
 		};
 
-		const publicClient = createPublicClient({ chain: baseSepolia, transport: http(c.env.RPC_URL) });
 		const serverAccount = privateKeyToAccount(c.env.PRIVATE_KEY as `0x${string}`);
-		const walletClient = createWalletClient({ chain: baseSepolia, transport: http(c.env.RPC_URL), account: serverAccount });
+		const walletClient = createWalletClient({
+			chain: activeChain,
+			transport: http(c.env.RPC_URL),
+			account: serverAccount,
+		});
 
 		const txHash = await walletClient.writeContract({
 			address: ENTRYPOINT_ADDRESS as `0x${string}`,
@@ -287,17 +363,21 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		}
 
 		const createdAt = new Date().toISOString();
-		await recordSentTransaction(c.env, {
-			uid: user.sub,
-			txHash,
-			amount: pending.amount || "0",
-			currency: pending.currency || "USDC",
-			to: pending.wallet || "",
-			createdAt,
-		});
+		const isAccountAction = pending.currency === "PASSKEY_ADD";
+
+		if (!isAccountAction) {
+			await recordSentTransaction(c.env, {
+				uid: user.sub,
+				txHash,
+				amount: pending.amount || "0",
+				currency: pending.currency || "USDC",
+				to: pending.wallet || "",
+				createdAt,
+			});
+		}
 
 		const linkId = pending.linkId;
-		if (isStoredPaymentLink(linkId)) {
+		if (!isAccountAction && isStoredPaymentLink(linkId)) {
 			const link = await getPaymentLinkById(c.env, linkId);
 			if (link) {
 				await markPaymentLinkPaid(c.env, {

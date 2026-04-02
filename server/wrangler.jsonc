@@ -12,6 +12,7 @@
     // Non-sensitive runtime config only. Secrets like PRIVATE_KEY and RPC_URL
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
+    "CHAIN_KEY": "monad-testnet",
   },
 
   "observability": {

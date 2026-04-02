@@ -112,6 +112,26 @@ Desplegadas y compartidas desde `shared/index.ts`.
 - `erc20Abi`
 - `USDC_DECIMALS`
 
+## Direcciones On-Chain (Monad Testnet)
+
+Desplegadas el 30 de marzo de 2026. Estas direcciones se agregan como referencia de V2 en Monad y no reemplazan las de Base Sepolia.
+
+| Contrato                                  | Direccion                                    |
+| ----------------------------------------- | -------------------------------------------- |
+| ERC7913WebAuthnVerifier                   | `0x900Cd8B955d88fD7b805eDcA939f0BFB069946bd` |
+| AccountWebAuthnV2 (`implementation`)      | `0x536eD5b326d148fB0097b1f29F0Cb45862b91DC7` |
+| AccountFactoryV2                          | `0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2` |
+| ParmeliaPaymaster                         | `0xbcC45e484a1D448b3Df629aD91B0Cc6A7a7463b2` |
+| EntryPoint (`ENTRYPOINT_ADDRESS`)         | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
+| Paymaster sponsor signer inicial          | `0x75464f762bc50d0A0B127ab5a085504BF102Bb88` |
+
+Notas:
+
+- Las 4 direcciones de contrato anteriores quedaron desplegadas correctamente en Monad Testnet.
+- El `stake` del paymaster se completo despues del deploy con la tx `0x7cf1843e525dfbd633b9509218581dee64cac381cd423c531863f11395875872`.
+- El `deposit` del paymaster se completo despues con la tx `0x8f2460de828c1b304ed6251f62ff33a8738273d76bc9462e39faefc6048abc03`.
+- `getDeposit()` del paymaster ahora devuelve `10000000000000000` wei (`0.01 MON`).
+
 ---
 
 ## Arquitectura Logica

@@ -2,6 +2,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { useRef } from "react";
 import { toPng } from "html-to-image";
 import Logo from "../components/Logo";
+import { activeNetwork, getExplorerTxUrl } from "../network";
 
 export default function PaymentStatus() {
 	const [searchParams] = useSearchParams();
@@ -70,6 +71,10 @@ export default function PaymentStatus() {
 						<p className="text-xl mb-3 text-center">{amount} {currency}</p>
 					)}
 
+					<p className="text-xs text-muted text-center mb-4">
+						Red: {activeNetwork.name}
+					</p>
+
 					{to && (
 						<p className="text-muted text-sm mb-8 break-all text-center px-2 font-mono">A {to}</p>
 					)}
@@ -83,7 +88,7 @@ export default function PaymentStatus() {
 
 					{txHash && (
 						<a
-							href={`https://base-sepolia.blockscout.com/tx/${txHash}`}
+							href={getExplorerTxUrl(txHash)}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-parmelia-blue text-sm underline mt-4 text-center"
@@ -120,7 +125,7 @@ export default function PaymentStatus() {
 								await navigator.share({
 									title: "Pago Parmelia",
 									text: `Pagué ${amount} ${currency}`,
-									url: `https://base-sepolia.blockscout.com/tx/${txHash}`,
+									url: getExplorerTxUrl(txHash),
 								});
 							}
 						} catch {

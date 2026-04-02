@@ -35,13 +35,14 @@ Se usa para:
 
 ### Blockchain: fuente principal de verdad para historial
 
-`/user/transactions` reconstruye el historial primero desde la actividad on-chain indexada por Blockscout:
+`/user/transactions` reconstruye el historial combinando:
 
-- `token-transfers` para ERC-20,
-- `transactions` para transferencias directas,
-- `internal-transactions` para movimientos internos relevantes en smart accounts.
+- En Base Sepolia usa Blockscout.
+- En Monad testnet usa el `RPC_URL` directamente para leer transferencias ERC-20 visibles en logs recientes.
+- D1 sigue aportando los pagos y links que pasan por la app para no depender de un indexador pago.
 
-D1 solo se usa para enriquecer metadata de la app o como fallback si el indexador falla.
+Esto evita depender de BlockVision o de planes pagos para el historial de Monad.
+Como tradeoff, el historial externo de Monad queda acotado a una ventana reciente cuando usas un RPC free como Alchemy.
 
 ### KV: solo migracion temporal
 
@@ -96,10 +97,13 @@ Despues de eso:
 
 ## Secrets y variables
 
-- Usa `vars` solo para configuracion no sensible como `FIREBASE_PROJECT_ID`.
+- Usa `vars` para configuracion no sensible como:
+  - `FIREBASE_PROJECT_ID`
+  - `CHAIN_KEY`
 - Usa `wrangler secret put` o `.dev.vars` para:
   - `RPC_URL`
   - `PRIVATE_KEY`
+  - `PAYMASTER_SIGNER_PRIVATE_KEY` si separas la firma del paymaster
   - `STORAGE_MIGRATION_TOKEN` temporal
 
 ### Configurar secrets remotos

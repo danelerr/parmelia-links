@@ -1,5 +1,15 @@
 // WebAuthn helpers for P256 passkey creation and signing
 
+const PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
+
+export type RememberedPasskey = {
+	credentialId: string;
+	qx: string;
+	qy: string;
+	createdAt: string;
+	lastUsedAt: string;
+};
+
 function bufferToBase64url(buffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(buffer);
 	let str = "";
@@ -45,6 +55,87 @@ function getRelyingPartyId() {
 	return currentHost;
 }
 
+function canUseLocalStorage() {
+	return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function readRememberedPasskeys(): Record<string, RememberedPasskey> {
+	if (!canUseLocalStorage()) return {};
+
+	try {
+		const raw = window.localStorage.getItem(PASSKEY_STORAGE_KEY);
+		if (!raw) return {};
+
+		const parsed = JSON.parse(raw) as Record<string, RememberedPasskey>;
+		if (!parsed || typeof parsed !== "object") return {};
+		return parsed;
+	} catch {
+		return {};
+	}
+}
+
+function writeRememberedPasskeys(passkeys: Record<string, RememberedPasskey>) {
+	if (!canUseLocalStorage()) return;
+	window.localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeys));
+}
+
+export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
+	const remembered = readRememberedPasskeys();
+	const existing = remembered[passkey.credentialId];
+	const now = new Date().toISOString();
+
+	remembered[passkey.credentialId] = {
+		credentialId: passkey.credentialId,
+		qx: passkey.qx,
+		qy: passkey.qy,
+		createdAt: existing?.createdAt || now,
+		lastUsedAt: now,
+	};
+
+	writeRememberedPasskeys(remembered);
+	return remembered[passkey.credentialId];
+}
+
+export function listRememberedPasskeys(): RememberedPasskey[] {
+	return Object.values(readRememberedPasskeys()).sort((a, b) =>
+		b.lastUsedAt.localeCompare(a.lastUsedAt),
+	);
+}
+
+function markPasskeyUsed(credentialId: string) {
+	const remembered = readRememberedPasskeys();
+	const entry = remembered[credentialId];
+	if (!entry) return;
+
+	remembered[credentialId] = {
+		...entry,
+		lastUsedAt: new Date().toISOString(),
+	};
+	writeRememberedPasskeys(remembered);
+}
+
+function resolveRememberedPasskey(
+	usedCredentialId: string,
+	hintedCredentialId?: string | null,
+) {
+	const remembered = readRememberedPasskeys();
+
+	if (remembered[usedCredentialId]) {
+		return remembered[usedCredentialId];
+	}
+
+	if (hintedCredentialId && remembered[hintedCredentialId]) {
+		return remembered[hintedCredentialId];
+	}
+
+	const all = Object.values(remembered);
+	if (all.length === 1) {
+		return all[0];
+	}
+
+	return null;
+}
+
 /** Create a new P256 passkey. Returns the credentialId and public key (qx, qy). */
 export async function createPasskey(username: string): Promise<{
 	credentialId: string;
@@ -78,12 +169,14 @@ export async function createPasskey(username: string): Promise<{
 
 	const attestation = credential.response as AuthenticatorAttestationResponse;
 	const { qx, qy } = extractP256PublicKey(attestation);
-
-	return {
+	const createdPasskey = {
 		credentialId: bufferToBase64url(credential.rawId),
 		qx: "0x" + qx,
 		qy: "0x" + qy,
 	};
+
+	rememberPasskey(createdPasskey);
+	return createdPasskey;
 }
 
 /** Extract P256 public key (qx, qy) from AuthenticatorAttestationResponse */
@@ -143,16 +236,26 @@ export async function signWithPasskey(
 	r: string;
 	s: string;
 	credentialId: string;
+	qx: string | null;
+	qy: string | null;
 }> {
 	let assertion: PublicKeyCredential | null = null;
 	let requestError: unknown = null;
 
-	try {
-		assertion = credentialId
-			? await requestAssertion(challenge, credentialId)
-			: await requestAssertion(challenge);
-	} catch (error) {
-		requestError = error;
+	const attempts = credentialId
+		? [
+			() => requestAssertion(challenge, credentialId),
+			() => requestAssertion(challenge),
+		]
+		: [() => requestAssertion(challenge)];
+
+	for (const attempt of attempts) {
+		try {
+			assertion = await attempt();
+			if (assertion) break;
+		} catch (error) {
+			requestError = error;
+		}
 	}
 
 	if (!assertion) {
@@ -167,13 +270,21 @@ export async function signWithPasskey(
 	const clientDataJSON = new TextDecoder().decode(response.clientDataJSON);
 	const signature = new Uint8Array(response.signature);
 	const { r, s } = parseDERSignature(signature);
+	const assertionCredentialId = bufferToBase64url(assertion.rawId);
+	const rememberedPasskey = resolveRememberedPasskey(assertionCredentialId, credentialId);
+
+	if (rememberedPasskey) {
+		markPasskeyUsed(rememberedPasskey.credentialId);
+	}
 
 	return {
 		authenticatorData: "0x" + bytesToHex(authenticatorData),
 		clientDataJSON,
 		r: "0x" + r.padStart(64, "0"),
 		s: "0x" + s.padStart(64, "0"),
-		credentialId: bufferToBase64url(assertion.rawId),
+		credentialId: assertionCredentialId,
+		qx: rememberedPasskey?.qx ?? null,
+		qy: rememberedPasskey?.qy ?? null,
 	};
 }
 

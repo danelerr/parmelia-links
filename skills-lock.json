@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "develop-secure-contracts": {
+      "source": "OpenZeppelin/openzeppelin-skills",
+      "sourceType": "github",
+      "computedHash": "2dff839990d5ac6ecaf1b7a9ce9588320779de05b8d00b9ab3cc6cf31bea8887"
+    }
+  }
+}

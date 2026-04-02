@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { toPng } from "html-to-image";
 import { fetchWithAuth } from "../authFetch";
 import Logo from "../components/Logo";
+import { activeNetwork, getExplorerTxUrl } from "../network";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
@@ -52,6 +53,12 @@ export default function Home({ user }: { user: User }) {
 		{ refreshInterval: 15000, keepPreviousData: true }
 	);
 
+	const { data: passkeyStatus } = useSWR(
+		profile?.walletAddress ? `${SERVER_URL}/account/passkey` : null,
+		fetcher,
+		{ refreshInterval: 30000, keepPreviousData: true }
+	);
+
 	// Parse Transactions
 	let transactions: Transaction[] = [];
 	if (txData) {
@@ -94,7 +101,7 @@ export default function Home({ user }: { user: User }) {
 			<div className="flex items-center justify-between mb-6">
 				<div className="flex items-center gap-2">
 					<Logo className="w-7" />
-					<span className="text-xs text-muted">Parmelia (Base Sepolia)</span>
+					<span className="text-xs text-muted">Parmelia ({activeNetwork.name})</span>
 				</div>
 				<button
 					onClick={() => setShowMenu(!showMenu)}
@@ -194,6 +201,40 @@ export default function Home({ user }: { user: User }) {
 				</button>
 			</div>
 
+			{passkeyStatus?.hasWallet && (
+				<div className="bg-surface rounded-2xl p-4 mb-5">
+					<div className="flex items-center justify-between gap-3 mb-2">
+						<h2 className="text-xs text-muted">Protección de cuenta</h2>
+						<span
+							className={`text-[11px] px-2.5 py-1 rounded-full ${
+								passkeyStatus.accountVersion === "v2"
+									? "bg-parmelia-blue/20 text-parmelia-blue"
+									: "bg-parmelia-gold/20 text-parmelia-gold"
+							}`}
+						>
+							{passkeyStatus.accountVersion === "v2" ? "V2" : "Legacy"}
+						</span>
+					</div>
+
+					{passkeyStatus.accountVersion === "v2" ? (
+						<p className="text-sm text-white leading-relaxed">
+							{passkeyStatus.signerCount || 1} passkeys activas, threshold{" "}
+							{passkeyStatus.threshold || 1} y recovery con guardian{" "}
+							{passkeyStatus.guardian &&
+							passkeyStatus.guardian !== "0x0000000000000000000000000000000000000000"
+								? "activo"
+								: "sin configurar"}
+							.
+						</p>
+					) : (
+						<p className="text-sm text-muted leading-relaxed">
+							Esta wallet todavía no expone multi-passkey on-chain. Los
+							detalles de migración y seguridad están en Configuración.
+						</p>
+					)}
+				</div>
+			)}
+
 			{/* Transactions */}
 			<div className="bg-surface rounded-2xl p-5 sm:p-6 flex-1 mb-5 relative min-h-[150px]">
 				<div className="flex items-center justify-between mb-3">
@@ -265,7 +306,7 @@ export default function Home({ user }: { user: User }) {
 
 							{selectedTx.txHash && (
 								<a
-									href={`https://base-sepolia.blockscout.com/tx/${selectedTx.txHash}`}
+									href={getExplorerTxUrl(selectedTx.txHash)}
 									target="_blank"
 									rel="noopener noreferrer"
 									className="text-parmelia-blue text-sm underline mt-2 text-center"

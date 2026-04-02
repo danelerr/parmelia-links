@@ -1,12 +1,28 @@
 export * from "./EntryPointAbi";
-// Base Sepolia (chain 84532) — deployed 2026-03-08
-export const FACTORY_ADDRESS = "0x8c91e55b11287c9c3970b64602fe50763fac0345";
+export * from "./networks";
+
+// ============================================================
+// V2 Contract Addresses (Monad Testnet)
+// ============================================================
+
+export const VERIFIER_ADDRESS = "0x900Cd8B955d88fD7b805eDcA939f0BFB069946bd";
+export const ACCOUNT_IMPLEMENTATION_ADDRESS = "0x536eD5b326d148fB0097b1f29F0Cb45862b91DC7";
+export const FACTORY_ADDRESS = "0x91Bf4c06D2A588980450Bb6AEDc43f1923f149c2";
 export const ENTRYPOINT_ADDRESS = "0x433709009B8330FDa32311DF1C2AFA402eD8D009";
-export const PAYMASTER_ADDRESS = "0xa1DC7ad6f4d2d0ea20bF5668F132c38c4f3c172D";
-// USDC on Base Sepolia
-export const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+export const PAYMASTER_ADDRESS = "0xbcC45e484a1D448b3Df629aD91B0Cc6A7a7463b2";
+
+// USDC remains configurable separately until the Monad token address is confirmed.
+export const USDC_ADDRESS = "0x534b2f3A21130d7a60830c2Df862319e593943A3";
 export const USDC_DECIMALS = 6;
 
+// ============================================================
+// V2 ABIs (from compiled artifacts)
+// ============================================================
+
+export { abi as accountWebAuthnV2Abi } from "../contracts/out/AccountWebAuthnV2.sol/AccountWebAuthnV2.json";
+export { abi as accountFactoryV2Abi } from "../contracts/out/AccountFactoryV2.sol/AccountFactoryV2.json";
+
+// Legacy V1 ABIs (keep for reference during migration)
 export { abi as accountWebAuthnAbi } from "../contracts/out/AccountWebAuthn.sol/AccountWebAuthn.json";
 export { abi as accountFactoryAbi } from "../contracts/out/AccountFactory.sol/AccountFactory.json";
 

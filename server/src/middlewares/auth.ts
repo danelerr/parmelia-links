@@ -1,5 +1,6 @@
 import { Context, Next } from "hono";
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
+import type { SupportedChainKey } from "../../../shared/networks";
 
 export interface KVListResult {
 	keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
@@ -36,10 +37,12 @@ export interface D1DatabaseBinding {
 export type Bindings = {
 	RPC_URL: string;
 	PRIVATE_KEY: string;
+	PAYMASTER_SIGNER_PRIVATE_KEY?: string;
 	FIREBASE_PROJECT_ID: string;
 	PARMELIA_DB: D1DatabaseBinding;
 	PARMELIA_KV?: KVNamespaceBinding;
 	STORAGE_MIGRATION_TOKEN?: string;
+	CHAIN_KEY?: SupportedChainKey;
 };
 
 export type Variables = {

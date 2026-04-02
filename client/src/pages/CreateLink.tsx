@@ -6,6 +6,7 @@ import { toPng } from "html-to-image";
 import type { User } from "../firebase";
 import Logo from "../components/Logo";
 import { fetchWithAuth } from "../authFetch";
+import { activeNetwork } from "../network";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
@@ -15,7 +16,6 @@ export default function CreateLink({ user }: { user: User }) {
 	const [step, setStep] = useState<"form" | "result">("form");
 	const [amount, setAmount] = useState("");
 	const [currency, setCurrency] = useState("USDC");
-	const [network, setNetwork] = useState("Base Sepolia");
 	const [reference, setReference] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [paymentUrl, setPaymentUrl] = useState("");
@@ -89,6 +89,10 @@ export default function CreateLink({ user }: { user: User }) {
 								{reference}
 							</p>
 						)}
+
+						<p className="text-xs text-muted text-center mt-5">
+							Red activa: {activeNetwork.name}
+						</p>
 					</div>
 				</div>
 
@@ -167,14 +171,14 @@ export default function CreateLink({ user }: { user: User }) {
 			{/* Form card */}
 			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-6">
 				<div className="mb-5">
-					<label className="text-sm text-muted mb-2 block">Red</label>
-					<select
-						value={network}
-						onChange={(e) => setNetwork(e.target.value)}
-						className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
-					>
-						<option value="Base Sepolia">Base Sepolia</option>
-					</select>
+					<label className="text-sm text-muted mb-2 block">Red activa</label>
+					<div className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm">
+						{activeNetwork.name}
+					</div>
+					<p className="text-xs text-muted mt-2 leading-relaxed">
+						Por ahora cada link usa una sola red activa. El selector multi-chain
+						llegará después del MVP.
+					</p>
 				</div>
 
 				<div className="mb-5">
@@ -229,4 +233,3 @@ export default function CreateLink({ user }: { user: User }) {
 		</div>
 	);
 }
-

@@ -363,6 +363,37 @@ export async function listPaymentLinksByOwner(env: Bindings, ownerUid: string, l
 	return rows.map(mapPaymentLinkRow);
 }
 
+export async function reassignPendingLinksWallet(
+	env: Bindings,
+	params: { ownerUid: string; fromWallet: string; toWallet: string },
+): Promise<number> {
+	const pendingLinks = await d1All<{ id: string }>(
+		env,
+		`SELECT id
+		 FROM payment_links
+		 WHERE owner_uid = ?
+		   AND wallet_address = ?
+		   AND status = 'pending'`,
+		[params.ownerUid, params.fromWallet],
+	);
+
+	if (pendingLinks.length === 0) {
+		return 0;
+	}
+
+	await d1Run(
+		env,
+		`UPDATE payment_links
+		 SET wallet_address = ?
+		 WHERE owner_uid = ?
+		   AND wallet_address = ?
+		   AND status = 'pending'`,
+		[params.toWallet, params.ownerUid, params.fromWallet],
+	);
+
+	return pendingLinks.length;
+}
+
 export async function listPaidLinksByOwner(env: Bindings, ownerUid: string, limit = 100): Promise<PaymentLinkRecord[]> {
 	const rows = await d1All<PaymentLinkRow>(
 		env,
@@ -486,5 +517,4 @@ export async function listSentTransactionsByUid(env: Bindings, uid: string, limi
 	);
 	return rows.map(mapSentRow);
 }
-
 

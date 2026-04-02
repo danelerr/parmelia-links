@@ -5,6 +5,7 @@ import { type User, logOut } from "../firebase";
 import { fetchWithAuth } from "../authFetch";
 import { createPasskey } from "../webauthn";
 import Logo from "../components/Logo";
+import { activeNetwork } from "../network";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
@@ -52,10 +53,14 @@ export default function Onboarding({ user, onComplete }: { user: User, onComplet
 				</h1>
 
 				<div className="text-muted text-center mb-10 text-sm leading-relaxed max-w-xs space-y-4">
-					<p>Para continuar debes crear tu wallet <br /> 100% gratis!</p>
+					<p>Para continuar debes crear tu wallet en {activeNetwork.name}</p>
 
 					<p className="text-xs opacity-80">
-						Nota: Te va a pedir que crees un passkey para tu dispositivo, es decir Huella o FaceID
+						Se creará tu primera passkey y luego podrás agregar más desde Configuración sin cambiar de dirección.
+					</p>
+
+					<p className="text-xs opacity-80">
+						También quedará lista la protección de recovery con guardian y ventana de 48 horas.
 					</p>
 				</div>
 
