@@ -1,10 +1,25 @@
 {
   "version": 1,
   "skills": {
-    "develop-secure-contracts": {
-      "source": "OpenZeppelin/openzeppelin-skills",
+    "monskill": {
+      "source": "therealharpaljadeja/monskills",
       "sourceType": "github",
-      "computedHash": "2dff839990d5ac6ecaf1b7a9ce9588320779de05b8d00b9ab3cc6cf31bea8887"
+      "computedHash": "7b22662fd9137957d012fd9b0e87118235fb13d7b5588350faad8909e26740f0"
+    },
+    "setup-solidity-contracts": {
+      "source": "openzeppelin/openzeppelin-skills",
+      "sourceType": "github",
+      "computedHash": "562f4ececbc91ab8eed22b2bcae6b3e0a573916c0b8a2e44be96245847aab17c"
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "computedHash": "ab346ab2aa2fb81f44d2c46b699efa54224e019cb7a506cb7e6978c26da507db"
+    },
+    "workers-best-practices": {
+      "source": "cloudflare/skills",
+      "sourceType": "github",
+      "computedHash": "c919a93c9db826a0ee2818f6f7977c40c1a43bb87abc848b22181fdbabe2ef80"
     }
   }
 }
