@@ -529,4 +529,109 @@ accountRoutes.get("/fund", requireAuth, async (c) => {
 	return c.json({ funded: !!profile?.fundedAt, fundedAt: profile?.fundedAt || null });
 });
 
+accountRoutes.post("/reset-wallet", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	
+	await c.env.PARMELIA_DB.prepare(
+		`UPDATE users SET wallet_address = NULL, credential_id = NULL, funded_at = NULL WHERE uid = ?`
+	).bind(user.sub).run();
+
+	return c.json({ success: true, message: "Cuenta reseteada. Puedes crear una nueva wallet." });
+});
+
+// Propose a guardian recovery (48h timelock)
+accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const profile = await getUserByUid(c.env, user.sub);
+	const walletAddress = profile?.walletAddress ?? undefined;
+
+	if (!walletAddress) {
+		return c.json({ error: "No wallet found." }, 400);
+	}
+
+	const { qx, qy } = await c.req.json();
+	if (!qx || !qy) {
+		return c.json({ error: "Missing qx or qy" }, 400);
+	}
+
+	try {
+		const { publicClient, walletClient, serverAccount } = getClients(c.env);
+		
+		const isV2 = await isV2Wallet(publicClient, walletAddress as `0x${string}`);
+		if (!isV2) return c.json({ error: "Recovery only available for V2 wallets." }, 400);
+
+		const isRecoveryPending = await publicClient.readContract({
+			address: walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "isRecoveryPending",
+		}) as boolean;
+
+		if (isRecoveryPending) {
+			return c.json({ error: "Ya hay una recuperacion en proceso." }, 400);
+		}
+
+		const newSigner = buildWebAuthnSigner(VERIFIER_ADDRESS as Hex, qx as Hex, qy as Hex);
+
+		const txHash = await walletClient.writeContract({
+			address: walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "proposeRecovery",
+			args: [[newSigner], 1n],
+		});
+
+		await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+		return c.json({ success: true, txHash, message: "Recuperación iniciada. Estará lista en 48 horas." });
+	} catch (error) {
+		return c.json({ error: `Recovery error: ${error}` }, 500);
+	}
+});
+
+// Execute a guardian recovery
+accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const profile = await getUserByUid(c.env, user.sub);
+	const walletAddress = profile?.walletAddress ?? undefined;
+
+	if (!walletAddress) return c.json({ error: "No wallet found." }, 400);
+
+	const { credentialId } = await c.req.json();
+	if (!credentialId) return c.json({ error: "Missing new credentialId" }, 400);
+
+	try {
+		const { publicClient, walletClient } = getClients(c.env);
+		
+		const pendingRecovery = await publicClient.readContract({
+			address: walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "getPendingRecovery",
+		}) as [bigint, Hex[], bigint];
+
+		const executeAfter = Number(pendingRecovery[0]);
+		if (executeAfter === 0) return c.json({ error: "No hay recuperacion en proceso." }, 400);
+		if (Date.now() / 1000 < executeAfter) {
+			return c.json({ error: `La recuperacion estara disponible el ${new Date(executeAfter * 1000).toLocaleString()}` }, 400);
+		}
+
+		// Execute recovery using standard transaction (walletClient is the guardian/relayer)
+		const txHash = await walletClient.writeContract({
+			address: walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "executeRecovery",
+		});
+
+		await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+		// Update DB to the new credentialId
+		await saveUser(c.env, {
+			uid: user.sub,
+			credentialId,
+		});
+
+		return c.json({ success: true, txHash, message: "Cuenta recuperada exitosamente." });
+	} catch (error) {
+		return c.json({ error: `Execution error: ${error}` }, 500);
+	}
+});
+
 export default accountRoutes;

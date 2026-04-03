@@ -140,9 +140,10 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			recipientAddress = normalizeWalletAddress(body.wallet);
 			paymentCurrency = normalizeCurrency(body.currency);
 			paymentAmount = normalizePositiveAmount(body.amount);
-			if (!pendingLinkId) {
-				pendingLinkId = null;
-			}
+			// Client-side payment IDs like "manual", "direct", "username" are NOT
+			// real payment_links rows, so they must be stored as NULL to avoid
+			// a FOREIGN KEY constraint violation on pending_payments.link_id.
+			pendingLinkId = null;
 		}
 
 		if (!recipientAddress) {

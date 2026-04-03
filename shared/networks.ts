@@ -6,7 +6,7 @@ export type NetworkConfig = {
 	name: string;
 	nativeTokenSymbol: string;
 	explorerBaseUrl: string;
-	historyProvider: "blockscout" | "rpc";
+	historyProvider: "blockscout" | "rpc" | "monadscan";
 	historyApiBaseUrl: string | null;
 	faucetUrl: string | null;
 	faucetLabel: string | null;
@@ -31,9 +31,9 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		chainId: 10143,
 		name: "Monad Testnet",
 		nativeTokenSymbol: "MON",
-		explorerBaseUrl: "https://testnet.monadvision.com",
-		historyProvider: "rpc",
-		historyApiBaseUrl: null,
+		explorerBaseUrl: "https://testnet.monadscan.com",
+		historyProvider: "monadscan",
+		historyApiBaseUrl: "https://api-testnet.monadscan.com/api",
 		faucetUrl: "https://faucet.monad.xyz",
 		faucetLabel: "Monad Faucet",
 	},

@@ -476,6 +476,73 @@ async function fetchRpcHistory(
 	return history;
 }
 
+async function fetchMonadscanHistory(walletAddress: string, baseApiUrl: string, nativeTokenSymbol: string) {
+	const normalizedWallet = walletAddress.toLowerCase();
+	const baseUrl = trimTrailingSlash(baseApiUrl);
+
+	const [tokenTransfersJson, transactionsJson] = await Promise.all([
+		fetchJson(`${baseUrl}?module=account&action=tokentx&address=${walletAddress}&sort=desc`),
+		fetchJson(`${baseUrl}?module=account&action=txlist&address=${walletAddress}&sort=desc`)
+	]);
+
+	const history: ChainHistoryItem[] = [];
+	const seen = new Set<string>();
+
+	for (const item of firstArray((tokenTransfersJson as Record<string, unknown>)?.result)) {
+		const from = normalizeAddress(item.from);
+		const to = normalizeAddress(item.to);
+		const txHash = firstString(item.hash);
+		if (!txHash) continue;
+
+		const direction = from === normalizedWallet ? "sent" : to === normalizedWallet ? "received" : null;
+		if (!direction) continue;
+
+		const decimals = Number(item.tokenDecimal ?? 18);
+		const rawValue = item.value ?? "0";
+		const amount = formatAmount(rawValue, Number.isFinite(decimals) ? decimals : 18);
+		if (!amount) continue;
+
+		pushUnique(history, {
+			direction,
+			txHash,
+			amount,
+			currency: String(item.tokenSymbol || "TOKEN"),
+			counterparty: direction === "sent" ? getAddress(item.to) : getAddress(item.from),
+			createdAt: String(item.timeStamp ? new Date(Number(item.timeStamp) * 1000).toISOString() : new Date().toISOString()),
+			source: "token-transfer",
+		}, seen);
+	}
+
+	for (const item of firstArray((transactionsJson as Record<string, unknown>)?.result)) {
+		// Convert Etherscan format to the common format parseHistoryRecord expects or just parse manually
+		const from = normalizeAddress(item.from);
+		const to = normalizeAddress(item.to);
+		const txHash = firstString(item.hash);
+		if (!txHash) continue;
+		
+		const direction = from === normalizedWallet ? "sent" : to === normalizedWallet ? "received" : null;
+		if (!direction) continue;
+
+		const rawValue = item.value ?? "0";
+		if (safeBigInt(rawValue) <= 0n) continue; // Only want value transfers
+		
+		const amount = formatAmount(rawValue, 18);
+		if (!amount) continue;
+
+		pushUnique(history, {
+			direction,
+			txHash,
+			amount,
+			currency: nativeTokenSymbol,
+			counterparty: direction === "sent" ? getAddress(item.to) : getAddress(item.from),
+			createdAt: String(item.timeStamp ? new Date(Number(item.timeStamp) * 1000).toISOString() : new Date().toISOString()),
+			source: "transaction",
+		}, seen);
+	}
+
+	return history;
+}
+
 export async function fetchWalletHistory(
 	walletAddress: string,
 	options: FetchWalletHistoryOptions = {},
@@ -491,6 +558,14 @@ export async function fetchWalletHistory(
 
 	if (!network.historyApiBaseUrl) {
 		throw new Error(`No history API configured for ${network.name}`);
+	}
+
+	if (network.historyProvider === "monadscan") {
+		return fetchMonadscanHistory(
+			walletAddress,
+			network.historyApiBaseUrl,
+			network.nativeTokenSymbol,
+		);
 	}
 
 	return fetchBlockscoutHistory(

@@ -42,9 +42,6 @@ interface WalletMigrationResponse {
 	manualMigrationRequired: boolean;
 }
 
-function formatAddress(address: string) {
-	return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
 
 function isZeroAddress(address: string | null | undefined) {
 	return !address || /^0x0{40}$/i.test(address);
@@ -461,163 +458,124 @@ export default function Settings({ user }: { user: User }) {
 
 			{walletAddress && (
 				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<label className="text-sm text-muted mb-2 block">Wallet</label>
-					<p className="text-xs text-muted mb-2">{activeNetwork.name}</p>
+					<div className="flex items-center justify-between mb-2">
+						<label className="text-sm text-muted">Wallet</label>
+						<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/8 text-white/70">{activeNetwork.name}</span>
+					</div>
 					<p className="text-xs text-muted font-mono break-all leading-relaxed mb-3">
 						{walletAddress}
 					</p>
-					<button
-						onClick={() => {
-							navigator.clipboard.writeText(walletAddress);
-							sileo.success({ title: "Dirección copiada" });
-							setCopied(true);
-							setTimeout(() => setCopied(false), 2000);
-						}}
-						className="bg-parmelia-gold text-black px-6 py-2 rounded-full text-xs font-medium"
-					>
-						{copied ? "Copiado" : "Copiar dirección"}
-					</button>
+					<div className="flex gap-2">
+						<button
+							onClick={() => {
+								navigator.clipboard.writeText(walletAddress);
+								sileo.success({ title: "Dirección copiada" });
+								setCopied(true);
+								setTimeout(() => setCopied(false), 2000);
+							}}
+							className="bg-parmelia-gold text-black px-5 py-2 rounded-full text-xs font-medium"
+						>
+							{copied ? "Copiado" : "Copiar"}
+						</button>
+						<a
+							href={`${activeNetwork.explorerBaseUrl}/address/${walletAddress}`}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="bg-surface-2 text-white px-5 py-2 rounded-full text-xs font-medium hover:bg-white/15 transition-colors"
+						>
+							Ver en explorador ↗
+						</a>
+					</div>
 				</div>
 			)}
 
 			{walletAddress && (
 				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<label className="text-sm text-muted mb-2 block">Red activa</label>
-					<p className="text-sm mb-2">{activeNetwork.name}</p>
-					<p className="text-xs text-muted leading-relaxed">
-						Para mantener el MVP simple, links, pagos y account abstraction
-						operan sobre una sola red activa a la vez.
-					</p>
-				</div>
-			)}
-
-			{walletAddress && (
-				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<label className="text-sm text-muted mb-2 block">
-						Passkeys y recovery
-					</label>
+					<div className="flex items-center justify-between mb-4">
+						<label className="text-sm text-muted">
+							Passkeys y seguridad
+						</label>
+						{passkeyStatus && (
+							<span
+								className={`text-[11px] px-2.5 py-1 rounded-full ${passkeyStatus.accountVersion === "v2"
+										? "bg-parmelia-blue/20 text-parmelia-blue"
+										: "bg-parmelia-gold/20 text-parmelia-gold"
+									}`}
+							>
+								{passkeyStatus.accountVersion === "v2" ? "V2" : "Legacy"}
+							</span>
+						)}
+					</div>
 
 					{!passkeyStatus ? (
-						<p className="text-xs text-muted">Cargando...</p>
-					) : (
+						<div className="flex items-center gap-2">
+							<div className="w-4 h-4 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
+							<p className="text-xs text-muted">Cargando...</p>
+						</div>
+					) : passkeyStatus.accountVersion === "v2" ? (
 						<>
-							<div className="flex flex-wrap gap-2 mb-4">
-								<span
-									className={`text-[11px] px-2.5 py-1 rounded-full ${
-										passkeyStatus.accountVersion === "v2"
-											? "bg-parmelia-blue/20 text-parmelia-blue"
-											: "bg-parmelia-gold/20 text-parmelia-gold"
-									}`}
-								>
-									{passkeyStatus.accountVersion === "v2"
-										? "Wallet V2"
-										: "Wallet legacy"}
-								</span>
-								<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/8 text-white/80">
-									Hint {passkeyStatus.recoveryMode}
-								</span>
-								{passkeyStatus.signerCount ? (
-									<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/8 text-white/80">
-										{passkeyStatus.signerCount} passkeys
-									</span>
-								) : null}
+							{/* V2 Account Summary — compact grid */}
+							<div className="grid grid-cols-3 gap-3 mb-4">
+								<div className="bg-surface-2 rounded-xl p-3 text-center">
+									<p className="text-lg font-mono text-parmelia-blue">{passkeyStatus.signerCount || 1}</p>
+									<p className="text-[10px] text-muted mt-0.5">Passkeys</p>
+								</div>
+								<div className="bg-surface-2 rounded-xl p-3 text-center">
+									<p className="text-lg font-mono text-white">{passkeyStatus.threshold || 1}</p>
+									<p className="text-[10px] text-muted mt-0.5">Threshold</p>
+								</div>
+								<div className="bg-surface-2 rounded-xl p-3 text-center">
+									<p className="text-lg">
+										{isZeroAddress(passkeyStatus.guardian)
+											? "—"
+											: "✓"}
+									</p>
+									<p className="text-[10px] text-muted mt-0.5">Guardian</p>
+								</div>
 							</div>
 
-							{passkeyStatus.accountVersion === "v2" ? (
-								<>
-									<p className="text-xs text-muted mb-3 leading-relaxed">
-										Esta wallet ya soporta multi-passkey on-chain. Puedes
-										agregar nuevas passkeys sin cambiar de dirección.
+							{passkeyStatus.recoveryPending && (
+								<div className="bg-parmelia-pink/10 border border-parmelia-pink/20 rounded-xl p-3 mb-4">
+									<p className="text-xs text-parmelia-pink leading-relaxed">
+										⚠ Recuperación pendiente — ejecutable después de {recoveryDateLabel}.
 									</p>
-									<p className="text-xs text-muted mb-3 leading-relaxed">
-										Guardian:{" "}
-										{isZeroAddress(passkeyStatus.guardian)
-											? "sin configurar"
-											: formatAddress(passkeyStatus.guardian as string)}
-										. Threshold: {passkeyStatus.threshold || 1} de{" "}
-										{passkeyStatus.signerCount || 1}.
-									</p>
-
-									{passkeyStatus.recoveryPending ? (
-										<p className="text-xs text-parmelia-pink mb-3 leading-relaxed">
-											Hay una recuperación pendiente. Si es legítima, podrá
-											ejecutarse después de {recoveryDateLabel}.
-										</p>
-									) : (
-										<p className="text-xs text-muted mb-3 leading-relaxed">
-											No hay recovery pendiente. Si un guardian propone una
-											recuperación, existe una ventana de 48 horas para
-											cancelarla con una passkey activa.
-										</p>
-									)}
-
-									<p className="text-xs text-muted mb-3 leading-relaxed">
-										Este navegador recuerda {rememberedPasskeys.length}{" "}
-										passkey{rememberedPasskeys.length === 1 ? "" : "s"} creada
-										desde Parmelia.
-									</p>
-
-									{rememberedPasskeys.length > 0 && (
-										<div className="flex flex-wrap gap-2 mb-4">
-											{rememberedPasskeys.map((passkey) => (
-												<span
-													key={passkey.credentialId}
-													className="text-[11px] px-2.5 py-1 rounded-full bg-white/8 text-white/80 font-mono"
-												>
-													...{passkey.credentialId.slice(-8)}
-												</span>
-											))}
-										</div>
-									)}
-
-									<button
-										onClick={handleAddPasskey}
-										disabled={updatingPasskey}
-										className="bg-parmelia-blue text-black px-6 py-2 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity mb-3"
-									>
-										{updatingPasskey
-											? "Agregando..."
-											: "Agregar otra passkey"}
-									</button>
-
-									<p className="text-xs text-muted leading-relaxed">
-										Agregar una passkey no elimina la anterior. El flujo de
-										rotación completa llegará en una siguiente iteración.
-									</p>
-								</>
-							) : (
-								<>
-									<p className="text-xs text-parmelia-pink mb-3 leading-relaxed">
-										Tu wallet actual todavía no soporta multi-passkey seguro en
-										la misma dirección.
-									</p>
-									<p className="text-xs text-muted mb-3 leading-relaxed">
-										La migración a V2 crea una nueva wallet en {activeNetwork.name},
-										actualiza tu perfil y mueve tus links pendientes a la nueva
-										dirección.
-									</p>
-									<p className="text-xs text-muted mb-4 leading-relaxed">
-										Los fondos de la wallet anterior no se transfieren
-										automáticamente. Si una passkey fue creada bajo otro dominio
-										de Parmelia, el navegador puede no mostrarla aquí porque
-										WebAuthn la liga al RP ID original.
-									</p>
-									<button
-										onClick={handleMigrateWallet}
-										disabled={migratingWallet}
-										className="bg-parmelia-gold text-black px-6 py-2 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity mb-3"
-									>
-										{migratingWallet
-											? "Migrando..."
-											: "Migrar wallet a V2"}
-									</button>
-									<p className="text-xs text-muted leading-relaxed">
-										Después de migrar, esta pantalla te dejará agregar nuevas
-										passkeys en la misma wallet V2. Si la nueva cuenta queda sin
-										fondos, podrás pedir tokens de prueba otra vez.
-									</p>
-								</>
+								</div>
 							)}
+
+							{rememberedPasskeys.length > 0 && (
+								<div className="flex flex-wrap gap-1.5 mb-4">
+									{rememberedPasskeys.map((passkey) => (
+										<span
+											key={passkey.credentialId}
+											className="text-[10px] px-2 py-0.5 rounded-full bg-white/8 text-white/70 font-mono"
+										>
+											...{passkey.credentialId.slice(-8)}
+										</span>
+									))}
+								</div>
+							)}
+
+							<button
+								onClick={handleAddPasskey}
+								disabled={updatingPasskey}
+								className="bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
+							>
+								{updatingPasskey ? "Agregando..." : "Agregar passkey"}
+							</button>
+						</>
+					) : (
+						<>
+							{/* Legacy wallet — single clean prompt */}
+							<p className="text-sm text-muted mb-4 leading-relaxed">
+								Migra a V2 para agregar passkeys de respaldo y activar recovery con guardian.
+							</p>
+							<button
+								onClick={handleMigrateWallet}
+								disabled={migratingWallet}
+								className="bg-parmelia-gold text-black px-6 py-2.5 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
+							>
+								{migratingWallet ? "Migrando..." : "Migrar a V2"}
+							</button>
 						</>
 					)}
 				</div>
@@ -670,6 +628,33 @@ export default function Settings({ user }: { user: User }) {
 					</a>
 				</div>
 			)}
+
+			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4 border border-parmelia-pink/20">
+				<label className="text-sm text-parmelia-pink mb-2 block font-medium">
+					Zona de Peligro
+				</label>
+				<p className="text-xs text-muted mb-4 leading-relaxed">
+					Si has perdido acceso a tus passkeys (debido a que se crearon en otro dominio u otra razón) y no puedes operar tu cuenta, puedes restablecer tu cuenta. Esto desvinculará tu wallet actual de tu usuario para que puedas crear una nueva. <strong className="text-parmelia-pink">Perderás acceso a los fondos de la wallet actual.</strong>
+				</p>
+				<button
+					onClick={async () => {
+						if (!confirm("¿Estás seguro de que quieres restablecer tu cuenta? Perderás acceso a los fondos en esta wallet para siempre si no tienes la passkey en otro lado.")) return;
+						try {
+							const res = await fetchWithAuth(user, `${SERVER_URL}/account/reset-wallet`, {
+								method: "POST"
+							});
+							if (!res.ok) throw new Error("Error al restablecer");
+							sileo.success({ title: "Cuenta restablecida" });
+							window.location.href = "/";
+						} catch (e) {
+							sileo.error({ title: "Error al restablecer cuenta" });
+						}
+					}}
+					className="bg-parmelia-pink/20 text-parmelia-pink border border-parmelia-pink/50 hover:bg-parmelia-pink/30 px-6 py-2.5 rounded-full text-xs font-medium transition-colors w-full sm:w-auto"
+				>
+					Restablecer cuenta
+				</button>
+			</div>
 		</div>
 	);
 }
