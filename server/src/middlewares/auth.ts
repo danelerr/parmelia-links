@@ -2,47 +2,16 @@ import { Context, Next } from "hono";
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import type { SupportedChainKey } from "../../../shared/networks";
 
-export interface KVListResult {
-	keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
-	list_complete: boolean;
-	cursor: string;
-}
-
-export interface KVNamespaceBinding {
-	get(key: string, options?: string | { type?: string }): Promise<any>;
-	put(key: string, value: string): Promise<void>;
-	delete(key: string): Promise<void>;
-	list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult>;
-}
-
-export interface D1QueryResult<Row = Record<string, unknown>> {
-	results?: Row[];
-	success?: boolean;
-	meta?: Record<string, unknown>;
-}
-
-export interface D1PreparedStatementBinding {
-	bind(...values: unknown[]): D1PreparedStatementBinding;
-	first<Row = Record<string, unknown>>(columnName?: string): Promise<Row | null>;
-	run<Row = Record<string, unknown>>(): Promise<D1QueryResult<Row>>;
-	all<Row = Record<string, unknown>>(): Promise<D1QueryResult<Row>>;
-}
-
-export interface D1DatabaseBinding {
-	prepare(query: string): D1PreparedStatementBinding;
-	exec(query: string): Promise<unknown>;
-	batch<T = unknown>(statements: D1PreparedStatementBinding[]): Promise<T[]>;
-}
-
+// D1Database is provided globally by worker-configuration.d.ts (Cloudflare runtime types).
 export type Bindings = {
 	RPC_URL: string;
 	PRIVATE_KEY: string;
 	PAYMASTER_SIGNER_PRIVATE_KEY?: string;
 	FIREBASE_PROJECT_ID: string;
-	PARMELIA_DB: D1DatabaseBinding;
-	PARMELIA_KV?: KVNamespaceBinding;
-	STORAGE_MIGRATION_TOKEN?: string;
+	PARMELIA_DB: D1Database;
 	CHAIN_KEY?: SupportedChainKey;
+	/** Comma-separated allowlist of CORS origins. Unset => allow any origin. */
+	ALLOWED_ORIGINS?: string;
 };
 
 export type Variables = {

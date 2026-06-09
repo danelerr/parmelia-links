@@ -24,24 +24,12 @@ interface ProfileResponse {
 interface PasskeyStatusResponse {
 	hasStoredCredential: boolean;
 	hasWallet: boolean;
-	recoveryMode: "stored" | "discoverable";
-	accountVersion: "unknown" | "legacy" | "v2";
-	supportsPasskeyManagement: boolean;
 	signerCount: number | null;
 	threshold: number | null;
 	guardian: string | null;
 	recoveryPending: boolean | null;
 	recoveryExecutableAfter: string | null;
 }
-
-interface WalletMigrationResponse {
-	accountAddress: string;
-	previousWalletAddress: string;
-	transactionHash: string;
-	updatedPendingLinks: number;
-	manualMigrationRequired: boolean;
-}
-
 
 function isZeroAddress(address: string | null | undefined) {
 	return !address || /^0x0{40}$/i.test(address);
@@ -60,7 +48,6 @@ export default function Settings({ user }: { user: User }) {
 		RememberedPasskey[]
 	>([]);
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
-	const [migratingWallet, setMigratingWallet] = useState(false);
 	const [faucetClaimed, setFaucetClaimed] = useState<boolean | null>(null);
 	const [claimingFaucet, setClaimingFaucet] = useState(false);
 	const [initialLoading, setInitialLoading] = useState(true);
@@ -159,15 +146,6 @@ export default function Settings({ user }: { user: User }) {
 	}
 
 	async function handleAddPasskey() {
-		if (!passkeyStatus?.supportsPasskeyManagement) {
-			sileo.warning({
-				title: "Wallet legacy",
-				description:
-					"Esta wallet todavía no soporta agregar passkeys sin cambiar de dirección.",
-			});
-			return;
-		}
-
 		setUpdatingPasskey(true);
 		try {
 			const uid = user.uid || "parmelia-user";
@@ -254,53 +232,6 @@ export default function Settings({ user }: { user: User }) {
 			});
 		} finally {
 			setUpdatingPasskey(false);
-		}
-	}
-
-	async function handleMigrateWallet() {
-		if (!walletAddress) return;
-
-		const confirmed = window.confirm(
-			"Esta migracion crea una nueva wallet V2 y actualiza tu perfil a esa nueva direccion. Los links pendientes se moveran a la nueva wallet, pero los fondos de la wallet anterior no se transfieren solos. ¿Quieres continuar?",
-		);
-		if (!confirmed) return;
-
-		setMigratingWallet(true);
-		try {
-			const uid = user.uid || "parmelia-user";
-			const nextPasskey = await createPasskey(uid);
-
-			const res = await fetchWithAuth(user, `${SERVER_URL}/account/migrate`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(nextPasskey),
-			});
-			if (!res.ok) {
-				const data = await res
-					.json()
-					.catch(() => ({ error: "Error al migrar la wallet" }));
-				throw new Error(data.error || "Error al migrar la wallet");
-			}
-
-			const data = (await res.json()) as WalletMigrationResponse;
-			await refreshSettings();
-			sileo.success({
-				title: "Wallet migrada",
-				description:
-					data.updatedPendingLinks > 0
-						? `La nueva wallet V2 ya esta activa y ${data.updatedPendingLinks} link(s) pendiente(s) fueron actualizados.`
-						: "La nueva wallet V2 ya esta activa. Si necesitas fondos, podras reclamarlos de nuevo desde esta pantalla.",
-			});
-		} catch (err) {
-			sileo.error({
-				title: "Error",
-				description:
-					err instanceof Error ? err.message : "Error al migrar la wallet",
-			});
-		} finally {
-			setMigratingWallet(false);
 		}
 	}
 
@@ -495,16 +426,6 @@ export default function Settings({ user }: { user: User }) {
 						<label className="text-sm text-muted">
 							Passkeys y seguridad
 						</label>
-						{passkeyStatus && (
-							<span
-								className={`text-[11px] px-2.5 py-1 rounded-full ${passkeyStatus.accountVersion === "v2"
-										? "bg-parmelia-blue/20 text-parmelia-blue"
-										: "bg-parmelia-gold/20 text-parmelia-gold"
-									}`}
-							>
-								{passkeyStatus.accountVersion === "v2" ? "V2" : "Legacy"}
-							</span>
-						)}
 					</div>
 
 					{!passkeyStatus ? (
@@ -512,9 +433,9 @@ export default function Settings({ user }: { user: User }) {
 							<div className="w-4 h-4 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
 							<p className="text-xs text-muted">Cargando...</p>
 						</div>
-					) : passkeyStatus.accountVersion === "v2" ? (
+					) : (
 						<>
-							{/* V2 Account Summary — compact grid */}
+							{/* Account summary — compact grid */}
 							<div className="grid grid-cols-3 gap-3 mb-4">
 								<div className="bg-surface-2 rounded-xl p-3 text-center">
 									<p className="text-lg font-mono text-parmelia-blue">{passkeyStatus.signerCount || 1}</p>
@@ -561,20 +482,6 @@ export default function Settings({ user }: { user: User }) {
 								className="bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
 							>
 								{updatingPasskey ? "Agregando..." : "Agregar passkey"}
-							</button>
-						</>
-					) : (
-						<>
-							{/* Legacy wallet — single clean prompt */}
-							<p className="text-sm text-muted mb-4 leading-relaxed">
-								Migra a V2 para agregar passkeys de respaldo y activar recovery con guardian.
-							</p>
-							<button
-								onClick={handleMigrateWallet}
-								disabled={migratingWallet}
-								className="bg-parmelia-gold text-black px-6 py-2.5 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
-							>
-								{migratingWallet ? "Migrando..." : "Migrar a V2"}
 							</button>
 						</>
 					)}
@@ -628,33 +535,6 @@ export default function Settings({ user }: { user: User }) {
 					</a>
 				</div>
 			)}
-
-			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4 border border-parmelia-pink/20">
-				<label className="text-sm text-parmelia-pink mb-2 block font-medium">
-					Zona de Peligro
-				</label>
-				<p className="text-xs text-muted mb-4 leading-relaxed">
-					Si has perdido acceso a tus passkeys (debido a que se crearon en otro dominio u otra razón) y no puedes operar tu cuenta, puedes restablecer tu cuenta. Esto desvinculará tu wallet actual de tu usuario para que puedas crear una nueva. <strong className="text-parmelia-pink">Perderás acceso a los fondos de la wallet actual.</strong>
-				</p>
-				<button
-					onClick={async () => {
-						if (!confirm("¿Estás seguro de que quieres restablecer tu cuenta? Perderás acceso a los fondos en esta wallet para siempre si no tienes la passkey en otro lado.")) return;
-						try {
-							const res = await fetchWithAuth(user, `${SERVER_URL}/account/reset-wallet`, {
-								method: "POST"
-							});
-							if (!res.ok) throw new Error("Error al restablecer");
-							sileo.success({ title: "Cuenta restablecida" });
-							window.location.href = "/";
-						} catch (e) {
-							sileo.error({ title: "Error al restablecer cuenta" });
-						}
-					}}
-					className="bg-parmelia-pink/20 text-parmelia-pink border border-parmelia-pink/50 hover:bg-parmelia-pink/30 px-6 py-2.5 rounded-full text-xs font-medium transition-colors w-full sm:w-auto"
-				>
-					Restablecer cuenta
-				</button>
-			</div>
 		</div>
 	);
 }

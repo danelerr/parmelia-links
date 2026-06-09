@@ -12,7 +12,7 @@
     // Non-sensitive runtime config only. Secrets like PRIVATE_KEY and RPC_URL
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
-    "CHAIN_KEY": "monad-testnet",
+    "CHAIN_KEY": "arbitrum-sepolia",
   },
 
   "observability": {
@@ -29,15 +29,6 @@
       "database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "preview_database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "migrations_dir": "migrations",
-    },
-  ],
-
-  "kv_namespaces": [
-    {
-      // Legacy fallback during the D1 migration window.
-      "binding": "PARMELIA_KV",
-      "id": "755adbb2a53c442dbf05de55e2423186",
-      "remote": true,
     },
   ],
 }

@@ -1,14 +1,13 @@
 import {
 	createPublicClient,
 	formatUnits,
-	http,
 	parseAbiItem,
 	type Address,
 	type PublicClient,
 } from "viem";
-import { USDC_ADDRESS, USDC_DECIMALS } from "../../../shared";
 import { getActiveChain } from "../chain";
 import { getNetworkConfig } from "../../../shared/networks";
+import { buildRpcTransport } from "./clients";
 
 export type ChainHistoryItem = {
 	direction: "sent" | "received";
@@ -388,9 +387,10 @@ async function fetchRpcHistory(
 	rpcUrl: string,
 	chainKey?: string,
 ) {
+	const { usdc, usdcDecimals } = getNetworkConfig(chainKey).contracts;
 	const publicClient = createPublicClient({
 		chain: getActiveChain(chainKey),
-		transport: http(rpcUrl),
+		transport: buildRpcTransport(rpcUrl),
 	});
 	const latestBlock = await publicClient.getBlockNumber();
 	const fromBlock =
@@ -403,7 +403,7 @@ async function fetchRpcHistory(
 	const [sentLogs, receivedLogs] = await Promise.all([
 		fetchRpcTransferLogs(
 			publicClient,
-			USDC_ADDRESS as Address,
+			usdc as Address,
 			wallet,
 			"sent",
 			fromBlock,
@@ -411,7 +411,7 @@ async function fetchRpcHistory(
 		),
 		fetchRpcTransferLogs(
 			publicClient,
-			USDC_ADDRESS as Address,
+			usdc as Address,
 			wallet,
 			"received",
 			fromBlock,
@@ -460,7 +460,7 @@ async function fetchRpcHistory(
 				{
 					direction,
 					txHash: log.transactionHash,
-					amount: formatUnits(rawAmount, USDC_DECIMALS),
+					amount: formatUnits(rawAmount, usdcDecimals),
 					currency: "USDC",
 					counterparty,
 					createdAt:
@@ -476,7 +476,8 @@ async function fetchRpcHistory(
 	return history;
 }
 
-async function fetchMonadscanHistory(walletAddress: string, baseApiUrl: string, nativeTokenSymbol: string) {
+// Etherscan-family API (Arbiscan, Snowtrace, Etherscan v2, ...): module=account.
+async function fetchEtherscanHistory(walletAddress: string, baseApiUrl: string, nativeTokenSymbol: string) {
 	const normalizedWallet = walletAddress.toLowerCase();
 	const baseUrl = trimTrailingSlash(baseApiUrl);
 
@@ -560,8 +561,8 @@ export async function fetchWalletHistory(
 		throw new Error(`No history API configured for ${network.name}`);
 	}
 
-	if (network.historyProvider === "monadscan") {
-		return fetchMonadscanHistory(
+	if (network.historyProvider === "etherscan") {
+		return fetchEtherscanHistory(
 			walletAddress,
 			network.historyApiBaseUrl,
 			network.nativeTokenSymbol,

@@ -1,5 +1,5 @@
 import { type Chain } from "viem";
-import { baseSepolia, monadTestnet } from "viem/chains";
+import { arbitrum, arbitrumSepolia, baseSepolia } from "viem/chains";
 import {
 	DEFAULT_CHAIN_KEY,
 	type SupportedChainKey,
@@ -12,7 +12,8 @@ import {
  */
 const CHAIN_MAP: Record<SupportedChainKey, Chain> = {
 	"base-sepolia": baseSepolia,
-	"monad-testnet": monadTestnet,
+	"arbitrum-sepolia": arbitrumSepolia,
+	"arbitrum-one": arbitrum,
 };
 
 /**

@@ -4,3 +4,20 @@ node_modules
 .env.*
 .dev.vars
 .dev.vars.*
+
+# OS / editor junk
+.DS_Store
+*.DS_Store
+Thumbs.db
+
+# This is a pnpm workspace — never commit npm lockfiles or per-package pnpm locks.
+# The single source of truth is the root pnpm-lock.yaml.
+package-lock.json
+client/pnpm-lock.yaml
+server/pnpm-lock.yaml
+shared/pnpm-lock.yaml
+
+# NOTE: .agents/skills/ is intentionally vendored (committed) for now.
+# The `npx skills` toolchain has no "install everything from skills-lock.json"
+# command yet (vercel-labs/skills#283), so the only restore path is re-adding each
+# skill by hand. Once that command ships, gitignore .agents/ and restore from the lockfile.

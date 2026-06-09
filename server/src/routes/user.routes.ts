@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { createPublicClient, http, formatEther, formatUnits, erc20Abi } from "viem";
-import { USDC_ADDRESS, USDC_DECIMALS } from "../../../shared";
+import { formatEther, formatUnits } from "viem";
+import { erc20Abi, getNetworkConfig } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { getActiveChain } from "../chain";
+import { getPublicClient } from "../services/clients";
 import { getUserByUid, getUserByUsername, saveUser } from "../services/storage";
 
 const userRoutes = new Hono<AppContext>();
@@ -63,15 +63,13 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	const walletAddress = profile?.walletAddress ?? undefined;
 	if (!walletAddress) return c.json({ error: "No wallet" }, 404);
 
-	const publicClient = createPublicClient({
-		chain: getActiveChain(c.env.CHAIN_KEY),
-		transport: http(c.env.RPC_URL),
-	});
+	const { usdc, usdcDecimals } = getNetworkConfig(c.env.CHAIN_KEY).contracts;
+	const publicClient = getPublicClient(c.env);
 
 	const [ethBalanceWei, usdcBalanceRaw] = await Promise.all([
 		publicClient.getBalance({ address: walletAddress as `0x${string}` }),
 		publicClient.readContract({
-			address: USDC_ADDRESS as `0x${string}`,
+			address: usdc,
 			abi: erc20Abi,
 			functionName: "balanceOf",
 			args: [walletAddress as `0x${string}`],
@@ -80,7 +78,7 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 
 	return c.json({
 		eth: formatEther(ethBalanceWei),
-		usdc: formatUnits(usdcBalanceRaw, USDC_DECIMALS),
+		usdc: formatUnits(usdcBalanceRaw, usdcDecimals),
 		ethRaw: ethBalanceWei.toString(),
 		usdcRaw: usdcBalanceRaw.toString(),
 	});

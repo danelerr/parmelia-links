@@ -19,7 +19,7 @@ export default function Login() {
 
       <div className="w-full max-w-sm px-4 flex flex-col items-center">
         <p className="text-muted text-center mb-10 text-sm leading-relaxed max-w-xs">
-          Una Wallet para comprar, enviar y recibir dólares USDC sin pagar gas. Con la mejor UX
+          Usar cripto nunca habia sido tan facil. Aqui tu dinero es 100% tuyo. No necesitas descargar apps
         </p>
         <button
           onClick={handleLogin}

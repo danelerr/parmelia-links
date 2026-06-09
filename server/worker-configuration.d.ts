@@ -6,7 +6,6 @@ declare namespace Cloudflare {
 		mainModule: typeof import("./src/index");
 	}
 	interface Env {
-		PARMELIA_KV: KVNamespace;
 		PARMELIA_DB: D1Database;
 		FIREBASE_PROJECT_ID: "proyecto-prueba-push-firebase";
 	}

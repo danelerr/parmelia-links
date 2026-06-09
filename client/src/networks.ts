@@ -1,42 +1,46 @@
-// Keep the client self-contained so Vercel builds work even when deploying from `client/`.
-export type SupportedChainKey = "base-sepolia" | "monad-testnet";
+// Client-side mirror of the network metadata the UI displays.
+//
+// This is intentionally a small standalone copy of shared/networks.ts: Vercel
+// builds the client from this folder and cannot reach ../shared. The client only
+// ever needs presentation fields (name, symbol, explorer, faucet) — all on-chain
+// work and addresses live on the server — so keep just those in sync here.
+export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
 
 export type NetworkConfig = {
 	key: SupportedChainKey;
-	chainId: number;
 	name: string;
 	nativeTokenSymbol: string;
 	explorerBaseUrl: string;
-	historyProvider: "blockscout" | "rpc";
-	historyApiBaseUrl: string | null;
 	faucetUrl: string | null;
 	faucetLabel: string | null;
 };
 
-export const DEFAULT_CHAIN_KEY: SupportedChainKey = "monad-testnet";
+export const DEFAULT_CHAIN_KEY: SupportedChainKey = "arbitrum-sepolia";
 
 export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 	"base-sepolia": {
 		key: "base-sepolia",
-		chainId: 84532,
 		name: "Base Sepolia",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
-		historyProvider: "blockscout",
-		historyApiBaseUrl: "https://base-sepolia.blockscout.com/api/v2",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
 	},
-	"monad-testnet": {
-		key: "monad-testnet",
-		chainId: 10143,
-		name: "Monad Testnet",
-		nativeTokenSymbol: "MON",
-		explorerBaseUrl: "https://testnet.monadvision.com",
-		historyProvider: "rpc",
-		historyApiBaseUrl: null,
-		faucetUrl: "https://faucet.monad.xyz",
-		faucetLabel: "Monad Faucet",
+	"arbitrum-sepolia": {
+		key: "arbitrum-sepolia",
+		name: "Arbitrum Sepolia",
+		nativeTokenSymbol: "ETH",
+		explorerBaseUrl: "https://sepolia.arbiscan.io",
+		faucetUrl: "https://faucet.circle.com",
+		faucetLabel: "Circle Faucet",
+	},
+	"arbitrum-one": {
+		key: "arbitrum-one",
+		name: "Arbitrum One",
+		nativeTokenSymbol: "ETH",
+		explorerBaseUrl: "https://arbiscan.io",
+		faucetUrl: null,
+		faucetLabel: null,
 	},
 };
 
@@ -50,6 +54,5 @@ export function getNetworkConfig(chainKey?: string): NetworkConfig {
 	if (chainKey && isSupportedChainKey(chainKey)) {
 		return NETWORKS[chainKey];
 	}
-
 	return NETWORKS[DEFAULT_CHAIN_KEY];
 }

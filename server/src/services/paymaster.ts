@@ -11,6 +11,10 @@ import { privateKeyToAccount } from "viem/accounts";
 export const PAYMASTER_VERIFICATION_GAS_LIMIT = 100000n;
 export const PAYMASTER_POST_OP_GAS_LIMIT = 50000n;
 
+// Default sponsorship window: matches the pending-payment TTL (~10 min) so a
+// signed-but-unsubmitted UserOp expires and cannot be replayed against the paymaster.
+export const DEFAULT_SPONSOR_TTL_SECONDS = 600;
+
 type SponsorableUserOp = {
 	sender: `0x${string}`;
 	nonce: bigint;
@@ -36,6 +40,8 @@ export function getPaymasterSponsorHash(params: {
 	chainId: number;
 	paymasterAddress: `0x${string}`;
 	userOp: SponsorableUserOp;
+	validAfter: bigint;
+	validUntil: bigint;
 	paymasterHeader?: Hex;
 }): Hex {
 	const paymasterHeader =
@@ -44,7 +50,7 @@ export function getPaymasterSponsorHash(params: {
 	return keccak256(
 		encodeAbiParameters(
 			parseAbiParameters(
-				"uint256 chainId, address paymaster, address sender, uint256 nonce, bytes32 initCodeHash, bytes32 callDataHash, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes32 paymasterConfigHash",
+				"uint256 chainId, address paymaster, address sender, uint256 nonce, bytes32 initCodeHash, bytes32 callDataHash, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes32 paymasterConfigHash, uint256 validAfter, uint256 validUntil",
 			),
 			[
 				BigInt(params.chainId),
@@ -57,6 +63,8 @@ export function getPaymasterSponsorHash(params: {
 				params.userOp.preVerificationGas,
 				params.userOp.gasFees,
 				keccak256(paymasterHeader),
+				params.validAfter,
+				params.validUntil,
 			],
 		),
 	);
@@ -67,12 +75,21 @@ export async function buildSignedPaymasterAndData(params: {
 	paymasterAddress: `0x${string}`;
 	userOp: SponsorableUserOp;
 	signerPrivateKey: `0x${string}`;
+	validAfter?: bigint;
+	validUntil?: bigint;
 }): Promise<Hex> {
+	const validAfter = params.validAfter ?? 0n;
+	const validUntil =
+		params.validUntil ??
+		BigInt(Math.floor(Date.now() / 1000) + DEFAULT_SPONSOR_TTL_SECONDS);
+
 	const paymasterHeader = buildPaymasterHeader(params.paymasterAddress);
 	const sponsorHash = getPaymasterSponsorHash({
 		chainId: params.chainId,
 		paymasterAddress: params.paymasterAddress,
 		userOp: params.userOp,
+		validAfter,
+		validUntil,
 		paymasterHeader,
 	});
 	const sponsorSigner = privateKeyToAccount(params.signerPrivateKey);
@@ -80,5 +97,11 @@ export async function buildSignedPaymasterAndData(params: {
 		message: { raw: sponsorHash },
 	});
 
-	return concat([paymasterHeader, signature]) as Hex;
+	// header(52) + validAfter(6) + validUntil(6) + signature(65).
+	// uint48 values fit safely in a JS number (max ~2.8e14 << MAX_SAFE_INTEGER).
+	const timeBounds = encodePacked(
+		["uint48", "uint48"],
+		[Number(validAfter), Number(validUntil)],
+	);
+	return concat([paymasterHeader, timeBounds, signature]) as Hex;
 }

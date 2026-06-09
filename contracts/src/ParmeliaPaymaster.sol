@@ -2,22 +2,34 @@
 pragma solidity ^0.8.27;
 
 import {IPaymaster, IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title ParmeliaPaymaster
- * @notice Paymaster that sponsors gas for Parmelia Links UserOperations.
+ * @notice Verifying paymaster that sponsors gas for Parmelia Links UserOperations.
+ *         A trusted backend signer authorizes each op; the signature is bound to a
+ *         [validAfter, validUntil] window so a signed-but-unsubmitted op cannot be
+ *         replayed indefinitely (it expires with the backend's pending TTL).
  *         Uses Ownable2Step for safe ownership transfer.
- *         Only the owner can withdraw funds; the EntryPoint is the only caller
- *         for validatePaymasterUserOp and postOp.
+ *
+ *         paymasterAndData layout (after the 20-byte paymaster address):
+ *           [20:36] paymasterVerificationGasLimit (uint128)
+ *           [36:52] paymasterPostOpGasLimit       (uint128)
+ *           [52:58] validAfter                    (uint48)
+ *           [58:64] validUntil                    (uint48)
+ *           [64:]   sponsor signature             (65 bytes, ECDSA)
  */
 contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     IEntryPoint public immutable ENTRY_POINT;
     address public sponsorSigner;
 
+    // ERC-4337 mandated header is 52 bytes (20 addr + 16 + 16).
     uint256 private constant PAYMASTER_DATA_OFFSET = 52;
+    // Signed validity window: validAfter (6) + validUntil (6).
+    uint256 private constant SIGNATURE_OFFSET = PAYMASTER_DATA_OFFSET + 12; // 64
 
     error OnlyEntryPoint();
     error InvalidPaymasterSignature();
@@ -43,7 +55,13 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
         sponsorSigner = newSponsorSigner;
     }
 
-    function _sponsorDigest(PackedUserOperation calldata userOp) internal view returns (bytes32) {
+    /// @dev Digest the backend signs. Binds the op AND the validity window so neither
+    ///      the op fields nor the time bounds can be tampered with after signing.
+    function _sponsorDigest(PackedUserOperation calldata userOp, uint48 validAfter, uint48 validUntil)
+        internal
+        view
+        returns (bytes32)
+    {
         bytes calldata paymasterAndData = userOp.paymasterAndData;
         bytes32 paymasterConfigHash = _calldataKeccak256(paymasterAndData[:PAYMASTER_DATA_OFFSET]);
 
@@ -57,7 +75,9 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
             userOp.accountGasLimits,
             userOp.preVerificationGas,
             userOp.gasFees,
-            paymasterConfigHash
+            paymasterConfigHash,
+            uint256(validAfter),
+            uint256(validUntil)
         );
         return _memoryBytesKeccak256(encoded);
     }
@@ -76,26 +96,35 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
         }
     }
 
-    /// @notice Approves only UserOperations explicitly signed by the trusted backend signer.
+    /// @notice Approves only UserOperations explicitly signed by the trusted backend
+    ///         signer, within the signed [validAfter, validUntil] window enforced by
+    ///         the EntryPoint via the returned validationData.
     function validatePaymasterUserOp(PackedUserOperation calldata userOp, bytes32, uint256)
         external
         view
         onlyEntryPoint
         returns (bytes memory context, uint256 validationData)
     {
-        bytes calldata paymasterSignature = userOp.paymasterAndData[PAYMASTER_DATA_OFFSET:];
-        if (paymasterSignature.length == 0) revert MissingPaymasterSignature();
+        bytes calldata paymasterAndData = userOp.paymasterAndData;
+        if (paymasterAndData.length <= SIGNATURE_OFFSET) revert MissingPaymasterSignature();
 
-        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(_sponsorDigest(userOp));
-        address recoveredSigner = ECDSA.recover(digest, paymasterSignature);
-        if (recoveredSigner != sponsorSigner) {
+        uint48 validAfter = uint48(bytes6(paymasterAndData[PAYMASTER_DATA_OFFSET:PAYMASTER_DATA_OFFSET + 6]));
+        uint48 validUntil = uint48(bytes6(paymasterAndData[PAYMASTER_DATA_OFFSET + 6:SIGNATURE_OFFSET]));
+        bytes calldata paymasterSignature = paymasterAndData[SIGNATURE_OFFSET:];
+
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(_sponsorDigest(userOp, validAfter, validUntil));
+        if (ECDSA.recover(digest, paymasterSignature) != sponsorSigner) {
             revert InvalidPaymasterSignature();
         }
 
-        return ("", 0); // 0 = SIG_VALIDATION_SUCCESS
+        // authorizer = 0 (success); EntryPoint enforces the [validAfter, validUntil] window.
+        return ("", ERC4337Utils.packValidationData(true, validAfter, validUntil));
     }
 
-    /// @notice No-op post operation hook.
+    /// @notice Post-operation hook. Currently a no-op (gas is fully sponsored).
+    /// @dev Fee-model integration point: to charge users later (e.g. deduct a USDC
+    ///      fee), implement the charge here using the `context` returned above and the
+    ///      `actualGasCost`. Keep gas in mind — postOpGasLimit must cover the logic.
     function postOp(PostOpMode, bytes calldata, uint256, uint256) external onlyEntryPoint {}
 
     // ========== Owner management ==========

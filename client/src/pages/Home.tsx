@@ -19,14 +19,6 @@ interface Transaction {
 	createdAt: string;
 }
 
-interface PasskeyStatus {
-	hasWallet: boolean;
-	accountVersion: "unknown" | "legacy" | "v2";
-	signerCount: number | null;
-	threshold: number | null;
-	guardian: string | null;
-}
-
 export default function Home({ user }: { user: User }) {
 	const navigate = useNavigate();
 	const [showMenu, setShowMenu] = useState(false);
@@ -59,12 +51,6 @@ export default function Home({ user }: { user: User }) {
 		profile?.walletAddress ? `${SERVER_URL}/user/transactions` : null,
 		fetcher,
 		{ refreshInterval: 15000, keepPreviousData: true }
-	);
-
-	const { data: passkeyStatus } = useSWR<PasskeyStatus>(
-		profile?.walletAddress ? `${SERVER_URL}/account/passkey` : null,
-		fetcher,
-		{ refreshInterval: 30000, keepPreviousData: true }
 	);
 
 	// Parse Transactions
@@ -204,54 +190,10 @@ export default function Home({ user }: { user: User }) {
 					onClick={handleCopyAddress}
 					className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs text-muted hover:text-white hover:bg-surface-2 transition-colors"
 				>
-					<span className="font-mono truncate max-w-[200px]">{walletAddress || "Cargando..."}</span>
+					<span className="font-mono truncate max-w-50">{walletAddress || "Cargando..."}</span>
 					<span className="text-xs">{copied ? "[copiado]" : "[copiar]"}</span>
 				</button>
 			</div>
-
-			{passkeyStatus?.hasWallet && (
-				<div className="bg-surface rounded-2xl p-4 mb-5">
-					<div className="flex items-center justify-between gap-3 mb-2">
-						<h2 className="text-xs text-muted">Protección de cuenta</h2>
-						<span
-							className={`text-[11px] px-2.5 py-1 rounded-full ${
-								passkeyStatus.accountVersion === "v2"
-									? "bg-parmelia-blue/20 text-parmelia-blue"
-									: "bg-parmelia-gold/20 text-parmelia-gold"
-							}`}
-						>
-							{passkeyStatus.accountVersion === "v2" ? "V2" : "Legacy"}
-						</span>
-					</div>
-
-					{passkeyStatus.accountVersion === "v2" ? (
-						<p className="text-sm text-white leading-relaxed">
-							{passkeyStatus.signerCount || 1} passkeys activas, threshold{" "}
-							{passkeyStatus.threshold || 1} y recovery con guardian{" "}
-							{passkeyStatus.guardian &&
-							passkeyStatus.guardian !== "0x0000000000000000000000000000000000000000"
-								? "activo"
-								: "sin configurar"}
-							.
-						</p>
-					) : (
-						<div>
-							<p className="text-sm text-muted leading-relaxed mb-3">
-								Esta wallet todavía no expone multi-passkey on-chain en{" "}
-								{activeNetwork.name}. Necesita migración a V2 para agregar
-								passkeys y recovery moderno.
-							</p>
-							<button
-								onClick={() => navigate("/settings")}
-								className="bg-parmelia-gold text-black px-4 py-2 rounded-full text-xs font-medium"
-							>
-								Migrar desde Configuración
-							</button>
-						</div>
-					)}
-				</div>
-			)}
-
 			{/* Transactions */}
 			<div className="bg-surface rounded-2xl p-5 sm:p-6 flex-1 mb-5 relative min-h-[150px]">
 				<div className="flex items-center justify-between mb-3">

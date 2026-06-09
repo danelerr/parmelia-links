@@ -1,17 +1,19 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sileo";
 import { onAuthChange, type User } from "./firebase";
 import { fetchWithAuth } from "./authFetch";
-import Login from "./pages/Login";
-import Onboarding from "./pages/Onboarding";
-import Home from "./pages/Home";
-import CreateLink from "./pages/CreateLink";
-import PayPage from "./pages/PayPage";
-import PaymentStatus from "./pages/PaymentStatus";
-import Settings from "./pages/Settings";
-import ScanQR from "./pages/ScanQR";
 import Logo from "./components/Logo";
+
+// Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
+const Login = lazy(() => import("./pages/Login"));
+const Onboarding = lazy(() => import("./pages/Onboarding"));
+const Home = lazy(() => import("./pages/Home"));
+const CreateLink = lazy(() => import("./pages/CreateLink"));
+const PayPage = lazy(() => import("./pages/PayPage"));
+const PaymentStatus = lazy(() => import("./pages/PaymentStatus"));
+const Settings = lazy(() => import("./pages/Settings"));
+const ScanQR = lazy(() => import("./pages/ScanQR"));
 
 const SERVER_URL =
 	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
@@ -47,7 +49,6 @@ function App() {
 	useEffect(() => {
 		const unsub = onAuthChange((nextUser) => {
 			setUser(nextUser);
-			console.log("user", nextUser);
 
 			if (nextUser) {
 				setLoading(true);
@@ -141,27 +142,35 @@ function App() {
 					},
 				}}
 			/>
-			<Routes>
-				<Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
-				<Route path="/onboarding" element={renderOnboardingRoute()} />
-				<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
-				<Route
-					path="/cobrar"
-					element={renderProtectedRoute(user ? <CreateLink user={user} /> : null)}
-				/>
-				<Route
-					path="/pagar"
-					element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
-				/>
-				<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
-				<Route
-					path="/settings"
-					element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
-				/>
-				<Route path="/pay" element={<PayPage user={user} />} />
-				<Route path="/pay/status" element={<PaymentStatus />} />
-				<Route path="/:username" element={<PayPage user={user} />} />
-			</Routes>
+			<Suspense
+				fallback={
+					<div className="flex items-center justify-center min-h-dvh">
+						<Logo className="w-20 animate-pulse" />
+					</div>
+				}
+			>
+				<Routes>
+					<Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
+					<Route path="/onboarding" element={renderOnboardingRoute()} />
+					<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
+					<Route
+						path="/cobrar"
+						element={renderProtectedRoute(user ? <CreateLink user={user} /> : null)}
+					/>
+					<Route
+						path="/pagar"
+						element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
+					/>
+					<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
+					<Route
+						path="/settings"
+						element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
+					/>
+					<Route path="/pay" element={<PayPage user={user} />} />
+					<Route path="/pay/status" element={<PaymentStatus />} />
+					<Route path="/:username" element={<PayPage user={user} />} />
+				</Routes>
+			</Suspense>
 		</BrowserRouter>
 	);
 }

@@ -46,6 +46,15 @@ export type SentTransactionRecord = {
 	createdAt: string;
 };
 
+export type PasskeyRecord = {
+	credentialId: string;
+	uid: string;
+	qx: string;
+	qy: string;
+	createdAt: string;
+	lastUsedAt: string;
+};
+
 type UserRow = {
 	uid: string;
 	wallet_address: string | null;
@@ -90,6 +99,15 @@ type SentTransactionRow = {
 	currency: string;
 	to_wallet: string;
 	created_at: string;
+};
+
+type PasskeyRow = {
+	credential_id: string;
+	uid: string;
+	qx: string;
+	qy: string;
+	created_at: string;
+	last_used_at: string;
 };
 
 function nowIso() {
@@ -264,80 +282,6 @@ export async function createPaymentLink(env: Bindings, link: PaymentLinkRecord) 
 	);
 }
 
-export async function savePaymentLink(env: Bindings, link: PaymentLinkRecord) {
-	await d1Run(
-		env,
-		`UPDATE payment_links
-		 SET owner_uid = ?,
-			 wallet_address = ?,
-			 amount = ?,
-			 currency = ?,
-			 reference = ?,
-			 status = ?,
-			 tx_hash = ?,
-			 paid_at = ?,
-			 paid_by = ?,
-			 created_at = ?
-		 WHERE id = ?`,
-		[
-			link.ownerUid,
-			link.wallet,
-			link.amount,
-			link.currency,
-			link.reference,
-			link.status,
-			link.txHash,
-			link.paidAt,
-			link.paidBy,
-			link.createdAt,
-			link.id,
-		],
-	);
-}
-
-export async function upsertPaymentLink(env: Bindings, link: PaymentLinkRecord) {
-	await d1Run(
-		env,
-		`INSERT INTO payment_links (
-			id,
-			owner_uid,
-			wallet_address,
-			amount,
-			currency,
-			reference,
-			status,
-			tx_hash,
-			paid_at,
-			paid_by,
-			created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			owner_uid = excluded.owner_uid,
-			wallet_address = excluded.wallet_address,
-			amount = excluded.amount,
-			currency = excluded.currency,
-			reference = excluded.reference,
-			status = excluded.status,
-			tx_hash = excluded.tx_hash,
-			paid_at = excluded.paid_at,
-			paid_by = excluded.paid_by,
-			created_at = excluded.created_at`,
-		[
-			link.id,
-			link.ownerUid,
-			link.wallet,
-			link.amount,
-			link.currency,
-			link.reference,
-			link.status,
-			link.txHash,
-			link.paidAt,
-			link.paidBy,
-			link.createdAt,
-		],
-	);
-}
-
 export async function getPaymentLinkById(env: Bindings, id: string): Promise<PaymentLinkRecord | null> {
 	const row = await d1First<PaymentLinkRow>(
 		env,
@@ -361,37 +305,6 @@ export async function listPaymentLinksByOwner(env: Bindings, ownerUid: string, l
 		[ownerUid, limit],
 	);
 	return rows.map(mapPaymentLinkRow);
-}
-
-export async function reassignPendingLinksWallet(
-	env: Bindings,
-	params: { ownerUid: string; fromWallet: string; toWallet: string },
-): Promise<number> {
-	const pendingLinks = await d1All<{ id: string }>(
-		env,
-		`SELECT id
-		 FROM payment_links
-		 WHERE owner_uid = ?
-		   AND wallet_address = ?
-		   AND status = 'pending'`,
-		[params.ownerUid, params.fromWallet],
-	);
-
-	if (pendingLinks.length === 0) {
-		return 0;
-	}
-
-	await d1Run(
-		env,
-		`UPDATE payment_links
-		 SET wallet_address = ?
-		 WHERE owner_uid = ?
-		   AND wallet_address = ?
-		   AND status = 'pending'`,
-		[params.toWallet, params.ownerUid, params.fromWallet],
-	);
-
-	return pendingLinks.length;
 }
 
 export async function listPaidLinksByOwner(env: Bindings, ownerUid: string, limit = 100): Promise<PaymentLinkRecord[]> {
@@ -516,5 +429,58 @@ export async function listSentTransactionsByUid(env: Bindings, uid: string, limi
 		[uid, limit],
 	);
 	return rows.map(mapSentRow);
+}
+
+function mapPasskeyRow(row: PasskeyRow): PasskeyRecord {
+	return {
+		credentialId: row.credential_id,
+		uid: row.uid,
+		qx: row.qx,
+		qy: row.qy,
+		createdAt: row.created_at,
+		lastUsedAt: row.last_used_at,
+	};
+}
+
+/** Upsert a passkey's public key (qx, qy). Refreshes last_used_at on every call. */
+export async function savePasskey(
+	env: Bindings,
+	passkey: { credentialId: string; uid: string; qx: string; qy: string },
+) {
+	const now = nowIso();
+	await d1Run(
+		env,
+		`INSERT INTO passkeys (credential_id, uid, qx, qy, created_at, last_used_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(credential_id) DO UPDATE SET
+			qx = excluded.qx,
+			qy = excluded.qy,
+			last_used_at = excluded.last_used_at`,
+		[passkey.credentialId, passkey.uid, passkey.qx, passkey.qy, now, now],
+	);
+}
+
+export async function getPasskey(env: Bindings, credentialId: string): Promise<PasskeyRecord | null> {
+	const row = await d1First<PasskeyRow>(
+		env,
+		`SELECT credential_id, uid, qx, qy, created_at, last_used_at
+		 FROM passkeys
+		 WHERE credential_id = ?
+		 LIMIT 1`,
+		[credentialId],
+	);
+	return row ? mapPasskeyRow(row) : null;
+}
+
+export async function listPasskeysByUid(env: Bindings, uid: string): Promise<PasskeyRecord[]> {
+	const rows = await d1All<PasskeyRow>(
+		env,
+		`SELECT credential_id, uid, qx, qy, created_at, last_used_at
+		 FROM passkeys
+		 WHERE uid = ?
+		 ORDER BY datetime(last_used_at) DESC`,
+		[uid],
+	);
+	return rows.map(mapPasskeyRow);
 }
 

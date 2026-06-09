@@ -44,12 +44,6 @@ Se usa para:
 Esto evita depender de BlockVision o de planes pagos para el historial de Monad.
 Como tradeoff, el historial externo de Monad queda acotado a una ventana reciente cuando usas un RPC free como Alchemy.
 
-### KV: solo migracion temporal
-
-`PARMELIA_KV` ya no participa en las rutas normales de negocio.
-
-Solo queda para una migracion puntual de datos viejos a D1. Despues de migrar y purgar, puedes quitar el binding de KV del worker.
-
 ## D1
 
 ### Aplicar migraciones
@@ -58,42 +52,6 @@ Solo queda para una migracion puntual de datos viejos a D1. Despues de migrar y 
 npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
-
-## Migrar datos viejos de KV a D1
-
-Configura un secret temporal:
-
-```txt
-npx wrangler secret put STORAGE_MIGRATION_TOKEN
-```
-
-Luego despliega y ejecuta:
-
-```txt
-POST /internal/storage/migrate-kv-to-d1
-x-storage-migration-token: <tu token>
-Content-Type: application/json
-
-{
-  "dryRun": true,
-  "purgeKv": false
-}
-```
-
-Si el resultado se ve bien, repite con:
-
-```json
-{
-  "dryRun": false,
-  "purgeKv": true
-}
-```
-
-Despues de eso:
-
-1. quita `PARMELIA_KV` de `wrangler.jsonc`,
-2. elimina `STORAGE_MIGRATION_TOKEN`,
-3. vuelve a desplegar.
 
 ## Secrets y variables
 
@@ -104,7 +62,6 @@ Despues de eso:
   - `RPC_URL`
   - `PRIVATE_KEY`
   - `PAYMASTER_SIGNER_PRIVATE_KEY` si separas la firma del paymaster
-  - `STORAGE_MIGRATION_TOKEN` temporal
 
 ### Configurar secrets remotos
 
