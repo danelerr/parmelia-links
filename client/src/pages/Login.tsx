@@ -2,31 +2,55 @@ import { signInWithGoogle } from "../firebase";
 import { sileo } from "sileo";
 import Logo from "../components/Logo";
 
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62Z" />
+      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.35 0-4.34-1.58-5.05-3.71H.96v2.33A9 9 0 0 0 9 18Z" />
+      <path fill="#FBBC05" d="M3.95 10.71a5.4 5.4 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l2.99-2.33Z" />
+      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.96l2.99 2.33C4.66 5.16 6.65 3.58 9 3.58Z" />
+    </svg>
+  );
+}
+
 export default function Login() {
   async function handleLogin() {
     try {
       const credential = await signInWithGoogle();
       await credential.user.getIdToken(true);
-    } catch (err) {
-      sileo.error({ title: "Error al iniciar sesion" });
+    } catch {
+      sileo.error({ title: "No pudimos iniciar sesión", description: "Intenta de nuevo" });
     }
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-dvh px-5 sm:px-8">
-      <Logo className="w-24 sm:w-28 mb-6" />
-      <h1 className="text-3xl sm:text-4xl mb-16">Parmelia</h1>
-
-      <div className="w-full max-w-sm px-4 flex flex-col items-center">
-        <p className="text-muted text-center mb-10 text-sm leading-relaxed max-w-xs">
-          Usar cripto nunca habia sido tan facil. Aqui tu dinero es 100% tuyo. No necesitas descargar apps
+    <div className="flex flex-col min-h-dvh px-6 w-full max-w-[460px] mx-auto">
+      <div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
+        <Logo className="w-24 mb-9 animate-float-glow" />
+        <h1 className="font-display text-[34px] leading-[1.06] mb-4 max-w-[300px]">
+          Mueve dinero digital como{" "}
+          <span className="text-brand-gradient">mandar un mensaje</span>
+        </h1>
+        <p className="text-text-muted text-[15px] leading-relaxed max-w-[290px]">
+          Cobra con links. Paga con QR. Envía a usernames. Tu dinero sigue
+          siendo tuyo.
         </p>
+      </div>
+
+      <div
+        className="flex flex-col items-center gap-4 animate-fade-up"
+        style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }}
+      >
         <button
           onClick={handleLogin}
-          className="w-full bg-surface hover:bg-surface-2 text-white text-base py-4 rounded-xl transition-colors"
+          className="btn btn-primary btn-block"
         >
-          Ingresar
+          <GoogleIcon />
+          Continuar con Google
         </button>
+        <p className="text-text-faint text-[13px]">
+          Sin contraseñas. Tu huella es tu llave.
+        </p>
       </div>
     </div>
   );

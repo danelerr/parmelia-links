@@ -1,18 +1,32 @@
 import { useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { sileo } from "sileo";
-import { toPng } from "html-to-image";
 import type { User } from "../firebase";
 import Logo from "../components/Logo";
 import { fetchWithAuth } from "../authFetch";
 import { activeNetwork } from "../network";
+import { useViewTransitionNavigate } from "../useNav";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
+function BackButton({ onClick }: { onClick: () => void }) {
+	return (
+		<button
+			onClick={onClick}
+			aria-label="Volver"
+			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
+		>
+			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+				<path d="M19 12H5" />
+				<path d="M12 19l-7-7 7-7" />
+			</svg>
+		</button>
+	);
+}
+
 export default function CreateLink({ user }: { user: User }) {
-	const navigate = useNavigate();
+	const navigate = useViewTransitionNavigate();
 	const [step, setStep] = useState<"form" | "result">("form");
 	const [amount, setAmount] = useState("");
 	const [currency, setCurrency] = useState("USDC");
@@ -21,215 +35,204 @@ export default function CreateLink({ user }: { user: User }) {
 	const [paymentUrl, setPaymentUrl] = useState("");
 	const cardRef = useRef<HTMLDivElement>(null);
 
+	const symbol = activeNetwork.nativeTokenSymbol;
+
 	async function handleCreate() {
 		setLoading(true);
 		try {
 			const res = await fetchWithAuth(user, `${SERVER_URL}/links`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ amount, currency, reference }),
 			});
-
 			if (!res.ok) {
-				const data = await res.json().catch(() => ({ error: "Failed to create link" }));
-				throw new Error(data.error || "Failed to create link");
+				const data = await res.json().catch(() => ({ error: "No se pudo crear el link" }));
+				throw new Error(data.error || "No se pudo crear el link");
 			}
-
 			const data = await res.json();
 			setPaymentUrl(`${APP_URL}/pay?id=${data.id}`);
 			setStep("result");
 		} catch (err) {
-			sileo.error({ title: "Error", description: err instanceof Error ? err.message : "Error al crear link" });
+			sileo.error({
+				title: "No se pudo crear el link",
+				description: err instanceof Error ? err.message : "Intenta de nuevo",
+			});
 		} finally {
 			setLoading(false);
 		}
 	}
 
+	async function captureCard(): Promise<Blob | null> {
+		if (!cardRef.current) return null;
+		const { toPng } = await import("html-to-image");
+								const dataUrl = await toPng(cardRef.current, {
+			backgroundColor: "#0A0A0B",
+			width: cardRef.current.offsetWidth + 80,
+			height: cardRef.current.offsetHeight + 80,
+			style: { flex: "none", padding: "40px", margin: "0", maxWidth: "none" },
+			pixelRatio: 2,
+		});
+		return (await fetch(dataUrl)).blob();
+	}
+
+	// Compartir = imagen del QR + el link de pago.
+	async function handleShare() {
+		try {
+			const blob = await captureCard();
+			const file = blob ? new File([blob], "parmelia-cobro.png", { type: "image/png" }) : null;
+			if (file && navigator.canShare?.({ files: [file] })) {
+				await navigator.share({
+					title: "Cóbrame con Parmelia",
+					text: `Págame con Parmelia: ${paymentUrl}`,
+					files: [file],
+				});
+			} else if (navigator.share) {
+				await navigator.share({ title: "Cobro Parmelia", text: "Págame con Parmelia", url: paymentUrl });
+			} else {
+				navigator.clipboard.writeText(paymentUrl);
+				sileo.success({ title: "Link copiado" });
+			}
+		} catch {
+			/* user cancelled */
+		}
+	}
+
+	// Descargar = solo la imagen del QR.
+	async function handleDownload() {
+		try {
+			const blob = await captureCard();
+			if (!blob) return;
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.download = `parmelia-cobro-${amount || "abierto"}-${currency}.png`;
+			a.href = url;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch {
+			sileo.error({ title: "No se pudo descargar" });
+		}
+	}
+
+	// Copiar = solo el link.
+	function handleCopy() {
+		navigator.clipboard.writeText(paymentUrl);
+		sileo.success({ title: "Link copiado" });
+	}
+
 	if (step === "result") {
 		return (
-			<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-8 w-full max-w-lg mx-auto">
-				{/* Header */}
-				<div className="flex items-center justify-between mb-6">
-				<button
-					onClick={() => navigate("/")}
-					className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
-				>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
-					</svg>
-					Volver
-				</button>
-				</div>
+			<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+				<header className="flex items-center gap-3 mb-6">
+					<BackButton onClick={() => navigate("/")} />
+					<h1 className="text-[22px]">Tu link de cobro</h1>
+				</header>
 
-				{/* QR Card */}
-				<div ref={cardRef} className="flex-1 flex flex-col">
-					<div className="bg-surface rounded-2xl p-6 sm:p-8 flex flex-col items-center flex-1 h-full relative">
-						<Logo className="w-14 mb-6" />
+				<div className="flex-1 flex flex-col justify-center">
+					<div
+						ref={cardRef}
+						className="relative overflow-hidden bg-surface border border-border rounded-[24px] p-7 flex flex-col items-center shadow-e2"
+					>
+						<div
+							className="absolute top-0 left-0 right-0 h-1"
+							style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
+						/>
+						<div
+							className="pointer-events-none absolute -top-20 -right-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
+							style={{ background: "radial-gradient(circle,#9ce3f4,transparent 70%)" }}
+						/>
 
-						<div className="bg-white rounded-xl p-5 sm:p-6 mb-6 qr-card">
-							<QRCodeSVG
-								value={paymentUrl}
-								size={220}
-								bgColor="#ffffff"
-								fgColor="#000000"
-								level="M"
-							/>
+						<div className="flex items-center gap-2 mb-6 relative z-1">
+							<Logo className="w-6" />
+							<span className="font-display text-[16px]">Parmelia</span>
+						</div>
+
+						<div className="bg-white rounded-[18px] p-5 mb-6 shadow-e2 relative z-1">
+							<QRCodeSVG value={paymentUrl} size={216} bgColor="#ffffff" fgColor="#0A0A0B" level="M" />
 						</div>
 
 						{Number(amount) > 0 ? (
-							<p className="text-xl sm:text-2xl mb-3">{amount} {currency}</p>
+							<p className="font-display text-[34px] leading-none tabular mb-2 relative z-1">
+								{amount}
+								<span className="text-text-muted text-[18px] ml-1.5">{currency}</span>
+							</p>
 						) : (
-							<p className="text-xl sm:text-2xl mb-3 text-parmelia-pink">Monto abierto</p>
+							<p className="font-display text-[24px] text-glow-pink mb-2 relative z-1">Monto abierto</p>
 						)}
 
 						{reference && (
-							<p className="text-muted text-sm text-center px-6 leading-relaxed">
+							<p className="text-text-muted text-[14px] text-center leading-relaxed px-2 relative z-1">
 								{reference}
 							</p>
 						)}
-
-						<p className="text-xs text-muted text-center mt-5">
-							Red activa: {activeNetwork.name}
+						<p className="text-[12px] text-text-faint mt-5 relative z-1">
+							parmelia.me · Pago seguro en {activeNetwork.name}
 						</p>
 					</div>
 				</div>
 
-				{/* Action buttons */}
-				<div className="flex gap-3 mt-6">
-					<button
-						onClick={async () => {
-							if (!cardRef.current) return;
-							try {
-								const dataUrl = await toPng(cardRef.current, {
-									backgroundColor: '#000000',
-									width: cardRef.current.offsetWidth + 64,
-									height: cardRef.current.offsetHeight + 64,
-									style: { 
-										flex: 'none',
-										padding: '32px',
-										margin: '0',
-										maxWidth: 'none'
-									},
-									pixelRatio: 2,
-								});
-								const a = document.createElement("a");
-								a.download = `parmelia-${amount}-${currency}.png`;
-								a.href = dataUrl;
-								a.click();
-							} catch {
-								sileo.error({ title: "Error al descargar" });
-							}
-						}}
-						className="flex-1 bg-parmelia-blue text-black py-3 rounded-full text-sm font-medium"
-					>
-						Descargar
+				<button onClick={handleShare} className="btn btn-primary btn-block mt-6">
+					Compartir
+				</button>
+				<div className="flex gap-3 mt-3">
+					<button onClick={handleDownload} className="btn btn-ghost flex-1">
+						Descargar QR
 					</button>
-					<button
-						onClick={() => {
-							if (navigator.share) {
-								navigator.share({ title: "Parmelia Payment", url: paymentUrl });
-							} else {
-								navigator.clipboard.writeText(paymentUrl);
-								sileo.success({ title: "Link copiado" });
-							}
-						}}
-						className="flex-1 bg-parmelia-gold text-black py-3 rounded-full text-sm font-medium"
-					>
-						Compartir
+					<button onClick={handleCopy} className="btn btn-ghost flex-1">
+						Copiar link
 					</button>
 				</div>
-				<button
-					onClick={() => {
-						navigator.clipboard.writeText(paymentUrl);
-						sileo.success({ title: "Link copiado" });
-					}}
-					className="w-full text-center text-sm text-parmelia-blue underline mt-5"
-				>
-					Copiar link de pago
-				</button>
 			</div>
 		);
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-8 w-full max-w-lg mx-auto">
-			{/* Header */}
-			<div className="flex items-center justify-between mb-6">
-				<button
-					onClick={() => navigate("/")}
-					className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
-				>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
-					</svg>
-					Volver
-				</button>
+		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+			<header className="flex items-center gap-3 mb-7">
+				<BackButton onClick={() => navigate("/")} />
+				<h1 className="text-[22px]">Cobrar</h1>
+			</header>
+
+			{/* Amount — big input */}
+			<div className="flex flex-col items-center mt-6 mb-8">
+				<input
+					type="number"
+					placeholder="0"
+					value={amount}
+					onChange={(e) => setAmount(e.target.value)}
+					step="any"
+					min="0"
+					inputMode="decimal"
+					autoFocus
+					className="w-full max-w-[260px] bg-transparent text-center font-display text-[60px] leading-none text-text placeholder:text-text-faint tabular"
+				/>
+				<div className="seg-track mt-4">
+					{(["USDC", "ETH"] as const).map((c) => (
+						<button key={c} onClick={() => setCurrency(c)} data-active={currency === c} className="seg-item">
+							{c === "USDC" ? "USDC" : symbol}
+						</button>
+					))}
+				</div>
+				<p className="text-[12px] text-text-faint mt-4">
+					Deja el monto en 0 para un cobro de monto abierto.
+				</p>
 			</div>
 
-			{/* Form card */}
-			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-6">
-				<div className="mb-5">
-					<label className="text-sm text-muted mb-2 block">Red activa</label>
-					<div className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm">
-						{activeNetwork.name}
-					</div>
-					<p className="text-xs text-muted mt-2 leading-relaxed">
-						Por ahora cada link usa una sola red activa. El selector multi-chain
-						llegará después del MVP.
-					</p>
-				</div>
-
-				<div className="mb-5">
-					<label className="text-sm text-muted mb-2 block">Moneda</label>
-					<select
-						value={currency}
-						onChange={(e) => setCurrency(e.target.value)}
-						className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
-					>
-						<option value="USDC">USDC</option>
-						<option value="ETH">{activeNetwork.nativeTokenSymbol}</option>
-					</select>
-				</div>
-
-				<div className="mb-5">
-					<label className="text-sm text-muted mb-2 block">Monto</label>
-					<input
-						type="number"
-						placeholder="0.00"
-						value={amount}
-						onChange={(e) => setAmount(e.target.value)}
-						step="any"
-						min="0"
-						inputMode="decimal"
-						className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm"
-					/>
-				</div>
-
-				<div>
-					<label className="text-sm text-muted mb-2 block">Referencia</label>
-					<textarea
-						placeholder=""
-						value={reference}
-						onChange={(e) => setReference(e.target.value)}
-						maxLength={200}
-						rows={3}
-						className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm resize-none"
-					/>
-				</div>
+			{/* Reference */}
+			<div className="bg-surface border border-border rounded-[18px] p-5 mb-6 shadow-e1">
+				<label className="text-[13px] text-text-muted mb-2 block">Referencia (opcional)</label>
+				<textarea
+					placeholder="¿Por qué cobras? Ej: Diseño de logo"
+					value={reference}
+					onChange={(e) => setReference(e.target.value)}
+					maxLength={200}
+					rows={2}
+					className="w-full bg-bg border border-border rounded-[12px] px-3.5 py-3 text-[14px] text-text placeholder:text-text-faint resize-none focus:border-border-strong transition-colors"
+				/>
 			</div>
 
-			{/* Cobrar button */}
-			<div className="flex justify-center">
-				<button
-					onClick={handleCreate}
-					disabled={loading}
-					className="bg-parmelia-pink text-black px-12 py-3 rounded-full text-sm font-medium disabled:opacity-50 transition-opacity"
-				>
-					{loading ? "Creando..." : "Cobrar"}
-				</button>
-			</div>
+			<button onClick={handleCreate} disabled={loading} className="btn btn-primary btn-block">
+				{loading ? "Creando…" : "Crear link de cobro"}
+			</button>
 		</div>
 	);
 }

@@ -1,30 +1,119 @@
 @import "tailwindcss";
 
 @theme {
-  --color-parmelia-blue: #A7D4DE;
-  --color-parmelia-pink: #DEA6BC;
-  --color-parmelia-gold: #DED9A6;
-  --color-surface: #1a1a1a;
-  --color-surface-2: #2a2a2a;
-  --color-muted: #888;
-  --font-family-brand: "Shippori Antique", system-ui, sans-serif;
+  /* ===== Brand accents — signature, constant ===== */
+  --color-sky: #a7d4de;
+  --color-pink: #dea6bc;
+  --color-cream: #ded9a6;
+
+  /* Luminous variants — accent text / stroke / gradient on DARK surfaces */
+  --color-glow-sky: #9ce3f4;
+  --color-glow-pink: #f4a9cf;
+  --color-glow-gold: #efe08c;
+
+  /* Destructive (sign out, remove) */
+  --color-danger: #f0524b;
+
+  /* ===== Dark premium surface system ===== */
+  --color-bg: #0a0a0b;
+  --color-bg-2: #101117;
+  --color-surface: #141417;
+  --color-surface-2: #1a1a1e;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Text ramp */
+  --color-text: #f5f5f3;
+  --color-text-muted: rgba(245, 245, 243, 0.64);
+  --color-text-faint: rgba(245, 245, 243, 0.44);
+
+  /* Legacy aliases — keep utility classes resolving on screens not yet reworked */
+  --color-parmelia-blue: #a7d4de;
+  --color-parmelia-pink: #dea6bc;
+  --color-parmelia-gold: #ded9a6;
+  --color-background: #0a0a0b;
+  --color-muted: rgba(245, 245, 243, 0.64);
+
+  /* ===== Typography ===== */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
+
+  /* ===== Radii ===== */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  /* ===== Elevation ===== */
+  --shadow-e1: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-e2: 0 18px 50px rgba(0, 0, 0, 0.35);
+  --shadow-e3: 0 30px 90px rgba(0, 0, 0, 0.5);
+  --shadow-glow-sky: 0 0 32px rgba(156, 227, 244, 0.22);
+  --shadow-glow-pink: 0 0 32px rgba(244, 169, 207, 0.2);
+
+  /* ===== Motion ===== */
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in: fade-in 0.4s ease both;
+  --animate-pulse-soft: pulse-soft 2.6s ease-in-out infinite;
+  --animate-float-glow: float-glow 5s ease-in-out infinite;
+  --animate-qr-scan: qr-scan 2.6s ease-in-out infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 0.82; }
+    50% { opacity: 1; }
+  }
+  @keyframes float-glow {
+    0%, 100% { transform: translateY(0); filter: drop-shadow(0 0 26px rgba(156, 227, 244, 0.22)); }
+    50% { transform: translateY(-6px); filter: drop-shadow(0 0 38px rgba(244, 169, 207, 0.26)); }
+  }
+  @keyframes qr-scan {
+    0%, 100% { top: 6%; opacity: 0; }
+    15%, 85% { opacity: 1; }
+    50% { top: 92%; }
+  }
 }
 
 html {
   color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   /* Sileo toast state colors — Parmelia palette */
-  --sileo-state-success: oklch(0.82 0.06 192);   /* parmelia-blue */
-  --sileo-state-error: oklch(0.76 0.08 350);     /* parmelia-pink */
-  --sileo-state-warning: oklch(0.86 0.07 90);    /* parmelia-gold */
-  --sileo-state-info: oklch(0.82 0.06 192);      /* parmelia-blue */
+  --sileo-state-success: oklch(0.82 0.06 192); /* sky */
+  --sileo-state-error: oklch(0.76 0.08 350);   /* pink */
+  --sileo-state-warning: oklch(0.86 0.07 90);  /* gold */
+  --sileo-state-info: oklch(0.82 0.06 192);    /* sky */
 }
 
 body {
-  font-family: var(--font-family-brand);
-  background: #000;
-  color: #fff;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
   min-height: 100dvh;
-  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  letter-spacing: -0.011em;
+}
+
+/* Brand ambience on a fixed, GPU-composited layer instead of
+   background-attachment: fixed — which forces a full repaint on every scroll
+   frame (mobile jank) and is effectively ignored on iOS Safari. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(820px circle at 8% -8%, rgba(167, 212, 222, 0.08), transparent 46%),
+    radial-gradient(820px circle at 92% 4%, rgba(222, 166, 188, 0.07), transparent 46%),
+    radial-gradient(720px circle at 50% 112%, rgba(222, 217, 166, 0.05), transparent 52%);
 }
 
 #root {
@@ -38,17 +127,211 @@ body {
   width: 100%;
 }
 
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
 button, input, select, textarea {
-  font-family: var(--font-family-brand);
+  font-family: inherit;
 }
 
 button {
   cursor: pointer;
   border: none;
   outline: none;
+  background: none;
+  color: inherit;
+}
+
+input, select, textarea {
+  outline: none;
 }
 
 a {
-  color: var(--color-parmelia-blue);
+  color: inherit;
   text-decoration: none;
+}
+
+::selection {
+  background: rgba(167, 212, 222, 0.28);
+  color: #fff;
+}
+
+/* Remove the native number-input spinner (the stepper arrows on the right) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ===== Brand helpers ===== */
+
+/* Tabular figures for amounts/balances/lists */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Segmented control — a clearly "selected" pill on a track */
+.seg-track {
+  display: inline-flex;
+  padding: 4px;
+  gap: 2px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+}
+.seg-item {
+  padding: 7px 18px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  transition: background-color 150ms ease, color 150ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.seg-item:hover {
+  color: var(--color-text);
+}
+.seg-item[data-active="true"] {
+  background: rgba(156, 227, 244, 0.18);
+  color: var(--color-glow-sky);
+  font-weight: 600;
+}
+
+/* Full-width segmented control (e.g. Wallet / Usuario) */
+.seg-track-block {
+  display: flex;
+  width: 100%;
+}
+.seg-track-block .seg-item {
+  flex: 1;
+}
+
+/* ===== Buttons (guide §7) ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 24px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease,
+    border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+.btn:active {
+  transform: scale(0.985);
+}
+.btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.btn-block {
+  width: 100%;
+}
+.btn-sm {
+  height: 44px;
+  font-size: 14px;
+  padding: 0 20px;
+}
+
+/* Primary — light pill */
+.btn-primary {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+.btn-primary:hover {
+  transform: translateY(-1px);
+}
+
+/* Gradient CTA — surface fill + brand gradient border (one protagonist per screen) */
+.btn-gradient {
+  color: var(--color-text);
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+    linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold)) border-box;
+}
+.btn-gradient:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-glow-sky);
+}
+
+/* Ghost — simple bordered */
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+}
+.btn-ghost:hover {
+  background: var(--color-surface-2);
+}
+
+/* Text — tertiary action */
+.btn-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 12px;
+  transition: color 0.15s ease;
+}
+.btn-text:hover {
+  color: var(--color-text);
+}
+
+/* Brand gradient on text — one key element per screen */
+.text-brand-gradient {
+  background: linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Hairline gradient border (CTA / receipt frame) */
+.border-brand-gradient {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+    linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold)) border-box;
+}
+
+/* ===== Cross-page transitions (View Transitions API) =====
+   Enabled per-navigation via useViewTransitionNavigate. A short opacity
+   cross-fade that layers cleanly over each page's own entrance animation and
+   never fights a transform. Unsupported browsers navigate instantly. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.22s;
+  animation-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  /* ::view-transition pseudo-elements aren't matched by the * selector above. */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
 }

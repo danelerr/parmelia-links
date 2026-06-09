@@ -86,7 +86,17 @@ function App() {
 		);
 	}
 
+	const splash = (
+		<div className="flex items-center justify-center min-h-dvh">
+			<Logo className="w-20 animate-pulse" />
+		</div>
+	);
+
 	function renderProtectedRoute(content: ReactNode) {
+		if (loading) {
+			return renderAccountState();
+		}
+
 		if (!user) {
 			return <Navigate to="/login" />;
 		}
@@ -103,6 +113,10 @@ function App() {
 	}
 
 	function renderOnboardingRoute() {
+		if (loading) {
+			return splash;
+		}
+
 		if (!user) {
 			return <Navigate to="/login" />;
 		}
@@ -118,12 +132,11 @@ function App() {
 		return renderAccountState();
 	}
 
-	if (loading) {
-		return (
-			<div className="flex items-center justify-center min-h-dvh">
-				<Logo className="w-20 animate-pulse" />
-			</div>
-		);
+	function renderLoginRoute() {
+		if (loading) {
+			return splash;
+		}
+		return user ? <Navigate to="/" /> : <Login />;
 	}
 
 	return (
@@ -150,7 +163,7 @@ function App() {
 				}
 			>
 				<Routes>
-					<Route path="/login" element={user ? <Navigate to="/" /> : <Login />} />
+					<Route path="/login" element={renderLoginRoute()} />
 					<Route path="/onboarding" element={renderOnboardingRoute()} />
 					<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
 					<Route

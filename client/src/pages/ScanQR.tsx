@@ -1,7 +1,6 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import jsQR from "jsqr";
-import Logo from "../components/Logo";
+import { useViewTransitionNavigate } from "../useNav";
 
 type FocusCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
@@ -198,7 +197,7 @@ function getNavigationTargetFromQr(rawValue: string) {
 }
 
 export default function ScanQR() {
-  const navigate = useNavigate();
+  const navigate = useViewTransitionNavigate();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -656,51 +655,47 @@ export default function ScanQR() {
   }, [getOrCreateBarcodeDetector, handleQRResult, scannerVersion, stopCamera]);
 
   return (
-    <div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-8 w-full max-w-lg mx-auto">
-      <button
-        onClick={() => navigate(-1)}
-        className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors self-start mb-6"
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+    <div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+      <header className="flex items-center gap-3 mb-7">
+        <button
+          onClick={() => navigate(-1)}
+          aria-label="Volver"
+          className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
         >
-          <path d="M19 12H5" />
-          <path d="M12 19l-7-7 7-7" />
-        </svg>
-        Volver
-      </button>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5" />
+            <path d="M12 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <h1 className="text-[22px]">Escanear QR</h1>
+      </header>
 
-      <div className="bg-surface rounded-2xl p-5 sm:p-6 flex-1 flex flex-col items-center">
-        <Logo className="w-12 mb-5" />
-
+      <div className="flex-1 flex flex-col items-center">
         {cameraError ? (
-          <div className="w-full max-w-sm aspect-square rounded-xl overflow-hidden border-2 border-dashed border-parmelia-pink/60 mb-5 bg-black/30 flex items-center justify-center px-6">
-            <p className="text-parmelia-pink text-base text-center">
-              {cameraError}
-            </p>
+          <div className="w-full max-w-[340px] aspect-square rounded-[22px] overflow-hidden border border-glow-pink/40 mb-6 bg-surface flex items-center justify-center px-8 text-center">
+            <p className="text-glow-pink text-[15px]">{cameraError}</p>
           </div>
         ) : (
-          <div className="w-full max-w-sm aspect-square rounded-xl overflow-hidden border-2 border-parmelia-blue mb-5 relative bg-black">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
+          <div className="w-full max-w-[340px] aspect-square rounded-[22px] overflow-hidden mb-6 relative bg-black shadow-e2">
+            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+
+            {/* Brand scan frame */}
+            <div className="pointer-events-none absolute inset-0">
+              <span className="absolute top-4 left-4 w-7 h-7 border-t-2 border-l-2 border-glow-sky rounded-tl-lg" />
+              <span className="absolute top-4 right-4 w-7 h-7 border-t-2 border-r-2 border-glow-sky rounded-tr-lg" />
+              <span className="absolute bottom-4 left-4 w-7 h-7 border-b-2 border-l-2 border-glow-sky rounded-bl-lg" />
+              <span className="absolute bottom-4 right-4 w-7 h-7 border-b-2 border-r-2 border-glow-sky rounded-br-lg" />
+              {!isImporting && (
+                <div
+                  className="absolute left-5 right-5 h-[2px] rounded-full animate-qr-scan"
+                  style={{ background: "linear-gradient(90deg, transparent, #f4a9cf, #9ce3f4, transparent)" }}
+                />
+              )}
+            </div>
 
             {isImporting && (
-              <div className="absolute inset-0 bg-black/70 flex items-center justify-center px-6">
-                <p className="text-sm text-white text-center">
-                  Analizando la imagen del QR...
-                </p>
+              <div className="absolute inset-0 bg-bg/75 backdrop-blur-sm flex items-center justify-center px-6">
+                <p className="text-[14px] text-text text-center">Analizando el QR…</p>
               </div>
             )}
           </div>
@@ -708,47 +703,33 @@ export default function ScanQR() {
 
         <canvas ref={canvasRef} className="hidden" />
 
-        <p
-          className={`text-sm text-center min-h-10 ${
-            cameraError || message ? "text-parmelia-pink" : "text-muted"
-          }`}
-        >
-          {message || "Escanea un QR de Parmelia"}
+        <p className={`text-[14px] text-center min-h-10 ${cameraError || message ? "text-glow-pink" : "text-text-muted"}`}>
+          {message || "Apunta la cámara a un QR de Parmelia"}
         </p>
 
         {cameraError && (
-          <button
-            onClick={restartScanner}
-            className="mt-3 text-parmelia-blue text-sm underline underline-offset-4"
-          >
+          <button onClick={restartScanner} className="mt-1 text-sky text-[14px]">
             Reintentar cámara
           </button>
         )}
 
-        <div className="mt-6 w-full max-w-sm grid grid-cols-2 gap-3">
-          <button
-            onClick={() => navigate("/pagar")}
-            className="bg-parmelia-blue text-black py-3 px-4 rounded-full text-sm font-medium leading-tight transition-opacity"
-          >
-            Ingresar datos manualmente
-          </button>
-
+        <div className="mt-7 w-full max-w-[340px] flex flex-col gap-3">
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isImporting}
-            className="bg-parmelia-gold text-black py-3 px-4 rounded-full text-sm font-medium transition-opacity disabled:opacity-60"
+            className="btn btn-primary btn-block"
           >
-            {isImporting ? "Analizando..." : "Importar QR"}
+            {isImporting ? "Analizando…" : "Importar QR desde una imagen"}
+          </button>
+          <button
+            onClick={() => navigate("/pagar")}
+            className="btn btn-ghost btn-block"
+          >
+            Ingresar datos manualmente
           </button>
         </div>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleImportFile}
-        />
+        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImportFile} />
       </div>
     </div>
   );

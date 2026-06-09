@@ -1,16 +1,11 @@
-import { useEffect, useState } from "react";
-import { hexToBytes } from "viem";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
 import { sileo } from "sileo";
-import type { User } from "../firebase";
+import { type User, logOut } from "../firebase";
 import { fetchWithAuth } from "../authFetch";
-import {
-	createPasskey,
-	listRememberedPasskeys,
-	signWithPasskey,
-	type RememberedPasskey,
-} from "../webauthn";
+import { createPasskey, signWithPasskey } from "../webauthn";
 import { activeNetwork } from "../network";
+import { hexToBytes } from "../hex";
+import { useViewTransitionNavigate } from "../useNav";
 
 const SERVER_URL =
 	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
@@ -35,8 +30,74 @@ function isZeroAddress(address: string | null | undefined) {
 	return !address || /^0x0{40}$/i.test(address);
 }
 
+function shortAddress(address: string) {
+	return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+/** A titled content block with a colored accent badge. */
+function Section({
+	title,
+	icon,
+	accent,
+	children,
+}: {
+	title?: string;
+	icon?: ReactNode;
+	accent?: string;
+	children: ReactNode;
+}) {
+	return (
+		<div className="mb-6">
+			{title && (
+				<div className="flex items-center gap-2.5 px-1 mb-2.5">
+					{icon && (
+						<span
+							className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
+							style={{ background: accent ? `${accent}22` : undefined, color: accent }}
+						>
+							{icon}
+						</span>
+					)}
+					<h2 className="text-text-faint text-[12px] font-semibold uppercase tracking-[0.08em]">
+						{title}
+					</h2>
+				</div>
+			)}
+			<div className="bg-surface border border-border rounded-[20px] overflow-hidden shadow-e1">
+				{children}
+			</div>
+		</div>
+	);
+}
+
+const ICON = {
+	user: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<circle cx="12" cy="8" r="4" />
+			<path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" />
+		</svg>
+	),
+	card: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<rect x="3" y="6" width="18" height="13" rx="2" />
+			<path d="M3 10h18" />
+		</svg>
+	),
+	shield: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M12 2 4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5l-8-3Z" />
+		</svg>
+	),
+	coin: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<circle cx="12" cy="12" r="9" />
+			<path d="M12 7v10M9.5 9.5a2.5 2 0 0 1 5 0c0 2-5 1-5 3a2.5 2 0 0 0 5 0" />
+		</svg>
+	),
+};
+
 export default function Settings({ user }: { user: User }) {
-	const navigate = useNavigate();
+	const navigate = useViewTransitionNavigate();
 	const [username, setUsername] = useState("");
 	const [currentUsername, setCurrentUsername] = useState<string | null>(null);
 	const [walletAddress, setWalletAddress] = useState<string | null>(null);
@@ -44,9 +105,6 @@ export default function Settings({ user }: { user: User }) {
 	const [copied, setCopied] = useState(false);
 	const [passkeyStatus, setPasskeyStatus] =
 		useState<PasskeyStatusResponse | null>(null);
-	const [rememberedPasskeys, setRememberedPasskeys] = useState<
-		RememberedPasskey[]
-	>([]);
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [faucetClaimed, setFaucetClaimed] = useState<boolean | null>(null);
 	const [claimingFaucet, setClaimingFaucet] = useState(false);
@@ -72,9 +130,7 @@ export default function Settings({ user }: { user: User }) {
 		}
 	}
 
-	async function fetchFaucetStatusData(): Promise<{
-		funded: boolean;
-	} | null> {
+	async function fetchFaucetStatusData(): Promise<{ funded: boolean } | null> {
 		try {
 			const res = await fetchWithAuth(user, `${SERVER_URL}/account/fund`);
 			if (!res.ok) return null;
@@ -96,37 +152,29 @@ export default function Settings({ user }: { user: User }) {
 		setWalletAddress(profileData?.walletAddress || null);
 		setPasskeyStatus(passkeyData);
 		setFaucetClaimed(faucetData?.funded ?? null);
-		setRememberedPasskeys(listRememberedPasskeys());
 	}
 
 	useEffect(() => {
 		let cancelled = false;
-
 		async function loadSettings() {
 			setInitialLoading(true);
 			await refreshSettings();
-			if (!cancelled) {
-				setInitialLoading(false);
-			}
+			if (!cancelled) setInitialLoading(false);
 		}
-
 		void loadSettings();
-
 		return () => {
 			cancelled = true;
 		};
 	}, [user]);
 
 	async function handleSaveUsername() {
-		if (!username.trim()) return;
+		if (!username.trim() || username === currentUsername) return;
 		setSaving(true);
 		try {
 			const normalizedUsername = username.trim().toLowerCase();
 			const res = await fetchWithAuth(user, `${SERVER_URL}/user/username`, {
 				method: "PUT",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ username: normalizedUsername }),
 			});
 			if (!res.ok) {
@@ -134,11 +182,11 @@ export default function Settings({ user }: { user: User }) {
 				throw new Error(data.error || "Error al guardar");
 			}
 			setCurrentUsername(normalizedUsername);
-			sileo.success({ title: "Guardado" });
+			sileo.success({ title: "Usuario guardado" });
 		} catch (err) {
 			sileo.error({
-				title: "Error",
-				description: err instanceof Error ? err.message : "Error",
+				title: "No se pudo guardar",
+				description: err instanceof Error ? err.message : "Intenta de nuevo",
 			});
 		} finally {
 			setSaving(false);
@@ -159,15 +207,13 @@ export default function Settings({ user }: { user: User }) {
 			if (!intentRes.ok) {
 				const data = await intentRes
 					.json()
-					.catch(() => ({ error: "Error al preparar la nueva passkey" }));
-				throw new Error(data.error || "Error al preparar la nueva passkey");
+					.catch(() => ({ error: "Error al preparar la nueva llave" }));
+				throw new Error(data.error || "Error al preparar la nueva llave");
 			}
 
-			const intentData = (await intentRes.json()) as {
-				addSignerCalldata?: string;
-			};
+			const intentData = (await intentRes.json()) as { addSignerCalldata?: string };
 			if (!intentData.addSignerCalldata) {
-				throw new Error("No recibimos el calldata para agregar la passkey.");
+				throw new Error("No recibimos los datos para agregar la llave.");
 			}
 
 			const prepareRes = await fetchWithAuth(
@@ -192,7 +238,7 @@ export default function Settings({ user }: { user: User }) {
 			};
 
 			const assertion = await signWithPasskey(
-				hexToBytes(userOpHash as `0x${string}`),
+				hexToBytes(userOpHash),
 				credentialId,
 			);
 			const submitRes = await fetchWithAuth(user, `${SERVER_URL}/pay/submit`, {
@@ -212,23 +258,19 @@ export default function Settings({ user }: { user: User }) {
 			if (!submitRes.ok) {
 				const data = await submitRes
 					.json()
-					.catch(() => ({ error: "Error al activar la nueva passkey" }));
-				throw new Error(data.error || "Error al activar la nueva passkey");
+					.catch(() => ({ error: "Error al activar la nueva llave" }));
+				throw new Error(data.error || "Error al activar la nueva llave");
 			}
 
 			await refreshSettings();
 			sileo.success({
-				title: "Passkey agregada",
-				description:
-					"La nueva passkey ya firma en la misma wallet. La anterior sigue activa por ahora.",
+				title: "Llave agregada",
+				description: "Ya puedes confirmar pagos desde este dispositivo.",
 			});
 		} catch (err) {
 			sileo.error({
-				title: "Error",
-				description:
-					err instanceof Error
-						? err.message
-						: "Error al actualizar passkey",
+				title: "No se pudo agregar la llave",
+				description: err instanceof Error ? err.message : "Intenta de nuevo",
 			});
 		} finally {
 			setUpdatingPasskey(false);
@@ -245,24 +287,20 @@ export default function Settings({ user }: { user: User }) {
 			if (!res.ok) {
 				if (data.alreadyFunded) {
 					setFaucetClaimed(true);
-					sileo.warning({
-						title: "Ya canjeado",
-						description: "Ya recibiste tus tokens de prueba",
-					});
+					sileo.warning({ title: "Ya recibiste tus dólares de prueba" });
 					return;
 				}
-				throw new Error(data.error || "Error al obtener tokens");
+				throw new Error(data.error || "Error al obtener dólares de prueba");
 			}
 			setFaucetClaimed(true);
 			sileo.success({
-				title: "Tokens recibidos",
-				description: "Ya puedes probar pagos y links",
+				title: "¡Listo!",
+				description: "Recibiste 5 dólares digitales de prueba.",
 			});
 		} catch (err) {
 			sileo.error({
-				title: "Error",
-				description:
-					err instanceof Error ? err.message : "Error al obtener tokens",
+				title: "No se pudo completar",
+				description: err instanceof Error ? err.message : "Intenta de nuevo",
 			});
 		} finally {
 			setClaimingFaucet(false);
@@ -270,269 +308,243 @@ export default function Settings({ user }: { user: User }) {
 	}
 
 	const recoveryDateLabel = passkeyStatus?.recoveryExecutableAfter
-		? new Date(passkeyStatus.recoveryExecutableAfter).toLocaleString()
+		? new Date(passkeyStatus.recoveryExecutableAfter).toLocaleDateString("es", {
+				day: "numeric",
+				month: "long",
+		  })
 		: null;
-
-	if (initialLoading) {
-		return (
-			<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
-				<div className="flex items-center justify-between mb-6">
-					<button
-						onClick={() => navigate("/")}
-						className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
-					>
-						<svg
-							width="16"
-							height="16"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="2"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-						>
-							<path d="M19 12H5" />
-							<path d="M12 19l-7-7 7-7" />
-						</svg>
-						Volver
-					</button>
-				</div>
-
-				<h2 className="text-2xl mb-8">Configuración</h2>
-
-				<div className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col items-center justify-center gap-4">
-					<div className="w-8 h-8 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
-					<p className="text-sm text-muted text-center">
-						Cargando configuración...
-					</p>
-				</div>
-			</div>
-		);
-	}
+	const keyCount = passkeyStatus?.signerCount || 1;
+	const recoveryOn = !isZeroAddress(passkeyStatus?.guardian);
+	const usernameChanged = !!username.trim() && username !== currentUsername;
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
-			<div className="flex items-center justify-between mb-6">
+		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto">
+			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/")}
-					className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
+					aria-label="Volver"
+					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
-					<svg
-						width="16"
-						height="16"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						strokeWidth="2"
-						strokeLinecap="round"
-						strokeLinejoin="round"
-					>
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 						<path d="M19 12H5" />
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
-					Volver
 				</button>
-			</div>
+				<h1 className="text-[26px]">Ajustes</h1>
+			</header>
 
-			<h2 className="text-2xl mb-8">Configuración</h2>
-
-			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4 flex items-center gap-4">
-				{user.photoURL ? (
-					<img
-						src={user.photoURL}
-						alt=""
-						referrerPolicy="no-referrer"
-						className="w-14 h-14 rounded-full object-cover"
-					/>
-				) : (
-					<div className="w-14 h-14 rounded-full bg-parmelia-blue/20 flex items-center justify-center text-xl font-bold text-parmelia-blue">
-						{(user.displayName || user.email || "?")[0].toUpperCase()}
-					</div>
-				)}
-				<div className="min-w-0">
-					{user.displayName && (
-						<p className="text-sm font-medium truncate">{user.displayName}</p>
-					)}
-					{user.email && (
-						<p className="text-xs text-muted truncate">{user.email}</p>
-					)}
+			{initialLoading ? (
+				<div className="flex-1 flex flex-col items-center justify-center gap-4 text-center">
+					<div className="w-8 h-8 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
+					<p className="text-sm text-text-muted">Cargando tus ajustes…</p>
 				</div>
-			</div>
-
-			<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-				<label className="text-sm text-muted mb-2 block">Nombre de usuario</label>
-				{currentUsername && (
-					<p className="text-xs text-muted mb-3">
-						{new URL(APP_URL).host}/{currentUsername}
-					</p>
-				)}
-				<input
-					type="text"
-					placeholder="ej: daniel"
-					value={username}
-					onChange={(e) =>
-						setUsername(
-							e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase(),
-						)
-					}
-					maxLength={30}
-					className="w-full bg-white/90 text-black rounded-xl px-4 py-3 text-sm mb-4"
-				/>
-				<button
-					onClick={handleSaveUsername}
-					disabled={saving}
-					className="bg-parmelia-blue text-black px-8 py-2.5 rounded-full text-sm font-medium disabled:opacity-50 transition-opacity"
-				>
-					{saving ? "Guardando..." : "Guardar"}
-				</button>
-			</div>
-
-			{walletAddress && (
-				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<div className="flex items-center justify-between mb-2">
-						<label className="text-sm text-muted">Wallet</label>
-						<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/8 text-white/70">{activeNetwork.name}</span>
-					</div>
-					<p className="text-xs text-muted font-mono break-all leading-relaxed mb-3">
-						{walletAddress}
-					</p>
-					<div className="flex gap-2">
-						<button
-							onClick={() => {
-								navigator.clipboard.writeText(walletAddress);
-								sileo.success({ title: "Dirección copiada" });
-								setCopied(true);
-								setTimeout(() => setCopied(false), 2000);
-							}}
-							className="bg-parmelia-gold text-black px-5 py-2 rounded-full text-xs font-medium"
-						>
-							{copied ? "Copiado" : "Copiar"}
-						</button>
-						<a
-							href={`${activeNetwork.explorerBaseUrl}/address/${walletAddress}`}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="bg-surface-2 text-white px-5 py-2 rounded-full text-xs font-medium hover:bg-white/15 transition-colors"
-						>
-							Ver en explorador ↗
-						</a>
-					</div>
-				</div>
-			)}
-
-			{walletAddress && (
-				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<div className="flex items-center justify-between mb-4">
-						<label className="text-sm text-muted">
-							Passkeys y seguridad
-						</label>
-					</div>
-
-					{!passkeyStatus ? (
-						<div className="flex items-center gap-2">
-							<div className="w-4 h-4 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
-							<p className="text-xs text-muted">Cargando...</p>
+			) : (
+				<div className="animate-fade-up">
+					{/* Profile */}
+					<div className="flex items-center gap-4 mb-6 px-1">
+						{user.photoURL ? (
+							<img
+								src={user.photoURL}
+								alt=""
+								referrerPolicy="no-referrer"
+								className="w-14 h-14 rounded-full object-cover"
+							/>
+						) : (
+							<div className="w-14 h-14 rounded-full bg-sky/15 flex items-center justify-center text-xl font-display text-sky">
+								{(user.displayName || user.email || "?")[0].toUpperCase()}
+							</div>
+						)}
+						<div className="min-w-0">
+							{user.displayName && (
+								<p className="font-display text-[18px] truncate">{user.displayName}</p>
+							)}
+							{user.email && (
+								<p className="text-[13px] text-text-muted truncate">{user.email}</p>
+							)}
 						</div>
-					) : (
-						<>
-							{/* Account summary — compact grid */}
-							<div className="grid grid-cols-3 gap-3 mb-4">
-								<div className="bg-surface-2 rounded-xl p-3 text-center">
-									<p className="text-lg font-mono text-parmelia-blue">{passkeyStatus.signerCount || 1}</p>
-									<p className="text-[10px] text-muted mt-0.5">Passkeys</p>
+					</div>
+
+					{/* Username */}
+					<Section title="Tu usuario" icon={ICON.user} accent="#f4a9cf">
+						<div className="p-5">
+							<p className="text-[13px] text-text-muted mb-3">
+								Recibe pagos con un nombre fácil de compartir.
+							</p>
+							<div className="flex items-center gap-2 bg-bg border border-border rounded-[14px] h-12 px-3.5 mb-3 focus-within:border-border-strong transition-colors">
+								<span className="text-text-faint text-[14px]">
+									{new URL(APP_URL).host}/
+								</span>
+								<input
+									type="text"
+									placeholder="tunombre"
+									value={username}
+									onChange={(e) =>
+										setUsername(e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase())
+									}
+									maxLength={30}
+									className="flex-1 bg-transparent text-text text-[14px] placeholder:text-text-faint min-w-0"
+								/>
+							</div>
+							<button
+								onClick={handleSaveUsername}
+								disabled={saving || !usernameChanged}
+								className="btn btn-primary btn-sm"
+							>
+								{saving ? "Guardando…" : "Guardar"}
+							</button>
+						</div>
+					</Section>
+
+					{/* Account / address */}
+					{walletAddress && (
+						<Section title="Tu cuenta" icon={ICON.card} accent="#efe08c">
+							<div className="p-5">
+								<div className="flex items-center justify-between mb-1.5">
+									<span className="text-[13px] text-text-muted">Dirección</span>
+									<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/[0.06] text-text-muted">
+										{activeNetwork.name}
+									</span>
 								</div>
-								<div className="bg-surface-2 rounded-xl p-3 text-center">
-									<p className="text-lg font-mono text-white">{passkeyStatus.threshold || 1}</p>
-									<p className="text-[10px] text-muted mt-0.5">Threshold</p>
-								</div>
-								<div className="bg-surface-2 rounded-xl p-3 text-center">
-									<p className="text-lg">
-										{isZeroAddress(passkeyStatus.guardian)
-											? "—"
-											: "✓"}
-									</p>
-									<p className="text-[10px] text-muted mt-0.5">Guardian</p>
+								<p className="font-mono text-[14px] text-text mb-4 tabular">
+									{shortAddress(walletAddress)}
+								</p>
+								<div className="flex gap-2.5">
+									<button
+										onClick={() => {
+											navigator.clipboard.writeText(walletAddress);
+											sileo.success({ title: "Dirección copiada" });
+											setCopied(true);
+											setTimeout(() => setCopied(false), 2000);
+										}}
+										className="btn btn-ghost btn-sm flex-1"
+									>
+										{copied ? "Copiado ✓" : "Copiar"}
+									</button>
+									<a
+										href={`${activeNetwork.explorerBaseUrl}/address/${walletAddress}`}
+										target="_blank"
+										rel="noopener noreferrer"
+										className="btn btn-ghost btn-sm flex-1"
+									>
+										Ver en explorador
+									</a>
 								</div>
 							</div>
+						</Section>
+					)}
 
-							{passkeyStatus.recoveryPending && (
-								<div className="bg-parmelia-pink/10 border border-parmelia-pink/20 rounded-xl p-3 mb-4">
-									<p className="text-xs text-parmelia-pink leading-relaxed">
-										⚠ Recuperación pendiente — ejecutable después de {recoveryDateLabel}.
-									</p>
+					{/* Security */}
+					{walletAddress && (
+						<Section title="Seguridad" icon={ICON.shield} accent="#9ce3f4">
+							<div className="p-5">
+								<div className="flex items-start gap-3 mb-4">
+									<div className="w-9 h-9 rounded-full bg-sky/15 flex items-center justify-center shrink-0 mt-0.5">
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<path d="M12 1a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-2V5a4 4 0 0 0-4-4Z" />
+											<circle cx="12" cy="14" r="1.5" fill="#9ce3f4" stroke="none" />
+										</svg>
+									</div>
+									<div>
+										<p className="font-display text-[16px] leading-tight">
+											Tu huella es tu llave
+										</p>
+										<p className="text-[13px] text-text-muted leading-relaxed mt-1">
+											Confirmas cada pago con tu huella o tu rostro. Nadie más
+											puede mover tu dinero.
+										</p>
+									</div>
 								</div>
-							)}
 
-							{rememberedPasskeys.length > 0 && (
-								<div className="flex flex-wrap gap-1.5 mb-4">
-									{rememberedPasskeys.map((passkey) => (
-										<span
-											key={passkey.credentialId}
-											className="text-[10px] px-2 py-0.5 rounded-full bg-white/8 text-white/70 font-mono"
+								<div className="flex gap-2.5 mb-4">
+									<div className="flex-1 bg-surface-2 rounded-[14px] px-3.5 py-3">
+										<p className="font-display text-[20px] text-sky tabular">{keyCount}</p>
+										<p className="text-[12px] text-text-muted mt-0.5">
+											{keyCount === 1 ? "Llave activa" : "Llaves activas"}
+										</p>
+									</div>
+									<div className="flex-1 bg-surface-2 rounded-[14px] px-3.5 py-3">
+										<p className="font-display text-[20px] text-cream">
+											{recoveryOn ? "Sí" : "—"}
+										</p>
+										<p className="text-[12px] text-text-muted mt-0.5">Recuperación</p>
+									</div>
+								</div>
+
+								{passkeyStatus?.recoveryPending && (
+									<div className="bg-glow-pink/10 border border-glow-pink/20 rounded-[14px] p-3.5 mb-4">
+										<p className="text-[13px] text-glow-pink leading-relaxed">
+											Hay una recuperación en proceso
+											{recoveryDateLabel ? ` — disponible el ${recoveryDateLabel}` : ""}.
+										</p>
+									</div>
+								)}
+
+								<button
+									onClick={handleAddPasskey}
+									disabled={updatingPasskey}
+									className="btn btn-ghost btn-block"
+								>
+									{updatingPasskey ? "Agregando…" : "Agregar otra llave (respaldo)"}
+								</button>
+								<p className="text-[12px] text-text-faint leading-relaxed mt-2.5 px-0.5">
+									Agrega la huella de otro dispositivo para no perder tu cuenta si
+									pierdes este.
+								</p>
+							</div>
+						</Section>
+					)}
+
+					{/* Test funds */}
+					{walletAddress && (
+						<Section title="Dólares de prueba" icon={ICON.coin} accent="#efe08c">
+							<div className="p-5">
+								{faucetClaimed === null ? (
+									<p className="text-[13px] text-text-muted">Cargando…</p>
+								) : faucetClaimed ? (
+									<>
+										<p className="text-[13px] text-text-muted leading-relaxed mb-3">
+											Ya recibiste tus dólares de prueba en esta cuenta.
+											{activeNetwork.faucetUrl
+												? " ¿Necesitas más? Usa el faucet externo."
+												: ""}
+										</p>
+										{activeNetwork.faucetUrl && (
+											<a
+												href={activeNetwork.faucetUrl}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="btn btn-ghost btn-sm"
+											>
+												Abrir {activeNetwork.faucetLabel}
+											</a>
+										)}
+									</>
+								) : (
+									<>
+										<p className="text-[13px] text-text-muted leading-relaxed mb-3">
+											Recibe 5 dólares digitales de prueba para empezar a cobrar y
+											pagar.
+										</p>
+										<button
+											onClick={handleClaimFaucet}
+											disabled={claimingFaucet}
+											className="btn btn-primary btn-sm"
 										>
-											...{passkey.credentialId.slice(-8)}
-										</span>
-									))}
-								</div>
-							)}
-
-							<button
-								onClick={handleAddPasskey}
-								disabled={updatingPasskey}
-								className="bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
-							>
-								{updatingPasskey ? "Agregando..." : "Agregar passkey"}
-							</button>
-						</>
+											{claimingFaucet ? "Enviando…" : "Obtener dólares de prueba"}
+										</button>
+									</>
+								)}
+							</div>
+						</Section>
 					)}
-				</div>
-			)}
 
-			{walletAddress && (
-				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<label className="text-sm text-muted mb-2 block">
-						Tokens de prueba
-					</label>
-					{faucetClaimed === null ? (
-						<p className="text-xs text-muted">Cargando...</p>
-					) : faucetClaimed ? (
-						<p className="text-xs text-muted">
-							Ya canjeaste tus tokens de prueba en esta cuenta
-						</p>
-					) : (
-						<>
-							<p className="text-xs text-muted mb-3">
-								Obtén tokens de prueba para seguir usando la app
-							</p>
-							<button
-								onClick={handleClaimFaucet}
-								disabled={claimingFaucet}
-								className="bg-parmelia-gold text-black px-6 py-2 rounded-full text-xs font-medium disabled:opacity-50 transition-opacity"
-							>
-								{claimingFaucet ? "Enviando..." : "Obtener tokens"}
-							</button>
-						</>
-					)}
-				</div>
-			)}
-
-			{walletAddress && activeNetwork.faucetUrl && (
-				<div className="bg-surface rounded-2xl p-5 sm:p-6 mb-4">
-					<label className="text-sm text-muted mb-2 block">
-						Más tokens de prueba
-					</label>
-					<p className="text-xs text-muted mb-3 leading-relaxed">
-						Si el faucet de {activeNetwork.name} está disponible, puedes abrirlo
-						y pegar tu wallet para seguir probando.
-					</p>
-					<a
-						href={activeNetwork.faucetUrl}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="inline-block text-black! bg-parmelia-blue px-6 py-2 rounded-full text-xs font-medium"
+					{/* Logout */}
+					<button
+						onClick={() => logOut()}
+						className="btn btn-block text-danger border border-danger/45 hover:bg-danger/10"
 					>
-						Abrir {activeNetwork.faucetLabel}
-					</a>
+						Cerrar sesión
+					</button>
 				</div>
 			)}
 		</div>

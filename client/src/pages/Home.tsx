@@ -1,11 +1,10 @@
-import { useNavigate } from "react-router-dom";
-import { logOut, type User } from "../firebase";
-import { useState, useRef } from "react";
+import { type User } from "../firebase";
+import { useMemo, useState, useRef } from "react";
 import useSWR from "swr";
-import { toPng } from "html-to-image";
 import { fetchWithAuth } from "../authFetch";
 import Logo from "../components/Logo";
 import { activeNetwork, getExplorerTxUrl } from "../network";
+import { useViewTransitionNavigate } from "../useNav";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
@@ -19,23 +18,39 @@ interface Transaction {
 	createdAt: string;
 }
 
+function formatUsd(value: string | null) {
+	if (value === null) return "0.00";
+	const n = Number(value);
+	if (!Number.isFinite(n)) return value;
+	return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatNative(value: string | null) {
+	if (value === null) return "0";
+	const n = Number(value);
+	if (!Number.isFinite(n)) return value;
+	return n.toLocaleString("en-US", { maximumFractionDigits: 5 });
+}
+
+function formatDate(iso: string) {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return "";
+	return d.toLocaleDateString("es", { day: "numeric", month: "short" });
+}
+
 export default function Home({ user }: { user: User }) {
-	const navigate = useNavigate();
-	const [showMenu, setShowMenu] = useState(false);
-	const [showQrMenu, setShowQrMenu] = useState(false);
+	const navigate = useViewTransitionNavigate();
 	const [copied, setCopied] = useState(false);
 	const [selectedCurrency, setSelectedCurrency] = useState<"USDC" | "ETH">("USDC");
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 	const txCardRef = useRef<HTMLDivElement>(null);
 
-	// Custom fetcher for SWR
 	const fetcher = async (url: string) => {
 		const res = await fetchWithAuth(user, url);
 		if (!res.ok) throw new Error("API error");
 		return res.json();
 	};
 
-	// SWR Hooks for Data Fetching
 	const { data: profile } = useSWR(`${SERVER_URL}/user/profile`, fetcher, {
 		revalidateOnFocus: true,
 		revalidateOnReconnect: true,
@@ -44,18 +59,19 @@ export default function Home({ user }: { user: User }) {
 	const { data: balance, isLoading: isBalanceLoading } = useSWR(
 		profile?.walletAddress ? `${SERVER_URL}/user/balance` : null,
 		fetcher,
-		{ refreshInterval: 10000, keepPreviousData: true }
+		{ refreshInterval: 10000, keepPreviousData: true },
 	);
 
 	const { data: txData, isLoading: isTxLoading } = useSWR(
 		profile?.walletAddress ? `${SERVER_URL}/user/transactions` : null,
 		fetcher,
-		{ refreshInterval: 15000, keepPreviousData: true }
+		{ refreshInterval: 15000, keepPreviousData: true },
 	);
 
-	// Parse Transactions
-	let transactions: Transaction[] = [];
-	if (txData) {
+	// Derived from polled data — memoize so the two maps + sort don't re-run on
+	// every render (balance/tx poll on intervals, plus local UI state changes).
+	const transactions: Transaction[] = useMemo(() => {
+		if (!txData) return [];
 		const sent = (txData.sent || []).map((t: any) => ({
 			type: "sent" as const,
 			txHash: t.txHash,
@@ -72,15 +88,16 @@ export default function Home({ user }: { user: User }) {
 			reference: t.reference,
 			createdAt: t.createdAt,
 		}));
-		transactions = [...sent, ...received].sort(
-			(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+		return [...sent, ...received].sort(
+			(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
 		);
-	}
+	}, [txData]);
 
 	const walletAddress = profile?.walletAddress || null;
 	const username = profile?.username || null;
 	const ethBalance = balance?.eth ?? null;
 	const usdcBalance = balance?.usdc ?? null;
+	const symbol = activeNetwork.nativeTokenSymbol;
 
 	function handleCopyAddress() {
 		if (!walletAddress) return;
@@ -89,265 +106,309 @@ export default function Home({ user }: { user: User }) {
 		setTimeout(() => setCopied(false), 2000);
 	}
 
+	const quickActions = [
+		{ label: "Cobrar", to: "/cobrar", accent: "#f4a9cf", icon: <IconReceive /> },
+		{ label: "Pagar", to: "/pagar", accent: "#9ce3f4", icon: <IconSend /> },
+		{ label: "Escanear", to: "/scan", accent: "#efe08c", icon: <IconScan /> },
+	];
+
 	return (
-		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-28 relative w-full max-w-lg mx-auto">
-			{/* Header */}
-			<div className="flex items-center justify-between mb-6">
-				<div className="flex items-center gap-2">
+		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto animate-fade-up">
+			{/* Top bar */}
+			<header className="flex items-center justify-between mb-7">
+				<div className="flex items-center gap-2.5">
 					<Logo className="w-7" />
-					<span className="text-xs text-muted">Parmelia ({activeNetwork.name})</span>
+					<div className="leading-tight">
+						<p className="font-display text-[15px]">Parmelia</p>
+						<p className="text-[12px] text-text-faint">
+							{username ? `@${username}` : activeNetwork.name}
+						</p>
+					</div>
 				</div>
 				<button
-					onClick={() => setShowMenu(!showMenu)}
-					className="w-10 h-10 rounded-full bg-parmelia-pink flex items-center justify-center overflow-hidden"
+					onClick={() => navigate("/settings")}
+					aria-label="Ajustes"
+					className="w-10 h-10 rounded-full overflow-hidden border border-border flex items-center justify-center bg-surface hover:border-border-strong transition-colors"
 				>
 					{user.photoURL ? (
 						<img src={user.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
 					) : (
-						<span className="text-black text-sm font-bold uppercase">
-							{username ? username[0] : "?"}
+						<span className="text-sm font-display text-sky uppercase">
+							{(username || user.displayName || "?")[0]}
 						</span>
 					)}
 				</button>
-			</div>
-
-			{/* Dropdown menu */}
-			{showMenu && (
-				<div className="absolute top-16 right-5 sm:right-8 bg-surface rounded-xl p-2 z-50 min-w-45 shadow-xl border border-surface-2">
-					<button
-						onClick={() => { setShowMenu(false); navigate("/settings"); }}
-						className="w-full text-left px-4 py-3 text-sm rounded-lg hover:bg-surface-2 text-white transition-colors"
-					>
-						Configuracion
-					</button>
-					{username && (
-						<button
-							onClick={() => { setShowMenu(false); }}
-							className="w-full text-left px-4 py-3 text-sm rounded-lg hover:bg-surface-2 text-muted transition-colors"
-						>
-							@{username}
-						</button>
-					)}
-					<div className="border-t border-surface-2 mx-2 my-1" />
-					<button
-						onClick={() => { setShowMenu(false); logOut(); }}
-						className="w-full text-left px-4 py-3 text-sm rounded-lg hover:bg-surface-2 text-parmelia-pink transition-colors"
-					>
-						Cerrar sesion
-					</button>
-				</div>
-			)}
+			</header>
 
 			{/* Balance card */}
-			<div className="bg-surface rounded-2xl p-6 sm:p-8 mb-5 relative overflow-hidden">
+			<div className="relative overflow-hidden bg-surface border border-border rounded-[22px] p-6 mb-4 shadow-e2">
+				<div
+					className="pointer-events-none absolute -top-16 -right-10 w-48 h-48 rounded-full opacity-[0.18] blur-2xl"
+					style={{ background: "radial-gradient(circle, #9ce3f4, transparent 70%)" }}
+				/>
 				{isBalanceLoading && !balance && (
 					<div className="absolute inset-0 bg-surface z-10 flex items-center justify-center">
-						<div className="w-6 h-6 border-2 border-parmelia-blue border-t-transparent rounded-full animate-spin"></div>
+						<div className="w-6 h-6 border-2 border-sky border-t-transparent rounded-full animate-spin" />
 					</div>
 				)}
 
-				{/* Currency selector */}
-				<div className="flex justify-center gap-2 mb-4">
-					<button
-						onClick={() => setSelectedCurrency("USDC")}
-						className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${selectedCurrency === "USDC"
-							? "bg-parmelia-blue text-black"
-							: "bg-surface-2 text-muted"
-							}`}
-					>
-						USDC
-					</button>
-					<button
-						onClick={() => setSelectedCurrency("ETH")}
-						className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${selectedCurrency === "ETH"
-							? "bg-parmelia-blue text-black"
-							: "bg-surface-2 text-muted"
-							}`}
-					>
-						{activeNetwork.nativeTokenSymbol}
-					</button>
+				{/* Currency segmented control */}
+				<div className="flex justify-center mb-5 relative z-1">
+					<div className="seg-track">
+						{(["USDC", "ETH"] as const).map((c) => (
+							<button
+								key={c}
+								onClick={() => setSelectedCurrency(c)}
+								data-active={selectedCurrency === c}
+								className="seg-item"
+							>
+								{c === "USDC" ? "USDC" : symbol}
+							</button>
+						))}
+					</div>
 				</div>
 
-				<div className="flex flex-col items-center mb-4">
+				<div className="flex flex-col items-center mb-5 relative z-1">
+					<p className="text-[13px] text-text-muted mb-1">Tu saldo</p>
 					{selectedCurrency === "USDC" ? (
-						<>
-							<span className="text-3xl sm:text-4xl font-mono mb-1">
-								{usdcBalance !== null ? `$${usdcBalance}` : "$0"}
-							</span>
-							<span className="text-xs text-muted">USDC</span>
-						</>
+						<p className="font-display text-[46px] leading-none tabular">
+							<span className="text-text-muted text-[28px] align-top mr-0.5">$</span>
+							{formatUsd(usdcBalance)}
+						</p>
 					) : (
-						<>
-							<span className="text-3xl sm:text-4xl font-mono mb-1">
-								{ethBalance !== null ? ethBalance : "0"}
-							</span>
-							<span className="text-xs text-muted">{activeNetwork.nativeTokenSymbol}</span>
-						</>
+						<p className="font-display text-[46px] leading-none tabular">
+							{formatNative(ethBalance)}
+							<span className="text-text-muted text-[20px] ml-2">{symbol}</span>
+						</p>
 					)}
 				</div>
 
 				<button
 					onClick={handleCopyAddress}
-					className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs text-muted hover:text-white hover:bg-surface-2 transition-colors"
+					className="mx-auto flex items-center gap-2 px-3.5 py-2 rounded-full text-[12px] text-text-faint hover:text-text-muted hover:bg-surface-2 transition-colors relative z-1"
 				>
-					<span className="font-mono truncate max-w-50">{walletAddress || "Cargando..."}</span>
-					<span className="text-xs">{copied ? "[copiado]" : "[copiar]"}</span>
+					<span className="font-mono">
+						{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : "Cargando…"}
+					</span>
+					<span>{copied ? "Copiado ✓" : "Copiar"}</span>
 				</button>
 			</div>
-			{/* Transactions */}
-			<div className="bg-surface rounded-2xl p-5 sm:p-6 flex-1 mb-5 relative min-h-[150px]">
-				<div className="flex items-center justify-between mb-3">
-					<h2 className="text-xs text-muted">Transacciones</h2>
-					{isTxLoading && txData && (
-						<span className="w-2 h-2 rounded-full bg-parmelia-blue animate-pulse"></span>
-					)}
-				</div>
 
+			{/* Quick actions */}
+			<div className="grid grid-cols-3 gap-3 mb-7">
+				{quickActions.map((a) => (
+					<button
+						key={a.label}
+						onClick={() => navigate(a.to)}
+						className="flex flex-col items-center gap-2.5 py-4 bg-surface border border-border rounded-[18px] hover:border-border-strong hover:-translate-y-0.5 transition-all duration-200"
+					>
+						<span
+							className="w-11 h-11 rounded-full flex items-center justify-center"
+							style={{ background: `${a.accent}26`, color: a.accent }}
+						>
+							{a.icon}
+						</span>
+						<span className="text-[13px] font-medium">{a.label}</span>
+					</button>
+				))}
+			</div>
+
+			{/* Activity */}
+			<div className="flex items-center justify-between mb-3 px-1">
+				<h2 className="font-display text-[18px]">Actividad</h2>
+				{isTxLoading && txData && (
+					<span className="w-2 h-2 rounded-full bg-sky animate-pulse" />
+				)}
+			</div>
+
+			<div className="flex-1">
 				{isTxLoading && !txData ? (
-					<div className="absolute inset-0 z-10 flex items-center justify-center">
-						<div className="w-5 h-5 border-2 border-surface-2 border-t-parmelia-blue rounded-full animate-spin"></div>
+					<div className="flex items-center justify-center py-16">
+						<div className="w-5 h-5 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
 					</div>
 				) : transactions.length === 0 ? (
-					<p className="text-muted text-sm text-center py-10">Sin transacciones</p>
+					<div className="flex flex-col items-center text-center py-14 px-6">
+						<Logo className="w-12 mb-5 opacity-40" />
+						<p className="text-[15px] text-text mb-1">Aún no hay movimientos</p>
+						<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
+							Crea tu primer link de cobro y compártelo para recibir tu primer pago.
+						</p>
+						<button
+							onClick={() => navigate("/cobrar")}
+							className="btn btn-primary btn-sm"
+						>
+							Crear un link de cobro
+						</button>
+					</div>
 				) : (
-					<div className="flex flex-col gap-4 items-center">
-						{transactions.map((tx, i) => (
-							<button
-								key={tx.txHash + i}
-								onClick={() => setSelectedTx(tx)}
-								className="flex items-center justify-between py-3 border-b border-surface-2 last:border-0 hover:bg-surface-2/50 -mx-2 px-2 rounded-lg transition-colors text-left w-full"
-							>
-								<div>
-									<p className="text-sm mb-0.5">
-										{tx.type === "sent" ? "Enviado" : (tx.reference || "Recibido")}
-									</p>
-									<p className="text-xs text-muted">
-										{tx.type === "sent" ? "-" : "+"}{tx.amount} {tx.currency}
-									</p>
-								</div>
-								<span className={`text-xs px-3 py-1.5 rounded-full ${tx.type === "sent"
-									? "bg-parmelia-pink/20 text-parmelia-pink"
-									: "bg-parmelia-blue/20 text-parmelia-blue"
-									}`}>
-									{tx.type === "sent" ? "Enviado" : "Recibido"}
-								</span>
-							</button>
-						))}
+					<div className="flex flex-col gap-1">
+						{transactions.map((tx, i) => {
+							const received = tx.type === "received";
+							return (
+								<button
+									key={tx.txHash + i}
+									onClick={() => setSelectedTx(tx)}
+									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
+								>
+									<span
+										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+											received ? "bg-sky/15 text-glow-sky" : "bg-surface-2 text-text-muted"
+										}`}
+									>
+										{received ? <IconReceive small /> : <IconSend small />}
+									</span>
+									<div className="min-w-0 flex-1">
+										<p className="text-[15px] truncate">
+											{received ? tx.reference || "Cobro recibido" : "Pago enviado"}
+										</p>
+										<p className="text-[12px] text-text-faint">{formatDate(tx.createdAt)}</p>
+									</div>
+									<span
+										className={`text-[15px] font-medium tabular shrink-0 ${
+											received ? "text-glow-sky" : "text-text"
+										}`}
+									>
+										{received ? "+" : "−"}
+										{tx.amount} {tx.currency}
+									</span>
+								</button>
+							);
+						})}
 					</div>
 				)}
 			</div>
 
-			{/* Transaction detail modal */}
+			{/* Receipt modal */}
 			{selectedTx && (
-				<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center px-5 flex-col gap-4" onClick={() => setSelectedTx(null)}>
-					<div ref={txCardRef} className="w-full max-w-sm flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
-						<div className="bg-surface rounded-2xl p-8 w-full flex flex-col items-center relative">
-							<Logo className="w-14 mb-6" />
-							<h2 className="text-3xl mb-4">
-								{selectedTx.type === "sent" ? "Pagaste" : "Recibiste"}
-							</h2>
-							<p className={`text-xl mb-3 ${selectedTx.type === "sent" ? "text-parmelia-pink" : "text-parmelia-blue"}`}>
-								{selectedTx.type === "sent" ? "-" : "+"}{selectedTx.amount} {selectedTx.currency}
-							</p>
-							{selectedTx.to && (
-								<p className="text-muted text-xs font-mono break-all text-center px-2 mb-3">
-									A {selectedTx.to.slice(0, 6)}...{selectedTx.to.slice(-4)}
-								</p>
-							)}
-							{selectedTx.reference && (
-								<p className="text-muted text-sm text-center mb-3">{selectedTx.reference}</p>
-							)}
-							<div className="w-14 h-14 rounded-full bg-muted/30 flex items-center justify-center mb-4">
-								<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-									<polyline points="20 6 9 17 4 12" />
-								</svg>
-							</div>
+				<div
+					className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center px-5 gap-4 animate-fade-in"
+					onClick={() => setSelectedTx(null)}
+				>
+					<div
+						ref={txCardRef}
+						className="relative overflow-hidden w-full max-w-sm bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div
+							className="absolute top-0 left-0 right-0 h-1"
+							style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
+						/>
+						<div
+							className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
+							style={{
+								background:
+									selectedTx.type === "received"
+										? "radial-gradient(circle,#9ce3f4,transparent 70%)"
+										: "radial-gradient(circle,#f4a9cf,transparent 70%)",
+							}}
+						/>
 
-							{selectedTx.txHash && (
-								<a
-									href={getExplorerTxUrl(selectedTx.txHash)}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="text-parmelia-blue text-sm underline mt-2 text-center"
-								>
-									Comprobante onchain ↗
-								</a>
-							)}
+						<div className="flex items-center gap-2 mb-6 relative z-1">
+							<Logo className="w-6" />
+							<span className="font-display text-[16px]">Parmelia</span>
 						</div>
+						<div
+							className="w-14 h-14 rounded-full flex items-center justify-center mb-5 relative z-1"
+							style={{
+								background: selectedTx.type === "received" ? "rgba(156,227,244,0.16)" : "rgba(245,245,243,0.08)",
+							}}
+						>
+							<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={selectedTx.type === "received" ? "#9ce3f4" : "#f5f5f3"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+								<polyline points="20 6 9 17 4 12" />
+							</svg>
+						</div>
+						<p className="text-[14px] text-text-muted mb-1 relative z-1">
+							{selectedTx.type === "sent" ? "Pagaste" : "Recibiste"}
+						</p>
+						<p className="font-display text-[40px] leading-none mb-4 tabular relative z-1">
+							{selectedTx.type === "sent" ? "−" : "+"}
+							{selectedTx.amount}
+							<span className="text-text-muted text-[20px] ml-1.5">{selectedTx.currency}</span>
+						</p>
+						{selectedTx.to && (
+							<p className="text-text-faint text-[12px] font-mono break-all text-center mb-1 relative z-1">
+								Para {selectedTx.to.slice(0, 6)}…{selectedTx.to.slice(-4)}
+							</p>
+						)}
+						{selectedTx.reference && (
+							<p className="text-text-muted text-[14px] text-center mb-1 relative z-1">{selectedTx.reference}</p>
+						)}
+						<p className="text-[12px] text-text-faint mt-2 relative z-1">parmelia.me</p>
+						{selectedTx.txHash && (
+							<a
+								href={getExplorerTxUrl(selectedTx.txHash)}
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-text-faint text-[12px] mt-2 relative z-1"
+							>
+								Ver comprobante en la red ↗
+							</a>
+						)}
 					</div>
 
-					<div className="flex gap-3 w-full max-w-sm px-4 mt-2" onClick={(e) => e.stopPropagation()}>
+					<div className="flex gap-3 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
 						<button
 							onClick={async () => {
 								if (!txCardRef.current) return;
 								try {
-									const dataUrl = await toPng(txCardRef.current, {
-										backgroundColor: '#000000',
+									const { toPng } = await import("html-to-image");
+										const dataUrl = await toPng(txCardRef.current, {
+										backgroundColor: "#0A0A0B",
 										width: txCardRef.current.offsetWidth + 64,
 										height: txCardRef.current.offsetHeight + 64,
-										style: {
-											flex: 'none',
-											padding: '32px',
-											margin: '0',
-											maxWidth: 'none'
-										},
-										pixelRatio: 2
+										style: { flex: "none", padding: "32px", margin: "0", maxWidth: "none" },
+										pixelRatio: 2,
 									});
 									const a = document.createElement("a");
-									a.download = `parmelia-tx-${selectedTx.amount}-${selectedTx.currency}.png`;
+									a.download = `parmelia-${selectedTx.amount}-${selectedTx.currency}.png`;
 									a.href = dataUrl;
 									a.click();
-								} catch { /* ignore */ }
+								} catch {
+									/* ignore */
+								}
 							}}
-							className="flex-1 bg-parmelia-blue text-black py-3 rounded-full text-sm font-medium"
+							className="btn btn-primary flex-1"
 						>
-							Descargar
+							Descargar comprobante
 						</button>
-						<button
-							onClick={() => setSelectedTx(null)}
-							className="flex-1 bg-surface-2 text-white py-3 rounded-full text-sm font-medium"
-						>
+						<button onClick={() => setSelectedTx(null)} className="btn btn-ghost">
 							Cerrar
 						</button>
 					</div>
 				</div>
 			)}
-
-			{/* QR Button bottom center */}
-			<div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
-				<button
-					onClick={() => setShowQrMenu(!showQrMenu)}
-					className="w-16 h-16 rounded-full bg-parmelia-gold flex items-center justify-center"
-				>
-					<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<rect x="2" y="2" width="8" height="8" rx="1" />
-						<rect x="14" y="2" width="8" height="8" rx="1" />
-						<rect x="2" y="14" width="8" height="8" rx="1" />
-						<rect x="14" y="14" width="4" height="4" rx="0.5" />
-						<path d="M22 14h-4v4" />
-						<path d="M18 22h4v-4" />
-					</svg>
-				</button>
-
-				{/* QR Menu popup */}
-				{showQrMenu && (
-					<div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-surface rounded-xl p-2 min-w-[160px] shadow-xl border border-surface-2">
-						<button
-							onClick={() => { setShowQrMenu(false); navigate("/cobrar"); }}
-							className="w-full text-left px-4 py-3 text-sm rounded-lg hover:bg-surface-2 text-white transition-colors"
-						>
-							Cobrar
-						</button>
-						<div className="border-t border-surface-2 mx-2 my-1" />
-						<button
-							onClick={() => { setShowQrMenu(false); navigate("/scan"); }}
-							className="w-full text-left px-4 py-3 text-sm rounded-lg hover:bg-surface-2 text-white transition-colors"
-						>
-							Pagar
-						</button>
-					</div>
-				)}
-			</div>
 		</div>
+	);
+}
+
+function IconReceive({ small }: { small?: boolean }) {
+	const s = small ? 18 : 22;
+	return (
+		<svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M12 5v14" />
+			<path d="m19 12-7 7-7-7" />
+		</svg>
+	);
+}
+
+function IconSend({ small }: { small?: boolean }) {
+	const s = small ? 18 : 22;
+	return (
+		<svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M12 19V5" />
+			<path d="m5 12 7-7 7 7" />
+		</svg>
+	);
+}
+
+function IconScan() {
+	return (
+		<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M3 7V5a2 2 0 0 1 2-2h2" />
+			<path d="M17 3h2a2 2 0 0 1 2 2v2" />
+			<path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+			<path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+			<path d="M3 12h18" />
+		</svg>
 	);
 }

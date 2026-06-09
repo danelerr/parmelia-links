@@ -1,30 +1,32 @@
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { useRef } from "react";
-import { toPng } from "html-to-image";
 import Logo from "../components/Logo";
 import { activeNetwork, getExplorerTxUrl } from "../network";
+import { useViewTransitionNavigate } from "../useNav";
 
 export default function PaymentStatus() {
 	const [searchParams] = useSearchParams();
-	const navigate = useNavigate();
+	const navigate = useViewTransitionNavigate();
 	const cardRef = useRef<HTMLDivElement>(null);
 	const txHash = searchParams.get("tx");
 	const amount = searchParams.get("amount");
 	const currency = searchParams.get("currency");
 	const to = searchParams.get("to");
 
+	const toLabel = to
+		? to.startsWith("0x")
+			? `${to.slice(0, 6)}…${to.slice(-4)}`
+			: `@${to}`
+		: null;
+
 	async function captureCard() {
 		if (!cardRef.current) return null;
+		const { toPng } = await import("html-to-image");
 		return toPng(cardRef.current, {
-			backgroundColor: '#000000',
+			backgroundColor: "#0A0A0B",
 			width: cardRef.current.offsetWidth + 64,
 			height: cardRef.current.offsetHeight + 64,
-			style: {
-				flex: 'none',
-				padding: '32px',
-				margin: '0',
-				maxWidth: 'none'
-			},
+			style: { flex: "none", padding: "32px", margin: "0", maxWidth: "none" },
 			pixelRatio: 2,
 		});
 	}
@@ -38,105 +40,96 @@ export default function PaymentStatus() {
 			a.href = dataUrl;
 			a.click();
 		} catch {
-			// ignore
+			/* ignore */
+		}
+	}
+
+	async function handleShare() {
+		try {
+			const dataUrl = await captureCard();
+			if (!dataUrl) return;
+			const res = await fetch(dataUrl);
+			const blob = await res.blob();
+			const file = new File([blob], `parmelia-pago-${amount}-${currency}.png`, { type: "image/png" });
+			if (navigator.share && navigator.canShare?.({ files: [file] })) {
+				await navigator.share({ title: "Pago Parmelia", text: `Pagué ${amount} ${currency}`, files: [file] });
+			} else if (navigator.share && txHash) {
+				await navigator.share({ title: "Pago Parmelia", text: `Pagué ${amount} ${currency}`, url: getExplorerTxUrl(txHash) });
+			}
+		} catch {
+			/* user cancelled or unsupported */
 		}
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 sm:px-8 pt-6 sm:pt-10 pb-12 w-full max-w-lg mx-auto">
-			{/* Header */}
-			<div className="flex items-center justify-between mb-8">
-				<button
-					onClick={() => navigate("/")}
-					className="flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors"
+		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+			<div className="flex-1 flex flex-col justify-center">
+				<div
+					ref={cardRef}
+					className="relative overflow-hidden bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e2"
 				>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
-					</svg>
-					Inicio
-				</button>
-				<div className="flex items-center gap-2">
-					<Logo className="w-7" />
-				</div>
-			</div>
+					<div
+						className="absolute top-0 left-0 right-0 h-1"
+						style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
+					/>
+					<div
+						className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
+						style={{ background: "radial-gradient(circle,#9ce3f4,transparent 70%)" }}
+					/>
 
-			{/* Success card container for download */}
-			<div ref={cardRef} className="flex-1 flex flex-col">
-				<div className="bg-surface rounded-2xl p-8 sm:p-10 flex-1 flex flex-col items-center justify-center relative">
-					<Logo className="w-16 mb-8" />
+					<div className="flex items-center gap-2 mb-6 relative z-1">
+						<Logo className="w-6" />
+						<span className="font-display text-[16px]">Parmelia</span>
+					</div>
 
-					<h2 className="text-4xl sm:text-5xl mb-4 text-center">Pagaste</h2>
-
-					{amount && (
-						<p className="text-xl mb-3 text-center">{amount} {currency}</p>
-					)}
-
-					<p className="text-xs text-muted text-center mb-4">
-						Red: {activeNetwork.name}
-					</p>
-
-					{to && (
-						<p className="text-muted text-sm mb-8 break-all text-center px-2 font-mono">A {to}</p>
-					)}
-
-					{/* Check icon */}
-					<div className="w-16 h-16 rounded-full bg-muted/30 flex items-center justify-center">
-						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+					{/* Success check */}
+					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky relative z-1">
+						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
 							<polyline points="20 6 9 17 4 12" />
 						</svg>
 					</div>
+
+					<p className="text-[15px] text-text-muted mb-1 relative z-1">¡Listo! Pagaste</p>
+					{amount && (
+						<p className="font-display text-[44px] leading-none mb-4 tabular relative z-1">
+							{amount}
+							<span className="text-text-muted text-[22px] ml-1.5">{currency}</span>
+						</p>
+					)}
+
+					{toLabel && (
+						<p className="text-text-faint text-[13px] mb-1 relative z-1">
+							Para <span className="text-text-muted">{toLabel}</span>
+						</p>
+					)}
+					<p className="text-[12px] text-text-faint relative z-1">
+						parmelia.me · Asegurado en {activeNetwork.name}
+					</p>
 
 					{txHash && (
 						<a
 							href={getExplorerTxUrl(txHash)}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-parmelia-blue text-sm underline mt-4 text-center"
+							className="text-text-faint text-[12px] mt-4 relative z-1"
 						>
-							Comprobante onchain ↗
+							Ver comprobante en la red ↗
 						</a>
 					)}
 				</div>
 			</div>
 
-			{/* Action buttons */}
 			<div className="flex gap-3 mt-6">
-				<button
-					onClick={handleDownload}
-					className="flex-1 bg-parmelia-blue text-black py-3 rounded-full text-sm font-medium"
-				>
-					Descargar
-				</button>
-				<button
-					onClick={async () => {
-						try {
-							const dataUrl = await captureCard();
-							if (!dataUrl) return;
-							const res = await fetch(dataUrl);
-							const blob = await res.blob();
-							const file = new File([blob], `parmelia-pago-${amount}-${currency}.png`, { type: "image/png" });
-							if (navigator.share && navigator.canShare?.({ files: [file] })) {
-								await navigator.share({
-									title: "Pago Parmelia",
-									text: `Pagué ${amount} ${currency}`,
-									files: [file],
-								});
-							} else if (navigator.share && txHash) {
-								await navigator.share({
-									title: "Pago Parmelia",
-									text: `Pagué ${amount} ${currency}`,
-									url: getExplorerTxUrl(txHash),
-								});
-							}
-						} catch {
-							// User cancelled or not supported
-						}
-					}}
-					className="flex-1 bg-parmelia-gold text-black py-3 rounded-full text-sm font-medium"
-				>
+				<button onClick={handleShare} className="btn btn-primary flex-1">
 					Compartir
 				</button>
+				<button onClick={handleDownload} className="btn btn-ghost">
+					Descargar
+				</button>
 			</div>
+			<button onClick={() => navigate("/")} className="btn-text w-full mt-3">
+				Volver al inicio
+			</button>
 		</div>
 	);
 }
