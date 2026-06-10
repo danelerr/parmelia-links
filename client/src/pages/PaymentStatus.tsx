@@ -1,8 +1,9 @@
 import { useSearchParams } from "react-router-dom";
 import { useRef } from "react";
 import Logo from "../components/Logo";
-import { activeNetwork, getExplorerTxUrl } from "../network";
-import { useViewTransitionNavigate } from "../useNav";
+import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
+import { useViewTransitionNavigate } from "../hooks/useNav";
+import { downloadCard, shareCard } from "../lib/exportCard";
 
 export default function PaymentStatus() {
 	const [searchParams] = useSearchParams();
@@ -19,50 +20,36 @@ export default function PaymentStatus() {
 			: `@${to}`
 		: null;
 
-	async function captureCard() {
-		if (!cardRef.current) return null;
-		const { toPng } = await import("html-to-image");
-		return toPng(cardRef.current, {
-			backgroundColor: "#0A0A0B",
-			width: cardRef.current.offsetWidth + 64,
-			height: cardRef.current.offsetHeight + 64,
-			style: { flex: "none", padding: "32px", margin: "0", maxWidth: "none" },
-			pixelRatio: 2,
-		});
-	}
-
 	async function handleDownload() {
 		try {
-			const dataUrl = await captureCard();
-			if (!dataUrl) return;
-			const a = document.createElement("a");
-			a.download = `parmelia-pago-${amount}-${currency}.png`;
-			a.href = dataUrl;
-			a.click();
+			await downloadCard(cardRef.current, `parmelia-pago-${amount}-${currency}.png`);
 		} catch {
 			/* ignore */
 		}
 	}
 
 	async function handleShare() {
-		try {
-			const dataUrl = await captureCard();
-			if (!dataUrl) return;
-			const res = await fetch(dataUrl);
-			const blob = await res.blob();
-			const file = new File([blob], `parmelia-pago-${amount}-${currency}.png`, { type: "image/png" });
-			if (navigator.share && navigator.canShare?.({ files: [file] })) {
-				await navigator.share({ title: "Pago Parmelia", text: `Pagué ${amount} ${currency}`, files: [file] });
-			} else if (navigator.share && txHash) {
-				await navigator.share({ title: "Pago Parmelia", text: `Pagué ${amount} ${currency}`, url: getExplorerTxUrl(txHash) });
-			}
-		} catch {
-			/* user cancelled or unsupported */
-		}
+		await shareCard(cardRef.current, {
+			filename: `parmelia-pago-${amount}-${currency}.png`,
+			text: `Pagué ${amount} ${currency} con Parmelia`,
+			url: txHash ? getExplorerTxUrl(txHash) : undefined,
+		});
 	}
 
 	return (
 		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+			<header className="flex items-center">
+				<button
+					onClick={() => navigate("/")}
+					aria-label="Volver al inicio"
+					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
+				>
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+						<path d="M19 12H5" />
+						<path d="M12 19l-7-7 7-7" />
+					</svg>
+				</button>
+			</header>
 			<div className="flex-1 flex flex-col justify-center">
 				<div
 					ref={cardRef}
@@ -127,9 +114,6 @@ export default function PaymentStatus() {
 					Descargar
 				</button>
 			</div>
-			<button onClick={() => navigate("/")} className="btn-text w-full mt-3">
-				Volver al inicio
-			</button>
 		</div>
 	);
 }

@@ -1,6 +1,6 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { useViewTransitionNavigate } from "../useNav";
+import { useViewTransitionNavigate } from "../hooks/useNav";
 
 type FocusCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];

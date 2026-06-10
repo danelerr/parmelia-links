@@ -1,11 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { sileo } from "sileo";
-import { type User, logOut } from "../firebase";
-import { fetchWithAuth } from "../authFetch";
-import { createPasskey, signWithPasskey } from "../webauthn";
-import { activeNetwork } from "../network";
-import { hexToBytes } from "../hex";
-import { useViewTransitionNavigate } from "../useNav";
+import { type User, logOut } from "../lib/firebase";
+import { fetchWithAuth } from "../lib/authFetch";
+import { createPasskey, signWithPasskey } from "../lib/webauthn";
+import { activeNetwork } from "../lib/activeNetwork";
+import { hexToBytes } from "../lib/hex";
+import { useViewTransitionNavigate } from "../hooks/useNav";
 
 const SERVER_URL =
 	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
@@ -17,10 +17,7 @@ interface ProfileResponse {
 }
 
 interface PasskeyStatusResponse {
-	hasStoredCredential: boolean;
-	hasWallet: boolean;
 	signerCount: number | null;
-	threshold: number | null;
 	guardian: string | null;
 	recoveryPending: boolean | null;
 	recoveryExecutableAfter: string | null;

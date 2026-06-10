@@ -2,7 +2,7 @@
 
 const PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
 
-export type RememberedPasskey = {
+type RememberedPasskey = {
 	credentialId: string;
 	qx: string;
 	qy: string;
@@ -79,7 +79,7 @@ function writeRememberedPasskeys(passkeys: Record<string, RememberedPasskey>) {
 	window.localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeys));
 }
 
-export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
+function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
 	const remembered = readRememberedPasskeys();
 	const existing = remembered[passkey.credentialId];
 	const now = new Date().toISOString();
@@ -94,12 +94,6 @@ export function rememberPasskey(passkey: { credentialId: string; qx: string; qy:
 
 	writeRememberedPasskeys(remembered);
 	return remembered[passkey.credentialId];
-}
-
-export function listRememberedPasskeys(): RememberedPasskey[] {
-	return Object.values(readRememberedPasskeys()).sort((a, b) =>
-		b.lastUsedAt.localeCompare(a.lastUsedAt),
-	);
 }
 
 function markPasskeyUsed(credentialId: string) {

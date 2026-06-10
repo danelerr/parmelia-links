@@ -1,8 +1,8 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sileo";
-import { onAuthChange, type User } from "./firebase";
-import { fetchWithAuth } from "./authFetch";
+import { onAuthChange, type User } from "./lib/firebase";
+import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.

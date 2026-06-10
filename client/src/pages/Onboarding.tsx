@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { sileo } from "sileo";
-import { useViewTransitionNavigate } from "../useNav";
-import { type User, logOut } from "../firebase";
-import { fetchWithAuth } from "../authFetch";
-import { createPasskey } from "../webauthn";
+import { useViewTransitionNavigate } from "../hooks/useNav";
+import { type User, logOut } from "../lib/firebase";
+import { fetchWithAuth } from "../lib/authFetch";
+import { createPasskey } from "../lib/webauthn";
 import Logo from "../components/Logo";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";

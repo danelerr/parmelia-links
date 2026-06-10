@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useParams } from "react-router-dom";
 import { sileo } from "sileo";
-import { signInWithGoogle, type User } from "../firebase";
+import { signInWithGoogle, type User } from "../lib/firebase";
 import Logo from "../components/Logo";
-import { fetchWithAuth } from "../authFetch";
-import { signWithPasskey } from "../webauthn";
-import { activeNetwork } from "../network";
-import { hexToBytes } from "../hex";
-import { useViewTransitionNavigate } from "../useNav";
+import { fetchWithAuth } from "../lib/authFetch";
+import { signWithPasskey } from "../lib/webauthn";
+import { activeNetwork } from "../lib/activeNetwork";
+import { hexToBytes } from "../lib/hex";
+import { useViewTransitionNavigate } from "../hooks/useNav";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";

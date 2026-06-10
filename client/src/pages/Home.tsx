@@ -1,12 +1,18 @@
-import { type User } from "../firebase";
+import { type User } from "../lib/firebase";
 import { useMemo, useState, useRef } from "react";
+import { createPortal } from "react-dom";
+import { sileo } from "sileo";
 import useSWR from "swr";
-import { fetchWithAuth } from "../authFetch";
+import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
-import { activeNetwork, getExplorerTxUrl } from "../network";
-import { useViewTransitionNavigate } from "../useNav";
+import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
+import { useViewTransitionNavigate } from "../hooks/useNav";
+import { downloadCard } from "../lib/exportCard";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
+const PAGE_SIZE = 12;
+
+type TxFilter = "all" | "received" | "sent";
 
 interface Transaction {
 	type: "sent" | "received";
@@ -43,6 +49,9 @@ export default function Home({ user }: { user: User }) {
 	const [copied, setCopied] = useState(false);
 	const [selectedCurrency, setSelectedCurrency] = useState<"USDC" | "ETH">("USDC");
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+	const [txFilter, setTxFilter] = useState<TxFilter>("all");
+	const [txQuery, setTxQuery] = useState("");
+	const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 	const txCardRef = useRef<HTMLDivElement>(null);
 
 	const fetcher = async (url: string) => {
@@ -92,6 +101,24 @@ export default function Home({ user }: { user: User }) {
 			(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
 		);
 	}, [txData]);
+
+	const filteredTx = useMemo(() => {
+		const q = txQuery.trim().toLowerCase();
+		return transactions.filter((t) => {
+			if (txFilter !== "all" && t.type !== txFilter) return false;
+			if (!q) return true;
+			// Match the label the row actually shows (incl. the fallback copy),
+			// so e.g. searching "pago" surfaces sent transactions too.
+			const label =
+				t.type === "received" ? t.reference || "Cobro recibido" : "Pago enviado";
+			return (
+				label.toLowerCase().includes(q) ||
+				(t.to || "").toLowerCase().includes(q) ||
+				t.amount.toLowerCase().includes(q) ||
+				t.currency.toLowerCase().includes(q)
+			);
+		});
+	}, [transactions, txFilter, txQuery]);
 
 	const walletAddress = profile?.walletAddress || null;
 	const username = profile?.username || null;
@@ -216,167 +243,210 @@ export default function Home({ user }: { user: User }) {
 			{/* Activity */}
 			<div className="flex items-center justify-between mb-3 px-1">
 				<h2 className="font-display text-[18px]">Actividad</h2>
-				{isTxLoading && txData && (
-					<span className="w-2 h-2 rounded-full bg-sky animate-pulse" />
-				)}
+				{isTxLoading && txData && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
 			</div>
 
-			<div className="flex-1">
-				{isTxLoading && !txData ? (
-					<div className="flex items-center justify-center py-16">
-						<div className="w-5 h-5 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
+			{isTxLoading && !txData ? (
+				<div className="flex items-center justify-center py-16">
+					<div className="w-5 h-5 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
+				</div>
+			) : transactions.length === 0 ? (
+				<div className="flex flex-col items-center text-center py-14 px-6">
+					<Logo className="w-12 mb-5 opacity-40" />
+					<p className="text-[15px] text-text mb-1">Aún no hay movimientos</p>
+					<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
+						Crea tu primer link de cobro y compártelo para recibir tu primer pago.
+					</p>
+					<button onClick={() => navigate("/cobrar")} className="btn btn-primary btn-sm">
+						Crear un link de cobro
+					</button>
+				</div>
+			) : (
+				<>
+					{/* Search + filter */}
+					<div className="flex items-center gap-2 bg-surface border border-border rounded-[14px] h-11 px-3.5 mb-2.5 focus-within:border-border-strong transition-colors">
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0">
+							<circle cx="11" cy="11" r="7" />
+							<path d="m21 21-4.3-4.3" />
+						</svg>
+						<input
+							value={txQuery}
+							onChange={(e) => {
+								setTxQuery(e.target.value);
+								setVisibleCount(PAGE_SIZE);
+							}}
+							placeholder="Buscar por nombre, referencia o monto"
+							className="flex-1 bg-transparent text-[14px] text-text placeholder:text-text-faint min-w-0"
+						/>
 					</div>
-				) : transactions.length === 0 ? (
-					<div className="flex flex-col items-center text-center py-14 px-6">
-						<Logo className="w-12 mb-5 opacity-40" />
-						<p className="text-[15px] text-text mb-1">Aún no hay movimientos</p>
-						<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
-							Crea tu primer link de cobro y compártelo para recibir tu primer pago.
+					<div className="seg-track seg-track-block mb-4">
+						{(
+							[
+								["all", "Todos"],
+								["received", "Recibidos"],
+								["sent", "Enviados"],
+							] as const
+						).map(([value, label]) => (
+							<button
+								key={value}
+								onClick={() => {
+									setTxFilter(value);
+									setVisibleCount(PAGE_SIZE);
+								}}
+								data-active={txFilter === value}
+								className="seg-item"
+							>
+								{label}
+							</button>
+						))}
+					</div>
+
+					{filteredTx.length === 0 ? (
+						<p className="text-[14px] text-text-muted text-center py-10">
+							No encontramos movimientos con ese filtro.
 						</p>
-						<button
-							onClick={() => navigate("/cobrar")}
-							className="btn btn-primary btn-sm"
-						>
-							Crear un link de cobro
-						</button>
-					</div>
-				) : (
-					<div className="flex flex-col gap-1">
-						{transactions.map((tx, i) => {
-							const received = tx.type === "received";
-							return (
+					) : (
+						<>
+							<div className="flex flex-col gap-1">
+								{filteredTx.slice(0, visibleCount).map((tx) => {
+									const received = tx.type === "received";
+									return (
+										<button
+											key={tx.txHash + tx.type}
+											onClick={() => setSelectedTx(tx)}
+											className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
+										>
+											<span
+												className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+													received ? "bg-sky/15 text-glow-sky" : "bg-surface-2 text-text-muted"
+												}`}
+											>
+												{received ? <IconReceive small /> : <IconSend small />}
+											</span>
+											<div className="min-w-0 flex-1">
+												<p className="text-[15px] truncate">
+													{received ? tx.reference || "Cobro recibido" : "Pago enviado"}
+												</p>
+												<p className="text-[12px] text-text-faint">{formatDate(tx.createdAt)}</p>
+											</div>
+											<span
+												className={`text-[15px] font-medium tabular shrink-0 ${
+													received ? "text-glow-sky" : "text-text"
+												}`}
+											>
+												{received ? "+" : "−"}
+												{tx.amount} {tx.currency}
+											</span>
+										</button>
+									);
+								})}
+							</div>
+							{filteredTx.length > visibleCount && (
 								<button
-									key={tx.txHash + i}
-									onClick={() => setSelectedTx(tx)}
-									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
+									onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+									className="btn-text w-full mt-3"
 								>
-									<span
-										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-											received ? "bg-sky/15 text-glow-sky" : "bg-surface-2 text-text-muted"
-										}`}
-									>
-										{received ? <IconReceive small /> : <IconSend small />}
-									</span>
-									<div className="min-w-0 flex-1">
-										<p className="text-[15px] truncate">
-											{received ? tx.reference || "Cobro recibido" : "Pago enviado"}
-										</p>
-										<p className="text-[12px] text-text-faint">{formatDate(tx.createdAt)}</p>
-									</div>
-									<span
-										className={`text-[15px] font-medium tabular shrink-0 ${
-											received ? "text-glow-sky" : "text-text"
-										}`}
-									>
-										{received ? "+" : "−"}
-										{tx.amount} {tx.currency}
-									</span>
+									Ver más
 								</button>
-							);
-						})}
-					</div>
-				)}
-			</div>
+							)}
+						</>
+					)}
+				</>
+			)}
 
-			{/* Receipt modal */}
-			{selectedTx && (
-				<div
-					className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center px-5 gap-4 animate-fade-in"
-					onClick={() => setSelectedTx(null)}
-				>
+			{/* Receipt modal — portaled to <body> so position:fixed is viewport-relative
+			    (the page wrapper has a transform, which would otherwise capture it). */}
+			{selectedTx &&
+				createPortal(
 					<div
-						ref={txCardRef}
-						className="relative overflow-hidden w-full max-w-sm bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
-						onClick={(e) => e.stopPropagation()}
+						className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center px-5 gap-4 animate-fade-in"
+						onClick={() => setSelectedTx(null)}
 					>
 						<div
-							className="absolute top-0 left-0 right-0 h-1"
-							style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
-						/>
-						<div
-							className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
-							style={{
-								background:
-									selectedTx.type === "received"
-										? "radial-gradient(circle,#9ce3f4,transparent 70%)"
-										: "radial-gradient(circle,#f4a9cf,transparent 70%)",
-							}}
-						/>
-
-						<div className="flex items-center gap-2 mb-6 relative z-1">
-							<Logo className="w-6" />
-							<span className="font-display text-[16px]">Parmelia</span>
-						</div>
-						<div
-							className="w-14 h-14 rounded-full flex items-center justify-center mb-5 relative z-1"
-							style={{
-								background: selectedTx.type === "received" ? "rgba(156,227,244,0.16)" : "rgba(245,245,243,0.08)",
-							}}
+							ref={txCardRef}
+							className="relative overflow-hidden w-full max-w-sm bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
+							onClick={(e) => e.stopPropagation()}
 						>
-							<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={selectedTx.type === "received" ? "#9ce3f4" : "#f5f5f3"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-								<polyline points="20 6 9 17 4 12" />
-							</svg>
-						</div>
-						<p className="text-[14px] text-text-muted mb-1 relative z-1">
-							{selectedTx.type === "sent" ? "Pagaste" : "Recibiste"}
-						</p>
-						<p className="font-display text-[40px] leading-none mb-4 tabular relative z-1">
-							{selectedTx.type === "sent" ? "−" : "+"}
-							{selectedTx.amount}
-							<span className="text-text-muted text-[20px] ml-1.5">{selectedTx.currency}</span>
-						</p>
-						{selectedTx.to && (
-							<p className="text-text-faint text-[12px] font-mono break-all text-center mb-1 relative z-1">
-								Para {selectedTx.to.slice(0, 6)}…{selectedTx.to.slice(-4)}
-							</p>
-						)}
-						{selectedTx.reference && (
-							<p className="text-text-muted text-[14px] text-center mb-1 relative z-1">{selectedTx.reference}</p>
-						)}
-						<p className="text-[12px] text-text-faint mt-2 relative z-1">parmelia.me</p>
-						{selectedTx.txHash && (
-							<a
-								href={getExplorerTxUrl(selectedTx.txHash)}
-								target="_blank"
-								rel="noopener noreferrer"
-								className="text-text-faint text-[12px] mt-2 relative z-1"
+							<div
+								className="absolute top-0 left-0 right-0 h-1"
+								style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
+							/>
+							<div
+								className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
+								style={{
+									background:
+										selectedTx.type === "received"
+											? "radial-gradient(circle,#9ce3f4,transparent 70%)"
+											: "radial-gradient(circle,#f4a9cf,transparent 70%)",
+								}}
+							/>
+
+							<div className="flex items-center gap-2 mb-6 relative z-1">
+								<Logo className="w-6" />
+								<span className="font-display text-[16px]">Parmelia</span>
+							</div>
+							<div
+								className="w-14 h-14 rounded-full flex items-center justify-center mb-5 relative z-1"
+								style={{
+									background: selectedTx.type === "received" ? "rgba(156,227,244,0.16)" : "rgba(245,245,243,0.08)",
+								}}
 							>
-								Ver comprobante en la red ↗
-							</a>
-						)}
-					</div>
+								<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={selectedTx.type === "received" ? "#9ce3f4" : "#f5f5f3"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+									<polyline points="20 6 9 17 4 12" />
+								</svg>
+							</div>
+							<p className="text-[14px] text-text-muted mb-1 relative z-1">
+								{selectedTx.type === "sent" ? "Pagaste" : "Recibiste"}
+							</p>
+							<p className="font-display text-[40px] leading-none mb-4 tabular relative z-1">
+								{selectedTx.type === "sent" ? "−" : "+"}
+								{selectedTx.amount}
+								<span className="text-text-muted text-[20px] ml-1.5">{selectedTx.currency}</span>
+							</p>
+							{selectedTx.to && (
+								<p className="text-text-faint text-[12px] font-mono break-all text-center mb-1 relative z-1">
+									Para {selectedTx.to.slice(0, 6)}…{selectedTx.to.slice(-4)}
+								</p>
+							)}
+							{selectedTx.reference && (
+								<p className="text-text-muted text-[14px] text-center mb-1 relative z-1">{selectedTx.reference}</p>
+							)}
+							<p className="text-[12px] text-text-faint mt-2 relative z-1">parmelia.me</p>
+							{selectedTx.txHash && (
+								<a
+									href={getExplorerTxUrl(selectedTx.txHash)}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="text-text-faint text-[12px] mt-2 relative z-1"
+								>
+									Ver comprobante en la red ↗
+								</a>
+							)}
+						</div>
 
-					<div className="flex gap-3 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-						<button
-							onClick={async () => {
-								if (!txCardRef.current) return;
-								try {
-									const { toPng } = await import("html-to-image");
-										const dataUrl = await toPng(txCardRef.current, {
-										backgroundColor: "#0A0A0B",
-										width: txCardRef.current.offsetWidth + 64,
-										height: txCardRef.current.offsetHeight + 64,
-										style: { flex: "none", padding: "32px", margin: "0", maxWidth: "none" },
-										pixelRatio: 2,
-									});
-									const a = document.createElement("a");
-									a.download = `parmelia-${selectedTx.amount}-${selectedTx.currency}.png`;
-									a.href = dataUrl;
-									a.click();
-								} catch {
-									/* ignore */
-								}
-							}}
-							className="btn btn-primary flex-1"
-						>
-							Descargar comprobante
-						</button>
-						<button onClick={() => setSelectedTx(null)} className="btn btn-ghost">
-							Cerrar
-						</button>
-					</div>
-				</div>
-			)}
+						<div className="flex gap-3 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+							<button
+								onClick={async () => {
+									try {
+										await downloadCard(
+											txCardRef.current,
+											`parmelia-${selectedTx.amount}-${selectedTx.currency}.png`,
+										);
+									} catch {
+										sileo.error({ title: "No se pudo descargar el comprobante" });
+									}
+								}}
+								className="btn btn-primary flex-1"
+							>
+								Descargar comprobante
+							</button>
+							<button onClick={() => setSelectedTx(null)} className="btn btn-ghost">
+								Cerrar
+							</button>
+						</div>
+					</div>,
+					document.body,
+				)}
 		</div>
 	);
 }

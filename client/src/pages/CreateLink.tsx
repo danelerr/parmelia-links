@@ -1,11 +1,12 @@
 import { useState, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { sileo } from "sileo";
-import type { User } from "../firebase";
+import type { User } from "../lib/firebase";
 import Logo from "../components/Logo";
-import { fetchWithAuth } from "../authFetch";
-import { activeNetwork } from "../network";
-import { useViewTransitionNavigate } from "../useNav";
+import { fetchWithAuth } from "../lib/authFetch";
+import { activeNetwork } from "../lib/activeNetwork";
+import { useViewTransitionNavigate } from "../hooks/useNav";
+import { downloadCard, shareCard } from "../lib/exportCard";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
@@ -62,52 +63,23 @@ export default function CreateLink({ user }: { user: User }) {
 		}
 	}
 
-	async function captureCard(): Promise<Blob | null> {
-		if (!cardRef.current) return null;
-		const { toPng } = await import("html-to-image");
-								const dataUrl = await toPng(cardRef.current, {
-			backgroundColor: "#0A0A0B",
-			width: cardRef.current.offsetWidth + 80,
-			height: cardRef.current.offsetHeight + 80,
-			style: { flex: "none", padding: "40px", margin: "0", maxWidth: "none" },
-			pixelRatio: 2,
-		});
-		return (await fetch(dataUrl)).blob();
-	}
-
-	// Compartir = imagen del QR + el link de pago.
+	// Compartir = imagen del QR (sobre fondo blanco) + el link de pago.
 	async function handleShare() {
-		try {
-			const blob = await captureCard();
-			const file = blob ? new File([blob], "parmelia-cobro.png", { type: "image/png" }) : null;
-			if (file && navigator.canShare?.({ files: [file] })) {
-				await navigator.share({
-					title: "Cóbrame con Parmelia",
-					text: `Págame con Parmelia: ${paymentUrl}`,
-					files: [file],
-				});
-			} else if (navigator.share) {
-				await navigator.share({ title: "Cobro Parmelia", text: "Págame con Parmelia", url: paymentUrl });
-			} else {
-				navigator.clipboard.writeText(paymentUrl);
-				sileo.success({ title: "Link copiado" });
-			}
-		} catch {
-			/* user cancelled */
+		const shared = await shareCard(cardRef.current, {
+			filename: "parmelia-cobro.png",
+			text: `Págame con Parmelia: ${paymentUrl}`,
+			url: paymentUrl,
+		});
+		if (!shared) {
+			navigator.clipboard.writeText(paymentUrl);
+			sileo.success({ title: "Link copiado" });
 		}
 	}
 
 	// Descargar = solo la imagen del QR.
 	async function handleDownload() {
 		try {
-			const blob = await captureCard();
-			if (!blob) return;
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.download = `parmelia-cobro-${amount || "abierto"}-${currency}.png`;
-			a.href = url;
-			a.click();
-			URL.revokeObjectURL(url);
+			await downloadCard(cardRef.current, `parmelia-cobro-${amount || "abierto"}-${currency}.png`);
 		} catch {
 			sileo.error({ title: "No se pudo descargar" });
 		}

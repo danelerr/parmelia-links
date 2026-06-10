@@ -1,4 +1,4 @@
-import { signInWithGoogle } from "../firebase";
+import { signInWithGoogle } from "../lib/firebase";
 import { sileo } from "sileo";
 import Logo from "../components/Logo";
 

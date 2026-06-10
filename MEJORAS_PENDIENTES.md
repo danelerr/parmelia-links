@@ -75,6 +75,9 @@ Sin esto la app no opera en la nueva cadena.
 | 24 | **PWA instalable** (manifest + service worker + push) | Para retención del comerciante. **No forzar** la instalación (rompería el funnel del pagador). |
 | 25 | **App nativa (Expo/React Native)** | Post-PMF, enfocada al comerciante. Mismo RP ID de passkeys + push. Las skills de RN ya están instaladas. |
 | 26 | **Tests de cliente / E2E** | Hoy el cliente no tiene tests. |
+| 27 | **Comprobantes detallados** | Colocar fecha, hora y número de comprobante (hash de la transacción) en los recibos/comprobantes para validación rápida. |
+| 28 | **Pantalla de extractos y filtros temporales** | Sección dedicada (evitando sobrecargar el Home) para buscar y filtrar transacciones por mes, semana, hace 2 meses y fechas personalizadas. |
+| 29 | **Contactos e invitaciones (Ajustes)** | Pantalla para agregar/visualizar "Amigos" o "Contactos", con opción de invitar nuevos usuarios y contador de invitaciones exitosas. |
 
 ---
 
@@ -82,11 +85,22 @@ Sin esto la app no opera en la nueva cadena.
 
 | # | Tarea | Notas |
 |---|---|---|
-| 27 | **Multi-red en producción** | La portabilidad ya está lista (config por red). Elegir red(es) de settlement por fees/liquidez de USDC. |
-| 28 | **Uniswap crosschain / pagos multi-activo** | Post-PMF. UUPS permite agregarlo **sin cambiar direcciones de wallet**. |
-| 29 | **EIP-7702** (EOAs que delegan a contratos) | Complementario a 4337; no urgente para el modelo de passkeys. |
-| 30 | **Compresión de calldata** | ⚠️ **No recomendado** salvo que se mida como techo real: forzaría forkear el verifier auditado de OZ (alto riesgo). Post-blobs en Arbitrum el beneficio es chico. |
-| 31 | **Descentralizar el guardian** (guardians plurales / social recovery) | Evolución de #8. |
+| 30 | **Multi-red en producción** | La portabilidad ya está lista (config por red). Elegir red(es) de settlement por fees/liquidez de USDC. |
+| 31 | **Uniswap crosschain / pagos multi-activo** | Post-PMF. UUPS permite agregarlo **sin cambiar direcciones de wallet**. |
+| 32 | **EIP-7702** (EOAs que delegan a contratos) | Complementario a 4337; no urgente para el modelo de passkeys. |
+| 33 | **Compresión de calldata** | ⚠️ **No recomendado** salvo que se mida como techo real: forzaría forkear el verifier auditado de OZ (alto riesgo). Post-blobs en Arbitrum el beneficio es chico. |
+| 34 | **Descentralizar el guardian** (guardians plurales / social recovery) | Evolución de #8. |
+
+---
+
+## Funcionalidades de Negocio y Tokens Pendientes
+
+| # | Tarea | Notas |
+|---|---|---|
+| 35 | **Soporte de Tokens Adicionales (WBTC y MON)** | Integrar contratos, logos y decimales de WBTC y MON en `shared/networks.ts` y en la UI del cliente (actualmente la app solo soporta USDC y ETH, **sin soporte para Bitcoin/WBTC**). |
+| 36 | **Intercambios Nativos (Swaps in-app)** | Integrar agregadores (Uniswap/1inch) en servidor (`/swap/quote`, `/swap/prepare`) y diseñar en el cliente la UI de selector de pares y confirmación con passkey. |
+| 37 | **Modo Ahorro / Rendimiento (Earn Mode)** | Integrar protocolos DeFi (Aave/Silo/Vaults ERC-4626), implementar cobro de *Performance Fee* en `postOp` del Paymaster y diseñar UI de APY variable y depósito/retiro a un clic. |
+| 38 | **Depósitos y Retiros Cross-Chain (Intents)** | Conectar solvers cross-chain (Uniswap ERC-7683/Across) en backend para bridge/swap automático cobrando spread y diseñar UI de selección de redes. |
 
 ---
 
