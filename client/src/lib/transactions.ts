@@ -8,8 +8,17 @@ export interface Transaction {
 	to?: string;
 	reference?: string;
 	createdAt: string;
-	/** "link" = collected via payment link; "transfer" = direct movement. */
-	kind?: "link" | "transfer";
+	/** Ledger kind: payment, link (cobro), swap, fund (faucet), external (depósito). */
+	kind?: string;
+}
+
+/** Human label for a movement row. */
+export function txLabel(t: Transaction): string {
+	if (t.kind === "swap") return t.reference || "Cambio de tokens";
+	if (t.type === "received") {
+		return t.reference || (t.kind === "external" ? "Depósito recibido" : "Cobro recibido");
+	}
+	return "Pago enviado";
 }
 
 /** Merge + sort the /user/transactions payload into a single timeline. */
@@ -21,8 +30,9 @@ export function parseTransactions(txData: any): Transaction[] {
 		amount: t.amount,
 		currency: t.currency,
 		to: t.to,
+		reference: t.reference,
 		createdAt: t.createdAt,
-		kind: t.kind ?? "transfer",
+		kind: t.kind ?? "payment",
 	}));
 	const received = (txData.received || []).map((t: any) => ({
 		type: "received" as const,
@@ -31,7 +41,7 @@ export function parseTransactions(txData: any): Transaction[] {
 		currency: t.currency,
 		reference: t.reference,
 		createdAt: t.createdAt,
-		kind: t.kind ?? "transfer",
+		kind: t.kind ?? "payment",
 	}));
 	return [...sent, ...received].sort(
 		(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),

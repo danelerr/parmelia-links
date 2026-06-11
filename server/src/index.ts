@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { AppContext, authMiddleware, type Bindings } from "./middlewares/auth";
+import { runIndexer } from "./services/indexer";
 import { getRequestId, logError } from "./services/logger";
 
 import userRoutes from "./routes/user.routes";
@@ -59,4 +60,10 @@ app.onError((error, c) => {
 	return c.json({ error: "Internal server error", requestId }, 500);
 });
 
-export default app;
+export default {
+	fetch: app.fetch,
+	// Cron: ingest external incoming transfers into the ledger (see services/indexer).
+	async scheduled(_controller, env, ctx) {
+		ctx.waitUntil(runIndexer(env));
+	},
+} satisfies ExportedHandler<Bindings>;

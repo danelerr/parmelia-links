@@ -4,8 +4,10 @@ export type UserRecord = {
 	uid: string;
 	walletAddress: string | null;
 	username: string | null;
+	referralCode: string | null;
 	credentialId: string | null;
 	fundedAt: string | null;
+	invitedBy: string | null;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -33,17 +35,10 @@ export type PendingPaymentRecord = {
 	amount: string;
 	currency: string;
 	userOp: Record<string, unknown>;
+	/** Free-form context for submit (e.g. swap quote details). */
+	meta: Record<string, unknown> | null;
 	createdAt: string;
 	expiresAt: string;
-};
-
-export type SentTransactionRecord = {
-	uid: string;
-	txHash: string;
-	amount: string;
-	currency: string;
-	to: string;
-	createdAt: string;
 };
 
 export type PasskeyRecord = {
@@ -59,11 +54,16 @@ type UserRow = {
 	uid: string;
 	wallet_address: string | null;
 	username: string | null;
+	referral_code: string | null;
 	credential_id: string | null;
 	funded_at: string | null;
+	invited_by: string | null;
 	created_at: string | null;
 	updated_at: string | null;
 };
+
+const USER_COLUMNS =
+	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, created_at, updated_at";
 
 type PaymentLinkRow = {
 	id: string;
@@ -88,17 +88,9 @@ type PendingPaymentRow = {
 	amount: string;
 	currency: string;
 	user_op_json: string;
+	meta: string | null;
 	created_at: string;
 	expires_at: string;
-};
-
-type SentTransactionRow = {
-	uid: string;
-	tx_hash: string;
-	amount: string;
-	currency: string;
-	to_wallet: string;
-	created_at: string;
 };
 
 type PasskeyRow = {
@@ -132,8 +124,10 @@ function mapUserRow(row: UserRow): UserRecord {
 		uid: row.uid,
 		walletAddress: row.wallet_address,
 		username: row.username,
+		referralCode: row.referral_code,
 		credentialId: row.credential_id,
 		fundedAt: row.funded_at,
+		invitedBy: row.invited_by,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	};
@@ -165,19 +159,9 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 		amount: row.amount,
 		currency: row.currency,
 		userOp: JSON.parse(row.user_op_json) as Record<string, unknown>,
+		meta: row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : null,
 		createdAt: row.created_at,
 		expiresAt: row.expires_at,
-	};
-}
-
-function mapSentRow(row: SentTransactionRow): SentTransactionRecord {
-	return {
-		uid: row.uid,
-		txHash: row.tx_hash,
-		amount: row.amount,
-		currency: row.currency,
-		to: row.to_wallet,
-		createdAt: row.created_at,
 	};
 }
 
@@ -196,6 +180,12 @@ export async function saveUser(
 	const existing = await getUserByUid(env, user.uid);
 	const timestamp = user.updatedAt ?? nowIso();
 	const createdAt = existing?.createdAt ?? user.createdAt ?? timestamp;
+	// Addresses are stored lowercase so the ledger / indexer can do exact
+	// reverse lookups (address → user) without case games.
+	const walletAddress =
+		user.walletAddress !== undefined
+			? (user.walletAddress?.toLowerCase() ?? null)
+			: (existing?.walletAddress ?? null);
 
 	await d1Run(
 		env,
@@ -216,7 +206,7 @@ export async function saveUser(
 			updated_at = excluded.updated_at`,
 		[
 			user.uid,
-			user.walletAddress !== undefined ? user.walletAddress : existing?.walletAddress ?? null,
+			walletAddress,
 			user.username !== undefined ? user.username : existing?.username ?? null,
 			user.credentialId !== undefined ? user.credentialId : existing?.credentialId ?? null,
 			user.fundedAt !== undefined ? user.fundedAt : existing?.fundedAt ?? null,
@@ -229,10 +219,7 @@ export async function saveUser(
 export async function getUserByUid(env: Bindings, uid: string): Promise<UserRecord | null> {
 	const row = await d1First<UserRow>(
 		env,
-		`SELECT uid, wallet_address, username, credential_id, funded_at, created_at, updated_at
-		 FROM users
-		 WHERE uid = ?
-		 LIMIT 1`,
+		`SELECT ${USER_COLUMNS} FROM users WHERE uid = ? LIMIT 1`,
 		[uid],
 	);
 	return row ? mapUserRow(row) : null;
@@ -241,13 +228,56 @@ export async function getUserByUid(env: Bindings, uid: string): Promise<UserReco
 export async function getUserByUsername(env: Bindings, username: string): Promise<UserRecord | null> {
 	const row = await d1First<UserRow>(
 		env,
-		`SELECT uid, wallet_address, username, credential_id, funded_at, created_at, updated_at
-		 FROM users
-		 WHERE username = ?
-		 LIMIT 1`,
+		`SELECT ${USER_COLUMNS} FROM users WHERE username = ? LIMIT 1`,
 		[username],
 	);
 	return row ? mapUserRow(row) : null;
+}
+
+/** Reverse lookup: which Parmelia user owns this (lowercase) address? */
+export async function getUserByWallet(env: Bindings, walletAddress: string): Promise<UserRecord | null> {
+	const row = await d1First<UserRow>(
+		env,
+		`SELECT ${USER_COLUMNS} FROM users WHERE wallet_address = ? LIMIT 1`,
+		[walletAddress.toLowerCase()],
+	);
+	return row ? mapUserRow(row) : null;
+}
+
+export async function getUserByReferralCode(env: Bindings, code: string): Promise<UserRecord | null> {
+	const row = await d1First<UserRow>(
+		env,
+		`SELECT ${USER_COLUMNS} FROM users WHERE referral_code = ? LIMIT 1`,
+		[code.toUpperCase()],
+	);
+	return row ? mapUserRow(row) : null;
+}
+
+// Unambiguous alphabet (no 0/O/1/I) for invite codes.
+const REFERRAL_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/** Return the user's invite code, generating one on first use. */
+export async function ensureReferralCode(env: Bindings, uid: string): Promise<string | null> {
+	const user = await getUserByUid(env, uid);
+	if (!user) return null;
+	if (user.referralCode) return user.referralCode;
+
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const bytes = crypto.getRandomValues(new Uint8Array(6));
+		const code = Array.from(bytes, (b) => REFERRAL_ALPHABET[b % REFERRAL_ALPHABET.length]).join("");
+		try {
+			await d1Run(
+				env,
+				`UPDATE users SET referral_code = ? WHERE uid = ? AND referral_code IS NULL`,
+				[code, uid],
+			);
+			const fresh = await getUserByUid(env, uid);
+			if (fresh?.referralCode) return fresh.referralCode;
+		} catch {
+			// UNIQUE collision — retry with a new code.
+		}
+	}
+	return null;
 }
 
 export async function createPaymentLink(env: Bindings, link: PaymentLinkRecord) {
@@ -335,7 +365,8 @@ export async function markPaymentLinkPaid(
 
 export async function createPendingPayment(
 	env: Bindings,
-	pending: Omit<PendingPaymentRecord, "createdAt" | "expiresAt"> & {
+	pending: Omit<PendingPaymentRecord, "createdAt" | "expiresAt" | "meta"> & {
+		meta?: Record<string, unknown> | null;
 		createdAt?: string;
 		expiresAt?: string;
 	},
@@ -355,9 +386,10 @@ export async function createPendingPayment(
 			amount,
 			currency,
 			user_op_json,
+			meta,
 			created_at,
 			expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_op_hash) DO UPDATE SET
 			uid = excluded.uid,
 			link_id = excluded.link_id,
@@ -366,6 +398,7 @@ export async function createPendingPayment(
 			amount = excluded.amount,
 			currency = excluded.currency,
 			user_op_json = excluded.user_op_json,
+			meta = excluded.meta,
 			created_at = excluded.created_at,
 			expires_at = excluded.expires_at`,
 		[
@@ -377,6 +410,7 @@ export async function createPendingPayment(
 			pending.amount,
 			pending.currency,
 			JSON.stringify(pending.userOp),
+			pending.meta ? JSON.stringify(pending.meta) : null,
 			createdAt,
 			expiresAt,
 		],
@@ -386,7 +420,7 @@ export async function createPendingPayment(
 export async function getPendingPayment(env: Bindings, userOpHash: string): Promise<PendingPaymentRecord | null> {
 	const row = await d1First<PendingPaymentRow>(
 		env,
-		`SELECT user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, created_at, expires_at
+		`SELECT user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, created_at, expires_at
 		 FROM pending_payments
 		 WHERE user_op_hash = ?
 		 LIMIT 1`,
@@ -404,31 +438,123 @@ export async function deletePendingPayment(env: Bindings, userOpHash: string) {
 	await d1Run(env, `DELETE FROM pending_payments WHERE user_op_hash = ?`, [userOpHash]);
 }
 
-export async function recordSentTransaction(env: Bindings, tx: SentTransactionRecord) {
-	await d1Run(
-		env,
-		`INSERT INTO sent_transactions (uid, tx_hash, amount, currency, to_wallet, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(uid, tx_hash) DO UPDATE SET
-			amount = excluded.amount,
-			currency = excluded.currency,
-			to_wallet = excluded.to_wallet,
-			created_at = excluded.created_at`,
-		[tx.uid, tx.txHash, tx.amount, tx.currency, tx.to, tx.createdAt],
-	);
+// ===== Ledger (unified movements) =====
+
+export type LedgerKind = "payment" | "link" | "swap" | "fund" | "external";
+
+export type LedgerEntry = {
+	uid: string;
+	direction: "in" | "out";
+	kind: LedgerKind;
+	txHash: string;
+	/** Only for cron-ingested on-chain entries (dedup key). */
+	logIndex?: number | null;
+	token: string;
+	amount: string;
+	counterparty?: string | null;
+	counterpartyUid?: string | null;
+	reference?: string | null;
+	linkId?: string | null;
+	createdAt: string;
+};
+
+type LedgerRow = {
+	uid: string;
+	direction: "in" | "out";
+	kind: LedgerKind;
+	tx_hash: string;
+	log_index: number | null;
+	token: string;
+	amount: string;
+	counterparty: string | null;
+	counterparty_uid: string | null;
+	reference: string | null;
+	link_id: string | null;
+	created_at: string;
+};
+
+/** Idempotent append (the dedup unique index absorbs re-submissions/re-scans). */
+export async function writeLedgerEntries(env: Bindings, entries: LedgerEntry[]) {
+	for (const entry of entries) {
+		await d1Run(
+			env,
+			`INSERT OR IGNORE INTO ledger (
+				id, uid, direction, kind, tx_hash, log_index, token, amount,
+				counterparty, counterparty_uid, reference, link_id, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				crypto.randomUUID(),
+				entry.uid,
+				entry.direction,
+				entry.kind,
+				entry.txHash,
+				entry.logIndex ?? null,
+				entry.token,
+				entry.amount,
+				entry.counterparty?.toLowerCase() ?? null,
+				entry.counterpartyUid ?? null,
+				entry.reference ?? null,
+				entry.linkId ?? null,
+				entry.createdAt,
+			],
+		);
+	}
 }
 
-export async function listSentTransactionsByUid(env: Bindings, uid: string, limit = 100): Promise<SentTransactionRecord[]> {
-	const rows = await d1All<SentTransactionRow>(
+export async function listLedgerByUid(env: Bindings, uid: string, limit = 200): Promise<LedgerEntry[]> {
+	const rows = await d1All<LedgerRow>(
 		env,
-		`SELECT uid, tx_hash, amount, currency, to_wallet, created_at
-		 FROM sent_transactions
+		`SELECT uid, direction, kind, tx_hash, log_index, token, amount,
+			counterparty, counterparty_uid, reference, link_id, created_at
+		 FROM ledger
 		 WHERE uid = ?
 		 ORDER BY datetime(created_at) DESC
 		 LIMIT ?`,
 		[uid, limit],
 	);
-	return rows.map(mapSentRow);
+	return rows.map((row) => ({
+		uid: row.uid,
+		direction: row.direction,
+		kind: row.kind,
+		txHash: row.tx_hash,
+		logIndex: row.log_index,
+		token: row.token,
+		amount: row.amount,
+		counterparty: row.counterparty,
+		counterpartyUid: row.counterparty_uid,
+		reference: row.reference,
+		linkId: row.link_id,
+		createdAt: row.created_at,
+	}));
+}
+
+/** All wallets the cron indexer must watch. */
+export async function listUserWallets(env: Bindings): Promise<{ uid: string; walletAddress: string }[]> {
+	const rows = await d1All<{ uid: string; wallet_address: string }>(
+		env,
+		`SELECT uid, wallet_address FROM users WHERE wallet_address IS NOT NULL`,
+	);
+	return rows.map((r) => ({ uid: r.uid, walletAddress: r.wallet_address }));
+}
+
+// ===== Indexer cursor =====
+
+export async function getSyncCursor(env: Bindings, key: string): Promise<bigint | null> {
+	const row = await d1First<{ last_block: string }>(
+		env,
+		`SELECT last_block FROM sync_state WHERE key = ? LIMIT 1`,
+		[key],
+	);
+	return row ? BigInt(row.last_block) : null;
+}
+
+export async function setSyncCursor(env: Bindings, key: string, lastBlock: bigint) {
+	await d1Run(
+		env,
+		`INSERT INTO sync_state (key, last_block, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at`,
+		[key, lastBlock.toString(), nowIso()],
+	);
 }
 
 function mapPasskeyRow(row: PasskeyRow): PasskeyRecord {
@@ -472,18 +598,6 @@ export async function getPasskey(env: Bindings, credentialId: string): Promise<P
 	return row ? mapPasskeyRow(row) : null;
 }
 
-export async function listPasskeysByUid(env: Bindings, uid: string): Promise<PasskeyRecord[]> {
-	const rows = await d1All<PasskeyRow>(
-		env,
-		`SELECT credential_id, uid, qx, qy, created_at, last_used_at
-		 FROM passkeys
-		 WHERE uid = ?
-		 ORDER BY datetime(last_used_at) DESC`,
-		[uid],
-	);
-	return rows.map(mapPasskeyRow);
-}
-
 // ===== Swap quotes (Módulo 2) =====
 
 export type SwapQuoteRecord = {
@@ -502,7 +616,7 @@ export type SwapQuoteRecord = {
 	tickSpacing: number | null;
 	slippageBps: number;
 	recipient: string;
-	status: "quoted" | "prepared" | "expired";
+	status: "quoted" | "prepared" | "executed" | "expired";
 	createdAt: string;
 	expiresAt: string;
 };
@@ -523,7 +637,7 @@ type SwapQuoteRow = {
 	tick_spacing: number | null;
 	slippage_bps: number;
 	recipient: string;
-	status: "quoted" | "prepared" | "expired";
+	status: "quoted" | "prepared" | "executed" | "expired";
 	created_at: string;
 	expires_at: string;
 };

@@ -30,6 +30,10 @@ export default function Onboarding({
 }) {
 	const navigate = useViewTransitionNavigate();
 	const [creatingWallet, setCreatingWallet] = useState(false);
+	// Invite code: prefilled when the user arrived through an invite link.
+	const [inviteCode, setInviteCode] = useState(
+		() => localStorage.getItem("parmelia:ref") || "",
+	);
 
 	async function handleCreateWallet() {
 		setCreatingWallet(true);
@@ -38,8 +42,8 @@ export default function Onboarding({
 			const passkeyLabel = user.email || user.displayName || undefined;
 			const { credentialId, qx, qy } = await createPasskey(user.uid, passkeyLabel);
 
-			// Referral attribution: the invite link's ?ref was captured at landing.
-			const ref = localStorage.getItem("parmelia:ref") || undefined;
+			// Referral attribution: invite link (?ref) or the manually entered code.
+			const ref = inviteCode.trim() || undefined;
 			const res = await fetchWithAuth(user, `${SERVER_URL}/account/create`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -92,6 +96,22 @@ export default function Onboarding({
 					<Reassurance>Tu dinero siempre es tuyo</Reassurance>
 					<Reassurance>Confirmas cada pago con tu huella</Reassurance>
 					<Reassurance>Sin comisiones de red</Reassurance>
+				</div>
+
+				{/* Invite code (optional) */}
+				<div className="w-full max-w-[300px] mt-4 flex items-center gap-2 bg-surface border border-border rounded-full h-11 px-4 focus-within:border-border-strong transition-colors">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0">
+						<path d="M20 12v8H4v-8" />
+						<path d="M2 7h20v5H2z" />
+						<path d="M12 22V7" />
+						<path d="M12 7c-1.5 0-3-1.5-3-3a2 2 0 0 1 4 0c0 1.5-1.5 3-1 3Z" />
+					</svg>
+					<input
+						value={inviteCode}
+						onChange={(e) => setInviteCode(e.target.value.toUpperCase().slice(0, 30))}
+						placeholder="Código de invitación (opcional)"
+						className="flex-1 bg-transparent text-[13px] text-text placeholder:text-text-faint tracking-wide min-w-0 text-center"
+					/>
 				</div>
 			</div>
 

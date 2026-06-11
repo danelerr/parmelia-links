@@ -17,7 +17,7 @@ Sin esto la app no opera en la nueva cadena.
 | 1 | **Desplegar contratos V2 en Arbitrum** (`forge script ...:DeployV2 --broadcast`) | Usa el deploy determinista (CREATE2) ya listo. El deployer EOA necesita ETH. |
 | 2 | **Rellenar direcciones** en `shared/networks.ts` → `contracts` (verifier/factory/paymaster) | Las imprime el script. |
 | 3 | **Confirmar USDC de Arbitrum Sepolia** (Circle docs) y ponerla | Hoy es `TODO`. Mainnet ya está (`0xaf88...`). |
-| 4 | **Aplicar migración D1 en remoto**: `wrangler d1 migrations apply PARMELIA_DB --remote` | Crea la tabla `passkeys` (0002). |
+| 4 | **Aplicar migración D1 en remoto**: `wrangler d1 migrations apply PARMELIA_DB --remote` | Una sola migración (`0001_schema.sql`, esquema consolidado con DROP-prelude): segura sobre la DB remota vieja — la resetea al esquema v2. |
 | 5 | **Configurar secrets del Worker** en Arbitrum: `RPC_URL` (con ETH en el relayer), `PRIVATE_KEY`, `PAYMASTER_SIGNER_PRIVATE_KEY` | — |
 | 6 | Verificar EntryPoint v0.9 (`0x433709...09`) desplegado en Arbitrum | ✅ ya confirmado en Arbiscan. |
 
@@ -41,10 +41,10 @@ Sin esto la app no opera en la nueva cadena.
 | # | Tarea | Por qué | Notas |
 |---|---|---|---|
 | 13 | **Migrar a un bundler ERC-4337 (Pimlico/Alchemy/Stackup)** | Resuelve el **cuello de botella del relayer único** (nonce/throughput), da **batching automático** y **estimación de gas L2 correcta** | Mantener el paymaster propio; cambia el `submit` de self-`handleOps` a `eth_sendUserOperation`. Requiere API key. |
-| 14 | **Indexer (Ponder)** para historial | Hoy `/user/transactions` reconstruye on-chain en cada poll (15s/usuario) → no escala | Ingerir eventos a DB y servir lecturas desde ahí. Software gratis; hosting + RPC no. |
+| 14 | ~~Indexer para historial~~ | ✅ Resuelto **Cloudflare-nativo** (sin Ponder/hosting): tabla `ledger` en D1 escrita al relayar (la app conoce todo lo que pasa por ella, ambos lados si es interno) + **cron indexer** (`services/indexer.ts`, cada 2 min) que ingiere solo transferencias ERC-20 **entrantes externas** con cursor en `sync_state`. `/user/transactions` lee solo D1. `history.ts` eliminado. | Límite conocido: depósitos externos de ETH nativo no emiten logs (Across entrega USDC); sharding del filtro `to` al pasar miles de wallets. |
 | 15 | **`waitForReceipt` async completo**: `submit` responde inmediato + cliente pollea estado | Quita la espera síncrona del request | Toca frontend (por eso quedó pendiente; ya tuneamos polling para Arbitrum) |
-| 16 | **Cola idempotente** para pagos (Cloudflare Queues) | Reconciliar "tx enviada pero recibo no confirmado" | Va de la mano con #13/#15 |
-| 17 | **Caché de balance/historial** (mientras no haya indexer) | Reduce llamadas RPC/explorer | TTL corto en D1/Cache API |
+| 16 | **Cola idempotente** para pagos (Cloudflare Queues) | Reconciliar "tx enviada pero recibo no confirmado" | Va de la mano con #13/#15. Las escrituras del ledger ya son idempotentes (índice único). |
+| 17 | ~~Caché de balance/historial~~ | ✅ Resuelto de raíz por #14: el historial ya no toca RPC/explorer en el request (solo D1). El balance sigue on-chain (barato, 2-4 eth_call). | — |
 
 ---
 
@@ -64,7 +64,7 @@ Sin esto la app no opera en la nueva cadena.
 | 20 | ~~`CHECK (currency ...)` en `payment_links`~~ | ❌ Descartado: la whitelist de monedas ahora es **config por red** (`shared/networks.ts`, incluye WBTC) — un CHECK fijo en la DB pelearía con la config. La validación server-side (`normalizeCurrency` + whitelist) es la fuente de verdad. |
 | 21 | Normalizar direcciones a minúscula | Cambio de comportamiento; las comparaciones críticas ya hacen `lowercase`. |
 | 22 | `amount` como entero raw (smallest unit) | El string decimal está bien; raw habilitaría `SUM()` en SQL pero es cambio mayor (YAGNI). |
-| 23 | Tabla `transactions`/ledger unificada | Ligado al indexer (#14); es la dirección futura del historial. |
+| 23 | ~~Tabla ledger unificada~~ | ✅ Hecho (migración `0005_rebuild_v2`, esquema v2 con datos de testnet reseteados): `ledger` + `sync_state`, `users` con wallet única lowercase + `referral_code`, `pending_payments.meta`, `swap_quotes.status='executed'`. `sent_transactions` absorbida. |
 
 ---
 

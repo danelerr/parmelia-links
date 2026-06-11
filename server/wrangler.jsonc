@@ -18,6 +18,11 @@
     "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173",
   },
 
+  // Mini-indexer: scan external incoming ERC-20 transfers into the ledger.
+  "triggers": {
+    "crons": ["*/2 * * * *"],
+  },
+
   "observability": {
     "logs": {
       "enabled": true,

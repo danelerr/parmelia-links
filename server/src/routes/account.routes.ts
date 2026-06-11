@@ -9,11 +9,14 @@ import {
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	createPendingPayment,
+	ensureReferralCode,
+	getUserByReferralCode,
 	getUserByUid,
 	getUserByUsername,
 	savePasskey,
 	saveUser,
 	setInvitedBy,
+	writeLedgerEntries,
 } from "../services/storage";
 import { getClients, getPublicClient, waitForTx } from "../services/clients";
 import { buildSponsoredUserOp, serializeBigInts } from "../services/userOp";
@@ -96,11 +99,16 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 			credentialId,
 		});
 		await savePasskey(c.env, { credentialId, uid: user.sub, qx, qy });
+		// Every account gets a shareable invite code from day one.
+		await ensureReferralCode(c.env, user.sub).catch(() => null);
 
-		// Referral attribution (best-effort): ?ref=<username> captured at landing.
+		// Referral attribution (best-effort): ?ref=<código o username> captured at landing.
 		if (typeof ref === "string" && ref.trim()) {
 			try {
-				const inviter = await getUserByUsername(c.env, ref.trim().toLowerCase());
+				const value = ref.trim();
+				const inviter =
+					(await getUserByReferralCode(c.env, value)) ??
+					(await getUserByUsername(c.env, value.toLowerCase()));
 				if (inviter && inviter.uid !== user.sub) {
 					await setInvitedBy(c.env, user.sub, inviter.uid);
 				}
@@ -120,6 +128,18 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 				});
 				await waitForTx(publicClient, fundTx);
 				await saveUser(c.env, { uid: user.sub, fundedAt: new Date().toISOString() });
+				await writeLedgerEntries(c.env, [
+					{
+						uid: user.sub,
+						direction: "in",
+						kind: "fund",
+						txHash: fundTx,
+						token: "USDC",
+						amount: "5",
+						reference: "Dólares de bienvenida",
+						createdAt: new Date().toISOString(),
+					},
+				]);
 			}
 		} catch (e) {
 			console.error("Auto-fund failed:", e);
@@ -272,6 +292,18 @@ accountRoutes.post("/fund", requireAuth, async (c) => {
 
 		const fundedAt = new Date().toISOString();
 		await saveUser(c.env, { uid: user.sub, fundedAt });
+		await writeLedgerEntries(c.env, [
+			{
+				uid: user.sub,
+				direction: "in",
+				kind: "fund",
+				txHash,
+				token: "USDC",
+				amount: "5",
+				reference: "Dólares de prueba",
+				createdAt: fundedAt,
+			},
+		]);
 		return c.json({ success: true, txHash, amount: "5", currency: "USDC" });
 	} catch (error) {
 		return c.json({ error: `Error al fondear cuenta: ${error}` }, 500);

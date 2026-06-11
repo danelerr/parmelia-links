@@ -27,6 +27,7 @@ export default function Contacts({ user }: { user: User }) {
 	const [adding, setAdding] = useState(false);
 	const [invited, setInvited] = useState<number | null>(null);
 	const [myUsername, setMyUsername] = useState<string | null>(null);
+	const [referralCode, setReferralCode] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		try {
@@ -42,6 +43,7 @@ export default function Contacts({ user }: { user: User }) {
 				const data = await invitesRes.json();
 				setInvited(data.invited ?? 0);
 				setMyUsername(data.username ?? null);
+				setReferralCode(data.referralCode ?? null);
 			}
 		} finally {
 			setLoading(false);
@@ -84,8 +86,10 @@ export default function Contacts({ user }: { user: User }) {
 		});
 	}
 
+	const inviteRef = referralCode || myUsername;
+	const inviteUrl = inviteRef ? `${APP_URL}/?ref=${inviteRef}` : APP_URL;
+
 	async function handleInvite() {
-		const inviteUrl = myUsername ? `${APP_URL}/?ref=${myUsername}` : APP_URL;
 		const text = "Únete a Parmelia: cobra y paga dinero digital como mandar un mensaje.";
 		if (navigator.share) {
 			try {
@@ -127,9 +131,9 @@ export default function Contacts({ user }: { user: User }) {
 						<p className="font-display text-[17px] mb-1">Invita a tus amigos</p>
 						<p className="text-[13px] text-text-muted leading-relaxed">
 							{invited === null
-								? "Comparte tu link y cobra/paga entre amigos."
+								? "Comparte tu código y cobra/paga entre amigos."
 								: invited === 0
-									? "Aún nadie se unió con tu link. ¡Compártelo!"
+									? "Aún nadie se unió con tu código. ¡Compártelo!"
 									: `${invited} ${invited === 1 ? "amigo se unió" : "amigos se unieron"} con tu invitación 🎉`}
 						</p>
 					</div>
@@ -137,6 +141,24 @@ export default function Contacts({ user }: { user: User }) {
 						Invitar
 					</button>
 				</div>
+				{referralCode && (
+					<button
+						onClick={() => {
+							navigator.clipboard.writeText(referralCode);
+							sileo.success({ title: "Código copiado" });
+						}}
+						className="mt-3.5 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-bg/60 border border-border hover:border-border-strong transition-colors relative z-1"
+					>
+						<span className="text-[12px] text-text-faint">Tu código</span>
+						<span className="font-mono text-[14px] tracking-[0.2em] text-glow-gold">
+							{referralCode}
+						</span>
+						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint">
+							<rect x="9" y="9" width="13" height="13" rx="2" />
+							<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+						</svg>
+					</button>
+				)}
 			</div>
 
 			{/* Add contact */}

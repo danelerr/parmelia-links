@@ -340,6 +340,14 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 			wallet: account,
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			// Context for /pay/submit to write precise ledger entries.
+			meta: {
+				quoteId,
+				tokenIn: tokenIn.symbol,
+				tokenOut: tokenOut.symbol,
+				amountIn: formatUnits(amountIn, tokenIn.decimals),
+				amountOutEstimated: formatUnits(BigInt(quote.amountOutEstimated), tokenOut.decimals),
+			},
 		});
 		await updateSwapQuoteStatus(c.env, quoteId, "prepared");
 

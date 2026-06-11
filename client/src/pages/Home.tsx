@@ -6,7 +6,7 @@ import Logo from "../components/Logo";
 import ReceiptModal from "../components/ReceiptModal";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
-import { parseTransactions, formatShortDate, type Transaction } from "../lib/transactions";
+import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const RECENT_COUNT = 5;
@@ -224,9 +224,7 @@ export default function Home({ user }: { user: User }) {
 										{received ? <IconReceive small /> : <IconSend small />}
 									</span>
 									<div className="min-w-0 flex-1">
-										<p className="text-[15px] truncate">
-											{received ? tx.reference || "Cobro recibido" : "Pago enviado"}
-										</p>
+										<p className="text-[15px] truncate">{txLabel(tx)}</p>
 										<p className="text-[12px] text-text-faint">{formatShortDate(tx.createdAt)}</p>
 									</div>
 									<span

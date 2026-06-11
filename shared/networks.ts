@@ -10,12 +10,6 @@
 
 export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
 
-// How /user/transactions reconstructs on-chain history:
-//   - "rpc":        scan ERC-20 Transfer logs via eth_getLogs (no API key)
-//   - "etherscan":  Etherscan-family API (Arbiscan, Snowtrace, Etherscan v2...) module=account
-//   - "blockscout": Blockscout v2 REST API
-export type HistoryProvider = "blockscout" | "rpc" | "etherscan";
-
 /** On-chain addresses for one deployment of the Parmelia contracts. */
 export type ContractAddresses = {
 	/** Canonical ERC-4337 EntryPoint v0.9 — same address on every chain. */
@@ -65,8 +59,6 @@ export type NetworkConfig = {
 	name: string;
 	nativeTokenSymbol: string;
 	explorerBaseUrl: string;
-	historyProvider: HistoryProvider;
-	historyApiBaseUrl: string | null;
 	faucetUrl: string | null;
 	faucetLabel: string | null;
 	contracts: ContractAddresses;
@@ -98,8 +90,6 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Base Sepolia",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
-		historyProvider: "blockscout",
-		historyApiBaseUrl: "https://base-sepolia.blockscout.com/api/v2",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
 		contracts: {
@@ -121,8 +111,6 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Arbitrum Sepolia",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://sepolia.arbiscan.io",
-		historyProvider: "rpc",
-		historyApiBaseUrl: null,
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
 		contracts: {
@@ -170,8 +158,6 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Arbitrum One",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://arbiscan.io",
-		historyProvider: "etherscan",
-		historyApiBaseUrl: "https://api.arbiscan.io/api",
 		faucetUrl: null,
 		faucetLabel: null,
 		contracts: {

@@ -8,6 +8,7 @@ import {
 	addContact,
 	countInvitedUsers,
 	deleteContact,
+	ensureReferralCode,
 	getUserByUid,
 	getUserByUsername,
 	listContacts,
@@ -84,16 +85,18 @@ contactsRoutes.delete("/:id", requireAuth, async (c) => {
 	return c.json({ success: true });
 });
 
-// Invitation stats: how many people created their account with my link.
+// Invitation stats: shareable code + how many people joined with it.
 contactsRoutes.get("/invites", requireAuth, async (c) => {
 	const user = c.get("user")!;
-	const [profile, invited] = await Promise.all([
+	const [profile, invited, referralCode] = await Promise.all([
 		getUserByUid(c.env, user.sub),
 		countInvitedUsers(c.env, user.sub),
+		ensureReferralCode(c.env, user.sub),
 	]);
 	return c.json({
 		invited,
 		username: profile?.username ?? null,
+		referralCode,
 	});
 });
 

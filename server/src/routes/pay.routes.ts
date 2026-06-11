@@ -26,10 +26,13 @@ import {
 	getPaymentLinkById,
 	getPendingPayment,
 	getUserByUid,
+	getUserByWallet,
 	markPaymentLinkPaid,
-	recordSentTransaction,
 	savePasskey,
 	saveUser,
+	updateSwapQuoteStatus,
+	writeLedgerEntries,
+	type LedgerEntry,
 } from "../services/storage";
 import {
 	PAYMASTER_POST_OP_GAS_LIMIT,
@@ -492,22 +495,13 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 
 		const createdAt = new Date().toISOString();
 		const isAccountAction = NON_PAYMENT_CURRENCIES.has(pending.currency);
-
-		if (!isAccountAction) {
-			await recordSentTransaction(c.env, {
-				uid: user.sub,
-				txHash,
-				amount: pending.amount || "0",
-				currency: pending.currency || "USDC",
-				to: pending.wallet || "",
-				createdAt,
-			});
-		}
-
 		const linkId = pending.linkId;
+		let linkReference: string | null = null;
+
 		if (!isAccountAction && isStoredPaymentLink(linkId)) {
 			const link = await getPaymentLinkById(c.env, linkId);
 			if (link) {
+				linkReference = link.reference || null;
 				await markPaymentLinkPaid(c.env, {
 					id: linkId,
 					amount: pending.amount || link.amount,
@@ -516,6 +510,78 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 					paidBy: pending.senderAddress || "",
 				});
 			}
+		}
+
+		// Ledger writes — the app is the source of truth for everything it relays:
+		// the payer always gets an "out" row, and if the recipient is a Parmelia
+		// user they get their "in" row immediately (no chain scanning needed).
+		if (pending.currency === "SWAP") {
+			const meta = pending.meta ?? {};
+			const swapEntries: LedgerEntry[] = [];
+			if (typeof meta.tokenIn === "string" && typeof meta.amountIn === "string") {
+				swapEntries.push({
+					uid: user.sub,
+					direction: "out" as const,
+					kind: "swap" as const,
+					txHash,
+					token: meta.tokenIn,
+					amount: meta.amountIn,
+					counterparty: pending.senderAddress,
+					reference: typeof meta.tokenOut === "string" ? `Cambio a ${meta.tokenOut}` : null,
+					createdAt,
+				});
+			}
+			if (typeof meta.tokenOut === "string" && typeof meta.amountOutEstimated === "string") {
+				swapEntries.push({
+					uid: user.sub,
+					direction: "in" as const,
+					kind: "swap" as const,
+					txHash,
+					token: meta.tokenOut,
+					// Estimate at quote time; TODO: refine from receipt logs later.
+					amount: meta.amountOutEstimated,
+					counterparty: pending.senderAddress,
+					reference: typeof meta.tokenIn === "string" ? `Cambio desde ${meta.tokenIn}` : null,
+					createdAt,
+				});
+			}
+			if (swapEntries.length > 0) await writeLedgerEntries(c.env, swapEntries);
+			if (typeof meta.quoteId === "string") {
+				await updateSwapQuoteStatus(c.env, meta.quoteId, "executed");
+			}
+		} else if (!isAccountAction) {
+			const recipient = await getUserByWallet(c.env, pending.wallet || "");
+			const entries: LedgerEntry[] = [
+				{
+					uid: user.sub,
+					direction: "out",
+					kind: "payment",
+					txHash,
+					token: pending.currency || "USDC",
+					amount: pending.amount || "0",
+					counterparty: pending.wallet || null,
+					counterpartyUid: recipient?.uid ?? null,
+					reference: linkReference,
+					linkId: isStoredPaymentLink(linkId) ? linkId : null,
+					createdAt,
+				},
+			];
+			if (recipient && recipient.uid !== user.sub) {
+				entries.push({
+					uid: recipient.uid,
+					direction: "in",
+					kind: isStoredPaymentLink(linkId) ? "link" : "payment",
+					txHash,
+					token: pending.currency || "USDC",
+					amount: pending.amount || "0",
+					counterparty: pending.senderAddress || null,
+					counterpartyUid: user.sub,
+					reference: linkReference,
+					linkId: isStoredPaymentLink(linkId) ? linkId : null,
+					createdAt,
+				});
+			}
+			await writeLedgerEntries(c.env, entries);
 		}
 
 		await deletePendingPayment(c.env, userOpHash);
