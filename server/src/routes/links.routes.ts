@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getNetworkConfig } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	createPaymentLink,
@@ -24,9 +25,13 @@ linksRoutes.post("/", requireAuth, async (c) => {
 		return c.json({ error: normalizedAmount.error }, 400);
 	}
 
-	const normalizedCurrency = normalizeCurrency(currency, "USDC");
+	const network = getNetworkConfig(c.env.CHAIN_KEY);
+	const allowedCurrencies = network.tokens.length
+		? network.tokens.map((t) => t.symbol)
+		: ["USDC", "ETH"];
+	const normalizedCurrency = normalizeCurrency(currency, allowedCurrencies, "USDC");
 	if (!normalizedCurrency) {
-		return c.json({ error: "Currency must be USDC or ETH" }, 400);
+		return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})` }, 400);
 	}
 
 	const profile = await getUserByUid(c.env, user.sub);

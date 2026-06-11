@@ -9,6 +9,9 @@ import accountRoutes from "./routes/account.routes";
 import linksRoutes from "./routes/links.routes";
 import txRoutes from "./routes/transactions.routes";
 import payRoutes from "./routes/pay.routes";
+import swapRoutes from "./routes/swap.routes";
+import contactsRoutes from "./routes/contacts.routes";
+import bridgeRoutes from "./routes/bridge.routes";
 
 const app = new Hono<AppContext>();
 
@@ -42,6 +45,9 @@ app.route("/user", userRoutes);
 app.route("/account", accountRoutes);
 app.route("/links", linksRoutes);
 app.route("/pay", payRoutes);
+app.route("/swap", swapRoutes);
+app.route("/contacts", contactsRoutes);
+app.route("/bridge", bridgeRoutes);
 
 app.onError((error, c) => {
 	const requestId = getRequestId((name) => c.req.header(name));

@@ -12,6 +12,16 @@ export type Bindings = {
 	CHAIN_KEY?: SupportedChainKey;
 	/** Comma-separated allowlist of CORS origins. Unset => allow any origin. */
 	ALLOWED_ORIGINS?: string;
+	/** Service fees (Módulo 3). Fees are OFF unless this is exactly "true". */
+	PARMELIA_FEES_ENABLED?: string;
+	/** Swap service fee in bps (e.g. "30" = 0.30%). Capped by MAX + hard cap. */
+	PARMELIA_SWAP_FEE_BPS?: string;
+	/** Env-level fee ceiling in bps; code hard-caps at 100 (1%) regardless. */
+	PARMELIA_MAX_FEE_BPS?: string;
+	/** Fee recipient for the active chain. Required for fees to activate. */
+	PARMELIA_TREASURY_ADDRESS?: string;
+	/** Cross-chain withdrawal spread in bps (capped at 100 in code). */
+	PARMELIA_CROSSCHAIN_FEE_BPS?: string;
 };
 
 export type Variables = {

@@ -33,19 +33,19 @@ export function normalizeLinkAmount(amount: unknown): { value?: string; error?: 
 }
 
 /**
- * Currency must be USDC or ETH. Empty/nullish returns `fallback`
- * (pass "USDC" for the link flow, leave null for the strict pay flow).
+ * Currency must be one of the chain's whitelisted symbols. Empty/nullish
+ * returns `fallback` (pass "USDC" for the link flow, null for strict flows).
  */
 export function normalizeCurrency(
 	currency: unknown,
-	fallback: "USDC" | "ETH" | null = null,
-): "USDC" | "ETH" | null {
+	allowed: readonly string[],
+	fallback: string | null = null,
+): string | null {
 	if (currency === undefined || currency === null || String(currency).trim() === "") {
 		return fallback;
 	}
 	const normalized = String(currency).trim().toUpperCase();
-	if (normalized === "USDC" || normalized === "ETH") return normalized;
-	return null;
+	return allowed.includes(normalized) ? normalized : null;
 }
 
 export function normalizeWalletAddress(wallet: unknown): `0x${string}` | null {

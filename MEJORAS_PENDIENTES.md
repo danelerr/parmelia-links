@@ -30,9 +30,9 @@ Sin esto la app no opera en la nueva cadena.
 | 7 | **Least-privilege de claves**: separar deployer / faucet / guardian / relayer en EOAs distintas | Reduce blast radius si una clave se filtra | Bajo (config de deploy) |
 | 8 | **Guardian fuera de la clave caliente** del relayer (clave dedicada o multisig) | El guardian de todas las wallets hoy es el EOA del server | Medio |
 | 9 | **Rate limiting + Turnstile** en endpoints públicos (`/account/create`, `/account/fund`) | Anti-abuso antes de abrir al público | Medio |
-| 10 | **Setear `ALLOWED_ORIGINS`** en prod (CORS ya es configurable) | Defensa en profundidad | Trivial |
-| 11 | **`user.name`/`displayName` del passkey** usar email/nombre en vez del `uid` | Cosmético: el diálogo del SO muestra un string críptico | Bajo |
-| 12 | Evitar el fallback constante `"parmelia-user"` como `user.id` de WebAuthn | Caso borde: dos users sin uid se pisan la resident key | Trivial |
+| 10 | ~~Setear `ALLOWED_ORIGINS`~~ | ✅ Hecho: allowlist en `wrangler.jsonc` (parmelia.me + www + localhost). Agregar dominios de preview si se usan. | — |
+| 11 | ~~Label humano del passkey~~ | ✅ Hecho: `createPasskey(uid, label)` — el diálogo del SO muestra email/nombre; el `uid` sigue siendo el id estable. | — |
+| 12 | ~~Fallback `"parmelia-user"`~~ | ✅ Hecho: sin uid se corta con error de sesión en vez de un id compartido. | — |
 
 ---
 
@@ -61,7 +61,7 @@ Sin esto la app no opera en la nueva cadena.
 
 | # | Tarea | Por qué no se hizo ya |
 |---|---|---|
-| 20 | `CHECK (currency IN ('USDC','ETH'))` en `payment_links` | SQLite no permite `ALTER ADD CHECK`; requiere rebuild de tabla sobre datos existentes. |
+| 20 | ~~`CHECK (currency ...)` en `payment_links`~~ | ❌ Descartado: la whitelist de monedas ahora es **config por red** (`shared/networks.ts`, incluye WBTC) — un CHECK fijo en la DB pelearía con la config. La validación server-side (`normalizeCurrency` + whitelist) es la fuente de verdad. |
 | 21 | Normalizar direcciones a minúscula | Cambio de comportamiento; las comparaciones críticas ya hacen `lowercase`. |
 | 22 | `amount` como entero raw (smallest unit) | El string decimal está bien; raw habilitaría `SUM()` en SQL pero es cambio mayor (YAGNI). |
 | 23 | Tabla `transactions`/ledger unificada | Ligado al indexer (#14); es la dirección futura del historial. |
@@ -72,12 +72,12 @@ Sin esto la app no opera en la nueva cadena.
 
 | # | Tarea | Notas |
 |---|---|---|
-| 24 | **PWA instalable** (manifest + service worker + push) | Para retención del comerciante. **No forzar** la instalación (rompería el funnel del pagador). |
+| 24 | ~~PWA instalable~~ | 🟡 Casi: manifest + service worker (shell cache-first para assets, network-first para navegación; la API jamás se cachea) + registro solo en prod. **Pendiente:** exportar iconos PNG 192/512 + apple-touch-icon 180px desde los assets de marca (iOS ignora SVG) y push notifications. |
 | 25 | **App nativa (Expo/React Native)** | Post-PMF, enfocada al comerciante. Mismo RP ID de passkeys + push. Las skills de RN ya están instaladas. |
 | 26 | **Tests de cliente / E2E** | Hoy el cliente no tiene tests. |
-| 27 | **Comprobantes detallados** | Colocar fecha, hora y número de comprobante (hash de la transacción) en los recibos/comprobantes para validación rápida. |
-| 28 | **Pantalla de extractos y filtros temporales** | Sección dedicada (evitando sobrecargar el Home) para buscar y filtrar transacciones por mes, semana, hace 2 meses y fechas personalizadas. |
-| 29 | **Contactos e invitaciones (Ajustes)** | Pantalla para agregar/visualizar "Amigos" o "Contactos", con opción de invitar nuevos usuarios y contador de invitaciones exitosas. |
+| 27 | ~~Comprobantes detallados~~ | ✅ Hecho: fecha, hora y N° de comprobante (tx hash) en el bloque inferior del modal (`ReceiptModal`) y en `PaymentStatus`. |
+| 28 | ~~Pantalla de extractos y filtros temporales~~ | ✅ Hecho: Home compacto ("Actividad reciente", 5 + "Ver extracto completo") y página `/extractos` con rangos rápidos (semana/mes/2 meses), rango personalizado, filtro por moneda y por tipo (enviados/recibidos/cobros por link — campo `kind` del server). |
+| 29 | ~~Contactos e invitaciones~~ | ✅ Hecho: página `/contactos` (agregar por usuario, pagar en un toque, eliminar), invitación con `?ref=` + contador de invitados (migración 0004, `/contacts/*`, atribución en `/account/create`). Entrada en Ajustes. |
 
 ---
 
@@ -93,14 +93,14 @@ Sin esto la app no opera en la nueva cadena.
 
 ---
 
-## Funcionalidades de Negocio y Tokens Pendientes
+## Funcionalidades de Negocio y Tokens Pendientes (100% Arbitrum)
 
 | # | Tarea | Notas |
 |---|---|---|
-| 35 | **Soporte de Tokens Adicionales (WBTC y MON)** | Integrar contratos, logos y decimales de WBTC y MON en `shared/networks.ts` y en la UI del cliente (actualmente la app solo soporta USDC y ETH, **sin soporte para Bitcoin/WBTC**). |
-| 36 | **Intercambios Nativos (Swaps in-app)** | Integrar agregadores (Uniswap/1inch) en servidor (`/swap/quote`, `/swap/prepare`) y diseñar en el cliente la UI de selector de pares y confirmación con passkey. |
-| 37 | **Modo Ahorro / Rendimiento (Earn Mode)** | Integrar protocolos DeFi (Aave/Silo/Vaults ERC-4626), implementar cobro de *Performance Fee* en `postOp` del Paymaster y diseñar UI de APY variable y depósito/retiro a un clic. |
-| 38 | **Depósitos y Retiros Cross-Chain (Intents)** | Conectar solvers cross-chain (Uniswap ERC-7683/Across) en backend para bridge/swap automático cobrando spread y diseñar UI de selección de redes. |
+| 35 | ~~Soporte de Tokens Adicionales~~ | ✅ Hecho: **WBTC** (8 dec, `0x2f2a...5B0f`) whitelisted en `shared/networks.ts` (Arbitrum One); selector de saldo en Home, pagos/links genéricos por whitelist (server), balance en `/user/balance`. WETH es interno (wrap de rutas), no se muestra al usuario. Sin WBTC canónico en Sepolia (omitido a propósito). |
+| 36 | ~~Intercambios Nativos (Swaps)~~ | ✅ Hecho: `/swap/quote` + `/swap/prepare` (quoters v3+v4 on-chain, Universal Router, fees con hard cap 1%), página `/cambiar` con confirmación passkey. Pendiente: smoke test on-chain tras el deploy P0. |
+| 37 | **Modo Ahorro / Rendimiento (Earn en Arbitrum)** | Diseñado en `DEFI_DESIGN.md` §4 (LP v3 primero, 3 niveles de riesgo, performance fee sobre fees). Implementación pendiente. |
+| 38 | **Depósitos y Retiros Cross-Chain** | 🟡 Parcial: quotes reales vía API pública de Across (`/bridge/config`, `/bridge/quote`) + página `/depositar` (depósitos continúan en Across con la cuenta del usuario prefijada — sin custodia; retiros: cotizados, ejecución desde la smart account = siguiente paso, requiere SpokePool verificado). Direcciones USDC externas: re-verificar contra Circle antes de mainnet. |
 
 ---
 

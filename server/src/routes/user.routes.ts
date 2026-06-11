@@ -63,24 +63,49 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	const walletAddress = profile?.walletAddress ?? undefined;
 	if (!walletAddress) return c.json({ error: "No wallet" }, 404);
 
-	const { usdc, usdcDecimals } = getNetworkConfig(c.env.CHAIN_KEY).contracts;
+	const network = getNetworkConfig(c.env.CHAIN_KEY);
+	const { usdc, usdcDecimals } = network.contracts;
 	const publicClient = getPublicClient(c.env);
+	const account = walletAddress as `0x${string}`;
 
-	const [ethBalanceWei, usdcBalanceRaw] = await Promise.all([
-		publicClient.getBalance({ address: walletAddress as `0x${string}` }),
+	// Extra whitelisted ERC-20s beyond USDC (e.g. WBTC) for the swap UI.
+	const extraTokens = network.tokens.filter(
+		(t) => t.address && t.address.toLowerCase() !== usdc.toLowerCase(),
+	);
+
+	const [ethBalanceWei, usdcBalanceRaw, ...extraRaw] = await Promise.all([
+		publicClient.getBalance({ address: account }),
 		publicClient.readContract({
 			address: usdc,
 			abi: erc20Abi,
 			functionName: "balanceOf",
-			args: [walletAddress as `0x${string}`],
+			args: [account],
 		}) as Promise<bigint>,
+		...extraTokens.map(
+			(t) =>
+				publicClient.readContract({
+					address: t.address!,
+					abi: erc20Abi,
+					functionName: "balanceOf",
+					args: [account],
+				}) as Promise<bigint>,
+		),
 	]);
+
+	const tokens: Record<string, string> = {
+		ETH: formatEther(ethBalanceWei),
+		USDC: formatUnits(usdcBalanceRaw, usdcDecimals),
+	};
+	extraTokens.forEach((t, i) => {
+		tokens[t.symbol] = formatUnits(extraRaw[i], t.decimals);
+	});
 
 	return c.json({
 		eth: formatEther(ethBalanceWei),
 		usdc: formatUnits(usdcBalanceRaw, usdcDecimals),
 		ethRaw: ethBalanceWei.toString(),
 		usdcRaw: usdcBalanceRaw.toString(),
+		tokens,
 	});
 });
 

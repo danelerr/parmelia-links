@@ -13,6 +13,9 @@
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
     "CHAIN_KEY": "arbitrum-sepolia",
+    // CORS allowlist (defense in depth — real auth is Firebase token + passkey).
+    // Add Vercel preview domains here if you test against previews.
+    "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173",
   },
 
   "observability": {

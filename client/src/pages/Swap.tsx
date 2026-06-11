@@ -1,0 +1,398 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { sileo } from "sileo";
+import type { User } from "../lib/firebase";
+import { fetchWithAuth } from "../lib/authFetch";
+import { signWithPasskey } from "../lib/webauthn";
+import { hexToBytes } from "../lib/hex";
+import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
+import { useViewTransitionNavigate } from "../hooks/useNav";
+import Logo from "../components/Logo";
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
+
+type SwapToken = { symbol: string; name: string; decimals: number; isNative: boolean };
+
+type Quote = {
+	quoteId: string;
+	tokenIn: string;
+	tokenOut: string;
+	amountIn: string;
+	amountOutEstimated: string;
+	minimumAmountOut: string;
+	parmeliaFeeBps: number;
+	parmeliaFee: string;
+	route: string;
+	slippageBps: number;
+	expiresAt: string;
+};
+
+type SwapStage = "idle" | "preparing" | "signing" | "sending";
+
+function BackButton({ onClick }: { onClick: () => void }) {
+	return (
+		<button
+			onClick={onClick}
+			aria-label="Volver"
+			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
+		>
+			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+				<path d="M19 12H5" />
+				<path d="M12 19l-7-7 7-7" />
+			</svg>
+		</button>
+	);
+}
+
+function StageOverlay({ stage }: { stage: SwapStage }) {
+	if (stage === "idle") return null;
+	const copy: Record<Exclude<SwapStage, "idle">, string> = {
+		preparing: "Preparando operación segura…",
+		signing: "Confirma con tu huella",
+		sending: "Cambiando tus tokens…",
+	};
+	return (
+		<div className="fixed inset-0 z-50 bg-bg/92 backdrop-blur-sm flex flex-col items-center justify-center gap-6 animate-fade-in">
+			<Logo className="w-16 animate-float-glow" />
+			<div className="flex flex-col items-center gap-3">
+				{stage !== "signing" && (
+					<div className="w-6 h-6 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
+				)}
+				<p className="text-[16px] text-text font-display">{copy[stage]}</p>
+			</div>
+		</div>
+	);
+}
+
+export default function Swap({ user }: { user: User }) {
+	const navigate = useViewTransitionNavigate();
+	const [tokens, setTokens] = useState<SwapToken[]>([]);
+	const [swapsEnabled, setSwapsEnabled] = useState(true);
+	const [balances, setBalances] = useState<Record<string, string>>({});
+	const [tokenIn, setTokenIn] = useState("USDC");
+	const [tokenOut, setTokenOut] = useState("ETH");
+	const [amount, setAmount] = useState("");
+	const [quote, setQuote] = useState<Quote | null>(null);
+	const [quoting, setQuoting] = useState(false);
+	const [quoteError, setQuoteError] = useState("");
+	const [stage, setStage] = useState<SwapStage>("idle");
+	const [showDetails, setShowDetails] = useState(false);
+	const [result, setResult] = useState<{ txHash: string; received: string } | null>(null);
+	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	const loadBalances = useCallback(async () => {
+		try {
+			const res = await fetchWithAuth(user, `${SERVER_URL}/user/balance`);
+			if (!res.ok) return;
+			const data = await res.json();
+			setBalances(data.tokens || { ETH: data.eth, USDC: data.usdc });
+		} catch {
+			/* non-blocking */
+		}
+	}, [user]);
+
+	useEffect(() => {
+		(async () => {
+			try {
+				const res = await fetchWithAuth(user, `${SERVER_URL}/swap/tokens`);
+				if (!res.ok) throw new Error();
+				const data = await res.json();
+				setTokens(data.tokens || []);
+				setSwapsEnabled(!!data.swapsEnabled);
+			} catch {
+				setSwapsEnabled(false);
+			}
+		})();
+		void loadBalances();
+	}, [user, loadBalances]);
+
+	// Debounced quoting whenever the inputs change.
+	useEffect(() => {
+		setQuote(null);
+		setQuoteError("");
+		if (debounceRef.current) clearTimeout(debounceRef.current);
+		const value = Number(amount);
+		if (!amount || !Number.isFinite(value) || value <= 0 || tokenIn === tokenOut) return;
+
+		debounceRef.current = setTimeout(async () => {
+			setQuoting(true);
+			try {
+				const res = await fetchWithAuth(user, `${SERVER_URL}/swap/quote`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ tokenIn, tokenOut, amountIn: amount }),
+				});
+				const data = await res.json();
+				if (!res.ok) throw new Error(data.error || "No pudimos cotizar");
+				setQuote(data as Quote);
+			} catch (err) {
+				setQuoteError(err instanceof Error ? err.message : "No pudimos cotizar");
+			} finally {
+				setQuoting(false);
+			}
+		}, 450);
+
+		return () => {
+			if (debounceRef.current) clearTimeout(debounceRef.current);
+		};
+	}, [amount, tokenIn, tokenOut, user]);
+
+	function flip() {
+		setTokenIn(tokenOut);
+		setTokenOut(tokenIn);
+		setQuote(null);
+	}
+
+	async function handleSwap() {
+		if (!quote) return;
+		setStage("preparing");
+		try {
+			const prepRes = await fetchWithAuth(user, `${SERVER_URL}/swap/prepare`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ quoteId: quote.quoteId }),
+			});
+			const prep = await prepRes.json();
+			if (!prepRes.ok) throw new Error(prep.error || "No pudimos preparar el cambio");
+
+			setStage("signing");
+			const assertion = await signWithPasskey(
+				hexToBytes(prep.userOpHash as `0x${string}`),
+				prep.credentialId,
+			);
+
+			setStage("sending");
+			const submitRes = await fetchWithAuth(user, `${SERVER_URL}/pay/submit`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					userOpHash: prep.userOpHash,
+					authenticatorData: assertion.authenticatorData,
+					clientDataJSON: assertion.clientDataJSON,
+					r: assertion.r,
+					s: assertion.s,
+					credentialId: assertion.credentialId,
+					qx: assertion.qx,
+					qy: assertion.qy,
+				}),
+			});
+			const submit = await submitRes.json();
+			if (!submitRes.ok) throw new Error(submit.error || "El cambio falló");
+
+			setResult({ txHash: submit.txHash, received: quote.amountOutEstimated });
+			setQuote(null);
+			setAmount("");
+			void loadBalances();
+		} catch (err) {
+			sileo.error({
+				title: "No se pudo completar el cambio",
+				description: err instanceof Error ? err.message : "Intenta de nuevo",
+			});
+		} finally {
+			setStage("idle");
+		}
+	}
+
+	const balanceIn = balances[tokenIn];
+	const tokenOptions = tokens.map((t) => t.symbol);
+
+	// ===== Success screen =====
+	if (result) {
+		return (
+			<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+				<header className="flex items-center">
+					<BackButton onClick={() => navigate("/")} />
+				</header>
+				<div className="flex-1 flex flex-col items-center justify-center text-center">
+					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky">
+						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="20 6 9 17 4 12" />
+						</svg>
+					</div>
+					<p className="text-[15px] text-text-muted mb-1">¡Listo! Recibiste aproximadamente</p>
+					<p className="font-display text-[40px] leading-none tabular mb-4">
+						{Number(result.received).toLocaleString("en-US", { maximumFractionDigits: 6 })}
+						<span className="text-text-muted text-[20px] ml-1.5">{tokenOut}</span>
+					</p>
+					<p className="text-[13px] text-text-faint mb-2">Tus fondos ya están actualizados.</p>
+					<a
+						href={getExplorerTxUrl(result.txHash)}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="text-text-faint text-[12px]"
+					>
+						Ver comprobante en la red ↗
+					</a>
+				</div>
+				<button onClick={() => setResult(null)} className="btn btn-primary btn-block">
+					Hacer otro cambio
+				</button>
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+			<StageOverlay stage={stage} />
+			<header className="flex items-center gap-3 mb-7">
+				<BackButton onClick={() => navigate("/")} />
+				<h1 className="text-[22px]">Cambiar</h1>
+			</header>
+
+			{!swapsEnabled ? (
+				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+					<Logo className="w-12 mb-5 opacity-40" />
+					<p className="text-[15px] text-text mb-1">Los cambios aún no están disponibles</p>
+					<p className="text-[13px] text-text-muted max-w-[260px] leading-relaxed">
+						Estamos preparando esta función en {activeNetwork.name}. Vuelve pronto.
+					</p>
+				</div>
+			) : (
+				<>
+					{/* From */}
+					<div className="bg-surface border border-border rounded-[18px] p-5 mb-2 shadow-e1">
+						<div className="flex items-center justify-between mb-3">
+							<span className="text-[13px] text-text-muted">Cambias</span>
+							{balanceIn !== undefined && (
+								<button
+									onClick={() => setAmount(balanceIn)}
+									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
+								>
+									Saldo: {Number(balanceIn).toLocaleString("en-US", { maximumFractionDigits: 6 })} · Usar todo
+								</button>
+							)}
+						</div>
+						<div className="flex items-center gap-3">
+							<input
+								type="number"
+								placeholder="0"
+								value={amount}
+								onChange={(e) => setAmount(e.target.value)}
+								step="any"
+								min="0"
+								inputMode="decimal"
+								autoFocus
+								className="flex-1 min-w-0 bg-transparent font-display text-[34px] leading-none text-text placeholder:text-text-faint tabular"
+							/>
+							<div className="seg-track shrink-0">
+								{tokenOptions.map((s) => (
+									<button
+										key={s}
+										onClick={() => {
+											if (s === tokenOut) flip();
+											else setTokenIn(s);
+										}}
+										data-active={tokenIn === s}
+										className="seg-item"
+									>
+										{s}
+									</button>
+								))}
+							</div>
+						</div>
+					</div>
+
+					{/* Flip */}
+					<div className="flex justify-center -my-1 relative z-1">
+						<button
+							onClick={flip}
+							aria-label="Invertir"
+							className="w-10 h-10 rounded-full bg-surface-2 border border-border-strong flex items-center justify-center text-text-muted hover:text-text transition-colors"
+						>
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<path d="m7 4 0 16" />
+								<path d="m3 8 4-4 4 4" />
+								<path d="m17 20 0-16" />
+								<path d="m13 16 4 4 4-4" />
+							</svg>
+						</button>
+					</div>
+
+					{/* To */}
+					<div className="bg-surface border border-border rounded-[18px] p-5 mt-2 mb-5 shadow-e1">
+						<div className="flex items-center justify-between mb-3">
+							<span className="text-[13px] text-text-muted">Recibes (estimado)</span>
+							{quoting && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
+						</div>
+						<div className="flex items-center gap-3">
+							<p className="flex-1 min-w-0 font-display text-[34px] leading-none tabular truncate text-text">
+								{quote
+									? Number(quote.amountOutEstimated).toLocaleString("en-US", { maximumFractionDigits: 6 })
+									: quoting
+										? "…"
+										: "0"}
+							</p>
+							<div className="seg-track shrink-0">
+								{tokenOptions.map((s) => (
+									<button
+										key={s}
+										onClick={() => {
+											if (s === tokenIn) flip();
+											else setTokenOut(s);
+										}}
+										data-active={tokenOut === s}
+										className="seg-item"
+									>
+										{s}
+									</button>
+								))}
+							</div>
+						</div>
+					</div>
+
+					{quoteError && (
+						<p className="text-glow-pink text-[13px] text-center mb-4">{quoteError}</p>
+					)}
+
+					{quote && (
+						<div className="bg-surface border border-border rounded-[18px] px-5 py-4 mb-5">
+							<div className="flex items-center justify-between text-[13px] mb-1.5">
+								<span className="text-text-muted">Recibirás como mínimo</span>
+								<span className="text-text tabular">
+									{Number(quote.minimumAmountOut).toLocaleString("en-US", { maximumFractionDigits: 6 })} {quote.tokenOut}
+								</span>
+							</div>
+							<div className="flex items-center justify-between text-[13px]">
+								<span className="text-text-muted">Comisión de red</span>
+								<span className="text-glow-sky">Cubierta por Parmelia</span>
+							</div>
+							{quote.parmeliaFeeBps > 0 && (
+								<div className="flex items-center justify-between text-[13px] mt-1.5">
+									<span className="text-text-muted">Servicio Parmelia ({(quote.parmeliaFeeBps / 100).toFixed(2)}%)</span>
+									<span className="text-text tabular">
+										{Number(quote.parmeliaFee).toLocaleString("en-US", { maximumFractionDigits: 6 })} {quote.tokenOut}
+									</span>
+								</div>
+							)}
+							<button
+								onClick={() => setShowDetails(!showDetails)}
+								className="text-[12px] text-text-faint hover:text-text-muted transition-colors mt-2.5"
+							>
+								{showDetails ? "Ocultar detalles" : "Ver detalles"}
+							</button>
+							{showDetails && (
+								<div className="mt-2 pt-2 border-t border-border text-[12px] text-text-faint leading-relaxed">
+									<p>Ruta: {quote.route}</p>
+									<p>Tolerancia de precio: {(quote.slippageBps / 100).toFixed(2)}%</p>
+									<p>Red: {activeNetwork.name}</p>
+								</div>
+							)}
+						</div>
+					)}
+
+					<div className="flex-1" />
+
+					<button
+						onClick={handleSwap}
+						disabled={!quote || quoting || stage !== "idle"}
+						className="btn btn-gradient btn-block"
+					>
+						{quoting ? "Buscando mejor ruta…" : "Cambiar"}
+					</button>
+					<p className="text-[12px] text-text-faint text-center mt-3">
+						Confirmas con tu huella. Sin comisiones de red.
+					</p>
+				</>
+			)}
+		</div>
+	);
+}

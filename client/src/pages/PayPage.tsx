@@ -114,7 +114,6 @@ export default function PayPage({ user }: { user: User | null }) {
 	const currencyParam = searchParams.get("currency") || "USDC";
 	const refParam = searchParams.get("ref");
 	const walletParam = searchParams.get("wallet");
-	const symbol = activeNetwork.nativeTokenSymbol;
 
 	useEffect(() => {
 		const slowTimer = setTimeout(() => setSlowConnection(true), 5000);
@@ -369,9 +368,9 @@ export default function PayPage({ user }: { user: User | null }) {
 						className={bigInput}
 					/>
 					<div className="seg-track mt-4">
-						{(["USDC", "ETH"] as const).map((c) => (
+						{activeNetwork.currencies.map((c) => (
 							<button key={c} onClick={() => setPayCurrency(c)} data-active={payCurrency === c} className="seg-item">
-								{c === "USDC" ? "USDC" : symbol}
+								{c}
 							</button>
 						))}
 					</div>
@@ -517,7 +516,7 @@ export default function PayPage({ user }: { user: User | null }) {
 							className={bigInput}
 						/>
 						<div className="seg-track mt-4">
-							{(["USDC", "ETH"] as const).map((c) => {
+							{activeNetwork.currencies.map((c) => {
 								// Stored links fix the currency; only direct/username let you choose.
 								const fixed = isStoredLink;
 								const value = fixed ? linkData.currency : payCurrency;
@@ -529,7 +528,7 @@ export default function PayPage({ user }: { user: User | null }) {
 										data-active={value === c}
 										className={`seg-item ${fixed && c !== linkData.currency ? "opacity-30" : ""}`}
 									>
-										{c === "USDC" ? "USDC" : symbol}
+										{c}
 									</button>
 								);
 							})}

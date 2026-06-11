@@ -13,6 +13,8 @@ export type NetworkConfig = {
 	explorerBaseUrl: string;
 	faucetUrl: string | null;
 	faucetLabel: string | null;
+	/** Whitelisted display currencies on this chain (must mirror shared/networks tokens). */
+	currencies: string[];
 };
 
 export const DEFAULT_CHAIN_KEY: SupportedChainKey = "arbitrum-sepolia";
@@ -25,6 +27,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
+		currencies: ["USDC", "ETH"],
 	},
 	"arbitrum-sepolia": {
 		key: "arbitrum-sepolia",
@@ -33,6 +36,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		explorerBaseUrl: "https://sepolia.arbiscan.io",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
+		currencies: ["USDC", "ETH"],
 	},
 	"arbitrum-one": {
 		key: "arbitrum-one",
@@ -41,6 +45,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		explorerBaseUrl: "https://arbiscan.io",
 		faucetUrl: null,
 		faucetLabel: null,
+		currencies: ["USDC", "ETH", "WBTC"],
 	},
 };
 

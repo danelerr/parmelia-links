@@ -36,9 +36,14 @@ type WindowWithBarcodeDetector = Window & {
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const SCAN_INTERVAL_MS = 180;
-const MAX_LIVE_ANALYSIS_WIDTH = 1280;
+// jsQR cost grows ~quadratically with width and it runs on the main thread —
+// keep live analysis small so it never starves rendering. QR codes at arm's
+// length decode reliably at 640px; imported images get the full-quality pass.
+const MAX_LIVE_ANALYSIS_WIDTH = 640;
 const MAX_IMAGE_ANALYSIS_WIDTH = 1600;
 const QR_SCAN_CROP_RATIOS = [1, 0.72] as const;
+
+type InversionAttempts = "dontInvert" | "onlyInvert" | "attemptBoth" | "invertFirst";
 
 function decodeWithJsQR(
   source: CanvasImageSource,
@@ -47,6 +52,7 @@ function decodeWithJsQR(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   maxAnalysisWidth: number,
+  inversionAttempts: InversionAttempts = "attemptBoth",
 ) {
   for (const cropRatio of QR_SCAN_CROP_RATIOS) {
     const cropWidth = Math.max(1, Math.floor(sourceWidth * cropRatio));
@@ -76,7 +82,7 @@ function decodeWithJsQR(
 
     const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
     const code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: "attemptBoth",
+      inversionAttempts,
     });
 
     if (code?.data) {
@@ -449,6 +455,8 @@ export default function ScanQR() {
         return;
       }
 
+      // Live scanning targets Parmelia QRs (dark-on-white plaques): skipping the
+      // inverted pass halves the per-frame decode cost.
       const fallbackResult = decodeWithJsQR(
         video,
         sourceWidth,
@@ -456,6 +464,7 @@ export default function ScanQR() {
         canvas,
         ctx,
         MAX_LIVE_ANALYSIS_WIDTH,
+        "dontInvert",
       );
 
       if (fallbackResult) {
@@ -686,10 +695,21 @@ export default function ScanQR() {
               <span className="absolute bottom-4 left-4 w-7 h-7 border-b-2 border-l-2 border-glow-sky rounded-bl-lg" />
               <span className="absolute bottom-4 right-4 w-7 h-7 border-b-2 border-r-2 border-glow-sky rounded-br-lg" />
               {!isImporting && (
-                <div
-                  className="absolute left-5 right-5 h-[2px] rounded-full animate-qr-scan"
-                  style={{ background: "linear-gradient(90deg, transparent, #f4a9cf, #9ce3f4, transparent)" }}
-                />
+                <div className="absolute inset-x-5 top-4 bottom-4 overflow-hidden">
+                  {/* Full-height runner with a 2px gradient strip at its top:
+                      translateY runs on the compositor, so the sweep stays
+                      smooth even while jsQR is busy on the main thread. */}
+                  <div
+                    className="h-full w-full animate-qr-scan"
+                    style={{
+                      background:
+                        "linear-gradient(90deg, transparent, #f4a9cf, #9ce3f4, transparent)",
+                      backgroundSize: "100% 2px",
+                      backgroundRepeat: "no-repeat",
+                      willChange: "transform",
+                    }}
+                  />
+                </div>
               )}
             </div>
 

@@ -12,6 +12,8 @@ type SentTransactionResponse = {
 	currency: string;
 	to: string;
 	createdAt: string;
+	/** "transfer" = direct send; payments are transfers too. */
+	kind: "transfer";
 };
 
 type ReceivedTransactionResponse = {
@@ -21,6 +23,8 @@ type ReceivedTransactionResponse = {
 	reference: string;
 	paidBy: string;
 	createdAt: string;
+	/** "link" = collected through a payment link; "transfer" = direct receive. */
+	kind: "link" | "transfer";
 };
 
 function sortByCreatedAtDesc<T extends { createdAt: string }>(items: T[]) {
@@ -51,6 +55,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 			currency: tx.currency,
 			to: tx.to,
 			createdAt: tx.createdAt,
+			kind: "transfer",
 		}),
 	);
 	const appReceived = paidLinks.map(
@@ -65,6 +70,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 					: "Transferencia On-chain"),
 			paidBy: link.paidBy || "",
 			createdAt: link.paidAt || link.createdAt,
+			kind: "link",
 		}),
 	);
 
@@ -83,6 +89,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 				currency: item.currency,
 				to: item.counterparty,
 				createdAt: item.createdAt,
+				kind: "transfer",
 				}),
 			);
 
@@ -101,6 +108,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 							: "Transferencia On-chain"),
 					paidBy: item.counterparty,
 					createdAt: link?.paidAt || item.createdAt,
+					kind: link ? "link" : "transfer",
 				};
 			});
 

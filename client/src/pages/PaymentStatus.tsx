@@ -90,15 +90,40 @@ export default function PaymentStatus() {
 						</p>
 					)}
 					<p className="text-[12px] text-text-faint relative z-1">
-						parmelia.me · Asegurado en {activeNetwork.name}
+						Asegurado en {activeNetwork.name}
 					</p>
+
+					{/* Formal receipt info */}
+					<div className="w-full border-t border-border mt-5 pt-4 relative z-1 flex flex-col gap-1.5">
+						<div className="flex items-center justify-between text-[12px]">
+							<span className="text-text-faint">Fecha</span>
+							<span className="text-text-muted">
+								{new Date().toLocaleDateString("es", { day: "numeric", month: "long", year: "numeric" })}
+							</span>
+						</div>
+						<div className="flex items-center justify-between text-[12px]">
+							<span className="text-text-faint">Hora</span>
+							<span className="text-text-muted">
+								{new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}
+							</span>
+						</div>
+						{txHash && (
+							<div className="flex items-center justify-between text-[12px] gap-3">
+								<span className="text-text-faint shrink-0">N° de comprobante</span>
+								<span className="text-text-muted font-mono truncate">
+									{txHash.slice(0, 10)}…{txHash.slice(-8)}
+								</span>
+							</div>
+						)}
+						<p className="text-[11px] text-text-faint text-center mt-2">parmelia.me</p>
+					</div>
 
 					{txHash && (
 						<a
 							href={getExplorerTxUrl(txHash)}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-text-faint text-[12px] mt-4 relative z-1"
+							className="text-text-faint text-[12px] mt-3 relative z-1"
 						>
 							Ver comprobante en la red ↗
 						</a>

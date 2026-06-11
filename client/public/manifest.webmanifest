@@ -1,0 +1,28 @@
+{
+	"name": "Parmelia",
+	"short_name": "Parmelia",
+	"description": "Mueve dinero digital como mandar un mensaje. Cobra con links, paga con QR, envía a usernames.",
+	"id": "/",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#0a0a0b",
+	"theme_color": "#0a0a0b",
+	"lang": "es",
+	"categories": ["finance"],
+	"icons": [
+		{
+			"src": "/parmelia.svg",
+			"sizes": "any",
+			"type": "image/svg+xml",
+			"purpose": "any"
+		},
+		{
+			"src": "/parmelia.svg",
+			"sizes": "any",
+			"type": "image/svg+xml",
+			"purpose": "maskable"
+		}
+	]
+}

@@ -17,6 +17,7 @@ import {
 	entryPointAbi,
 	erc20Abi,
 	getNetworkConfig,
+	getTokenBySymbol,
 } from "../../../shared";
 import {
 	createPendingPayment,
@@ -53,6 +54,10 @@ import { extractErrorMessage, getRequestId, logError, logInfo, logWarn } from ".
 
 const payRoutes = new Hono<AppContext>();
 
+// Pending ops that are account/DeFi actions rather than payments: they reuse
+// the same sign+submit pipeline but must not be recorded as transfers.
+const NON_PAYMENT_CURRENCIES = new Set(["PASSKEY_ADD", "SWAP"]);
+
 // Gas budget for the relayer's handleOps transaction (mirrors the UserOp gas budget
 // produced by buildSponsoredUserOp, plus the paymaster limits and tx overhead).
 const HANDLE_OPS_TX_GAS_OVERHEAD = 300000n;
@@ -63,6 +68,30 @@ const HANDLE_OPS_TX_GAS_LIMIT =
 	PAYMASTER_VERIFICATION_GAS_LIMIT +
 	PAYMASTER_POST_OP_GAS_LIMIT +
 	HANDLE_OPS_TX_GAS_OVERHEAD;
+
+/**
+ * Derive the relayer tx gas limit from the stored op itself, so ops with a
+ * larger call budget (e.g. swaps) are not strangled by the default constant.
+ * accountGasLimits packs verificationGas (16 bytes) | callGas (16 bytes).
+ */
+function handleOpsGasFor(raw: Record<string, unknown>): bigint {
+	try {
+		const packed = String(raw.accountGasLimits);
+		const verification = BigInt("0x" + packed.slice(2, 34));
+		const call = BigInt("0x" + packed.slice(34, 66));
+		const preVerification = BigInt(String(raw.preVerificationGas));
+		return (
+			verification +
+			call +
+			preVerification +
+			PAYMASTER_VERIFICATION_GAS_LIMIT +
+			PAYMASTER_POST_OP_GAS_LIMIT +
+			HANDLE_OPS_TX_GAS_OVERHEAD
+		);
+	} catch {
+		return HANDLE_OPS_TX_GAS_LIMIT;
+	}
+}
 
 function buildExecuteCalldata(target: `0x${string}`, value: bigint, data: Hex): Hex {
 	const mode = pad("0x01", { size: 32, dir: "right" }) as Hex;
@@ -105,13 +134,14 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 		const credentialId = profile?.credentialId ?? null;
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
-		const { usdc, usdcDecimals } = network.contracts;
-		const nativeTokenSymbol = network.nativeTokenSymbol;
+		const allowedCurrencies = network.tokens.length
+			? network.tokens.map((t) => t.symbol)
+			: ["USDC", "ETH"];
 		const { publicClient } = getClients(c.env);
 
 		let recipientAddress: `0x${string}` | null = null;
 		let paymentAmount: string | null = null;
-		let paymentCurrency: "USDC" | "ETH" | null = null;
+		let paymentCurrency: string | null = null;
 		let pendingLinkId: string | null = typeof linkId === "string" ? linkId : null;
 
 		if (isStoredPaymentLink(linkId)) {
@@ -126,11 +156,11 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			}
 
 			recipientAddress = normalizeWalletAddress(link.wallet);
-			paymentCurrency = normalizeCurrency(link.currency) ?? "USDC";
+			paymentCurrency = normalizeCurrency(link.currency, allowedCurrencies) ?? "USDC";
 			paymentAmount = Number(link.amount) > 0 ? link.amount : normalizePositiveAmount(body.amount);
 		} else {
 			recipientAddress = normalizeWalletAddress(body.wallet);
-			paymentCurrency = normalizeCurrency(body.currency);
+			paymentCurrency = normalizeCurrency(body.currency, allowedCurrencies);
 			paymentAmount = normalizePositiveAmount(body.amount);
 			// Client-side payment IDs like "manual", "direct", "username" are NOT
 			// real payment_links rows, so they must be stored as NULL to avoid
@@ -144,42 +174,56 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 		if (!paymentCurrency) {
 			logWarn("payment_prepare_invalid_currency", { requestId, uid: user.sub });
-			return c.json({ error: "Currency must be USDC or ETH", requestId }, 400);
+			return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})`, requestId }, 400);
 		}
 		if (!paymentAmount) {
 			logWarn("payment_prepare_invalid_amount", { requestId, uid: user.sub, currency: paymentCurrency });
 			return c.json({ error: "El monto debe ser mayor a 0", requestId }, 400);
 		}
 
+		// Resolve the asset from the whitelist; legacy chains without a token
+		// registry fall back to the USDC/native pair from `contracts`.
+		const token = getTokenBySymbol(network, paymentCurrency);
+		const isNative = token ? !!token.isNative : paymentCurrency === "ETH";
+		const tokenAddress = token?.address ?? network.contracts.usdc;
+		const tokenDecimals = token?.decimals ?? network.contracts.usdcDecimals;
+
 		let executeCalldata: Hex;
 
-		if (paymentCurrency === "USDC") {
-			let usdcAmount: bigint;
+		if (!isNative) {
+			let rawAmount: bigint;
 			try {
-				usdcAmount = parseUnits(paymentAmount, usdcDecimals);
+				rawAmount = parseUnits(paymentAmount, tokenDecimals);
 			} catch {
-				logWarn("payment_prepare_invalid_usdc_amount", { requestId, uid: user.sub, amount: paymentAmount });
-				return c.json({ error: "Monto inválido para USDC", requestId }, 400);
+				logWarn("payment_prepare_invalid_erc20_amount", { requestId, uid: user.sub, amount: paymentAmount, currency: paymentCurrency });
+				return c.json({ error: `Monto inválido para ${paymentCurrency}`, requestId }, 400);
 			}
 
-			const usdcBalance = (await publicClient.readContract({
-				address: usdc,
+			const erc20Balance = (await publicClient.readContract({
+				address: tokenAddress,
 				abi: erc20Abi,
 				functionName: "balanceOf",
 				args: [senderAddress as `0x${string}`],
 			})) as bigint;
-			if (usdcBalance < usdcAmount) {
-				logWarn("payment_prepare_insufficient_usdc", {
+			if (erc20Balance < rawAmount) {
+				logWarn("payment_prepare_insufficient_erc20", {
 					requestId,
 					uid: user.sub,
 					wallet: senderAddress,
-					balance: formatUnits(usdcBalance, usdcDecimals),
+					balance: formatUnits(erc20Balance, tokenDecimals),
 					amount: paymentAmount,
+					currency: paymentCurrency,
 				});
-				return c.json({ error: `Saldo USDC insuficiente (tienes ${formatUnits(usdcBalance, usdcDecimals)} USDC)`, requestId }, 400);
+				return c.json(
+					{
+						error: `Saldo ${paymentCurrency} insuficiente (tienes ${formatUnits(erc20Balance, tokenDecimals)} ${paymentCurrency})`,
+						requestId,
+					},
+					400,
+				);
 			}
-			const transferData = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipientAddress, usdcAmount] });
-			executeCalldata = buildExecuteCalldata(usdc, 0n, transferData);
+			const transferData = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipientAddress, rawAmount] });
+			executeCalldata = buildExecuteCalldata(tokenAddress, 0n, transferData);
 		} else {
 			let ethAmount: bigint;
 			try {
@@ -199,7 +243,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 					amount: paymentAmount,
 				});
 				return c.json({
-					error: `Saldo ${nativeTokenSymbol} insuficiente (tienes ${formatEther(ethBalance)} ${nativeTokenSymbol})`,
+					error: `Saldo ETH insuficiente (tienes ${formatEther(ethBalance)} ETH)`,
 					requestId,
 				}, 400);
 			}
@@ -383,13 +427,14 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			signature,
 		};
 
+		const handleOpsGas = handleOpsGasFor(raw);
 		logInfo("payment_submit_handleops_sending", {
 			requestId,
 			uid: user.sub,
 			userOpHash: userOpHashForLog,
 			entryPoint: contracts.entryPoint,
 			relayerAddress: serverAccount.address,
-			gasLimit: HANDLE_OPS_TX_GAS_LIMIT.toString(),
+			gasLimit: handleOpsGas.toString(),
 		});
 		try {
 			await publicClient.simulateContract({
@@ -398,20 +443,20 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 				abi: entryPointAbi,
 				functionName: "handleOps",
 				args: [[userOp], serverAccount.address],
-				gas: HANDLE_OPS_TX_GAS_LIMIT,
+				gas: handleOpsGas,
 			});
 			logInfo("payment_submit_handleops_simulation_ok", {
 				requestId,
 				uid: user.sub,
 				userOpHash: userOpHashForLog,
-				gasLimit: HANDLE_OPS_TX_GAS_LIMIT.toString(),
+				gasLimit: handleOpsGas.toString(),
 			});
 		} catch (error) {
 			logError("payment_submit_handleops_simulation_failed", error, {
 				requestId,
 				uid: user.sub,
 				userOpHash: userOpHashForLog,
-				gasLimit: HANDLE_OPS_TX_GAS_LIMIT.toString(),
+				gasLimit: handleOpsGas.toString(),
 			});
 			throw error;
 		}
@@ -420,7 +465,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			abi: entryPointAbi,
 			functionName: "handleOps",
 			args: [[userOp], serverAccount.address],
-			gas: HANDLE_OPS_TX_GAS_LIMIT,
+			gas: handleOpsGas,
 		});
 
 		logInfo("payment_submit_handleops_sent", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
@@ -446,7 +491,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		}
 
 		const createdAt = new Date().toISOString();
-		const isAccountAction = pending.currency === "PASSKEY_ADD";
+		const isAccountAction = NON_PAYMENT_CURRENCIES.has(pending.currency);
 
 		if (!isAccountAction) {
 			await recordSentTransaction(c.env, {

@@ -7,7 +7,14 @@ import {
 	getNetworkConfig,
 } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { createPendingPayment, getUserByUid, savePasskey, saveUser } from "../services/storage";
+import {
+	createPendingPayment,
+	getUserByUid,
+	getUserByUsername,
+	savePasskey,
+	saveUser,
+	setInvitedBy,
+} from "../services/storage";
 import { getClients, getPublicClient, waitForTx } from "../services/clients";
 import { buildSponsoredUserOp, serializeBigInts } from "../services/userOp";
 
@@ -74,7 +81,7 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 		return c.json({ error: "Account already exists", accountAddress: existingUser.walletAddress }, 409);
 	}
 
-	const { credentialId, qx, qy } = await c.req.json();
+	const { credentialId, qx, qy, ref } = await c.req.json();
 	if (!credentialId || !qx || !qy) {
 		return c.json({ error: "Missing credentialId, qx, or qy from passkey" }, 400);
 	}
@@ -89,6 +96,18 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 			credentialId,
 		});
 		await savePasskey(c.env, { credentialId, uid: user.sub, qx, qy });
+
+		// Referral attribution (best-effort): ?ref=<username> captured at landing.
+		if (typeof ref === "string" && ref.trim()) {
+			try {
+				const inviter = await getUserByUsername(c.env, ref.trim().toLowerCase());
+				if (inviter && inviter.uid !== user.sub) {
+					await setInvitedBy(c.env, user.sub, inviter.uid);
+				}
+			} catch (e) {
+				console.error("Referral attribution failed:", e);
+			}
+		}
 
 		// Auto-fund 5 USDC (best-effort)
 		try {

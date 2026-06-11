@@ -1,8 +1,51 @@
-import { type Hex, concat, pad, toHex } from "viem";
+import {
+	type Hex,
+	concat,
+	encodeAbiParameters,
+	encodeFunctionData,
+	pad,
+	parseAbiParameters,
+	toHex,
+} from "viem";
 import { entryPointAbi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
 import { buildSignedPaymasterAndData } from "./paymaster";
+
+export type AccountCall = {
+	target: `0x${string}`;
+	value: bigint;
+	data: Hex;
+};
+
+/**
+ * Encode an ERC-7821 `execute(mode, executionData)` batch for the smart
+ * account. All calls run atomically inside one UserOperation — this is how a
+ * smart account replaces "approve then act" multi-tx flows with a single
+ * biometric confirmation.
+ */
+export function encodeExecuteBatch(calls: AccountCall[]): Hex {
+	const mode = pad("0x01", { size: 32, dir: "right" }) as Hex;
+	const executionData = encodeAbiParameters(
+		parseAbiParameters("(address target, uint256 value, bytes callData)[]"),
+		[calls.map((c) => ({ target: c.target, value: c.value, callData: c.data }))],
+	);
+	return encodeFunctionData({
+		abi: [
+			{
+				name: "execute",
+				type: "function",
+				inputs: [
+					{ name: "mode", type: "bytes32" },
+					{ name: "executionData", type: "bytes" },
+				],
+				outputs: [],
+			},
+		],
+		functionName: "execute",
+		args: [mode, executionData],
+	});
+}
 
 /** secp256r1 (P-256) curve order. */
 export const P256_N =

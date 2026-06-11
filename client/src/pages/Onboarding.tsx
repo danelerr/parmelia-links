@@ -34,13 +34,16 @@ export default function Onboarding({
 	async function handleCreateWallet() {
 		setCreatingWallet(true);
 		try {
-			const uid = user.uid || "parmelia-user";
-			const { credentialId, qx, qy } = await createPasskey(uid);
+			if (!user.uid) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+			const passkeyLabel = user.email || user.displayName || undefined;
+			const { credentialId, qx, qy } = await createPasskey(user.uid, passkeyLabel);
 
+			// Referral attribution: the invite link's ?ref was captured at landing.
+			const ref = localStorage.getItem("parmelia:ref") || undefined;
 			const res = await fetchWithAuth(user, `${SERVER_URL}/account/create`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ credentialId, qx, qy }),
+				body: JSON.stringify({ credentialId, qx, qy, ref }),
 			});
 			if (!res.ok) {
 				const errorData = await res.json().catch(() => ({ error: "No se pudo crear tu cuenta" }));
@@ -48,6 +51,7 @@ export default function Onboarding({
 			}
 			await res.json();
 
+			localStorage.removeItem("parmelia:ref");
 			sileo.success({
 				title: "¡Cuenta lista!",
 				description: "Recibiste 5 dólares digitales de bienvenida.",

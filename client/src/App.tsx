@@ -14,6 +14,17 @@ const PayPage = lazy(() => import("./pages/PayPage"));
 const PaymentStatus = lazy(() => import("./pages/PaymentStatus"));
 const Settings = lazy(() => import("./pages/Settings"));
 const ScanQR = lazy(() => import("./pages/ScanQR"));
+const Swap = lazy(() => import("./pages/Swap"));
+const Extractos = lazy(() => import("./pages/Extractos"));
+const Contacts = lazy(() => import("./pages/Contacts"));
+const Deposit = lazy(() => import("./pages/Deposit"));
+
+// Capture ?ref=<username> from invitation links before the router strips it;
+// Onboarding attaches it to account creation for referral attribution.
+const refParam = new URLSearchParams(window.location.search).get("ref");
+if (refParam && /^[a-z0-9_-]{3,30}$/i.test(refParam)) {
+	localStorage.setItem("parmelia:ref", refParam.toLowerCase());
+}
 
 const SERVER_URL =
 	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
@@ -175,6 +186,22 @@ function App() {
 						element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
 					/>
 					<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
+					<Route
+						path="/cambiar"
+						element={renderProtectedRoute(user ? <Swap user={user} /> : null)}
+					/>
+					<Route
+						path="/extractos"
+						element={renderProtectedRoute(user ? <Extractos user={user} /> : null)}
+					/>
+					<Route
+						path="/contactos"
+						element={renderProtectedRoute(user ? <Contacts user={user} /> : null)}
+					/>
+					<Route
+						path="/depositar"
+						element={renderProtectedRoute(user ? <Deposit user={user} /> : null)}
+					/>
 					<Route
 						path="/settings"
 						element={renderProtectedRoute(user ? <Settings user={user} /> : null)}

@@ -70,14 +70,16 @@
     0%, 100% { opacity: 0.82; }
     50% { opacity: 1; }
   }
+  /* Compositor-only (transform/opacity): animating `filter` or `top` forces
+     main-thread paints every frame and stutters on low-end phones. */
   @keyframes float-glow {
-    0%, 100% { transform: translateY(0); filter: drop-shadow(0 0 26px rgba(156, 227, 244, 0.22)); }
-    50% { transform: translateY(-6px); filter: drop-shadow(0 0 38px rgba(244, 169, 207, 0.26)); }
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
   }
   @keyframes qr-scan {
-    0%, 100% { top: 6%; opacity: 0; }
-    15%, 85% { opacity: 1; }
-    50% { top: 92%; }
+    0%, 100% { transform: translateY(0); opacity: 0; }
+    12%, 88% { opacity: 1; }
+    50% { transform: translateY(calc(100% - 2px)); }
   }
 }
 
@@ -172,6 +174,12 @@ input[type="number"] {
 }
 
 /* ===== Brand helpers ===== */
+
+/* Static glow for the floating logo — the animation itself is transform-only. */
+.animate-float-glow {
+  filter: drop-shadow(0 0 30px rgba(156, 227, 244, 0.24));
+  will-change: transform;
+}
 
 /* Tabular figures for amounts/balances/lists */
 .tabular {

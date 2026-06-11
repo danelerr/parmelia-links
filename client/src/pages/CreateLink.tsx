@@ -36,8 +36,6 @@ export default function CreateLink({ user }: { user: User }) {
 	const [paymentUrl, setPaymentUrl] = useState("");
 	const cardRef = useRef<HTMLDivElement>(null);
 
-	const symbol = activeNetwork.nativeTokenSymbol;
-
 	async function handleCreate() {
 		setLoading(true);
 		try {
@@ -178,9 +176,9 @@ export default function CreateLink({ user }: { user: User }) {
 					className="w-full max-w-[260px] bg-transparent text-center font-display text-[60px] leading-none text-text placeholder:text-text-faint tabular"
 				/>
 				<div className="seg-track mt-4">
-					{(["USDC", "ETH"] as const).map((c) => (
+					{activeNetwork.currencies.map((c) => (
 						<button key={c} onClick={() => setCurrency(c)} data-active={currency === c} className="seg-item">
-							{c === "USDC" ? "USDC" : symbol}
+							{c}
 						</button>
 					))}
 				</div>

@@ -130,22 +130,31 @@ function resolveRememberedPasskey(
 	return null;
 }
 
-/** Create a new P256 passkey. Returns the credentialId and public key (qx, qy). */
-export async function createPasskey(username: string): Promise<{
+/**
+ * Create a new P256 passkey. Returns the credentialId and public key (qx, qy).
+ * `userId` must be the stable Firebase uid (it keys the resident credential on
+ * the device); `label` is what the OS passkey dialog shows — pass something
+ * human like the user's email, never the uid.
+ */
+export async function createPasskey(
+	userId: string,
+	label?: string,
+): Promise<{
 	credentialId: string;
 	qx: string;
 	qy: string;
 }> {
 	const challenge = crypto.getRandomValues(new Uint8Array(32));
 	const rpId = getRelyingPartyId();
+	const displayLabel = label?.trim() || "Cuenta Parmelia";
 
 	const credential = (await navigator.credentials.create({
 		publicKey: {
 			rp: { name: "Parmelia", id: rpId },
 			user: {
-				id: new TextEncoder().encode(username),
-				name: username,
-				displayName: username,
+				id: new TextEncoder().encode(userId),
+				name: displayLabel,
+				displayName: displayLabel,
 			},
 			challenge,
 			pubKeyCredParams: [{ alg: -7, type: "public-key" }],

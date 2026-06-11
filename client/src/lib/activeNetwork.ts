@@ -27,6 +27,7 @@ export const activeNetwork = {
 	explorerBaseUrl: trimTrailingSlash(configuredExplorerBaseUrl),
 	faucetUrl: configuredFaucetUrl,
 	faucetLabel: configuredFaucetLabel,
+	currencies: networkDefaults.currencies,
 };
 
 export function getExplorerTxUrl(txHash: string) {

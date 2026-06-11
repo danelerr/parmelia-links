@@ -45,18 +45,23 @@ describe("normalizeLinkAmount", () => {
 });
 
 describe("normalizeCurrency", () => {
-	it("normalizes case and accepts only USDC/ETH", () => {
-		expect(normalizeCurrency("usdc")).toBe("USDC");
-		expect(normalizeCurrency("ETH")).toBe("ETH");
-		expect(normalizeCurrency(" eth ")).toBe("ETH");
-		expect(normalizeCurrency("btc")).toBeNull();
+	const ALLOWED = ["USDC", "ETH", "WBTC"];
+
+	it("normalizes case and accepts only whitelisted symbols", () => {
+		expect(normalizeCurrency("usdc", ALLOWED)).toBe("USDC");
+		expect(normalizeCurrency("ETH", ALLOWED)).toBe("ETH");
+		expect(normalizeCurrency(" eth ", ALLOWED)).toBe("ETH");
+		expect(normalizeCurrency("wbtc", ALLOWED)).toBe("WBTC");
+		expect(normalizeCurrency("DOGE", ALLOWED)).toBeNull();
+		// Not in this chain's whitelist → rejected even if valid elsewhere
+		expect(normalizeCurrency("WBTC", ["USDC", "ETH"])).toBeNull();
 	});
 
 	it("applies the fallback for empty/nullish input", () => {
-		expect(normalizeCurrency("")).toBeNull();
-		expect(normalizeCurrency(undefined)).toBeNull();
-		expect(normalizeCurrency("", "USDC")).toBe("USDC");
-		expect(normalizeCurrency(undefined, "USDC")).toBe("USDC");
+		expect(normalizeCurrency("", ALLOWED)).toBeNull();
+		expect(normalizeCurrency(undefined, ALLOWED)).toBeNull();
+		expect(normalizeCurrency("", ALLOWED, "USDC")).toBe("USDC");
+		expect(normalizeCurrency(undefined, ALLOWED, "USDC")).toBe("USDC");
 	});
 });
 
