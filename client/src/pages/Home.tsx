@@ -69,9 +69,9 @@ export default function Home({ user }: { user: User }) {
 	}
 
 	const quickActions = [
-		{ label: "Cobrar", to: "/cobrar", accent: "#f4a9cf", icon: <IconReceive /> },
-		{ label: "Pagar", to: "/pagar", accent: "#9ce3f4", icon: <IconSend /> },
-		{ label: "Cambiar", to: "/cambiar", accent: "#efe08c", icon: <IconSwap /> },
+		{ label: "Cobrar", to: "/charge", accent: "#f4a9cf", icon: <IconReceive /> },
+		{ label: "Pagar", to: "/send", accent: "#9ce3f4", icon: <IconSend /> },
+		{ label: "Cambiar", to: "/swap", accent: "#efe08c", icon: <IconSwap /> },
 		{ label: "Escanear", to: "/scan", accent: "#f5f5f3", icon: <IconScan /> },
 	];
 
@@ -154,7 +154,7 @@ export default function Home({ user }: { user: User }) {
 					<span>{copied ? "Copiado ✓" : "Copiar"}</span>
 				</button>
 				<button
-					onClick={() => navigate("/depositar")}
+					onClick={() => navigate("/deposit")}
 					className="mx-auto mt-1 flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12px] text-text-faint hover:text-text-muted transition-colors relative z-1"
 				>
 					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -201,7 +201,7 @@ export default function Home({ user }: { user: User }) {
 					<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
 						Crea tu primer link de cobro y compártelo para recibir tu primer pago.
 					</p>
-					<button onClick={() => navigate("/cobrar")} className="btn btn-primary btn-sm">
+					<button onClick={() => navigate("/charge")} className="btn btn-primary btn-sm">
 						Crear un link de cobro
 					</button>
 				</div>
@@ -239,7 +239,7 @@ export default function Home({ user }: { user: User }) {
 							);
 						})}
 					</div>
-					<button onClick={() => navigate("/extractos")} className="btn-text w-full mt-3">
+					<button onClick={() => navigate("/statement")} className="btn-text w-full mt-3">
 						Ver extracto completo
 					</button>
 				</>

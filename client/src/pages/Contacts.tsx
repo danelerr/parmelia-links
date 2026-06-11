@@ -126,8 +126,8 @@ export default function Contacts({ user }: { user: User }) {
 					className="pointer-events-none absolute -top-16 -right-12 w-44 h-44 rounded-full opacity-[0.16] blur-2xl"
 					style={{ background: "radial-gradient(circle,#f4a9cf,transparent 70%)" }}
 				/>
-				<div className="flex items-center justify-between gap-4 relative z-1">
-					<div>
+				<div className="flex items-center justify-between gap-3 relative z-1">
+					<div className="min-w-0 flex-1">
 						<p className="font-display text-[17px] mb-1">Invita a tus amigos</p>
 						<p className="text-[13px] text-text-muted leading-relaxed">
 							{invited === null
@@ -162,19 +162,23 @@ export default function Contacts({ user }: { user: User }) {
 			</div>
 
 			{/* Add contact */}
-			<div className="flex gap-2.5 mb-6">
-				<div className="flex-1 flex items-center gap-1.5 bg-surface border border-border rounded-full h-12 px-4 focus-within:border-border-strong transition-colors">
-					<span className="text-text-faint text-[14px]">@</span>
+			<div className="flex gap-2 mb-6">
+				<div className="flex-1 min-w-0 flex items-center gap-1.5 bg-surface border border-border rounded-full h-12 px-4 focus-within:border-border-strong transition-colors">
+					<span className="text-text-faint text-[14px] shrink-0">@</span>
 					<input
 						value={newUsername}
 						onChange={(e) => setNewUsername(e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase())}
 						onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-						placeholder="usuario de Parmelia"
+						placeholder="usuario"
 						maxLength={30}
 						className="flex-1 bg-transparent text-[14px] text-text placeholder:text-text-faint min-w-0"
 					/>
 				</div>
-				<button onClick={handleAdd} disabled={adding || !newUsername.trim()} className="btn btn-primary btn-sm h-12">
+				<button
+					onClick={handleAdd}
+					disabled={adding || !newUsername.trim()}
+					className="btn btn-primary btn-sm h-12 shrink-0"
+				>
 					{adding ? "…" : "Agregar"}
 				</button>
 			</div>

@@ -396,7 +396,7 @@ export default function Settings({ user }: { user: User }) {
 					{/* Contacts & invitations */}
 					<Section title="Amigos" icon={ICON.user} accent="#9ce3f4">
 						<button
-							onClick={() => navigate("/contactos")}
+							onClick={() => navigate("/contacts")}
 							className="w-full flex items-center justify-between p-5 hover:bg-surface-2 transition-colors text-left"
 						>
 							<div>

@@ -742,7 +742,7 @@ export default function ScanQR() {
             {isImporting ? "Analizando…" : "Importar QR desde una imagen"}
           </button>
           <button
-            onClick={() => navigate("/pagar")}
+            onClick={() => navigate("/send")}
             className="btn btn-ghost btn-block"
           >
             Ingresar datos manualmente

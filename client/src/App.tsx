@@ -15,7 +15,7 @@ const PaymentStatus = lazy(() => import("./pages/PaymentStatus"));
 const Settings = lazy(() => import("./pages/Settings"));
 const ScanQR = lazy(() => import("./pages/ScanQR"));
 const Swap = lazy(() => import("./pages/Swap"));
-const Extractos = lazy(() => import("./pages/Extractos"));
+const Statement = lazy(() => import("./pages/Statement"));
 const Contacts = lazy(() => import("./pages/Contacts"));
 const Deposit = lazy(() => import("./pages/Deposit"));
 
@@ -178,28 +178,28 @@ function App() {
 					<Route path="/onboarding" element={renderOnboardingRoute()} />
 					<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
 					<Route
-						path="/cobrar"
+						path="/charge"
 						element={renderProtectedRoute(user ? <CreateLink user={user} /> : null)}
 					/>
 					<Route
-						path="/pagar"
+						path="/send"
 						element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
 					/>
 					<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
 					<Route
-						path="/cambiar"
+						path="/swap"
 						element={renderProtectedRoute(user ? <Swap user={user} /> : null)}
 					/>
 					<Route
-						path="/extractos"
-						element={renderProtectedRoute(user ? <Extractos user={user} /> : null)}
+						path="/statement"
+						element={renderProtectedRoute(user ? <Statement user={user} /> : null)}
 					/>
 					<Route
-						path="/contactos"
+						path="/contacts"
 						element={renderProtectedRoute(user ? <Contacts user={user} /> : null)}
 					/>
 					<Route
-						path="/depositar"
+						path="/deposit"
 						element={renderProtectedRoute(user ? <Deposit user={user} /> : null)}
 					/>
 					<Route

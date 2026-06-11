@@ -13,35 +13,40 @@ import { parseTransactions, formatShortDate, txLabel, type Transaction } from ".
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
-type QuickRange = "week" | "month" | "two-months" | "custom";
-type TypeFilter = "all" | "sent" | "received" | "link";
+type PeriodOption = "all" | "week" | "month" | "prev-month" | "custom";
+type TypeFilter = "all" | "sent" | "received";
 
-const QUICK_RANGES: [QuickRange, string][] = [
-	["week", "Esta semana"],
+const PERIOD_OPTIONS: [PeriodOption, string][] = [
+	["all", "Todas las fechas"],
+	["week", "Última semana"],
 	["month", "Este mes"],
-	["two-months", "Últimos 2 meses"],
-	["custom", "Personalizado"],
+	["prev-month", "Mes anterior"],
+	["custom", "Rango personalizado"],
 ];
 
-function rangeStart(range: QuickRange): Date | null {
+function periodBounds(period: PeriodOption): { start: Date | null; end: Date | null } {
 	const now = new Date();
-	if (range === "week") {
-		const d = new Date(now);
-		d.setDate(now.getDate() - 7);
-		return d;
+	if (period === "week") {
+		const start = new Date(now);
+		start.setDate(now.getDate() - 7);
+		return { start, end: null };
 	}
-	if (range === "month") return new Date(now.getFullYear(), now.getMonth(), 1);
-	if (range === "two-months") {
-		const d = new Date(now);
-		d.setMonth(now.getMonth() - 2);
-		return d;
+	if (period === "month") {
+		return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: null };
 	}
-	return null;
+	if (period === "prev-month") {
+		return {
+			start: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+			// Day 0 of the current month = last day of the previous one.
+			end: new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999),
+		};
+	}
+	return { start: null, end: null };
 }
 
-export default function Extractos({ user }: { user: User }) {
+export default function Statement({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
-	const [range, setRange] = useState<QuickRange>("month");
+	const [period, setPeriod] = useState<PeriodOption>("all");
 	const [fromDate, setFromDate] = useState("");
 	const [toDate, setToDate] = useState("");
 	const [asset, setAsset] = useState("all");
@@ -63,11 +68,11 @@ export default function Extractos({ user }: { user: User }) {
 	const filtered = useMemo(() => {
 		let start: Date | null = null;
 		let end: Date | null = null;
-		if (range === "custom") {
+		if (period === "custom") {
 			if (fromDate) start = new Date(`${fromDate}T00:00:00`);
 			if (toDate) end = new Date(`${toDate}T23:59:59`);
 		} else {
-			start = rangeStart(range);
+			({ start, end } = periodBounds(period));
 		}
 
 		return transactions.filter((t) => {
@@ -77,10 +82,9 @@ export default function Extractos({ user }: { user: User }) {
 			if (asset !== "all" && t.currency !== asset) return false;
 			if (typeFilter === "sent" && t.type !== "sent") return false;
 			if (typeFilter === "received" && t.type !== "received") return false;
-			if (typeFilter === "link" && !(t.type === "received" && t.kind === "link")) return false;
 			return true;
 		});
-	}, [transactions, range, fromDate, toDate, asset, typeFilter]);
+	}, [transactions, period, fromDate, toDate, asset, typeFilter]);
 
 	return (
 		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto animate-fade-up">
@@ -98,25 +102,36 @@ export default function Extractos({ user }: { user: User }) {
 				<h1 className="text-[22px]">Extracto</h1>
 			</header>
 
-			{/* Quick ranges */}
-			<div className="flex gap-1.5 overflow-x-auto pb-1 mb-3 -mx-1 px-1">
-				{QUICK_RANGES.map(([value, label]) => (
-					<button
-						key={value}
-						onClick={() => setRange(value)}
-						className={`shrink-0 px-3.5 h-9 rounded-full text-[13px] font-medium border transition-colors ${
-							range === value
-								? "bg-sky/18 text-glow-sky border-sky/30"
-								: "text-text-muted border-border hover:text-text"
-						}`}
-					>
-						{label}
-					</button>
-				))}
+			{/* Period dropdown */}
+			<div className="relative mb-3">
+				<select
+					value={period}
+					onChange={(e) => setPeriod(e.target.value as PeriodOption)}
+					className="w-full h-12 appearance-none bg-surface border border-border rounded-[14px] pl-4 pr-10 text-[14px] text-text [color-scheme:dark] focus:border-border-strong transition-colors"
+				>
+					{PERIOD_OPTIONS.map(([value, label]) => (
+						<option key={value} value={value}>
+							{label}
+						</option>
+					))}
+				</select>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="2"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+					className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-text-faint"
+				>
+					<path d="m6 9 6 6 6-6" />
+				</svg>
 			</div>
 
 			{/* Custom range */}
-			{range === "custom" && (
+			{period === "custom" && (
 				<div className="flex gap-2.5 mb-3">
 					{(
 						[
@@ -139,19 +154,27 @@ export default function Extractos({ user }: { user: User }) {
 
 			{/* Asset + type filters */}
 			<div className="flex gap-1.5 mb-2 overflow-x-auto -mx-1 px-1 pb-1">
-				{["all", ...activeNetwork.currencies].map((c) => (
-					<button
-						key={c}
-						onClick={() => setAsset(c)}
-						className={`shrink-0 px-3.5 h-8 rounded-full text-[12px] font-medium border transition-colors ${
-							asset === c
-								? "bg-surface-2 text-text border-border-strong"
-								: "text-text-muted border-border hover:text-text"
-						}`}
-					>
-						{c === "all" ? "Todas las monedas" : c}
-					</button>
-				))}
+				{["all", ...activeNetwork.currencies].map((c) => {
+					const active = asset === c;
+					return (
+						<button
+							key={c}
+							onClick={() => setAsset(c)}
+							className={`shrink-0 flex items-center gap-1.5 px-3.5 h-8 rounded-full text-[12px] font-medium border transition-colors ${
+								active
+									? "bg-sky/18 text-glow-sky border-sky/40 font-semibold"
+									: "text-text-muted border-border hover:text-text"
+							}`}
+						>
+							{active && (
+								<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+									<polyline points="20 6 9 17 4 12" />
+								</svg>
+							)}
+							{c === "all" ? "Todas las monedas" : c}
+						</button>
+					);
+				})}
 			</div>
 			<div className="seg-track seg-track-block mb-5">
 				{(
@@ -159,14 +182,13 @@ export default function Extractos({ user }: { user: User }) {
 						["all", "Todos"],
 						["sent", "Enviados"],
 						["received", "Recibidos"],
-						["link", "Cobros por link"],
 					] as const
 				).map(([value, label]) => (
 					<button
 						key={value}
 						onClick={() => setTypeFilter(value)}
 						data-active={typeFilter === value}
-						className="seg-item !px-2.5"
+						className="seg-item"
 					>
 						{label}
 					</button>

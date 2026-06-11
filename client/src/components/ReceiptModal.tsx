@@ -104,7 +104,17 @@ export default function ReceiptModal({
 							<span className="text-text-muted font-mono truncate">{shortHash(tx.txHash)}</span>
 						</div>
 					)}
-					<p className="text-[11px] text-text-faint text-center mt-2">parmelia.me</p>
+					{tx.txHash && (
+						<a
+							href={getExplorerTxUrl(tx.txHash)}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-text-faint hover:text-text-muted text-[12px] text-center mt-2 transition-colors"
+						>
+							Ver comprobante en la red ↗
+						</a>
+					)}
+					<p className="text-[11px] text-text-faint text-center mt-1">parmelia.me</p>
 				</div>
 			</div>
 
@@ -117,26 +127,11 @@ export default function ReceiptModal({
 							sileo.error({ title: "No se pudo descargar el comprobante" });
 						}
 					}}
-					className="btn btn-primary flex-1"
+					className="btn btn-primary flex-1 min-w-0"
 				>
 					Descargar comprobante
 				</button>
-				{tx.txHash && (
-					<a
-						href={getExplorerTxUrl(tx.txHash)}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="btn btn-ghost"
-						aria-label="Ver en la red"
-					>
-						<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-							<path d="M15 3h6v6" />
-							<path d="M10 14 21 3" />
-							<path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
-						</svg>
-					</a>
-				)}
-				<button onClick={onClose} className="btn btn-ghost">
+				<button onClick={onClose} className="btn btn-ghost shrink-0">
 					Cerrar
 				</button>
 			</div>
