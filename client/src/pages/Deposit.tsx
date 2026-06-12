@@ -5,12 +5,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { User } from "../lib/firebase";
+import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
+import { humanizeError } from "../lib/notify";
 import Logo from "../components/Logo";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
 type BridgeChain = { id: number; key: string; name: string };
 type Direction = "deposit" | "withdraw";
@@ -61,16 +61,13 @@ export default function Deposit({ user }: { user: User }) {
 		debounceRef.current = setTimeout(async () => {
 			setQuoting(true);
 			try {
-				const res = await fetchWithAuth(user, `${SERVER_URL}/bridge/quote`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ direction, chainId, amount }),
+				const data = await apiFetch<BridgeQuote>("/bridge/quote", {
+					user,
+					body: { direction, chainId, amount },
 				});
-				const data = await res.json();
-				if (!res.ok) throw new Error(data.error || "No pudimos cotizar");
-				setQuote(data as BridgeQuote);
+				setQuote(data);
 			} catch (err) {
-				setError(err instanceof Error ? err.message : "No pudimos cotizar");
+				setError(humanizeError(err, "No pudimos cotizar el puente.").message);
 			} finally {
 				setQuoting(false);
 			}

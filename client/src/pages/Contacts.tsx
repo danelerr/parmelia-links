@@ -2,13 +2,13 @@
 // people with your link and see how many joined.
 
 import { useCallback, useEffect, useState } from "react";
-import { sileo } from "sileo";
 import type { User } from "../lib/firebase";
+import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
+import { notifyError, notifySuccess } from "../lib/notify";
 import Logo from "../components/Logo";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 type Contact = {
@@ -59,21 +59,15 @@ export default function Contacts({ user }: { user: User }) {
 		if (!username) return;
 		setAdding(true);
 		try {
-			const res = await fetchWithAuth(user, `${SERVER_URL}/contacts`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ username }),
+			const data = await apiFetch<{ contact: Contact }>("/contacts", {
+				user,
+				body: { username },
 			});
-			const data = await res.json();
-			if (!res.ok) throw new Error(data.error || "No se pudo agregar");
 			setContacts((prev) => [data.contact, ...prev.filter((c) => c.id !== data.contact.id)]);
 			setNewUsername("");
-			sileo.success({ title: "Contacto agregado" });
+			notifySuccess("Contacto agregado");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo agregar",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo agregar");
 		} finally {
 			setAdding(false);
 		}
@@ -100,7 +94,7 @@ export default function Contacts({ user }: { user: User }) {
 			}
 		} else {
 			navigator.clipboard.writeText(inviteUrl);
-			sileo.success({ title: "Link de invitación copiado" });
+			notifySuccess("Link de invitación copiado");
 		}
 	}
 
@@ -145,7 +139,7 @@ export default function Contacts({ user }: { user: User }) {
 					<button
 						onClick={() => {
 							navigator.clipboard.writeText(referralCode);
-							sileo.success({ title: "Código copiado" });
+							notifySuccess("Código copiado");
 						}}
 						className="mt-3.5 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-bg/60 border border-border hover:border-border-strong transition-colors relative z-1"
 					>

@@ -1,5 +1,5 @@
 import { signInWithGoogle } from "../lib/firebase";
-import { sileo } from "sileo";
+import { notifyError } from "../lib/notify";
 import Logo from "../components/Logo";
 
 function GoogleIcon() {
@@ -18,8 +18,8 @@ export default function Login() {
     try {
       const credential = await signInWithGoogle();
       await credential.user.getIdToken(true);
-    } catch {
-      sileo.error({ title: "No pudimos iniciar sesión", description: "Intenta de nuevo" });
+    } catch (err) {
+      notifyError(err, "No pudimos iniciar sesión");
     }
   }
 

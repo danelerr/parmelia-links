@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { sileo } from "sileo";
 import type { User } from "../lib/firebase";
+import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
+import { humanizeError, notifyError } from "../lib/notify";
 import { signWithPasskey } from "../lib/webauthn";
 import { hexToBytes } from "../lib/hex";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import Logo from "../components/Logo";
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
 type SwapToken = { symbol: string; name: string; decimals: number; isNative: boolean };
 
@@ -116,16 +115,13 @@ export default function Swap({ user }: { user: User }) {
 		debounceRef.current = setTimeout(async () => {
 			setQuoting(true);
 			try {
-				const res = await fetchWithAuth(user, `${SERVER_URL}/swap/quote`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ tokenIn, tokenOut, amountIn: amount }),
+				const data = await apiFetch<Quote>("/swap/quote", {
+					user,
+					body: { tokenIn, tokenOut, amountIn: amount },
 				});
-				const data = await res.json();
-				if (!res.ok) throw new Error(data.error || "No pudimos cotizar");
-				setQuote(data as Quote);
+				setQuote(data);
 			} catch (err) {
-				setQuoteError(err instanceof Error ? err.message : "No pudimos cotizar");
+				setQuoteError(humanizeError(err, "No pudimos cotizar.").message);
 			} finally {
 				setQuoting(false);
 			}
@@ -146,13 +142,10 @@ export default function Swap({ user }: { user: User }) {
 		if (!quote) return;
 		setStage("preparing");
 		try {
-			const prepRes = await fetchWithAuth(user, `${SERVER_URL}/swap/prepare`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ quoteId: quote.quoteId }),
-			});
-			const prep = await prepRes.json();
-			if (!prepRes.ok) throw new Error(prep.error || "No pudimos preparar el cambio");
+			const prep = await apiFetch<{ userOpHash: string; credentialId: string | null }>(
+				"/swap/prepare",
+				{ user, body: { quoteId: quote.quoteId } },
+			);
 
 			setStage("signing");
 			const assertion = await signWithPasskey(
@@ -161,10 +154,9 @@ export default function Swap({ user }: { user: User }) {
 			);
 
 			setStage("sending");
-			const submitRes = await fetchWithAuth(user, `${SERVER_URL}/pay/submit`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
+			const submit = await apiFetch<{ txHash: string }>("/pay/submit", {
+				user,
+				body: {
 					userOpHash: prep.userOpHash,
 					authenticatorData: assertion.authenticatorData,
 					clientDataJSON: assertion.clientDataJSON,
@@ -173,20 +165,15 @@ export default function Swap({ user }: { user: User }) {
 					credentialId: assertion.credentialId,
 					qx: assertion.qx,
 					qy: assertion.qy,
-				}),
+				},
 			});
-			const submit = await submitRes.json();
-			if (!submitRes.ok) throw new Error(submit.error || "El cambio falló");
 
 			setResult({ txHash: submit.txHash, received: quote.amountOutEstimated });
 			setQuote(null);
 			setAmount("");
 			void loadBalances();
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo completar el cambio",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo completar el cambio");
 		} finally {
 			setStage("idle");
 		}

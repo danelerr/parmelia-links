@@ -1,14 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { sileo } from "sileo";
 import { type User, logOut } from "../lib/firebase";
+import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
+import { notifyError, notifySuccess, notifyWarning } from "../lib/notify";
 import { createPasskey, signWithPasskey } from "../lib/webauthn";
 import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 
-const SERVER_URL =
-	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 interface ProfileResponse {
@@ -169,22 +168,15 @@ export default function Settings({ user }: { user: User }) {
 		setSaving(true);
 		try {
 			const normalizedUsername = username.trim().toLowerCase();
-			const res = await fetchWithAuth(user, `${SERVER_URL}/user/username`, {
+			await apiFetch("/user/username", {
+				user,
 				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ username: normalizedUsername }),
+				body: { username: normalizedUsername },
 			});
-			if (!res.ok) {
-				const data = await res.json();
-				throw new Error(data.error || "Error al guardar");
-			}
 			setCurrentUsername(normalizedUsername);
-			sileo.success({ title: "Usuario guardado" });
+			notifySuccess("Usuario guardado");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo guardar",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo guardar");
 		} finally {
 			setSaving(false);
 		}
@@ -197,52 +189,29 @@ export default function Settings({ user }: { user: User }) {
 			const passkeyLabel = user.email || user.displayName || undefined;
 			const nextPasskey = await createPasskey(user.uid, passkeyLabel);
 
-			const intentRes = await fetchWithAuth(user, `${SERVER_URL}/account/passkey`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(nextPasskey),
-			});
-			if (!intentRes.ok) {
-				const data = await intentRes
-					.json()
-					.catch(() => ({ error: "Error al preparar la nueva llave" }));
-				throw new Error(data.error || "Error al preparar la nueva llave");
-			}
-
-			const intentData = (await intentRes.json()) as { addSignerCalldata?: string };
+			const intentData = await apiFetch<{ addSignerCalldata?: string }>(
+				"/account/passkey",
+				{ user, method: "PUT", body: nextPasskey },
+			);
 			if (!intentData.addSignerCalldata) {
 				throw new Error("No recibimos los datos para agregar la llave.");
 			}
 
-			const prepareRes = await fetchWithAuth(
-				user,
-				`${SERVER_URL}/account/passkey/prepare`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ callData: intentData.addSignerCalldata }),
-				},
-			);
-			if (!prepareRes.ok) {
-				const data = await prepareRes
-					.json()
-					.catch(() => ({ error: "Error al preparar la operación" }));
-				throw new Error(data.error || "Error al preparar la operación");
-			}
-
-			const { userOpHash, credentialId } = (await prepareRes.json()) as {
+			const { userOpHash, credentialId } = await apiFetch<{
 				userOpHash: string;
 				credentialId?: string | null;
-			};
+			}>("/account/passkey/prepare", {
+				user,
+				body: { callData: intentData.addSignerCalldata },
+			});
 
 			const assertion = await signWithPasskey(
 				hexToBytes(userOpHash),
 				credentialId,
 			);
-			const submitRes = await fetchWithAuth(user, `${SERVER_URL}/pay/submit`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
+			await apiFetch("/pay/submit", {
+				user,
+				body: {
 					userOpHash,
 					authenticatorData: assertion.authenticatorData,
 					clientDataJSON: assertion.clientDataJSON,
@@ -251,25 +220,13 @@ export default function Settings({ user }: { user: User }) {
 					credentialId: assertion.credentialId,
 					qx: assertion.qx,
 					qy: assertion.qy,
-				}),
+				},
 			});
-			if (!submitRes.ok) {
-				const data = await submitRes
-					.json()
-					.catch(() => ({ error: "Error al activar la nueva llave" }));
-				throw new Error(data.error || "Error al activar la nueva llave");
-			}
 
 			await refreshSettings();
-			sileo.success({
-				title: "Llave agregada",
-				description: "Ya puedes confirmar pagos desde este dispositivo.",
-			});
+			notifySuccess("Llave agregada", "Ya puedes confirmar pagos desde este dispositivo.");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo agregar la llave",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo agregar la llave");
 		} finally {
 			setUpdatingPasskey(false);
 		}
@@ -278,28 +235,17 @@ export default function Settings({ user }: { user: User }) {
 	async function handleClaimFaucet() {
 		setClaimingFaucet(true);
 		try {
-			const res = await fetchWithAuth(user, `${SERVER_URL}/account/fund`, {
-				method: "POST",
-			});
-			const data = await res.json();
-			if (!res.ok) {
-				if (data.alreadyFunded) {
-					setFaucetClaimed(true);
-					sileo.warning({ title: "Ya recibiste tus dólares de prueba" });
-					return;
-				}
-				throw new Error(data.error || "Error al obtener dólares de prueba");
-			}
+			await apiFetch("/account/fund", { user, method: "POST" });
 			setFaucetClaimed(true);
-			sileo.success({
-				title: "¡Listo!",
-				description: "Recibiste 5 dólares digitales de prueba.",
-			});
+			notifySuccess("¡Listo!", "Recibiste 5 dólares digitales de prueba.");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo completar",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			// 409 = the one-time faucet was already claimed.
+			if (err instanceof ApiError && err.status === 409) {
+				setFaucetClaimed(true);
+				notifyWarning("Ya recibiste tus dólares de prueba");
+				return;
+			}
+			notifyError(err, "No se pudo completar");
 		} finally {
 			setClaimingFaucet(false);
 		}
@@ -428,7 +374,7 @@ export default function Settings({ user }: { user: User }) {
 									<button
 										onClick={() => {
 											navigator.clipboard.writeText(walletAddress);
-											sileo.success({ title: "Dirección copiada" });
+											notifySuccess("Dirección copiada");
 											setCopied(true);
 											setTimeout(() => setCopied(false), 2000);
 										}}

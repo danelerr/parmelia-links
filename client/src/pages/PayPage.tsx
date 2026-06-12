@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useParams } from "react-router-dom";
-import { sileo } from "sileo";
+import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
+import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
 import { signInWithGoogle, type User } from "../lib/firebase";
 import Logo from "../components/Logo";
-import { fetchWithAuth } from "../lib/authFetch";
 import { signWithPasskey } from "../lib/webauthn";
 import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const APP_HOST = new URL(APP_URL).hostname;
 
@@ -184,26 +183,19 @@ export default function PayPage({ user }: { user: User | null }) {
 		setPayStage("preparing");
 		const paySlowTimer = setTimeout(() => setSlowConnection(true), 6000);
 		try {
-			const prepRes = await fetchWithAuth(user, `${SERVER_URL}/pay/prepare`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(params),
-			});
-			if (!prepRes.ok) {
-				const data = await prepRes.json().catch(() => ({ error: "El pago falló" }));
-				throw new Error(data.error || "El pago falló");
-			}
-			const { userOpHash, credentialId } = await prepRes.json();
+			const { userOpHash, credentialId } = await apiFetch<{
+				userOpHash: string;
+				credentialId: string | null;
+			}>("/pay/prepare", { user, body: params });
 
 			setPayStage("signing");
 			const challengeBytes = hexToBytes(userOpHash);
 			const assertion = await signWithPasskey(challengeBytes, credentialId);
 
 			setPayStage("securing");
-			const submitRes = await fetchWithAuth(user, `${SERVER_URL}/pay/submit`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
+			const { txHash } = await apiFetch<{ txHash: string }>("/pay/submit", {
+				user,
+				body: {
 					userOpHash,
 					authenticatorData: assertion.authenticatorData,
 					clientDataJSON: assertion.clientDataJSON,
@@ -212,20 +204,27 @@ export default function PayPage({ user }: { user: User | null }) {
 					credentialId: assertion.credentialId,
 					qx: assertion.qx,
 					qy: assertion.qy,
-				}),
+				},
 			});
-			if (!submitRes.ok) {
-				const data = await submitRes.json().catch(() => ({ error: "El pago falló" }));
-				throw new Error(data.error || "El pago falló");
-			}
-			const { txHash } = await submitRes.json();
 			const to = params.linkId === "username" ? linkData?.username || params.wallet : params.wallet;
 			navigate(`/pay/status?tx=${txHash}&amount=${params.amount}&currency=${params.currency}&to=${to}`);
 		} catch (err) {
-			const raw = err instanceof Error ? err.message : "Error al procesar el pago";
-			const msg = parsePaymentError(raw);
-			sileo.error({ title: "No se pudo pagar", description: msg });
-			setError(msg);
+			if (isUserCancelled(err)) {
+				// The user dismissed the passkey prompt — calm notice, no red.
+				notifyWarning("Confirmación cancelada", "Tu pago no se realizó.");
+				setError("");
+			} else {
+				const raw = err instanceof Error ? err.message : "Error al procesar el pago";
+				const msg = parsePaymentError(raw);
+				notifyError(
+					new ApiError(msg, {
+						status: 400,
+						requestId: err instanceof ApiError ? err.requestId : undefined,
+					}),
+					"No se pudo pagar",
+				);
+				setError(msg);
+			}
 		} finally {
 			clearTimeout(paySlowTimer);
 			setSlowConnection(false);
@@ -272,7 +271,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		const amount = hasFixedAmount ? linkData.amount : payAmount;
 		const currency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
 		if (!amount || Number(amount) <= 0) {
-			sileo.error({ title: "Monto inválido", description: "El monto debe ser mayor a 0" });
+			notifyWarning("Monto inválido", "El monto debe ser mayor a 0.");
 			return;
 		}
 		await executePay({ linkId: linkData.id, wallet: linkData.wallet, amount, currency });
@@ -284,7 +283,7 @@ export default function PayPage({ user }: { user: User | null }) {
 
 		if (destType === "username") {
 			if (!manualWallet.trim()) {
-				sileo.error({ title: "Escribe un usuario" });
+				notifyWarning("Escribe un usuario");
 				return;
 			}
 			setResolvingUsername(true);
@@ -295,14 +294,14 @@ export default function PayPage({ user }: { user: User | null }) {
 				if (!data.walletAddress) throw new Error();
 				targetWallet = data.walletAddress;
 			} catch {
-				sileo.error({ title: "Usuario no encontrado", description: "Revisa el nombre" });
+				notifyWarning("Usuario no encontrado", "Revisa el nombre.");
 				setResolvingUsername(false);
 				return;
 			} finally {
 				setResolvingUsername(false);
 			}
 		} else if (!/^0x[a-fA-F0-9]{40}$/.test(manualWallet)) {
-			sileo.error({ title: "Dirección inválida", description: "Debe ser una dirección 0x válida" });
+			notifyWarning("Dirección inválida", "Debe ser una dirección 0x válida.");
 			return;
 		}
 
@@ -314,7 +313,7 @@ export default function PayPage({ user }: { user: User | null }) {
 			const credential = await signInWithGoogle();
 			await credential.user.getIdToken(true);
 		} catch {
-			sileo.error({ title: "No pudimos iniciar sesión" });
+			notifyError(new Error("No pudimos iniciar sesión. Intenta de nuevo."));
 		}
 	}
 

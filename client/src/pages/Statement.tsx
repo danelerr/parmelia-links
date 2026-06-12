@@ -4,6 +4,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import type { User } from "../lib/firebase";
+import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
 import ReceiptModal from "../components/ReceiptModal";
@@ -11,7 +12,6 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
 type PeriodOption = "all" | "week" | "month" | "prev-month" | "custom";
 type TypeFilter = "all" | "sent" | "received";

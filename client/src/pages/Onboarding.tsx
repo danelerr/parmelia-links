@@ -1,12 +1,10 @@
 import { useState } from "react";
-import { sileo } from "sileo";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { type User, logOut } from "../lib/firebase";
-import { fetchWithAuth } from "../lib/authFetch";
+import { apiFetch } from "../lib/api";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { createPasskey } from "../lib/webauthn";
 import Logo from "../components/Logo";
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
 function Reassurance({ children }: { children: string }) {
 	return (
@@ -44,29 +42,17 @@ export default function Onboarding({
 
 			// Referral attribution: invite link (?ref) or the manually entered code.
 			const ref = inviteCode.trim() || undefined;
-			const res = await fetchWithAuth(user, `${SERVER_URL}/account/create`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ credentialId, qx, qy, ref }),
+			await apiFetch("/account/create", {
+				user,
+				body: { credentialId, qx, qy, ref },
 			});
-			if (!res.ok) {
-				const errorData = await res.json().catch(() => ({ error: "No se pudo crear tu cuenta" }));
-				throw new Error(errorData.error || "No se pudo crear tu cuenta");
-			}
-			await res.json();
 
 			localStorage.removeItem("parmelia:ref");
-			sileo.success({
-				title: "¡Cuenta lista!",
-				description: "Recibiste 5 dólares digitales de bienvenida.",
-			});
+			notifySuccess("¡Cuenta lista!", "Recibiste 5 dólares digitales de bienvenida.");
 			onComplete();
 			navigate("/");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo crear tu cuenta",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo crear tu cuenta");
 		} finally {
 			setCreatingWallet(false);
 		}

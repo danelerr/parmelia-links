@@ -1,6 +1,7 @@
 import { type User } from "../lib/firebase";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
+import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
 import ReceiptModal from "../components/ReceiptModal";
@@ -8,7 +9,6 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const RECENT_COUNT = 5;
 
 function formatBalance(symbol: string, value: string | undefined) {

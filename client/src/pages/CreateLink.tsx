@@ -1,14 +1,13 @@
 import { useState, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { sileo } from "sileo";
 import type { User } from "../lib/firebase";
 import Logo from "../components/Logo";
-import { fetchWithAuth } from "../lib/authFetch";
+import { apiFetch } from "../lib/api";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { downloadCard, shareCard } from "../lib/exportCard";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 function BackButton({ onClick }: { onClick: () => void }) {
@@ -39,23 +38,14 @@ export default function CreateLink({ user }: { user: User }) {
 	async function handleCreate() {
 		setLoading(true);
 		try {
-			const res = await fetchWithAuth(user, `${SERVER_URL}/links`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ amount, currency, reference }),
+			const data = await apiFetch<{ id: string }>("/links", {
+				user,
+				body: { amount, currency, reference },
 			});
-			if (!res.ok) {
-				const data = await res.json().catch(() => ({ error: "No se pudo crear el link" }));
-				throw new Error(data.error || "No se pudo crear el link");
-			}
-			const data = await res.json();
 			setPaymentUrl(`${APP_URL}/pay?id=${data.id}`);
 			setStep("result");
 		} catch (err) {
-			sileo.error({
-				title: "No se pudo crear el link",
-				description: err instanceof Error ? err.message : "Intenta de nuevo",
-			});
+			notifyError(err, "No se pudo crear el link");
 		} finally {
 			setLoading(false);
 		}
@@ -70,7 +60,7 @@ export default function CreateLink({ user }: { user: User }) {
 		});
 		if (!shared) {
 			navigator.clipboard.writeText(paymentUrl);
-			sileo.success({ title: "Link copiado" });
+			notifySuccess("Link copiado");
 		}
 	}
 
@@ -78,15 +68,15 @@ export default function CreateLink({ user }: { user: User }) {
 	async function handleDownload() {
 		try {
 			await downloadCard(cardRef.current, `parmelia-cobro-${amount || "abierto"}-${currency}.png`);
-		} catch {
-			sileo.error({ title: "No se pudo descargar" });
+		} catch (err) {
+			notifyError(err, "No se pudo descargar");
 		}
 	}
 
 	// Copiar = solo el link.
 	function handleCopy() {
 		navigator.clipboard.writeText(paymentUrl);
-		sileo.success({ title: "Link copiado" });
+		notifySuccess("Link copiado");
 	}
 
 	if (step === "result") {

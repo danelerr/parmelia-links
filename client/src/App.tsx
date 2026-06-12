@@ -4,6 +4,8 @@ import { Toaster } from "sileo";
 import { onAuthChange, type User } from "./lib/firebase";
 import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
+import ErrorBoundary from "./components/ErrorBoundary";
+import { SERVER_URL } from "./lib/api";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
 const Login = lazy(() => import("./pages/Login"));
@@ -25,9 +27,6 @@ const refParam = new URLSearchParams(window.location.search).get("ref");
 if (refParam && /^[a-z0-9_-]{3,30}$/i.test(refParam)) {
 	localStorage.setItem("parmelia:ref", refParam.toLowerCase());
 }
-
-const SERVER_URL =
-	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
 
 function App() {
 	const [user, setUser] = useState<User | null>(null);
@@ -166,14 +165,15 @@ function App() {
 					},
 				}}
 			/>
-			<Suspense
-				fallback={
-					<div className="flex items-center justify-center min-h-dvh">
-						<Logo className="w-20 animate-pulse" />
-					</div>
-				}
-			>
-				<Routes>
+			<ErrorBoundary>
+				<Suspense
+					fallback={
+						<div className="flex items-center justify-center min-h-dvh">
+							<Logo className="w-20 animate-pulse" />
+						</div>
+					}
+				>
+					<Routes>
 					<Route path="/login" element={renderLoginRoute()} />
 					<Route path="/onboarding" element={renderOnboardingRoute()} />
 					<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
@@ -210,7 +210,8 @@ function App() {
 					<Route path="/pay/status" element={<PaymentStatus />} />
 					<Route path="/:username" element={<PayPage user={user} />} />
 				</Routes>
-			</Suspense>
+				</Suspense>
+			</ErrorBoundary>
 		</BrowserRouter>
 	);
 }

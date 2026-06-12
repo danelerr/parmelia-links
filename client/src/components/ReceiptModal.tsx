@@ -4,7 +4,7 @@
 
 import { useRef } from "react";
 import { createPortal } from "react-dom";
-import { sileo } from "sileo";
+import { notifyError } from "../lib/notify";
 import Logo from "./Logo";
 import { getExplorerTxUrl } from "../lib/activeNetwork";
 import { downloadCard } from "../lib/exportCard";
@@ -123,8 +123,8 @@ export default function ReceiptModal({
 					onClick={async () => {
 						try {
 							await downloadCard(cardRef.current, `parmelia-${tx.amount}-${tx.currency}.png`);
-						} catch {
-							sileo.error({ title: "No se pudo descargar el comprobante" });
+						} catch (err) {
+							notifyError(err, "No se pudo descargar el comprobante");
 						}
 					}}
 					className="btn btn-primary flex-1 min-w-0"
