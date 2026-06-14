@@ -291,7 +291,7 @@ contract AccountWebAuthnV2Test is Test {
         vm.prank(guardian);
         account.proposeRecovery(newSigners, 1);
 
-        // Attacker tries to cancel — should fail
+        // Attacker tries to cancel - should fail
         vm.prank(attacker);
         vm.expectRevert();
         account.cancelRecovery();

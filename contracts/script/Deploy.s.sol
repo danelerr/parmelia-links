@@ -18,7 +18,7 @@ address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d
  *
  * Why CREATE2: deploying with a fixed salt through the standard CREATE2 deployer
  * (0x4e59b44847b379578588920cA78FbF26c0B4956C, present on Arbitrum and most EVM
- * chains) yields the SAME contract addresses on every chain — as long as the
+ * chains) yields the SAME contract addresses on every chain - as long as the
  * bytecode is identical (same solc version + optimizer settings in foundry.toml).
  *
  * Because the verifier and implementation addresses are part of how each user's
@@ -27,7 +27,7 @@ address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d
  * keeps the SAME wallet address across chains. That makes chain migration trivial.
  *
  * The EntryPoint is the canonical ERC-4337 v0.9 (0x4337...09), identical on every
- * chain, so it is not deployed here — only referenced.
+ * chain, so it is not deployed here - only referenced.
  */
 contract DeployV2 is Script {
     // Canonical ERC-4337 EntryPoint v0.9 (same address on every chain).
@@ -52,7 +52,7 @@ contract DeployV2 is Script {
         AccountFactoryV2 factory = new AccountFactoryV2{salt: SALT}(address(accountImpl));
         console.log("AccountFactoryV2:        ", address(factory));
 
-        // 4. Paymaster — owner/sponsorSigner = the broadcaster. msg.sender here
+        // 4. Paymaster - owner/sponsorSigner = the broadcaster. msg.sender here
         // must be the real deployer, so you MUST run with `--sender <addr>`
         // (with only `--account`, msg.sender is Foundry's default and owner would
         // mismatch the address that signs addStake → OwnableUnauthorizedAccount).

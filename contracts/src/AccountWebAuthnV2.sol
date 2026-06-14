@@ -25,11 +25,11 @@ import {MultiSignerERC7913} from "@openzeppelin/contracts/utils/cryptography/sig
  *   - UUPS upgradeable: allows adding features (Uniswap, yield) without changing wallet addresses.
  *
  * Key improvements over V1:
- *   1. Multiple passkeys — primary + backup passkeys from different devices/ecosystems.
- *   2. Passkey rotation — add new passkey, remove old one, same wallet address.
- *   3. Domain-agnostic — on-chain validation uses qx/qy, not the WebAuthn RP ID.
- *   4. Guardian recovery — 48h timelock protects against malicious guardian actions.
- *   5. Upgradeable — UUPS proxy pattern for future feature additions.
+ *   1. Multiple passkeys - primary + backup passkeys from different devices/ecosystems.
+ *   2. Passkey rotation - add new passkey, remove old one, same wallet address.
+ *   3. Domain-agnostic - on-chain validation uses qx/qy, not the WebAuthn RP ID.
+ *   4. Guardian recovery - 48h timelock protects against malicious guardian actions.
+ *   5. Upgradeable - UUPS proxy pattern for future feature additions.
  */
 contract AccountWebAuthnV2 is
     Initializable,
@@ -80,7 +80,7 @@ contract AccountWebAuthnV2 is
     ///      Proxies use `initialize()` instead and have separate storage.
     ///      We must pass a valid signer + threshold to MultiSignerERC7913's constructor
     ///      because the library requires threshold > 0 and signer count >= threshold.
-    ///      The implementation's state is irrelevant — proxies get fresh storage via initialize().
+    ///      The implementation's state is irrelevant - proxies get fresh storage via initialize().
     constructor() EIP712("AccountWebAuthnV2", "2") MultiSignerERC7913(_dummySigners(), 1) {
         _disableInitializers();
     }

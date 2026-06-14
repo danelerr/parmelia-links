@@ -124,7 +124,7 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     /// @notice Post-operation hook. Currently a no-op (gas is fully sponsored).
     /// @dev Fee-model integration point: to charge users later (e.g. deduct a USDC
     ///      fee), implement the charge here using the `context` returned above and the
-    ///      `actualGasCost`. Keep gas in mind — postOpGasLimit must cover the logic.
+    ///      `actualGasCost`. Keep gas in mind - postOpGasLimit must cover the logic.
     function postOp(PostOpMode, bytes calldata, uint256, uint256) external onlyEntryPoint {}
 
     // ========== Owner management ==========
