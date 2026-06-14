@@ -133,7 +133,7 @@ function resolveRememberedPasskey(
 /**
  * Create a new P256 passkey. Returns the credentialId and public key (qx, qy).
  * `userId` must be the stable Firebase uid (it keys the resident credential on
- * the device); `label` is what the OS passkey dialog shows — pass something
+ * the device); `label` is what the OS passkey dialog shows - pass something
  * human like the user's email, never the uid.
  */
 export async function createPasskey(

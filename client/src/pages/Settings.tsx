@@ -9,6 +9,7 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import Turnstile from "../components/Turnstile";
+import { Skeleton } from "../components/Skeleton";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
@@ -99,6 +100,28 @@ const ICON = {
 		</svg>
 	),
 };
+
+/** Layout-matching placeholder for the initial settings fetch - profile header
+ *  plus a few section-shaped cards, so there's no jump when the data lands. */
+function SettingsSkeleton() {
+	return (
+		<div className="animate-fade-up" aria-hidden="true">
+			<div className="flex items-center gap-4 mb-6 px-1">
+				<Skeleton className="w-14 h-14 rounded-full shrink-0" />
+				<div className="flex-1 flex flex-col gap-2">
+					<Skeleton className="h-4 w-32 rounded-[6px]" />
+					<Skeleton className="h-3 w-44 rounded-[6px]" />
+				</div>
+			</div>
+			{[96, 84, 132, 188].map((h, i) => (
+				<div key={i} className="mb-6">
+					<Skeleton className="h-3 w-24 rounded-[6px] mb-2.5 ml-1" />
+					<Skeleton className="w-full rounded-[20px]" style={{ height: h }} />
+				</div>
+			))}
+		</div>
+	);
+}
 
 export default function Settings({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
@@ -298,7 +321,7 @@ export default function Settings({ user }: { user: User }) {
 	const usernameChanged = !!username.trim() && username !== currentUsername;
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto">
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/")}
@@ -310,14 +333,11 @@ export default function Settings({ user }: { user: User }) {
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<h1 className="text-[26px]">Ajustes</h1>
+				<h1 className="text-[22px]">Ajustes</h1>
 			</header>
 
 			{initialLoading ? (
-				<div className="flex-1 flex flex-col items-center justify-center gap-4 text-center">
-					<div className="w-8 h-8 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
-					<p className="text-sm text-text-muted">Cargando tus ajustes…</p>
-				</div>
+				<SettingsSkeleton />
 			) : (
 				<div className="animate-fade-up">
 					{/* Profile */}
@@ -462,7 +482,7 @@ export default function Settings({ user }: { user: User }) {
 									</div>
 									<div className="flex-1 bg-surface-2 rounded-[14px] px-3.5 py-3">
 										<p className="font-display text-[20px] text-cream">
-											{recoveryOn ? "Sí" : "—"}
+											{recoveryOn ? "Sí" : "-"}
 										</p>
 										<p className="text-[12px] text-text-muted mt-0.5">Recuperación</p>
 									</div>
@@ -472,7 +492,7 @@ export default function Settings({ user }: { user: User }) {
 									<div className="bg-glow-pink/10 border border-glow-pink/20 rounded-[14px] p-3.5 mb-4">
 										<p className="text-[13px] text-glow-pink leading-relaxed">
 											Hay una recuperación en proceso
-											{recoveryDateLabel ? ` — disponible el ${recoveryDateLabel}` : ""}.
+											{recoveryDateLabel ? ` - disponible el ${recoveryDateLabel}` : ""}.
 										</p>
 									</div>
 								)}

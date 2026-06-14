@@ -5,6 +5,10 @@ node_modules
 .dev.vars
 .dev.vars.*
 
+# Secrets — never commit. Firebase service account keys go to `wrangler secret`.
+*-firebase-adminsdk-*.json
+*service-account*.json
+
 # OS / editor junk
 .DS_Store
 *.DS_Store

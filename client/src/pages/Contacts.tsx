@@ -8,6 +8,7 @@ import { fetchWithAuth } from "../lib/authFetch";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
 import Logo from "../components/Logo";
+import { RowSkeletonList } from "../components/Skeleton";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
@@ -101,7 +102,7 @@ export default function Contacts({ user }: { user: User }) {
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/settings")}
@@ -130,10 +131,10 @@ export default function Contacts({ user }: { user: User }) {
 								? "Comparte tu código y cobra/paga entre amigos."
 								: invited === 0
 									? "Aún nadie se unió con tu código. ¡Compártelo!"
-									: `${invited} ${invited === 1 ? "amigo se unió" : "amigos se unieron"} con tu invitación 🎉`}
+									: `${invited} ${invited === 1 ? "amigo se unió" : "amigos se unieron"} con tu invitación`}
 						</p>
 					</div>
-					<button onClick={handleInvite} className="btn btn-gradient btn-sm shrink-0">
+					<button onClick={handleInvite} className="btn btn-primary btn-sm shrink-0">
 						Invitar
 					</button>
 				</div>
@@ -181,9 +182,7 @@ export default function Contacts({ user }: { user: User }) {
 
 			{/* List */}
 			{loading ? (
-				<div className="flex items-center justify-center py-14">
-					<div className="w-5 h-5 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
-				</div>
+				<RowSkeletonList count={5} />
 			) : contacts.length === 0 ? (
 				<div className="flex flex-col items-center text-center py-12 px-6">
 					<Logo className="w-10 mb-4 opacity-40" />

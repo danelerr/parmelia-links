@@ -8,6 +8,7 @@ import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
 import ReceiptModal from "../components/ReceiptModal";
+import { RowSkeletonList } from "../components/Skeleton";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
@@ -87,7 +88,7 @@ export default function Statement({ user }: { user: User }) {
 	}, [transactions, period, fromDate, toDate, asset, typeFilter]);
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-12 w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center gap-3 mb-6">
 				<button
 					onClick={() => navigate("/")}
@@ -153,28 +154,17 @@ export default function Statement({ user }: { user: User }) {
 			)}
 
 			{/* Asset + type filters */}
-			<div className="flex gap-1.5 mb-2 overflow-x-auto -mx-1 px-1 pb-1">
-				{["all", ...activeNetwork.currencies].map((c) => {
-					const active = asset === c;
-					return (
-						<button
-							key={c}
-							onClick={() => setAsset(c)}
-							className={`shrink-0 flex items-center gap-1.5 px-3.5 h-8 rounded-full text-[12px] font-medium border transition-colors ${
-								active
-									? "bg-sky/18 text-glow-sky border-sky/40 font-semibold"
-									: "text-text-muted border-border hover:text-text"
-							}`}
-						>
-							{active && (
-								<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-									<polyline points="20 6 9 17 4 12" />
-								</svg>
-							)}
-							{c === "all" ? "Todas las monedas" : c}
-						</button>
-					);
-				})}
+			<div className="seg-track seg-track-block mb-2">
+				{["all", ...activeNetwork.currencies].map((c) => (
+					<button
+						key={c}
+						onClick={() => setAsset(c)}
+						data-active={asset === c}
+						className="seg-item"
+					>
+						{c === "all" ? "Todas" : c}
+					</button>
+				))}
 			</div>
 			<div className="seg-track seg-track-block mb-5">
 				{(
@@ -197,9 +187,7 @@ export default function Statement({ user }: { user: User }) {
 
 			{/* List */}
 			{isLoading && !txData ? (
-				<div className="flex items-center justify-center py-16">
-					<div className="w-5 h-5 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
-				</div>
+				<RowSkeletonList count={8} />
 			) : filtered.length === 0 ? (
 				<div className="flex flex-col items-center text-center py-14 px-6">
 					<Logo className="w-10 mb-4 opacity-40" />
@@ -221,7 +209,7 @@ export default function Statement({ user }: { user: User }) {
 								>
 									<span
 										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-											received ? "bg-sky/15 text-glow-sky" : "bg-surface-2 text-text-muted"
+											received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
 										}`}
 									>
 										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -247,7 +235,7 @@ export default function Statement({ user }: { user: User }) {
 									</div>
 									<span
 										className={`text-[15px] font-medium tabular shrink-0 ${
-											received ? "text-glow-sky" : "text-text"
+											received ? "text-glow-sky" : "text-glow-pink"
 										}`}
 									>
 										{received ? "+" : "−"}

@@ -2,8 +2,8 @@
 //
 // This is intentionally a small standalone copy of shared/networks.ts: Vercel
 // builds the client from this folder and cannot reach ../shared. The client only
-// ever needs presentation fields (name, symbol, explorer, faucet) — all on-chain
-// work and addresses live on the server — so keep just those in sync here.
+// ever needs presentation fields (name, symbol, explorer, faucet) - all on-chain
+// work and addresses live on the server - so keep just those in sync here.
 export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
 
 export type NetworkConfig = {

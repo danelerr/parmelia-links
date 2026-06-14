@@ -1,4 +1,4 @@
-// Centralized notifications — the only place that talks to sileo for outcomes.
+// Centralized notifications - the only place that talks to sileo for outcomes.
 //
 // Guarantees:
 //   - the user NEVER sees raw technical text (hex blobs, stack-ish messages);
@@ -19,7 +19,7 @@ function deduped(key: string): boolean {
 	return false;
 }
 
-/** The user dismissed/timed out a passkey, share or login prompt — not a failure. */
+/** The user dismissed/timed out a passkey, share or login prompt - not a failure. */
 export function isUserCancelled(err: unknown): boolean {
 	if (!(err instanceof Error)) return false;
 	if (err.name === "NotAllowedError" || err.name === "AbortError") return true;

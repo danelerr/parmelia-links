@@ -25,7 +25,9 @@
   /* Text ramp */
   --color-text: #f5f5f3;
   --color-text-muted: rgba(245, 245, 243, 0.64);
-  --color-text-faint: rgba(245, 245, 243, 0.44);
+  /* Faint is used for informative microcopy (dates, hints, labels), not just
+     decoration — kept at >=0.56 so 12-13px text clears WCAG AA (~5.6:1) on bg. */
+  --color-text-faint: rgba(245, 245, 243, 0.56);
 
   /* Legacy aliases — keep utility classes resolving on screens not yet reworked */
   --color-parmelia-blue: #a7d4de;
@@ -85,6 +87,9 @@
 
 html {
   color-scheme: dark;
+  /* Match the body so overscroll/rubber-band and the dvh gap when the mobile URL
+     bar retracts don't expose the browser's black canvas as a dark strip. */
+  background: var(--color-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   /* Sileo toast state colors — Parmelia palette */
@@ -97,7 +102,11 @@ html {
 body {
   font-family: var(--font-sans);
   color: var(--color-text);
-  background: var(--color-bg);
+  /* Transparent on purpose: the base color lives on <html> (so overscroll/dvh
+     never flash black), and a transparent body lets the body::before gradient
+     show through. An opaque body background here would paint over that gradient
+     (it sits at z-index:-1) and flatten the screen to solid black. */
+  background: transparent;
   min-height: 100dvh;
   line-height: 1.6;
   letter-spacing: -0.011em;
@@ -109,7 +118,15 @@ body {
 body::before {
   content: "";
   position: fixed;
-  inset: 0;
+  /* Size to the LARGE viewport (lvh), not the default/small one: when the mobile
+     URL bar retracts the viewport grows, and a layer pinned to the small viewport
+     would leave the new bottom strip uncovered (the "black line"). 100lvh always
+     spans the tallest viewport, so the gradient itself covers it. */
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh; /* fallback: vh already maps to the large viewport */
+  height: 100lvh;
   z-index: -1;
   pointer-events: none;
   background:
@@ -186,6 +203,30 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
 }
 
+/* ===== Skeleton placeholders =====
+   A neutral block with a sweeping highlight. The sweep is a transform on a
+   pseudo-element, so it stays on the compositor (no per-frame paint) — the same
+   discipline as the rest of the motion here. Set the radius via a utility class;
+   under prefers-reduced-motion the global rule freezes the sweep and the static
+   block remains. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-2);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes skeleton-sweep {
+  100% { transform: translateX(100%); }
+}
+
 /* Segmented control — a clearly "selected" pill on a track */
 .seg-track {
   display: inline-flex;
@@ -224,7 +265,13 @@ input[type="number"] {
   flex: 1;
 }
 
-/* ===== Buttons (guide §7) ===== */
+/* ===== Buttons (guide §7) =====
+   Primary-action rule (keep the hierarchy legible):
+   - .btn-primary  — the default primary action on a screen: create, save,
+     continue, sign in, share. Solid light pill.
+   - .btn-gradient — RESERVED for the single action that moves the user's money
+     (pay, swap, bridge). The brand gradient marks "this is the moment you commit
+     funds." One per screen, and never for non-money actions (invite, share). */
 .btn {
   display: inline-flex;
   align-items: center;

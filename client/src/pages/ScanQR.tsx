@@ -36,7 +36,7 @@ type WindowWithBarcodeDetector = Window & {
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const SCAN_INTERVAL_MS = 180;
-// jsQR cost grows ~quadratically with width and it runs on the main thread —
+// jsQR cost grows ~quadratically with width and it runs on the main thread -
 // keep live analysis small so it never starves rendering. QR codes at arm's
 // length decode reliably at 640px; imported images get the full-quality pass.
 const MAX_LIVE_ANALYSIS_WIDTH = 640;
@@ -664,10 +664,10 @@ export default function ScanQR() {
   }, [getOrCreateBarcodeDetector, handleQRResult, scannerVersion, stopCamera]);
 
   return (
-    <div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+    <div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
       <header className="flex items-center gap-3 mb-7">
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate("/")}
           aria-label="Volver"
           className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
         >

@@ -83,7 +83,7 @@ export default function CreateLink({ user }: { user: User }) {
 
 	if (step === "result") {
 		return (
-			<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+			<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 				<header className="flex items-center gap-3 mb-6">
 					<BackButton onClick={() => navigate("/")} />
 					<h1 className="text-[22px]">Tu link de cobro</h1>
@@ -148,13 +148,13 @@ export default function CreateLink({ user }: { user: User }) {
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center gap-3 mb-7">
 				<BackButton onClick={() => navigate("/")} />
 				<h1 className="text-[22px]">Cobrar</h1>
 			</header>
 
-			{/* Amount — big input */}
+			{/* Amount - big input */}
 			<div className="flex flex-col items-center mt-6 mb-8">
 				<input
 					type="number"

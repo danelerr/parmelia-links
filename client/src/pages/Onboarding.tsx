@@ -79,7 +79,7 @@ export default function Onboarding({
 					) : null}
 				</h1>
 				<p className="text-text-muted text-[15px] leading-relaxed max-w-[300px] mb-8">
-					Vamos a crear tu cuenta. Tu huella será tu llave — sin contraseñas, sin
+					Vamos a crear tu cuenta. Tu huella será tu llave - sin contraseñas, sin
 					frases raras.
 				</p>
 

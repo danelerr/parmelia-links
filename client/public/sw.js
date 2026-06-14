@@ -4,8 +4,19 @@
 //   - everything else (API, cross-origin, non-GET): untouched — money flows
 //     must NEVER be served from a cache.
 const CACHE = "parmelia-shell-v1";
+const SHELL = "/index.html";
 
-self.addEventListener("install", () => {
+self.addEventListener("install", (event) => {
+	// Precache the app shell so the very first offline load — before any online
+	// navigation has populated the cache — still has a fallback to render.
+	event.waitUntil(
+		caches
+			.open(CACHE)
+			.then((cache) => cache.add(SHELL))
+			.catch(() => {
+				/* offline shell is a nice-to-have, never blocks activation */
+			}),
+	);
 	self.skipWaiting();
 });
 
@@ -45,10 +56,10 @@ self.addEventListener("fetch", (event) => {
 			fetch(request)
 				.then((res) => {
 					const copy = res.clone();
-					caches.open(CACHE).then((cache) => cache.put("/index.html", copy));
+					caches.open(CACHE).then((cache) => cache.put(SHELL, copy));
 					return res;
 				})
-				.catch(() => caches.match("/index.html")),
+				.catch(() => caches.match(SHELL)),
 		);
 	}
 });

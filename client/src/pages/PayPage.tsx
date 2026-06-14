@@ -30,6 +30,16 @@ interface UserProfile {
 	walletAddress: string;
 }
 
+// A pending manual payment awaiting explicit confirmation (free-typed,
+// irreversible destinations get a review step before the biometric signature).
+type ManualConfirm = {
+	wallet: string;
+	amount: string;
+	currency: string;
+	isAddress: boolean;
+	username?: string;
+};
+
 function BackButton({ onClick }: { onClick: () => void }) {
 	return (
 		<button
@@ -45,7 +55,7 @@ function BackButton({ onClick }: { onClick: () => void }) {
 	);
 }
 
-/** Anti-phishing trust seal — always visible when paying. */
+/** Anti-phishing trust seal - always visible when paying. */
 function TrustBadge() {
 	return (
 		<div className="flex items-center justify-center gap-2 mb-7">
@@ -90,6 +100,59 @@ function PayingOverlay({ stage }: { stage: PayStage }) {
 	);
 }
 
+/** Confirmation sheet shown before signing a manual (free-typed) payment.
+ *  Surfaces the full destination so the user can verify an irreversible send. */
+function ManualConfirmSheet({
+	tx,
+	onConfirm,
+	onCancel,
+}: {
+	tx: ManualConfirm | null;
+	onConfirm: () => void;
+	onCancel: () => void;
+}) {
+	if (!tx) return null;
+	return (
+		<div
+			className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center px-5 animate-fade-in"
+			style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+			onClick={onCancel}
+		>
+			<div
+				className="w-full max-w-sm bg-surface border border-border rounded-[24px] p-6 shadow-e3 animate-fade-up"
+				onClick={(e) => e.stopPropagation()}
+			>
+				<div className="flex items-center justify-center gap-2 mb-5">
+					<Logo className="w-6" />
+					<span className="text-[13px] text-text-muted">Confirma tu pago</span>
+				</div>
+				<p className="text-[13px] text-text-muted text-center mb-1">Vas a enviar</p>
+				<p className="font-display text-[40px] leading-none tabular text-center mb-5">
+					{tx.amount}
+					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
+				</p>
+				<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
+					<span className="text-[12px] text-text-muted block mb-1">Para</span>
+					{tx.isAddress ? (
+						<span className="text-[13px] text-text font-mono break-all">{tx.wallet}</span>
+					) : (
+						<span className="text-[15px] text-text">@{tx.username}</span>
+					)}
+				</div>
+				<p className="text-[12px] text-text-faint text-center mb-5 leading-relaxed">
+					Revisa bien el destino: los pagos no se pueden deshacer. Sin comisiones de red.
+				</p>
+				<button onClick={onConfirm} className="btn btn-gradient btn-block">
+					Confirmar y pagar
+				</button>
+				<button onClick={onCancel} className="btn-text w-full mt-1">
+					Cancelar
+				</button>
+			</div>
+		</div>
+	);
+}
+
 export default function PayPage({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
 	const { username } = useParams();
@@ -108,6 +171,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	const [slowConnection, setSlowConnection] = useState(false);
 	const [destType, setDestType] = useState<"address" | "username">("address");
 	const [resolvingUsername, setResolvingUsername] = useState(false);
+	const [confirmTx, setConfirmTx] = useState<ManualConfirm | null>(null);
 
 	const linkId = searchParams.get("id");
 	const amountParam = searchParams.get("amount");
@@ -172,7 +236,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		}
 
 		return () => clearTimeout(slowTimer);
-		// Depend on the parsed primitives only — searchParams is a fresh object
+		// Depend on the parsed primitives only - searchParams is a fresh object
 		// each render and would re-run this fetch effect unnecessarily.
 	}, [linkId, username, amountParam, currencyParam, refParam, walletParam]);
 
@@ -212,7 +276,7 @@ export default function PayPage({ user }: { user: User | null }) {
 			navigate(`/pay/status?tx=${txHash}&amount=${params.amount}&currency=${params.currency}&to=${to}`);
 		} catch (err) {
 			if (isUserCancelled(err)) {
-				// The user dismissed the passkey prompt — calm notice, no red.
+				// The user dismissed the passkey prompt - calm notice, no red.
 				notifyWarning("Confirmación cancelada", "Tu pago no se realizó.");
 				setError("");
 			} else {
@@ -259,7 +323,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		}
 		if (msg.includes("insufficient") || msg.includes("Insufficient")) return "Saldo insuficiente.";
 		if (msg.includes("FailedOp")) {
-			const match = msg.match(/FailedOp\([^,]+,\s*"?([^"\)]+)/);
+			const match = msg.match(/FailedOp\([^,]+,\s*"?([^")]+)/);
 			if (match) return `Error: ${match[1]}`;
 		}
 		if (msg.length > 150) return "No se pudo procesar el pago. Intenta de nuevo.";
@@ -307,19 +371,33 @@ export default function PayPage({ user }: { user: User | null }) {
 			return;
 		}
 
-		await executePay({ linkId: "manual", wallet: targetWallet, amount: payAmount, currency: payCurrency });
+		// Don't sign yet - review the resolved destination first (irreversible).
+		setConfirmTx({
+			wallet: targetWallet,
+			amount: payAmount,
+			currency: payCurrency,
+			isAddress: destType === "address",
+			username: destType === "username" ? manualWallet.trim().toLowerCase() : undefined,
+		});
+	}
+
+	async function confirmAndPay() {
+		if (!confirmTx) return;
+		const tx = confirmTx;
+		setConfirmTx(null);
+		await executePay({ linkId: "manual", wallet: tx.wallet, amount: tx.amount, currency: tx.currency });
 	}
 
 	async function handleLogin() {
 		try {
 			const credential = await signInWithGoogle();
-			await credential.user.getIdToken(true);
+			if (credential) await credential.user.getIdToken(true);
 		} catch {
 			notifyError(new Error("No pudimos iniciar sesión. Intenta de nuevo."));
 		}
 	}
 
-	const screen = "flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto";
+	const screen = "flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto";
 	const bigInput =
 		"w-full max-w-[260px] bg-transparent text-center font-display text-[56px] leading-none text-text placeholder:text-text-faint tabular";
 
@@ -349,8 +427,13 @@ export default function PayPage({ user }: { user: User | null }) {
 		return (
 			<div className={screen}>
 				<PayingOverlay stage={payStage} />
+				<ManualConfirmSheet
+					tx={confirmTx}
+					onConfirm={confirmAndPay}
+					onCancel={() => setConfirmTx(null)}
+				/>
 				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate(-1)} />
+					<BackButton onClick={() => navigate("/")} />
 					<h1 className="text-[22px]">Pagar o enviar</h1>
 				</header>
 
@@ -440,7 +523,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		return (
 			<div className={screen}>
 				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate(-1)} />
+					<BackButton onClick={() => navigate("/")} />
 				</header>
 				<div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
 					<div className="w-20 h-20 rounded-full bg-pink/15 flex items-center justify-center font-display text-[32px] text-glow-pink uppercase mb-5">
@@ -490,7 +573,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		<div className={screen}>
 			<PayingOverlay stage={payStage} />
 			<header className="flex items-center gap-3 mb-6">
-				<BackButton onClick={() => (showPayForm ? setShowPayForm(false) : navigate(-1))} />
+				<BackButton onClick={() => (showPayForm ? setShowPayForm(false) : navigate("/"))} />
 			</header>
 
 			<TrustBadge />

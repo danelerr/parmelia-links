@@ -37,7 +37,7 @@ export default function PaymentStatus() {
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center">
 				<button
 					onClick={() => navigate("/")}

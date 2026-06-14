@@ -1,6 +1,6 @@
 // Render-error boundary: without this, any uncaught render error (or a failed
 // lazy chunk after a deploy) is a white screen. Shows a branded recovery
-// screen instead. Class component — boundaries can't be hooks.
+// screen instead. Class component - boundaries can't be hooks.
 
 import { Component, type ReactNode } from "react";
 import Logo from "./Logo";

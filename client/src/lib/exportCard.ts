@@ -1,5 +1,5 @@
 // Renders a receipt / QR card as a faithful PNG on a white, lightly textured
-// background — the dark card sits on "paper", like a shareable comprobante.
+// background - the dark card sits on "paper", like a shareable comprobante.
 //
 // Approach: capture the card node directly with html-to-image (reliable), then
 // composite it onto a <canvas> we fully control: white paper + a generative
@@ -40,7 +40,7 @@ function roundRectPath(
 	ctx.closePath();
 }
 
-// Flowing, randomized curved lines — gives the paper an organic, slightly
+// Flowing, randomized curved lines - gives the paper an organic, slightly
 // noticeable grain that's different on every export.
 function drawTexture(ctx: CanvasRenderingContext2D, w: number, h: number, scale: number) {
 	const rnd = (a: number, b: number) => a + Math.random() * (b - a);
@@ -160,7 +160,7 @@ export async function shareCard(
 			return true;
 		}
 	} catch {
-		// user cancelled or share unsupported — caller falls back
+		// user cancelled or share unsupported - caller falls back
 	}
 	return false;
 }

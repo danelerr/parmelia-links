@@ -1,6 +1,6 @@
 // Move money between networks (cross-chain MVP, USDC).
 // Deposits: quote in-app → continue on Across (our bridge partner) with the
-// user's Parmelia account prefilled as recipient — funds land directly here.
+// user's Parmelia account prefilled as recipient - funds land directly here.
 // Withdrawals: quoted; execution ships next (signed with the passkey).
 
 import { useEffect, useRef, useState } from "react";
@@ -81,7 +81,7 @@ export default function Deposit({ user }: { user: User }) {
 	const externalChainName = chains.find((c) => c.id === chainId)?.name ?? "";
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-6 pb-10 w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/")}
@@ -226,7 +226,7 @@ export default function Deposit({ user }: { user: User }) {
 					) : (
 						<>
 							<button disabled className="btn btn-ghost btn-block">
-								Retiros entre redes — muy pronto
+								Retiros entre redes - muy pronto
 							</button>
 							<p className="text-[12px] text-text-faint text-center mt-3">
 								Ya puedes ver el costo estimado; los retiros se activan en la próxima actualización.

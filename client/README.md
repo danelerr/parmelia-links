@@ -1,73 +1,31 @@
-# React + TypeScript + Vite
+# Client (Parmelia web app)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+SPA de Parmelia: React 19 + TypeScript + Vite 7 + Tailwind v4. Es una PWA instalable. Ver `../ARCHITECTURE.md` para la arquitectura completa.
 
-Currently, two official plugins are available:
+## Desarrollo
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```txt
+pnpm install
+pnpm --filter client dev      # o: npm run dev
+npm run build                 # tsc -b + vite build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Variables de entorno
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Copia `client/.env.example` a `client/.env` y complétalo (gitignored):
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+| Variable | Descripción |
+| --- | --- |
+| `VITE_FIREBASE_*` | Config de Firebase web (incluye `VITE_FIREBASE_MEASUREMENT_ID` para GA4) |
+| `VITE_SERVER_URL` / `VITE_APP_URL` | URLs del backend / frontend |
+| `VITE_CHAIN_KEY` | Red activa (`arbitrum-sepolia` / `arbitrum-one`) |
+| `VITE_TURNSTILE_SITE_KEY` | Site key de Turnstile (pública) |
+| `VITE_FIREBASE_VAPID_KEY` | VAPID pública para web push |
+| `VITE_ENABLE_APPLE_LOGIN` | `"true"` para mostrar el botón de Apple |
+
+## Notas
+
+- El service worker (`public/sw.js`) se registra solo en producción (PWA shell + push FCM).
+- Las páginas usan `React.lazy`; todo va envuelto en `ErrorBoundary`.
+- Capas transversales en `src/lib/`: `api` (fetch tipado), `notify` (avisos), `firebase` (auth), `push`, `analytics`.
+- Deploy: Vercel construye desde esta carpeta.

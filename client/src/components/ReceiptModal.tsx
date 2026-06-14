@@ -1,4 +1,4 @@
-// Receipt modal — a brand piece (gradient bar + glow) with the formal receipt
+// Receipt modal - a brand piece (gradient bar + glow) with the formal receipt
 // info at the bottom (fecha, hora, N° de comprobante = tx hash). Portaled to
 // <body> so position:fixed stays viewport-relative under transformed pages.
 
@@ -56,10 +56,10 @@ export default function ReceiptModal({
 				<div
 					className="w-14 h-14 rounded-full flex items-center justify-center mb-5 relative z-1"
 					style={{
-						background: received ? "rgba(156,227,244,0.16)" : "rgba(245,245,243,0.08)",
+						background: received ? "rgba(156,227,244,0.16)" : "rgba(244,169,207,0.16)",
 					}}
 				>
-					<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={received ? "#9ce3f4" : "#f5f5f3"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+					<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={received ? "#9ce3f4" : "#f4a9cf"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
 						<polyline points="20 6 9 17 4 12" />
 					</svg>
 				</div>

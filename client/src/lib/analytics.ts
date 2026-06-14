@@ -1,4 +1,4 @@
-// GA4 via Firebase — dormant until VITE_FIREBASE_MEASUREMENT_ID is set, so the
+// GA4 via Firebase - dormant until VITE_FIREBASE_MEASUREMENT_ID is set, so the
 // app works identically before Analytics is enabled in the Firebase console.
 
 import { app } from "./firebase";

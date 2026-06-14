@@ -67,8 +67,9 @@ export default function Login() {
 
   async function handleGoogle() {
     try {
+      // null => a redirect was started; onAuthChange completes it on return.
       const credential = await signInWithGoogle();
-      await credential.user.getIdToken(true);
+      if (credential) await credential.user.getIdToken(true);
     } catch (err) {
       if (!isUserCancelled(err)) notifyError(err, "No pudimos iniciar sesión");
     }
@@ -77,7 +78,7 @@ export default function Login() {
   async function handleApple() {
     try {
       const credential = await signInWithApple();
-      await credential.user.getIdToken(true);
+      if (credential) await credential.user.getIdToken(true);
     } catch (err) {
       if (!isUserCancelled(err)) notifyError(err, "No pudimos iniciar sesión");
     }

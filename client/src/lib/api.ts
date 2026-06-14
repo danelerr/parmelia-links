@@ -1,4 +1,4 @@
-// Typed API layer — one place that knows how to talk to the worker.
+// Typed API layer - one place that knows how to talk to the worker.
 // Every caller gets parsed JSON or a thrown ApiError with a HUMAN message
 // (the server already speaks Spanish in `error`) plus status/requestId,
 // instead of re-implementing res.ok / data.error plumbing per page.
@@ -12,7 +12,7 @@ export const SERVER_URL =
 export class ApiError extends Error {
 	/** HTTP status; 0 = network failure (offline, DNS, CORS). */
 	status: number;
-	/** Server correlation id — surface it so support can find the log line. */
+	/** Server correlation id - surface it so support can find the log line. */
 	requestId?: string;
 	network: boolean;
 
