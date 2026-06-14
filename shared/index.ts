@@ -5,7 +5,7 @@ export * from "./networks";
 // app stays portable. Resolve them at runtime with getNetworkConfig(CHAIN_KEY).
 
 // ============================================================
-// ABIs (chain-independent — compiled from contracts/out)
+// ABIs (chain-independent - compiled from contracts/out)
 // ============================================================
 
 export { abi as accountWebAuthnV2Abi } from "../contracts/out/AccountWebAuthnV2.sol/AccountWebAuthnV2.json";

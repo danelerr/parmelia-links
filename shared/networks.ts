@@ -12,7 +12,7 @@ export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-
 
 /** On-chain addresses for one deployment of the Parmelia contracts. */
 export type ContractAddresses = {
-	/** Canonical ERC-4337 EntryPoint v0.9 — same address on every chain. */
+	/** Canonical ERC-4337 EntryPoint v0.9 - same address on every chain. */
 	entryPoint: `0x${string}`;
 	factory: `0x${string}`;
 	paymaster: `0x${string}`;
@@ -37,11 +37,11 @@ export type TokenConfig = {
 
 /**
  * Uniswap infrastructure on a chain. All addresses verified against the
- * official deployment docs (developers.uniswap.org) — v4 deployments page for
+ * official deployment docs (developers.uniswap.org) - v4 deployments page for
  * UR/PoolManager/V4Quoter/Permit2, v3 deployments page for QuoterV2.
  */
 export type UniswapConfig = {
-	/** Universal Router (v4-compatible) — single execution surface for v3+v4 swaps. */
+	/** Universal Router (v4-compatible) - single execution surface for v3+v4 swaps. */
 	universalRouter: `0x${string}`;
 	/** Canonical Permit2 (same address on every chain). */
 	permit2: `0x${string}`;
@@ -68,11 +68,11 @@ export type NetworkConfig = {
 	uniswap: UniswapConfig | null;
 };
 
-// Canonical ERC-4337 EntryPoint v0.9 (deterministic — identical on every chain,
+// Canonical ERC-4337 EntryPoint v0.9 (deterministic - identical on every chain,
 // including Arbitrum). This matches OpenZeppelin's Account.entryPoint() default.
 const ENTRYPOINT_V09 = "0x433709009B8330FDa32311DF1C2AFA402eD8D009" as const;
 
-// Canonical Permit2 — deterministic deployment, identical on every chain.
+// Canonical Permit2 - deterministic deployment, identical on every chain.
 const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const;
 
 // Sentinel for contracts not yet deployed on a given chain. Fill these in after
@@ -115,9 +115,9 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		faucetLabel: "Circle Faucet",
 		contracts: {
 			entryPoint: ENTRYPOINT_V09,
-			factory: TODO_DEPLOY, // TODO: deploy V2 to Arbitrum Sepolia, then fill
-			paymaster: TODO_DEPLOY, // TODO
-			verifier: TODO_DEPLOY, // TODO
+			factory: "0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB",
+			paymaster: "0x31f357a64cF5899da21337f0D9e28ef8D6385753",
+			verifier: "0xb7fA10dEe75042D6973676A7d7882e4621B806d6",
 			// Circle's official testnet USDC on Arbitrum Sepolia.
 			usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
 			usdcDecimals: 6,
@@ -129,7 +129,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 				address: null,
 				decimals: 18,
 				isNative: true,
-				// Uniswap v3 docs — WETH on Arbitrum Sepolia.
+				// Uniswap v3 docs - WETH on Arbitrum Sepolia.
 				wrappedAddress: "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73",
 				coingeckoId: "ethereum",
 			},
@@ -186,7 +186,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 				coingeckoId: "usd-coin",
 			},
 			{
-				// Chosen BTC wrapper: WBTC — deepest BTC liquidity on Arbitrum
+				// Chosen BTC wrapper: WBTC - deepest BTC liquidity on Arbitrum
 				// (v3 WBTC/WETH + WBTC/USDC pools). Config-driven: swap to cbBTC
 				// later by editing this entry only.
 				symbol: "WBTC",
