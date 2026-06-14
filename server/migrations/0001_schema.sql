@@ -1,4 +1,4 @@
--- Parmelia schema — single source of truth (consolidated; the incremental
+-- Parmelia schema - single source of truth (consolidated; the incremental
 -- migration history was squashed while testnet data was disposable).
 --
 -- Design notes:
@@ -6,7 +6,7 @@
 --     (address → user) powers the ledger and internal-transfer detection.
 --     referral_code: short shareable invite code (besides ?ref=username).
 --   * ledger: ONE unified movements table. Parmelia relays every UserOp, so
---     each payment/swap/faucet is written here at submit time — both sides for
+--     each payment/swap/faucet is written here at submit time - both sides for
 --     internal transfers. External incoming transfers are ingested by the cron
 --     indexer. /user/transactions reads ONLY this table.
 --   * sync_state: block cursor for the cron indexer.
@@ -38,6 +38,7 @@ CREATE TABLE users (
 	credential_id TEXT,                   -- last-used passkey hint (UX only)
 	funded_at TEXT,
 	invited_by TEXT,                      -- uid of the inviter (write-once)
+	push_token TEXT,                      -- FCM web push token
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT;

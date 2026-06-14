@@ -1,4 +1,4 @@
-// Statement endpoint — reads ONLY the D1 ledger (fast, no RPC/explorer calls).
+// Statement endpoint - reads ONLY the D1 ledger (fast, no RPC/explorer calls).
 // The ledger is fed at write time for everything the app relays, and by the
 // cron indexer for external incoming transfers.
 

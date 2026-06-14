@@ -3,7 +3,7 @@ import { formatEther, formatUnits } from "viem";
 import { erc20Abi, getNetworkConfig } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import { getPublicClient } from "../services/clients";
-import { getUserByUid, getUserByUsername, saveUser } from "../services/storage";
+import { getUserByUid, getUserByUsername, saveUser, setPushToken } from "../services/storage";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -34,10 +34,19 @@ userRoutes.put("/username", requireAuth, async (c) => {
 		return c.json({ error: "Username invalido. Solo letras minusculas, numeros, guiones. 3-30 caracteres." }, 400);
 	}
 
+	// Must cover every client route (the public pay page lives at /:username)
+	// plus API roots and common traps. Old Spanish routes kept defensively.
 	const reserved = [
-		"pay", "login", "create", "settings", "admin", "api", "user",
-		"cobrar", "pagar", "scan", "links", "account", "status",
-		"app", "help", "support", "about", "terms", "privacy",
+		// client routes
+		"login", "onboarding", "charge", "send", "scan", "swap",
+		"statement", "contacts", "deposit", "settings", "pay", "status",
+		// API roots
+		"user", "account", "links", "bridge", "api",
+		// legacy Spanish routes
+		"cobrar", "pagar", "cambiar", "extractos", "contactos", "depositar",
+		// common traps
+		"admin", "create", "app", "help", "support", "about", "terms", "privacy",
+		"parmelia", "www", "root",
 	];
 	if (reserved.includes(username)) {
 		return c.json({ error: "Username reservado" }, 400);
@@ -107,6 +116,17 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 		usdcRaw: usdcBalanceRaw.toString(),
 		tokens,
 	});
+});
+
+// Register (or clear) this device's FCM web-push token.
+userRoutes.put("/push-token", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const { token } = await c.req.json().catch(() => ({ token: null }));
+	if (token !== null && (typeof token !== "string" || token.length < 20 || token.length > 4096)) {
+		return c.json({ error: "Token inválido" }, 400);
+	}
+	await setPushToken(c.env, user.sub, token);
+	return c.json({ success: true });
 });
 
 // Get user by username (public)

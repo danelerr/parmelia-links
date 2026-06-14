@@ -1,5 +1,5 @@
 // Pure Uniswap encoding layer: Universal Router commands, v4 actions and the
-// minimal ABIs we need for on-chain quoting. No I/O here — everything is a pure
+// minimal ABIs we need for on-chain quoting. No I/O here - everything is a pure
 // function so it can be unit-tested without a chain.
 //
 // All constants verified against source:
@@ -35,7 +35,7 @@ export const V4_ACTIONS = {
 	TAKE_PORTION: 0x10,
 } as const;
 
-/** universal-router Constants.ADDRESS_THIS — "the router itself" recipient. */
+/** universal-router Constants.ADDRESS_THIS - "the router itself" recipient. */
 export const UR_ADDRESS_THIS = "0x0000000000000000000000000000000000000002" as const;
 /** v4 native currency (ETH) = address(0). */
 export const NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000" as const;
@@ -208,7 +208,7 @@ export type BuildSwapParams = {
 	amountIn: bigint;
 	/** Net minimum the user must receive (post Parmelia fee). */
 	minAmountOutNet: bigint;
-	/** Final recipient — MUST be the user's smart account. */
+	/** Final recipient - MUST be the user's smart account. */
 	account: `0x${string}`;
 	/** Parmelia service fee (0 = disabled). */
 	feeBps: bigint;

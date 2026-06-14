@@ -22,6 +22,10 @@ export type Bindings = {
 	PARMELIA_TREASURY_ADDRESS?: string;
 	/** Cross-chain withdrawal spread in bps (capped at 100 in code). */
 	PARMELIA_CROSSCHAIN_FEE_BPS?: string;
+	/** Cloudflare Turnstile secret. Unset => anti-abuse check is skipped (dev). */
+	TURNSTILE_SECRET_KEY?: string;
+	/** Firebase service account JSON (one line). Unset => push notifications off. */
+	FCM_SERVICE_ACCOUNT?: string;
 };
 
 export type Variables = {

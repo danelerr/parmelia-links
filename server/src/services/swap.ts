@@ -1,6 +1,6 @@
 // Swap quoting + fee policy. Quotes come from on-chain quoters (no API keys):
 // we probe the standard v3 fee tiers and v4 hookless pool configs for the pair
-// and pick the route with the best raw output (tie-break: v4 — native ETH is a
+// and pick the route with the best raw output (tie-break: v4 - native ETH is a
 // first-class currency there, which avoids WRAP/UNWRAP gas on ETH pairs).
 
 import { formatUnits } from "viem";
@@ -18,7 +18,7 @@ import {
 	v4QuoterAbi,
 } from "./uniswap";
 
-/** Hard cap on Parmelia's service fee — env can never push it above 1%. */
+/** Hard cap on Parmelia's service fee - env can never push it above 1%. */
 export const MAX_FEE_BPS_HARD_CAP = 100n;
 /** Default slippage when the client doesn't send one: 0.50%. */
 export const DEFAULT_SLIPPAGE_BPS = 50;
@@ -155,7 +155,7 @@ export async function quoteBestRoute(
 	);
 	if (results.length === 0) return null;
 
-	// Best raw output wins; on (near) ties prefer v4 — cheaper execution for
+	// Best raw output wins; on (near) ties prefer v4 - cheaper execution for
 	// native-ETH legs (no wrap) and singleton-manager gas savings.
 	results.sort((a, b) => {
 		if (a.amountOut === b.amountOut) {

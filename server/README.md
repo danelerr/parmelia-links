@@ -1,75 +1,56 @@
 # Server (Cloudflare Worker)
 
+API de Parmelia: Hono sobre Cloudflare Workers + D1. Ver `../ARCHITECTURE.md` para el detalle y `../DEPLOY.md` para el runbook de despliegue.
+
 ## Desarrollo local
 
 ```txt
-npm install
-npm run dev
+pnpm install
+pnpm --filter server dev      # o: npm run dev
+pnpm --filter server test     # vitest (encoders de swap, fees, validación)
 ```
 
 ## Despliegue
 
 ```txt
 npm run deploy
+npm run cf-typegen            # regenerar tipos del Worker
 ```
 
-## Generar tipos del Worker
+## Almacenamiento (D1)
 
-```txt
-npm run cf-typegen
-```
+Toda la data de la app vive en D1 (binding `PARMELIA_DB`): usuarios/usernames, wallet del usuario, `credential_id` (pista de UX), `referral_code`, estado del faucet, links de cobro, operaciones pendientes (`prepare`↔`submit`), cotizaciones de swap, contactos y el **ledger** unificado de movimientos.
 
-## Storage actual
+### Historial = ledger + indexer (sin indexador pago)
 
-### D1: fuente principal de datos de aplicacion
+`/user/transactions` lee **solo** la tabla `ledger`:
 
-Se usa para:
+- Lo que la app relaya (pagos, swaps, faucet) se escribe al confirmar - ambos lados en transferencias internas.
+- Los **depósitos externos** entrantes los ingiere un **Cron Trigger** (`services/indexer.ts`, cada 2 min) escaneando logs `Transfer` ERC-20 con un cursor en `sync_state`. Escrituras idempotentes.
 
-- usuarios y usernames,
-- wallet address del usuario,
-- `credentialId` mas reciente,
-- estado del faucet,
-- links de cobro,
-- operaciones pendientes entre `prepare` y `submit`,
-- auditoria app-level de transacciones enviadas.
+No depende de Blockscout/Etherscan/BlockVision en cada request.
 
-### Blockchain: fuente principal de verdad para historial
-
-`/user/transactions` reconstruye el historial combinando:
-
-- En Base Sepolia usa Blockscout.
-- En Monad testnet usa el `RPC_URL` directamente para leer transferencias ERC-20 visibles en logs recientes.
-- D1 sigue aportando los pagos y links que pasan por la app para no depender de un indexador pago.
-
-Esto evita depender de BlockVision o de planes pagos para el historial de Monad.
-Como tradeoff, el historial externo de Monad queda acotado a una ventana reciente cuando usas un RPC free como Alchemy.
-
-## D1
-
-### Aplicar migraciones
+### Migraciones
 
 ```txt
 npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, seguro sobre una DB de testnet previa; incluye el token FCM de push notifications). Nuevas features = nueva migración numerada.
+
 ## Secrets y variables
 
-- Usa `vars` para configuracion no sensible como:
-  - `FIREBASE_PROJECT_ID`
-  - `CHAIN_KEY`
-- Usa `wrangler secret put` o `.dev.vars` para:
-  - `RPC_URL`
-  - `PRIVATE_KEY`
-  - `PAYMASTER_SIGNER_PRIVATE_KEY` si separas la firma del paymaster
+`vars` (en `wrangler.jsonc`) para config no sensible: `FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, y las de fees (`PARMELIA_*`).
 
-### Configurar secrets remotos
+`wrangler secret put` (o `.dev.vars` local, gitignored) para lo sensible:
 
 ```txt
-npx wrangler secret put RPC_URL
-npx wrangler secret put PRIVATE_KEY
+npx wrangler secret put RPC_URL                     # acepta varias URLs por coma (failover)
+npx wrangler secret put PRIVATE_KEY                  # EOA relayer/deploy/guardian/faucet
+npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY # firma del paymaster
+npx wrangler secret put TURNSTILE_SECRET_KEY         # anti-abuso (opcional; sin definir = se omite)
+npx wrangler secret put FCM_SERVICE_ACCOUNT          # JSON del service account, 1 línea (opcional; sin definir = sin push)
 ```
 
-### Desarrollo local
-
-Crea `server/.dev.vars` basado en `server/.dev.vars.example`.
+Las integraciones opcionales (Turnstile, FCM) son feature-flagged: si su secret no está, el resto de la app funciona igual. Para dev local crea `server/.dev.vars` a partir de `server/.dev.vars.example`.

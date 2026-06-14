@@ -23,6 +23,7 @@ import {
 	writeLedgerEntries,
 	type LedgerEntry,
 } from "./storage";
+import { notifyUser } from "./push";
 import { logError, logInfo } from "./logger";
 
 const TRANSFER_EVENT = parseAbiItem(
@@ -101,6 +102,14 @@ export async function runIndexer(env: Bindings): Promise<void> {
 
 		if (entries.length > 0) {
 			await writeLedgerEntries(env, entries);
+			// Best-effort "deposit received" push per ingested transfer.
+			for (const e of entries) {
+				await notifyUser(env, e.uid, {
+					title: "Recibiste un depósito",
+					body: `Te llegaron ${e.amount} ${e.token}`,
+					link: "/",
+				});
+			}
 		}
 		await setSyncCursor(env, cursorKey, latest);
 
@@ -112,7 +121,7 @@ export async function runIndexer(env: Bindings): Promise<void> {
 			ingested: entries.length,
 		});
 	} catch (error) {
-		// Never throw from the cron — the cursor simply stays put and the next
+		// Never throw from the cron - the cursor simply stays put and the next
 		// run retries the same range (writes are idempotent).
 		logError("indexer_failed", error, {});
 	}

@@ -1,4 +1,4 @@
-// Cross-chain quotes (Módulo 1 MVP) via the public Across API — no API key.
+// Cross-chain quotes (Módulo 1 MVP) via the public Across API - no API key.
 //
 // Scope by design:
 //   - USDC only (the core LatAm asset; deepest Across support).
@@ -6,7 +6,7 @@
 //     the user's smart account as recipient → funds land directly in Parmelia,
 //     we never custody anything and there is no new fund-moving code to audit.
 //   - Withdrawals: quoted (origin = Arbitrum); execution from the smart account
-//     (SpokePool depositV3 batched like a swap) is the documented next step —
+//     (SpokePool depositV3 batched like a swap) is the documented next step -
 //     it needs the verified SpokePool ABI/address + a testnet smoke test.
 
 import { formatUnits, parseUnits } from "viem";
@@ -16,7 +16,7 @@ const USDC_DECIMALS = 6;
 
 /**
  * Origin/destination chains offered in the UI. USDC addresses from Circle's
- * official list — TODO: re-verify against developers.circle.com before
+ * official list - TODO: re-verify against developers.circle.com before
  * enabling on mainnet traffic.
  */
 export const BRIDGE_CHAINS = [

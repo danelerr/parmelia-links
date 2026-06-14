@@ -34,6 +34,7 @@ import {
 	writeLedgerEntries,
 	type LedgerEntry,
 } from "../services/storage";
+import { notifyUser } from "../services/push";
 import {
 	PAYMASTER_POST_OP_GAS_LIMIT,
 	PAYMASTER_VERIFICATION_GAS_LIMIT,
@@ -512,7 +513,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			}
 		}
 
-		// Ledger writes — the app is the source of truth for everything it relays:
+		// Ledger writes - the app is the source of truth for everything it relays:
 		// the payer always gets an "out" row, and if the recipient is a Parmelia
 		// user they get their "in" row immediately (no chain scanning needed).
 		if (pending.currency === "SWAP") {
@@ -582,6 +583,20 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 				});
 			}
 			await writeLedgerEntries(c.env, entries);
+
+			// Best-effort "te pagaron" push to the recipient (never blocks the response).
+			if (recipient && recipient.uid !== user.sub) {
+				const note = {
+					title: "Te pagaron",
+					body: `Recibiste ${pending.amount} ${pending.currency}`,
+					link: "/",
+				};
+				try {
+					c.executionCtx.waitUntil(notifyUser(c.env, recipient.uid, note));
+				} catch {
+					void notifyUser(c.env, recipient.uid, note);
+				}
+			}
 		}
 
 		await deletePendingPayment(c.env, userOpHash);

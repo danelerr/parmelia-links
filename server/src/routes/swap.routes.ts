@@ -11,7 +11,7 @@
 //   - tokens resolved only from the shared whitelist (symbols, not addresses)
 //   - recipient is ALWAYS the user's own smart account (from their profile)
 //   - slippage, deadline and minimumAmountOut are mandatory and server-computed
-//   - approvals are exact-amount with a short Permit2 expiration — never infinite
+//   - approvals are exact-amount with a short Permit2 expiration - never infinite
 //   - quotes expire (60s) and are re-checked against the pool before preparing
 
 import { Hono } from "hono";
@@ -57,7 +57,7 @@ const SWAP_CALL_GAS_LIMIT = 700000n;
 /** Router deadline and Permit2 expiration window for a prepared swap. */
 const EXECUTION_WINDOW_SECONDS = 600;
 
-// GET /swap/tokens — the whitelist the UI may offer. Server is the only
+// GET /swap/tokens - the whitelist the UI may offer. Server is the only
 // source of truth so the client can never drift (no hardcoded mirrors).
 swapRoutes.get("/tokens", requireAuth, async (c) => {
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
@@ -241,7 +241,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 			return c.json({ error: "La cotización es de otra red.", requestId }, 409);
 		}
 
-		// Resolve everything from server-side state — never from the client.
+		// Resolve everything from server-side state - never from the client.
 		const tokenIn = getTokenBySymbol(network, quote.tokenIn)!;
 		const tokenOut = getTokenBySymbol(network, quote.tokenOut)!;
 		const account = quote.recipient as `0x${string}`;
@@ -288,7 +288,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		});
 
 		// Batch for the smart account. ERC-20 input goes through Permit2 with
-		// EXACT-amount allowances that expire with the execution window — a
+		// EXACT-amount allowances that expire with the execution window - a
 		// smart account batches approve+swap atomically, so signature-based
 		// Permit2 (EIP-712) buys nothing here and would add verifier complexity.
 		const calls: AccountCall[] = [];

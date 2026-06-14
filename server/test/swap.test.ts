@@ -119,7 +119,7 @@ describe("encodeV3Path", () => {
 	});
 });
 
-describe("buildUniversalRouterSwap — v4", () => {
+describe("buildUniversalRouterSwap - v4", () => {
 	it("ETH→USDC without fee: V4_SWAP, native value, SWAP+SETTLE_ALL+TAKE_ALL", () => {
 		const { calldata, value } = buildUniversalRouterSwap({
 			route: { protocol: "v4", fee: 500, tickSpacing: 10 },
@@ -214,7 +214,7 @@ describe("buildUniversalRouterSwap — v4", () => {
 	});
 });
 
-describe("buildUniversalRouterSwap — v3", () => {
+describe("buildUniversalRouterSwap - v3", () => {
 	it("USDC→WBTC without fee goes straight to the account via Permit2", () => {
 		const { calldata, value } = buildUniversalRouterSwap({
 			route: { protocol: "v3", fee: 3000, tickSpacing: null },

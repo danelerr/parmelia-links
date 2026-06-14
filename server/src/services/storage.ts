@@ -8,6 +8,7 @@ export type UserRecord = {
 	credentialId: string | null;
 	fundedAt: string | null;
 	invitedBy: string | null;
+	pushToken: string | null;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -58,12 +59,13 @@ type UserRow = {
 	credential_id: string | null;
 	funded_at: string | null;
 	invited_by: string | null;
+	push_token: string | null;
 	created_at: string | null;
 	updated_at: string | null;
 };
 
 const USER_COLUMNS =
-	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, created_at, updated_at";
+	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, push_token, created_at, updated_at";
 
 type PaymentLinkRow = {
 	id: string;
@@ -128,6 +130,7 @@ function mapUserRow(row: UserRow): UserRecord {
 		credentialId: row.credential_id,
 		fundedAt: row.funded_at,
 		invitedBy: row.invited_by,
+		pushToken: row.push_token,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	};
@@ -274,7 +277,7 @@ export async function ensureReferralCode(env: Bindings, uid: string): Promise<st
 			const fresh = await getUserByUid(env, uid);
 			if (fresh?.referralCode) return fresh.referralCode;
 		} catch {
-			// UNIQUE collision — retry with a new code.
+			// UNIQUE collision - retry with a new code.
 		}
 	}
 	return null;
@@ -797,13 +800,18 @@ export async function deleteContact(env: Bindings, ownerUid: string, contactId: 
 	await d1Run(env, `DELETE FROM contacts WHERE id = ? AND owner_uid = ?`, [contactId, ownerUid]);
 }
 
-/** Record who invited a user — write-once (never overwrites an existing referral). */
+/** Record who invited a user - write-once (never overwrites an existing referral). */
 export async function setInvitedBy(env: Bindings, uid: string, inviterUid: string) {
 	await d1Run(
 		env,
 		`UPDATE users SET invited_by = ? WHERE uid = ? AND invited_by IS NULL`,
 		[inviterUid, uid],
 	);
+}
+
+/** Register (or clear, with null) the FCM web-push token for a user's device. */
+export async function setPushToken(env: Bindings, uid: string, token: string | null) {
+	await d1Run(env, `UPDATE users SET push_token = ? WHERE uid = ?`, [token, uid]);
 }
 
 /** How many users joined with this user's invitation (and created an account). */

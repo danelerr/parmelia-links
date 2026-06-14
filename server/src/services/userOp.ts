@@ -20,7 +20,7 @@ export type AccountCall = {
 
 /**
  * Encode an ERC-7821 `execute(mode, executionData)` batch for the smart
- * account. All calls run atomically inside one UserOperation — this is how a
+ * account. All calls run atomically inside one UserOperation - this is how a
  * smart account replaces "approve then act" multi-tx flows with a single
  * biometric confirmation.
  */

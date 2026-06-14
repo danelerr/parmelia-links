@@ -20,12 +20,13 @@ import {
 } from "../services/storage";
 import { getClients, getPublicClient, waitForTx } from "../services/clients";
 import { buildSponsoredUserOp, serializeBigInts } from "../services/userOp";
+import { verifyTurnstile } from "../services/turnstile";
 
 const accountRoutes = new Hono<AppContext>();
 
 /**
  * Build the ERC-7913 signer bytes from the WebAuthn verifier address and P256 public key.
- * Format: abi.encodePacked(verifierAddress, qx, qy) — 84 bytes total.
+ * Format: abi.encodePacked(verifierAddress, qx, qy) - 84 bytes total.
  */
 function buildWebAuthnSigner(verifier: Hex, qx: Hex, qy: Hex): Hex {
 	return encodePacked(["address", "bytes32", "bytes32"], [verifier, qx, qy]);
@@ -76,7 +77,7 @@ async function deployV2Wallet(env: AppContext["Bindings"], params: { qx: Hex; qy
 	return { publicClient, walletClient, predictedAddress, transactionHash };
 }
 
-// Create account via WebAuthn (V2 — MultiSigner + UUPS)
+// Create account via WebAuthn (V2 - MultiSigner + UUPS)
 accountRoutes.post("/create", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const existingUser = await getUserByUid(c.env, user.sub);
@@ -84,9 +85,14 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 		return c.json({ error: "Account already exists", accountAddress: existingUser.walletAddress }, 409);
 	}
 
-	const { credentialId, qx, qy, ref } = await c.req.json();
+	const { credentialId, qx, qy, ref, turnstileToken } = await c.req.json();
 	if (!credentialId || !qx || !qy) {
 		return c.json({ error: "Missing credentialId, qx, or qy from passkey" }, 400);
+	}
+
+	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"));
+	if (!humanOk) {
+		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo." }, 403);
 	}
 
 	try {
@@ -197,7 +203,7 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 	}
 });
 
-// Add a new passkey to the existing wallet (V2 — MultiSigner).
+// Add a new passkey to the existing wallet (V2 - MultiSigner).
 // Returns the addSigners calldata; the client signs it as a UserOp via /pay/submit.
 accountRoutes.put("/passkey", requireAuth, async (c) => {
 	const user = c.get("user")!;
@@ -277,6 +283,12 @@ accountRoutes.post("/fund", requireAuth, async (c) => {
 
 	if (profile?.fundedAt) {
 		return c.json({ error: "Ya canjeaste tus 5 USDC de prueba", alreadyFunded: true }, 409);
+	}
+
+	const { turnstileToken } = await c.req.json().catch(() => ({ turnstileToken: undefined }));
+	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"));
+	if (!humanOk) {
+		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo." }, 403);
 	}
 
 	try {
