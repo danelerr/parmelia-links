@@ -7,6 +7,7 @@ import { track } from "../lib/analytics";
 import { createPasskey } from "../lib/webauthn";
 import Logo from "../components/Logo";
 import Turnstile from "../components/Turnstile";
+import { useTranslation } from "react-i18next";
 
 function Reassurance({ children }: { children: string }) {
 	return (
@@ -29,6 +30,7 @@ export default function Onboarding({
 	onComplete: () => void;
 }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [creatingWallet, setCreatingWallet] = useState(false);
 	// Invite code: prefilled when the user arrived through an invite link.
 	const [inviteCode, setInviteCode] = useState(
@@ -40,7 +42,7 @@ export default function Onboarding({
 	async function handleCreateWallet() {
 		setCreatingWallet(true);
 		try {
-			if (!user.uid) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+			if (!user.uid) throw new Error(t("common.sessionExpired"));
 			const passkeyLabel = user.email || user.displayName || undefined;
 			const { credentialId, qx, qy } = await createPasskey(user.uid, passkeyLabel);
 
@@ -53,11 +55,11 @@ export default function Onboarding({
 
 			localStorage.removeItem("parmelia:ref");
 			track("wallet_created", { referred: !!ref });
-			notifySuccess("¡Cuenta lista!", "Recibiste 5 dólares digitales de bienvenida.");
+			notifySuccess(t("onboarding.accountReady"), t("onboarding.welcomeFunds"));
 			onComplete();
 			navigate("/");
 		} catch (err) {
-			notifyError(err, "No se pudo crear tu cuenta");
+			notifyError(err, t("onboarding.createError"));
 		} finally {
 			setCreatingWallet(false);
 		}
@@ -71,7 +73,7 @@ export default function Onboarding({
 				<Logo className="w-20 mb-8 animate-float-glow" />
 
 				<h1 className="font-display text-[28px] leading-tight mb-3">
-					Casi listo
+					{t("onboarding.almostReady")}
 					{firstName ? (
 						<>
 							, <span className="text-brand-gradient">{firstName}</span>
@@ -79,14 +81,13 @@ export default function Onboarding({
 					) : null}
 				</h1>
 				<p className="text-text-muted text-[15px] leading-relaxed max-w-[300px] mb-8">
-					Vamos a crear tu cuenta. Tu huella será tu llave - sin contraseñas, sin
-					frases raras.
+					{t("onboarding.intro")}
 				</p>
 
 				<div className="w-full max-w-[300px] bg-surface border border-border rounded-[18px] p-5 flex flex-col gap-3.5 shadow-e1">
-					<Reassurance>Tu dinero siempre es tuyo</Reassurance>
-					<Reassurance>Confirmas cada pago con tu huella</Reassurance>
-					<Reassurance>Sin comisiones de red</Reassurance>
+					<Reassurance>{t("onboarding.reassure1")}</Reassurance>
+					<Reassurance>{t("onboarding.reassure2")}</Reassurance>
+					<Reassurance>{t("common.noNetworkFees")}</Reassurance>
 				</div>
 
 				{/* Invite code (optional) */}
@@ -100,7 +101,7 @@ export default function Onboarding({
 					<input
 						value={inviteCode}
 						onChange={(e) => setInviteCode(e.target.value.toUpperCase().slice(0, 30))}
-						placeholder="Código de invitación (opcional)"
+						placeholder={t("onboarding.invitePlaceholder")}
 						className="flex-1 bg-transparent text-[13px] text-text placeholder:text-text-faint tracking-wide min-w-0 text-center"
 					/>
 				</div>
@@ -116,13 +117,13 @@ export default function Onboarding({
 					disabled={creatingWallet || turnstileToken === null}
 					className="btn btn-primary btn-block"
 				>
-					{creatingWallet ? "Creando tu cuenta…" : "Crear mi cuenta"}
+					{creatingWallet ? t("onboarding.creating") : t("onboarding.createAccount")}
 				</button>
 				<button
 					onClick={logOut}
 					className="text-[13px] text-text-faint hover:text-text-muted transition-colors"
 				>
-					Hoy no, gracias
+					{t("onboarding.notToday")}
 				</button>
 			</div>
 		</div>

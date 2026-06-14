@@ -42,5 +42,28 @@
 			"type": "image/svg+xml",
 			"purpose": "any"
 		}
+	],
+	"screenshots": [
+		{
+			"src": "/screenshot-dashboard.png",
+			"sizes": "1080x2373",
+			"type": "image/png",
+			"form_factor": "narrow",
+			"label": "Panel principal con balance y actividad reciente"
+		},
+		{
+			"src": "/screenshot-charge.png",
+			"sizes": "1080x2373",
+			"type": "image/png",
+			"form_factor": "narrow",
+			"label": "Enlace de cobro con código QR listo para compartir"
+		},
+		{
+			"src": "/screenshot-swap.png",
+			"sizes": "1080x2373",
+			"type": "image/png",
+			"form_factor": "narrow",
+			"label": "Intercambio de tokens con ruta Uniswap integrada"
+		}
 	]
 }

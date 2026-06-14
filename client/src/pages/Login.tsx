@@ -8,6 +8,7 @@ import {
 } from "../lib/firebase";
 import { isUserCancelled, notifyError } from "../lib/notify";
 import Logo from "../components/Logo";
+import { useTranslation } from "react-i18next";
 
 const APPLE_ENABLED = import.meta.env.VITE_ENABLE_APPLE_LOGIN === "true";
 
@@ -42,6 +43,7 @@ function MailIcon() {
 }
 
 export default function Login() {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<Mode>("buttons");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -59,7 +61,7 @@ export default function Login() {
         if (err instanceof Error && err.message === "NEED_EMAIL") {
           setMode("need-email");
         } else {
-          notifyError(err, "No pudimos completar el inicio de sesión");
+          notifyError(err, t("login.completeError"));
           setMode("buttons");
         }
       });
@@ -71,7 +73,7 @@ export default function Login() {
       const credential = await signInWithGoogle();
       if (credential) await credential.user.getIdToken(true);
     } catch (err) {
-      if (!isUserCancelled(err)) notifyError(err, "No pudimos iniciar sesión");
+      if (!isUserCancelled(err)) notifyError(err, t("login.signInError"));
     }
   }
 
@@ -80,14 +82,14 @@ export default function Login() {
       const credential = await signInWithApple();
       if (credential) await credential.user.getIdToken(true);
     } catch (err) {
-      if (!isUserCancelled(err)) notifyError(err, "No pudimos iniciar sesión");
+      if (!isUserCancelled(err)) notifyError(err, t("login.signInError"));
     }
   }
 
   async function handleSendLink() {
     const value = email.trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
-      notifyError(new Error("Escribe un correo válido."));
+      notifyError(new Error(t("login.invalidEmail")));
       return;
     }
     setBusy(true);
@@ -95,7 +97,7 @@ export default function Login() {
       await sendEmailLink(value);
       setMode("sent");
     } catch (err) {
-      notifyError(err, "No pudimos enviar el enlace");
+      notifyError(err, t("login.sendError"));
     } finally {
       setBusy(false);
     }
@@ -104,7 +106,7 @@ export default function Login() {
   async function handleCompleteWithEmail() {
     const value = email.trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
-      notifyError(new Error("Escribe el correo donde recibiste el enlace."));
+      notifyError(new Error(t("login.enterEmailWhereSent")));
       return;
     }
     setBusy(true);
@@ -112,7 +114,7 @@ export default function Login() {
       await completeEmailLink(window.location.href, value);
       window.history.replaceState({}, "", "/login");
     } catch (err) {
-      notifyError(err, "No pudimos completar el inicio de sesión");
+      notifyError(err, t("login.completeError"));
     } finally {
       setBusy(false);
     }
@@ -123,7 +125,7 @@ export default function Login() {
     return (
       <div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center">
         <Logo className="w-16 mb-6 animate-float-glow" />
-        <p className="text-[15px] text-text-muted">Iniciando sesión…</p>
+        <p className="text-[15px] text-text-muted">{t("login.signingIn")}</p>
       </div>
     );
   }
@@ -134,13 +136,13 @@ export default function Login() {
         <div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 text-glow-sky">
           <MailIcon />
         </div>
-        <h1 className="font-display text-[24px] mb-2">Revisa tu correo</h1>
+        <h1 className="font-display text-[24px] mb-2">{t("login.checkEmailTitle")}</h1>
         <p className="text-[14px] text-text-muted max-w-[300px] leading-relaxed mb-7">
-          Te enviamos un enlace de acceso a <span className="text-text">{email}</span>.
-          Ábrelo en este dispositivo para entrar.
+          {t("login.emailSentTo")} <span className="text-text">{email}</span>.{" "}
+          {t("login.emailSentOpen")}
         </p>
         <button onClick={() => setMode("buttons")} className="btn-text">
-          Usar otro método
+          {t("login.useAnotherMethod")}
         </button>
       </div>
     );
@@ -150,9 +152,9 @@ export default function Login() {
     return (
       <div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center animate-fade-up">
         <Logo className="w-14 mb-6" />
-        <h1 className="font-display text-[22px] mb-2">Confirma tu correo</h1>
+        <h1 className="font-display text-[22px] mb-2">{t("login.confirmEmailTitle")}</h1>
         <p className="text-[14px] text-text-muted max-w-[300px] leading-relaxed mb-6">
-          Por seguridad, escribe el correo al que enviamos el enlace.
+          {t("login.confirmEmailBody")}
         </p>
         <input
           type="email"
@@ -160,11 +162,11 @@ export default function Login() {
           autoFocus
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="tu@correo.com"
+          placeholder={t("login.emailPlaceholder")}
           className="w-full max-w-[320px] bg-surface border border-border rounded-full h-12 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors mb-4"
         />
         <button onClick={handleCompleteWithEmail} disabled={busy} className="btn btn-primary btn-block max-w-[320px]">
-          {busy ? "Entrando…" : "Entrar"}
+          {busy ? t("login.entering") : t("login.enter")}
         </button>
       </div>
     );
@@ -176,12 +178,11 @@ export default function Login() {
       <div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
         <Logo className="w-24 mb-9 animate-float-glow" />
         <h1 className="font-display text-[34px] leading-[1.06] mb-4 max-w-[300px]">
-          Mueve dinero digital como{" "}
-          <span className="text-brand-gradient">mandar un mensaje</span>
+          {t("login.heroLead")}{" "}
+          <span className="text-brand-gradient">{t("login.heroEmphasis")}</span>
         </h1>
         <p className="text-text-muted text-[15px] leading-relaxed max-w-[290px]">
-          Cobra con links. Paga con QR. Envía a usernames. Tu dinero sigue
-          siendo tuyo.
+          {t("login.subtitle")}
         </p>
       </div>
 
@@ -198,35 +199,35 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSendLink()}
-              placeholder="tu@correo.com"
+              placeholder={t("login.emailPlaceholder")}
               className="w-full bg-surface border border-border rounded-full h-13 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors"
               style={{ height: "3.25rem" }}
             />
             <button onClick={handleSendLink} disabled={busy} className="btn btn-primary btn-block">
-              {busy ? "Enviando…" : "Enviarme un enlace"}
+              {busy ? t("login.sending") : t("login.sendLink")}
             </button>
             <button onClick={() => setMode("buttons")} className="btn-text">
-              Volver
+              {t("common.back")}
             </button>
           </>
         ) : (
           <>
             <button onClick={handleGoogle} className="btn btn-primary btn-block">
               <GoogleIcon />
-              Continuar con Google
+              {t("login.continueGoogle")}
             </button>
             {APPLE_ENABLED && (
               <button onClick={handleApple} className="btn btn-ghost btn-block">
                 <AppleIcon />
-                Continuar con Apple
+                {t("login.continueApple")}
               </button>
             )}
             <button onClick={() => setMode("email")} className="btn btn-ghost btn-block">
               <MailIcon />
-              Continuar con correo
+              {t("login.continueEmail")}
             </button>
             <p className="text-text-faint text-[13px] mt-1">
-              Sin contraseñas. Tu huella es tu llave.
+              {t("login.noPasswords")}
             </p>
           </>
         )}

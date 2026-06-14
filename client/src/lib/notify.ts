@@ -8,6 +8,7 @@
 
 import { sileo } from "sileo";
 import { ApiError } from "./api";
+import i18n from "./i18n";
 
 let lastKey = "";
 let lastAt = 0;
@@ -35,7 +36,7 @@ const TECHNICAL_PATTERN =
 /** Reduce any thrown value to a short, human, Spanish message. */
 export function humanizeError(
 	err: unknown,
-	fallback = "Intenta de nuevo en un momento.",
+	fallback = i18n.t("notify.tryAgain"),
 ): { message: string; requestId?: string } {
 	if (err instanceof ApiError) {
 		// Server messages are already written for humans.
@@ -50,9 +51,9 @@ export function humanizeError(
 	return { message: fallback };
 }
 
-export function notifyError(err: unknown, title = "Algo salió mal") {
+export function notifyError(err: unknown, title = i18n.t("notify.somethingWrong")) {
 	if (isUserCancelled(err)) {
-		notifyWarning("Confirmación cancelada", "No se realizó ningún cambio.");
+		notifyWarning(i18n.t("notify.cancelled"), i18n.t("notify.noChange"));
 		return;
 	}
 	const { message, requestId } = humanizeError(err);

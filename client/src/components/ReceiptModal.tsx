@@ -4,8 +4,10 @@
 
 import { useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { notifyError } from "../lib/notify";
 import Logo from "./Logo";
+import i18n from "../lib/i18n";
 import { getExplorerTxUrl } from "../lib/activeNetwork";
 import { downloadCard } from "../lib/exportCard";
 import type { Transaction } from "../lib/transactions";
@@ -21,6 +23,7 @@ export default function ReceiptModal({
 	tx: Transaction;
 	onClose: () => void;
 }) {
+	const { t } = useTranslation();
 	const cardRef = useRef<HTMLDivElement>(null);
 	const received = tx.type === "received";
 	const date = new Date(tx.createdAt);
@@ -64,7 +67,7 @@ export default function ReceiptModal({
 					</svg>
 				</div>
 				<p className="text-[14px] text-text-muted mb-1 relative z-1">
-					{received ? "Recibiste" : "Pagaste"}
+					{received ? t("receipt.received") : t("receipt.sent")}
 				</p>
 				<p className="font-display text-[40px] leading-none mb-4 tabular relative z-1">
 					{received ? "+" : "−"}
@@ -73,7 +76,7 @@ export default function ReceiptModal({
 				</p>
 				{tx.to && (
 					<p className="text-text-faint text-[12px] font-mono break-all text-center mb-1 relative z-1">
-						Para {tx.to.slice(0, 6)}…{tx.to.slice(-4)}
+						{t("receipt.to")} {tx.to.slice(0, 6)}…{tx.to.slice(-4)}
 					</p>
 				)}
 				{tx.reference && (
@@ -85,22 +88,22 @@ export default function ReceiptModal({
 					{hasDate && (
 						<>
 							<div className="flex items-center justify-between text-[12px]">
-								<span className="text-text-faint">Fecha</span>
+								<span className="text-text-faint">{t("common.date")}</span>
 								<span className="text-text-muted">
-									{date.toLocaleDateString("es", { day: "numeric", month: "long", year: "numeric" })}
+									{date.toLocaleDateString(i18n.resolvedLanguage || "es", { day: "numeric", month: "long", year: "numeric" })}
 								</span>
 							</div>
 							<div className="flex items-center justify-between text-[12px]">
-								<span className="text-text-faint">Hora</span>
+								<span className="text-text-faint">{t("common.time")}</span>
 								<span className="text-text-muted">
-									{date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}
+									{date.toLocaleTimeString(i18n.resolvedLanguage || "es", { hour: "2-digit", minute: "2-digit" })}
 								</span>
 							</div>
 						</>
 					)}
 					{tx.txHash && (
 						<div className="flex items-center justify-between text-[12px] gap-3">
-							<span className="text-text-faint shrink-0">N° de comprobante</span>
+							<span className="text-text-faint shrink-0">{t("receipt.receiptNo")}</span>
 							<span className="text-text-muted font-mono truncate">{shortHash(tx.txHash)}</span>
 						</div>
 					)}
@@ -111,7 +114,7 @@ export default function ReceiptModal({
 							rel="noopener noreferrer"
 							className="text-text-faint hover:text-text-muted text-[12px] text-center mt-2 transition-colors"
 						>
-							Ver comprobante en la red ↗
+							{t("receipt.viewOnNetwork")}
 						</a>
 					)}
 					<p className="text-[11px] text-text-faint text-center mt-1">parmelia.me</p>
@@ -124,15 +127,15 @@ export default function ReceiptModal({
 						try {
 							await downloadCard(cardRef.current, `parmelia-${tx.amount}-${tx.currency}.png`);
 						} catch (err) {
-							notifyError(err, "No se pudo descargar el comprobante");
+							notifyError(err, t("receipt.downloadError"));
 						}
 					}}
 					className="btn btn-primary flex-1 min-w-0"
 				>
-					Descargar comprobante
+					{t("receipt.download")}
 				</button>
 				<button onClick={onClose} className="btn btn-ghost shrink-0">
-					Cerrar
+					{t("common.close")}
 				</button>
 			</div>
 		</div>,

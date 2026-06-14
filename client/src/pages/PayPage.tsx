@@ -9,6 +9,7 @@ import { signWithPasskey } from "../lib/webauthn";
 import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const APP_HOST = new URL(APP_URL).hostname;
@@ -41,10 +42,11 @@ type ManualConfirm = {
 };
 
 function BackButton({ onClick }: { onClick: () => void }) {
+	const { t } = useTranslation();
 	return (
 		<button
 			onClick={onClick}
-			aria-label="Volver"
+			aria-label={t("common.back")}
 			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 		>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -57,39 +59,42 @@ function BackButton({ onClick }: { onClick: () => void }) {
 
 /** Anti-phishing trust seal - always visible when paying. */
 function TrustBadge() {
+	const { t } = useTranslation();
 	return (
 		<div className="flex items-center justify-center gap-2 mb-7">
 			<Logo className="w-6" />
 			<span className="text-[13px] text-text-muted">
-				Pago seguro con <span className="text-text font-medium">Parmelia</span>
+				{t("pay.secureWith")} <span className="text-text font-medium">Parmelia</span>
 			</span>
 		</div>
 	);
 }
 
 function Recipient({ label }: { label: string }) {
+	const { t } = useTranslation();
 	return (
 		<div className="flex flex-col items-center gap-2 mb-6">
 			<div className="w-12 h-12 rounded-full bg-pink/15 flex items-center justify-center font-display text-[18px] text-glow-pink uppercase">
 				{label.replace(/^@/, "")[0] || "?"}
 			</div>
 			<p className="text-[14px] text-text-muted">
-				Pagas a <span className="text-text font-medium">{label}</span>
+				{t("pay.payingTo")} <span className="text-text font-medium">{label}</span>
 			</p>
 		</div>
 	);
 }
 
 function PayingOverlay({ stage }: { stage: PayStage }) {
+	const { t } = useTranslation();
 	const copy: Record<Exclude<PayStage, "idle">, string> = {
-		preparing: "Preparando tu pago…",
-		signing: "Confirma con tu huella",
-		securing: "Asegurando en la red…",
+		preparing: t("pay.stagePreparing"),
+		signing: t("pay.stageSigning"),
+		securing: t("pay.stageSecuring"),
 	};
 	if (stage === "idle") return null;
 	return (
 		<div className="fixed inset-0 z-50 bg-bg/92 backdrop-blur-sm flex flex-col items-center justify-center gap-6 animate-fade-in">
-			<Logo className="w-16 animate-float-glow" />
+			<Logo className="w-16 animate-float-glow glow-soft" />
 			<div className="flex flex-col items-center gap-3">
 				{stage !== "signing" && (
 					<div className="w-6 h-6 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
@@ -111,6 +116,7 @@ function ManualConfirmSheet({
 	onConfirm: () => void;
 	onCancel: () => void;
 }) {
+	const { t } = useTranslation();
 	if (!tx) return null;
 	return (
 		<div
@@ -124,15 +130,15 @@ function ManualConfirmSheet({
 			>
 				<div className="flex items-center justify-center gap-2 mb-5">
 					<Logo className="w-6" />
-					<span className="text-[13px] text-text-muted">Confirma tu pago</span>
+					<span className="text-[13px] text-text-muted">{t("pay.confirmTitle")}</span>
 				</div>
-				<p className="text-[13px] text-text-muted text-center mb-1">Vas a enviar</p>
+				<p className="text-[13px] text-text-muted text-center mb-1">{t("pay.youWillSend")}</p>
 				<p className="font-display text-[40px] leading-none tabular text-center mb-5">
 					{tx.amount}
 					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
 				</p>
 				<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
-					<span className="text-[12px] text-text-muted block mb-1">Para</span>
+					<span className="text-[12px] text-text-muted block mb-1">{t("pay.to")}</span>
 					{tx.isAddress ? (
 						<span className="text-[13px] text-text font-mono break-all">{tx.wallet}</span>
 					) : (
@@ -140,13 +146,13 @@ function ManualConfirmSheet({
 					)}
 				</div>
 				<p className="text-[12px] text-text-faint text-center mb-5 leading-relaxed">
-					Revisa bien el destino: los pagos no se pueden deshacer. Sin comisiones de red.
+					{t("pay.confirmWarning")}
 				</p>
 				<button onClick={onConfirm} className="btn btn-gradient btn-block">
-					Confirmar y pagar
+					{t("pay.confirmAndPay")}
 				</button>
 				<button onClick={onCancel} className="btn-text w-full mt-1">
-					Cancelar
+					{t("pay.cancel")}
 				</button>
 			</div>
 		</div>
@@ -157,6 +163,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
 	const { username } = useParams();
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [linkData, setLinkData] = useState<LinkData | null>(null);
 	const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -169,7 +176,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	const [manualMode, setManualMode] = useState(false);
 	const [manualWallet, setManualWallet] = useState("");
 	const [slowConnection, setSlowConnection] = useState(false);
-	const [destType, setDestType] = useState<"address" | "username">("address");
+	const [destType, setDestType] = useState<"address" | "username">("username");
 	const [resolvingUsername, setResolvingUsername] = useState(false);
 	const [confirmTx, setConfirmTx] = useState<ManualConfirm | null>(null);
 
@@ -188,7 +195,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				if (!res.ok) throw new Error("Link no encontrado");
 				setLinkData(await res.json());
 			} catch {
-				setError("Este link de cobro no existe o expiró.");
+				setError(t("pay.linkNotFound"));
 			} finally {
 				setLoading(false);
 			}
@@ -210,7 +217,7 @@ export default function PayPage({ user }: { user: User | null }) {
 					username: uname,
 				});
 			} catch {
-				setError("No encontramos a ese usuario.");
+				setError(t("pay.userNotFound"));
 			} finally {
 				setLoading(false);
 			}
@@ -277,17 +284,17 @@ export default function PayPage({ user }: { user: User | null }) {
 		} catch (err) {
 			if (isUserCancelled(err)) {
 				// The user dismissed the passkey prompt - calm notice, no red.
-				notifyWarning("Confirmación cancelada", "Tu pago no se realizó.");
+				notifyWarning(t("notify.cancelled"), t("pay.paymentNotMade"));
 				setError("");
 			} else {
-				const raw = err instanceof Error ? err.message : "Error al procesar el pago";
+				const raw = err instanceof Error ? err.message : t("pay.processError");
 				const msg = parsePaymentError(raw);
 				notifyError(
 					new ApiError(msg, {
 						status: 400,
 						requestId: err instanceof ApiError ? err.requestId : undefined,
 					}),
-					"No se pudo pagar",
+					t("pay.payError"),
 				);
 				setError(msg);
 			}
@@ -299,34 +306,38 @@ export default function PayPage({ user }: { user: User | null }) {
 		}
 	}
 
+	// Map known raw errors (ERC-4337 codes, SDK strings, and the server's own
+	// Spanish balance messages) to a message in the user's language — so backend
+	// text never leaks untranslated. Truly unknown messages fall through.
 	function parsePaymentError(msg: string): string {
-		if (msg.includes("AA24")) return "No pudimos validar tu huella. Intenta de nuevo desde el dispositivo donde la creaste.";
-		if (msg.includes("AA21")) return "Saldo insuficiente para completar el pago.";
-		if (msg.includes("AA25")) return "Datos de firma inválidos. Intenta de nuevo.";
+		if (msg.includes("AA24")) return t("pay.errPasskeyValidate");
+		if (msg.includes("AA21")) return t("pay.errInsufficient");
+		if (msg.includes("AA25")) return t("pay.errSignatureInvalid");
 		if (msg.includes("Missing qx/qy")) {
-			return "No reconocimos tu huella en este dispositivo. Intenta desde el navegador donde la registraste.";
+			return t("pay.errPasskeyDevice");
 		}
 		if (
 			msg.includes("Saldo USDC insuficiente") ||
 			msg.includes(`Saldo ${activeNetwork.nativeTokenSymbol} insuficiente`) ||
-			msg.includes("Saldo ETH insuficiente")
+			msg.includes("Saldo ETH insuficiente") ||
+			msg.includes("insufficient") ||
+			msg.includes("Insufficient")
 		)
-			return msg;
+			return t("pay.errInsufficient");
 		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) {
-			return "No encontramos una huella compatible con esta cuenta.";
+			return t("pay.errPasskeyNotFound");
 		}
 		if (msg.includes("No passkeys available")) {
-			return `No hay huellas disponibles para ${APP_HOST} en este dispositivo.`;
+			return t("pay.errNoPasskeys", { host: APP_HOST });
 		}
 		if (msg.includes("NotAllowedError") || msg.includes("timed out or was not allowed") || msg.includes("Firma cancelada")) {
-			return "Cancelaste la confirmación o este dispositivo no encontró tu huella.";
+			return t("pay.errCancelled");
 		}
-		if (msg.includes("insufficient") || msg.includes("Insufficient")) return "Saldo insuficiente.";
 		if (msg.includes("FailedOp")) {
 			const match = msg.match(/FailedOp\([^,]+,\s*"?([^")]+)/);
 			if (match) return `Error: ${match[1]}`;
 		}
-		if (msg.length > 150) return "No se pudo procesar el pago. Intenta de nuevo.";
+		if (msg.length > 150) return t("pay.errGeneric");
 		return msg;
 	}
 
@@ -337,7 +348,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		const amount = hasFixedAmount ? linkData.amount : payAmount;
 		const currency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
 		if (!amount || Number(amount) <= 0) {
-			notifyWarning("Monto inválido", "El monto debe ser mayor a 0.");
+			notifyWarning(t("pay.invalidAmount"), t("pay.amountMustBePositive"));
 			return;
 		}
 		await executePay({ linkId: linkData.id, wallet: linkData.wallet, amount, currency });
@@ -349,7 +360,7 @@ export default function PayPage({ user }: { user: User | null }) {
 
 		if (destType === "username") {
 			if (!manualWallet.trim()) {
-				notifyWarning("Escribe un usuario");
+				notifyWarning(t("pay.enterUsername"));
 				return;
 			}
 			setResolvingUsername(true);
@@ -360,14 +371,14 @@ export default function PayPage({ user }: { user: User | null }) {
 				if (!data.walletAddress) throw new Error();
 				targetWallet = data.walletAddress;
 			} catch {
-				notifyWarning("Usuario no encontrado", "Revisa el nombre.");
+				notifyWarning(t("pay.userNotFoundTitle"), t("pay.checkName"));
 				setResolvingUsername(false);
 				return;
 			} finally {
 				setResolvingUsername(false);
 			}
 		} else if (!/^0x[a-fA-F0-9]{40}$/.test(manualWallet)) {
-			notifyWarning("Dirección inválida", "Debe ser una dirección 0x válida.");
+			notifyWarning(t("pay.invalidAddress"), t("pay.mustBe0x"));
 			return;
 		}
 
@@ -393,7 +404,7 @@ export default function PayPage({ user }: { user: User | null }) {
 			const credential = await signInWithGoogle();
 			if (credential) await credential.user.getIdToken(true);
 		} catch {
-			notifyError(new Error("No pudimos iniciar sesión. Intenta de nuevo."));
+			notifyError(new Error(t("pay.signInError")));
 		}
 	}
 
@@ -405,7 +416,7 @@ export default function PayPage({ user }: { user: User | null }) {
 		return (
 			<div className="flex flex-col items-center justify-center min-h-dvh px-6 gap-4">
 				<Logo className="w-16 animate-float-glow" />
-				{slowConnection && <p className="text-text-muted text-[14px] animate-fade-in">Conexión lenta, un momento…</p>}
+				{slowConnection && <p className="text-text-muted text-[14px] animate-fade-in">{t("pay.slowConnection")}</p>}
 			</div>
 		);
 	}
@@ -416,7 +427,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				<Logo className="w-14 opacity-50" />
 				<p className="text-text text-[16px] max-w-[280px]">{error}</p>
 				<button onClick={() => navigate("/")} className="btn btn-primary btn-sm">
-					Ir al inicio
+					{t("pay.goHome")}
 				</button>
 			</div>
 		);
@@ -434,7 +445,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				/>
 				<header className="flex items-center gap-3 mb-6">
 					<BackButton onClick={() => navigate("/")} />
-					<h1 className="text-[22px]">Pagar o enviar</h1>
+					<h1 className="text-[22px]">{t("pay.payOrSend")}</h1>
 				</header>
 
 				<TrustBadge />
@@ -462,17 +473,17 @@ export default function PayPage({ user }: { user: User | null }) {
 
 				<div className="bg-surface border border-border rounded-[18px] p-5 mb-5 shadow-e1">
 					<div className="seg-track seg-track-block mb-4">
-						{(["address", "username"] as const).map((t) => (
+						{(["username", "address"] as const).map((dt) => (
 							<button
-								key={t}
+								key={dt}
 								onClick={() => {
-									setDestType(t);
+									setDestType(dt);
 									setManualWallet("");
 								}}
-								data-active={destType === t}
+								data-active={destType === dt}
 								className="seg-item"
 							>
-								{t === "address" ? "Wallet" : "Usuario"}
+								{dt === "address" ? t("pay.wallet") : t("pay.user")}
 							</button>
 						))}
 					</div>
@@ -501,7 +512,7 @@ export default function PayPage({ user }: { user: User | null }) {
 						disabled={paying || resolvingUsername || !manualWallet || !payAmount}
 						className="btn btn-gradient btn-block"
 					>
-						{resolvingUsername ? "Buscando usuario…" : "Pagar"}
+						{resolvingUsername ? t("pay.searchingUser") : t("common.pay")}
 					</button>
 				)}
 			</div>
@@ -530,13 +541,13 @@ export default function PayPage({ user }: { user: User | null }) {
 						{userProfile.username[0]}
 					</div>
 					<h1 className="font-display text-[28px] mb-1">@{userProfile.username}</h1>
-					<p className="text-[14px] text-text-muted">Recibe pagos en {activeNetwork.name}</p>
+					<p className="text-[14px] text-text-muted">{t("pay.receivesPaymentsOn", { network: activeNetwork.name })}</p>
 				</div>
 				<button
 					onClick={() => (user ? setShowPayForm(true) : handleLogin())}
 					className="btn btn-primary btn-block"
 				>
-					{user ? `Pagar a @${userProfile.username}` : "Inicia sesión para pagar"}
+					{user ? t("pay.payTo", { name: userProfile.username }) : t("pay.signInToPay")}
 				</button>
 			</div>
 		);
@@ -555,7 +566,7 @@ export default function PayPage({ user }: { user: User | null }) {
 							<polyline points="20 6 9 17 4 12" />
 						</svg>
 					</div>
-					<p className="text-[15px] text-text-muted mb-1">Este cobro ya fue pagado</p>
+					<p className="text-[15px] text-text-muted mb-1">{t("pay.alreadyPaid")}</p>
 					<p className="font-display text-[40px] tabular">
 						{linkData.amount}
 						<span className="text-text-muted text-[20px] ml-1.5">{linkData.currency}</span>
@@ -617,7 +628,7 @@ export default function PayPage({ user }: { user: User | null }) {
 								);
 							})}
 						</div>
-						<p className="text-[12px] text-text-faint mt-3">Elige la moneda y escribe el monto.</p>
+						<p className="text-[12px] text-text-faint mt-3">{t("pay.chooseCurrency")}</p>
 					</>
 				)}
 			</div>
@@ -628,7 +639,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				</p>
 			)}
 
-			<p className="text-[12px] text-text-faint text-center mb-5">Sin comisiones de red</p>
+			<p className="text-[12px] text-text-faint text-center mb-5">{t("common.noNetworkFees")}</p>
 
 			{error && <p className="text-glow-pink text-[13px] text-center mb-4">{error}</p>}
 
@@ -647,7 +658,7 @@ export default function PayPage({ user }: { user: User | null }) {
 			)}
 			{slowConnection && paying && (
 				<p className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
-					La red está tardando un poco, no cierres esta pantalla…
+					{t("pay.networkSlow")}
 				</p>
 			)}
 		</div>

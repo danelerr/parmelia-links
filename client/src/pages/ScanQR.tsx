@@ -1,6 +1,8 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
+import { useTranslation } from "react-i18next";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import i18n from "../lib/i18n";
 
 type FocusCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
@@ -152,7 +154,7 @@ function loadImageFromFile(file: File) {
 
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl);
-      reject(new Error("No se pudo cargar la imagen"));
+      reject(new Error(i18n.t("scan.imgLoadError")));
     };
 
     image.src = objectUrl;
@@ -204,6 +206,7 @@ function getNavigationTargetFromQr(rawValue: string) {
 
 export default function ScanQR() {
   const navigate = useViewTransitionNavigate();
+  const { t } = useTranslation();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -351,7 +354,7 @@ export default function ScanQR() {
         return;
       }
 
-      setMessage("El QR no pertenece a Parmelia");
+      setMessage(t("scan.notParmelia"));
     },
     [navigate, playDetectedFeedback, stopCamera],
   );
@@ -365,13 +368,13 @@ export default function ScanQR() {
 
       const canvas = canvasRef.current;
       if (!canvas) {
-        setMessage("No se pudo preparar el lector de imágenes");
+        setMessage(t("scan.readerError"));
         return;
       }
 
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) {
-        setMessage("No se pudo preparar el lector de imágenes");
+        setMessage(t("scan.readerError"));
         return;
       }
 
@@ -406,10 +409,10 @@ export default function ScanQR() {
           return;
         }
 
-        setMessage("No pudimos leer el QR de esa imagen");
+        setMessage(t("scan.qrReadError"));
       } catch (err) {
         console.error(err);
-        setMessage("No pudimos analizar esa imagen");
+        setMessage(t("scan.imgAnalyzeError"));
       } finally {
         setIsImporting(false);
       }
@@ -480,7 +483,7 @@ export default function ScanQR() {
 
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) {
-        setCameraError("No se pudo inicializar el escáner");
+        setCameraError(t("scan.scannerInitError"));
         return;
       }
 
@@ -635,7 +638,7 @@ export default function ScanQR() {
       } catch (err) {
         console.error(err);
         if (!cancelled) {
-          setCameraError("No se pudo acceder a la cámara");
+          setCameraError(t("scan.cameraError"));
         }
       }
     }
@@ -668,7 +671,7 @@ export default function ScanQR() {
       <header className="flex items-center gap-3 mb-7">
         <button
           onClick={() => navigate("/")}
-          aria-label="Volver"
+          aria-label={t("common.back")}
           className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -676,7 +679,7 @@ export default function ScanQR() {
             <path d="M12 19l-7-7 7-7" />
           </svg>
         </button>
-        <h1 className="text-[22px]">Escanear QR</h1>
+        <h1 className="text-[22px]">{t("scan.title")}</h1>
       </header>
 
       <div className="flex-1 flex flex-col items-center">
@@ -715,7 +718,7 @@ export default function ScanQR() {
 
             {isImporting && (
               <div className="absolute inset-0 bg-bg/75 backdrop-blur-sm flex items-center justify-center px-6">
-                <p className="text-[14px] text-text text-center">Analizando el QR…</p>
+                <p className="text-[14px] text-text text-center">{t("scan.analyzing")}</p>
               </div>
             )}
           </div>
@@ -724,12 +727,12 @@ export default function ScanQR() {
         <canvas ref={canvasRef} className="hidden" />
 
         <p className={`text-[14px] text-center min-h-10 ${cameraError || message ? "text-glow-pink" : "text-text-muted"}`}>
-          {message || "Apunta la cámara a un QR de Parmelia"}
+          {message || t("scan.aim")}
         </p>
 
         {cameraError && (
           <button onClick={restartScanner} className="mt-1 text-sky text-[14px]">
-            Reintentar cámara
+            {t("scan.retryCamera")}
           </button>
         )}
 
@@ -739,13 +742,13 @@ export default function ScanQR() {
             disabled={isImporting}
             className="btn btn-primary btn-block"
           >
-            {isImporting ? "Analizando…" : "Importar QR desde una imagen"}
+            {isImporting ? t("scan.analyzingShort") : t("scan.importFromImage")}
           </button>
           <button
             onClick={() => navigate("/send")}
             className="btn btn-ghost btn-block"
           >
-            Ingresar datos manualmente
+            {t("scan.enterManually")}
           </button>
         </div>
 

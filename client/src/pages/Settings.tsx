@@ -10,6 +10,8 @@ import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import Turnstile from "../components/Turnstile";
 import { Skeleton } from "../components/Skeleton";
+import { useTranslation } from "react-i18next";
+import i18n from "../lib/i18n";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
@@ -99,6 +101,13 @@ const ICON = {
 			<path d="M13.73 21a2 2 0 0 1-3.46 0" />
 		</svg>
 	),
+	globe: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<circle cx="12" cy="12" r="10" />
+			<path d="M2 12h20" />
+			<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z" />
+		</svg>
+	),
 };
 
 /** Layout-matching placeholder for the initial settings fetch - profile header
@@ -125,6 +134,8 @@ function SettingsSkeleton() {
 
 export default function Settings({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
+	const isSpanish = (i18n.resolvedLanguage || i18n.language || "es").startsWith("es");
 	const [username, setUsername] = useState("");
 	const [currentUsername, setCurrentUsername] = useState<string | null>(null);
 	const [walletAddress, setWalletAddress] = useState<string | null>(null);
@@ -213,9 +224,9 @@ export default function Settings({ user }: { user: User }) {
 				body: { username: normalizedUsername },
 			});
 			setCurrentUsername(normalizedUsername);
-			notifySuccess("Usuario guardado");
+			notifySuccess(t("settings.usernameSaved"));
 		} catch (err) {
-			notifyError(err, "No se pudo guardar");
+			notifyError(err, t("settings.saveError"));
 		} finally {
 			setSaving(false);
 		}
@@ -224,7 +235,7 @@ export default function Settings({ user }: { user: User }) {
 	async function handleAddPasskey() {
 		setUpdatingPasskey(true);
 		try {
-			if (!user.uid) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+			if (!user.uid) throw new Error(t("common.sessionExpired"));
 			const passkeyLabel = user.email || user.displayName || undefined;
 			const nextPasskey = await createPasskey(user.uid, passkeyLabel);
 
@@ -233,7 +244,7 @@ export default function Settings({ user }: { user: User }) {
 				{ user, method: "PUT", body: nextPasskey },
 			);
 			if (!intentData.addSignerCalldata) {
-				throw new Error("No recibimos los datos para agregar la llave.");
+				throw new Error(t("settings.missingKeyData"));
 			}
 
 			const { userOpHash, credentialId } = await apiFetch<{
@@ -263,9 +274,9 @@ export default function Settings({ user }: { user: User }) {
 			});
 
 			await refreshSettings();
-			notifySuccess("Llave agregada", "Ya puedes confirmar pagos desde este dispositivo.");
+			notifySuccess(t("settings.keyAdded"), t("settings.keyAddedDesc"));
 		} catch (err) {
-			notifyError(err, "No se pudo agregar la llave");
+			notifyError(err, t("settings.keyAddError"));
 		} finally {
 			setUpdatingPasskey(false);
 		}
@@ -277,15 +288,15 @@ export default function Settings({ user }: { user: User }) {
 			const ok = await enablePush(user);
 			if (ok) {
 				setPushOn(true);
-				notifySuccess("Avisos activados", "Te avisaremos cuando te paguen.");
+				notifySuccess(t("settings.pushOnTitle"), t("settings.pushOnDesc"));
 			} else {
 				notifyWarning(
-					"No se activaron los avisos",
-					"Revisa el permiso de notificaciones de tu navegador.",
+					t("settings.pushFailTitle"),
+					t("settings.pushFailDesc"),
 				);
 			}
 		} catch (err) {
-			notifyError(err, "No se pudieron activar los avisos");
+			notifyError(err, t("settings.pushError"));
 		} finally {
 			setPushBusy(false);
 		}
@@ -296,22 +307,22 @@ export default function Settings({ user }: { user: User }) {
 		try {
 			await apiFetch("/account/fund", { user, method: "POST", body: { turnstileToken: faucetToken } });
 			setFaucetClaimed(true);
-			notifySuccess("¡Listo!", "Recibiste 5 dólares digitales de prueba.");
+			notifySuccess(t("settings.faucetDoneTitle"), t("settings.faucetDoneDesc"));
 		} catch (err) {
 			// 409 = the one-time faucet was already claimed.
 			if (err instanceof ApiError && err.status === 409) {
 				setFaucetClaimed(true);
-				notifyWarning("Ya recibiste tus dólares de prueba");
+				notifyWarning(t("settings.faucetAlready"));
 				return;
 			}
-			notifyError(err, "No se pudo completar");
+			notifyError(err, t("settings.faucetError"));
 		} finally {
 			setClaimingFaucet(false);
 		}
 	}
 
 	const recoveryDateLabel = passkeyStatus?.recoveryExecutableAfter
-		? new Date(passkeyStatus.recoveryExecutableAfter).toLocaleDateString("es", {
+		? new Date(passkeyStatus.recoveryExecutableAfter).toLocaleDateString(i18n.resolvedLanguage || "es", {
 				day: "numeric",
 				month: "long",
 		  })
@@ -325,7 +336,7 @@ export default function Settings({ user }: { user: User }) {
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/")}
-					aria-label="Volver"
+					aria-label={t("common.back")}
 					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -333,7 +344,7 @@ export default function Settings({ user }: { user: User }) {
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<h1 className="text-[22px]">Ajustes</h1>
+				<h1 className="text-[22px]">{t("common.settings")}</h1>
 			</header>
 
 			{initialLoading ? (
@@ -365,10 +376,10 @@ export default function Settings({ user }: { user: User }) {
 					</div>
 
 					{/* Username */}
-					<Section title="Tu usuario" icon={ICON.user} accent="#f4a9cf">
+					<Section title={t("settings.usernameTitle")} icon={ICON.user} accent="#f4a9cf">
 						<div className="p-5">
 							<p className="text-[13px] text-text-muted mb-3">
-								Recibe pagos con un nombre fácil de compartir.
+								{t("settings.usernameDesc")}
 							</p>
 							<div className="flex items-center gap-2 bg-bg border border-border rounded-[14px] h-12 px-3.5 mb-3 focus-within:border-border-strong transition-colors">
 								<span className="text-text-faint text-[14px]">
@@ -376,7 +387,7 @@ export default function Settings({ user }: { user: User }) {
 								</span>
 								<input
 									type="text"
-									placeholder="tunombre"
+									placeholder={t("settings.usernamePlaceholder")}
 									value={username}
 									onChange={(e) =>
 										setUsername(e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase())
@@ -390,21 +401,21 @@ export default function Settings({ user }: { user: User }) {
 								disabled={saving || !usernameChanged}
 								className="btn btn-primary btn-sm"
 							>
-								{saving ? "Guardando…" : "Guardar"}
+								{saving ? t("settings.saving") : t("settings.save")}
 							</button>
 						</div>
 					</Section>
 
 					{/* Contacts & invitations */}
-					<Section title="Amigos" icon={ICON.user} accent="#9ce3f4">
+					<Section title={t("settings.friends")} icon={ICON.user} accent="#9ce3f4">
 						<button
 							onClick={() => navigate("/contacts")}
 							className="w-full flex items-center justify-between p-5 hover:bg-surface-2 transition-colors text-left"
 						>
 							<div>
-								<p className="text-[15px] mb-0.5">Contactos e invitaciones</p>
+								<p className="text-[15px] mb-0.5">{t("settings.contactsTitle")}</p>
 								<p className="text-[13px] text-text-muted">
-									Agrega amigos, págales en un toque e invita gente a Parmelia.
+									{t("settings.contactsDesc")}
 								</p>
 							</div>
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0 ml-3">
@@ -415,10 +426,10 @@ export default function Settings({ user }: { user: User }) {
 
 					{/* Account / address */}
 					{walletAddress && (
-						<Section title="Tu cuenta" icon={ICON.card} accent="#efe08c">
+						<Section title={t("settings.accountTitle")} icon={ICON.card} accent="#efe08c">
 							<div className="p-5">
 								<div className="flex items-center justify-between mb-1.5">
-									<span className="text-[13px] text-text-muted">Dirección</span>
+									<span className="text-[13px] text-text-muted">{t("settings.address")}</span>
 									<span className="text-[11px] px-2.5 py-1 rounded-full bg-white/[0.06] text-text-muted">
 										{activeNetwork.name}
 									</span>
@@ -430,13 +441,13 @@ export default function Settings({ user }: { user: User }) {
 									<button
 										onClick={() => {
 											navigator.clipboard.writeText(walletAddress);
-											notifySuccess("Dirección copiada");
+											notifySuccess(t("settings.addressCopied"));
 											setCopied(true);
 											setTimeout(() => setCopied(false), 2000);
 										}}
 										className="btn btn-ghost btn-sm flex-1"
 									>
-										{copied ? "Copiado ✓" : "Copiar"}
+										{copied ? t("common.copied") : t("common.copy")}
 									</button>
 									<a
 										href={`${activeNetwork.explorerBaseUrl}/address/${walletAddress}`}
@@ -444,7 +455,7 @@ export default function Settings({ user }: { user: User }) {
 										rel="noopener noreferrer"
 										className="btn btn-ghost btn-sm flex-1"
 									>
-										Ver en explorador
+										{t("settings.viewExplorer")}
 									</a>
 								</div>
 							</div>
@@ -453,7 +464,7 @@ export default function Settings({ user }: { user: User }) {
 
 					{/* Security */}
 					{walletAddress && (
-						<Section title="Seguridad" icon={ICON.shield} accent="#9ce3f4">
+						<Section title={t("settings.security")} icon={ICON.shield} accent="#9ce3f4">
 							<div className="p-5">
 								<div className="flex items-start gap-3 mb-4">
 									<div className="w-9 h-9 rounded-full bg-sky/15 flex items-center justify-center shrink-0 mt-0.5">
@@ -464,11 +475,10 @@ export default function Settings({ user }: { user: User }) {
 									</div>
 									<div>
 										<p className="font-display text-[16px] leading-tight">
-											Tu huella es tu llave
+											{t("settings.fingerprintKeyTitle")}
 										</p>
 										<p className="text-[13px] text-text-muted leading-relaxed mt-1">
-											Confirmas cada pago con tu huella o tu rostro. Nadie más
-											puede mover tu dinero.
+											{t("settings.fingerprintKeyDesc")}
 										</p>
 									</div>
 								</div>
@@ -477,22 +487,22 @@ export default function Settings({ user }: { user: User }) {
 									<div className="flex-1 bg-surface-2 rounded-[14px] px-3.5 py-3">
 										<p className="font-display text-[20px] text-sky tabular">{keyCount}</p>
 										<p className="text-[12px] text-text-muted mt-0.5">
-											{keyCount === 1 ? "Llave activa" : "Llaves activas"}
+											{t("settings.keyActive", { count: keyCount })}
 										</p>
 									</div>
 									<div className="flex-1 bg-surface-2 rounded-[14px] px-3.5 py-3">
 										<p className="font-display text-[20px] text-cream">
-											{recoveryOn ? "Sí" : "-"}
+											{recoveryOn ? t("settings.yes") : "-"}
 										</p>
-										<p className="text-[12px] text-text-muted mt-0.5">Recuperación</p>
+										<p className="text-[12px] text-text-muted mt-0.5">{t("settings.recovery")}</p>
 									</div>
 								</div>
 
 								{passkeyStatus?.recoveryPending && (
 									<div className="bg-glow-pink/10 border border-glow-pink/20 rounded-[14px] p-3.5 mb-4">
 										<p className="text-[13px] text-glow-pink leading-relaxed">
-											Hay una recuperación en proceso
-											{recoveryDateLabel ? ` - disponible el ${recoveryDateLabel}` : ""}.
+											{t("settings.recoveryPending")}
+											{recoveryDateLabel ? t("settings.recoveryAvailableOn", { date: recoveryDateLabel }) : ""}.
 										</p>
 									</div>
 								)}
@@ -502,11 +512,10 @@ export default function Settings({ user }: { user: User }) {
 									disabled={updatingPasskey}
 									className="btn btn-ghost btn-block"
 								>
-									{updatingPasskey ? "Agregando…" : "Agregar otra llave (respaldo)"}
+									{updatingPasskey ? t("settings.addingKey") : t("settings.addBackupKey")}
 								</button>
 								<p className="text-[12px] text-text-faint leading-relaxed mt-2.5 px-0.5">
-									Agrega la huella de otro dispositivo para no perder tu cuenta si
-									pierdes este.
+									{t("settings.addBackupKeyDesc")}
 								</p>
 							</div>
 						</Section>
@@ -514,17 +523,15 @@ export default function Settings({ user }: { user: User }) {
 
 					{/* Test funds */}
 					{walletAddress && (
-						<Section title="Dólares de prueba" icon={ICON.coin} accent="#efe08c">
+						<Section title={t("settings.testFunds")} icon={ICON.coin} accent="#efe08c">
 							<div className="p-5">
 								{faucetClaimed === null ? (
-									<p className="text-[13px] text-text-muted">Cargando…</p>
+									<p className="text-[13px] text-text-muted">{t("common.loading")}</p>
 								) : faucetClaimed ? (
 									<>
 										<p className="text-[13px] text-text-muted leading-relaxed mb-3">
-											Ya recibiste tus dólares de prueba en esta cuenta.
-											{activeNetwork.faucetUrl
-												? " ¿Necesitas más? Usa el faucet externo."
-												: ""}
+											{t("settings.faucetClaimedDesc")}
+											{activeNetwork.faucetUrl ? t("settings.faucetNeedMore") : ""}
 										</p>
 										{activeNetwork.faucetUrl && (
 											<a
@@ -533,15 +540,14 @@ export default function Settings({ user }: { user: User }) {
 												rel="noopener noreferrer"
 												className="btn btn-ghost btn-sm"
 											>
-												Abrir {activeNetwork.faucetLabel}
+												{t("settings.openFaucet", { label: activeNetwork.faucetLabel })}
 											</a>
 										)}
 									</>
 								) : (
 									<>
 										<p className="text-[13px] text-text-muted leading-relaxed mb-3">
-											Recibe 5 dólares digitales de prueba para empezar a cobrar y
-											pagar.
+											{t("settings.faucetIntro")}
 										</p>
 										<div className="mb-3">
 											<Turnstile onToken={setFaucetToken} />
@@ -551,7 +557,7 @@ export default function Settings({ user }: { user: User }) {
 											disabled={claimingFaucet || faucetToken === null}
 											className="btn btn-primary btn-sm"
 										>
-											{claimingFaucet ? "Enviando…" : "Obtener dólares de prueba"}
+											{claimingFaucet ? t("settings.sending") : t("settings.getTestFunds")}
 										</button>
 									</>
 								)}
@@ -561,38 +567,61 @@ export default function Settings({ user }: { user: User }) {
 
 					{/* Notifications */}
 					{walletAddress && pushAvailable && !pushOn && (
-						<Section title="Notificaciones" icon={ICON.bell} accent="#9ce3f4">
+						<Section title={t("settings.notifications")} icon={ICON.bell} accent="#9ce3f4">
 							<div className="p-5">
 								<p className="text-[13px] text-text-muted leading-relaxed mb-3">
-									Te avisamos al instante cuando recibas un pago o un depósito.
+									{t("settings.pushIntro")}
 								</p>
 								<button
 									onClick={handleEnablePush}
 									disabled={pushBusy}
 									className="btn btn-primary btn-sm"
 								>
-									{pushBusy ? "Activando…" : "Activar avisos de pagos"}
+									{pushBusy ? t("settings.activating") : t("settings.enablePush")}
 								</button>
 							</div>
 						</Section>
 					)}
 					{walletAddress && pushOn && (
-						<Section title="Notificaciones" icon={ICON.bell} accent="#9ce3f4">
+						<Section title={t("settings.notifications")} icon={ICON.bell} accent="#9ce3f4">
 							<div className="p-5 flex items-center gap-2.5">
 								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
 									<polyline points="20 6 9 17 4 12" />
 								</svg>
-								<p className="text-[14px] text-text-muted">Avisos de pagos activados</p>
+								<p className="text-[14px] text-text-muted">{t("settings.pushEnabled")}</p>
 							</div>
 						</Section>
 					)}
 
-					{/* Logout */}
+					{/* Language */}
+						<Section title={t("settings.language")} icon={ICON.globe} accent="#efe08c">
+							<div className="p-5">
+								<p className="text-[13px] text-text-muted mb-3">{t("settings.languageDesc")}</p>
+								<div className="seg-track seg-track-block">
+									<button
+										onClick={() => void i18n.changeLanguage("es")}
+										data-active={isSpanish}
+										className="seg-item"
+									>
+										Español
+									</button>
+									<button
+										onClick={() => void i18n.changeLanguage("en")}
+										data-active={!isSpanish}
+										className="seg-item"
+									>
+										English
+									</button>
+								</div>
+							</div>
+						</Section>
+
+						{/* Logout */}
 					<button
 						onClick={() => logOut()}
 						className="btn btn-block text-danger border border-danger/45 hover:bg-danger/10"
 					>
-						Cerrar sesión
+						{t("settings.logout")}
 					</button>
 				</div>
 			)}

@@ -52,6 +52,8 @@
   --shadow-e3: 0 30px 90px rgba(0, 0, 0, 0.5);
   --shadow-glow-sky: 0 0 32px rgba(156, 227, 244, 0.22);
   --shadow-glow-pink: 0 0 32px rgba(244, 169, 207, 0.2);
+  /* Softer sky glow — for processing/receipt moments where the full glow is too much */
+  --shadow-glow-sky-soft: 0 0 20px rgba(156, 227, 244, 0.12);
 
   /* ===== Motion ===== */
   --animate-fade-up: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -196,6 +198,14 @@ input[type="number"] {
 .animate-float-glow {
   filter: drop-shadow(0 0 30px rgba(156, 227, 244, 0.24));
   will-change: transform;
+}
+
+/* Dimmed glow — append alongside .animate-float-glow on quieter moments
+   (e.g. the processing-payment overlay) so the logo doesn't blaze. Defined
+   after .animate-float-glow so its filter wins at equal specificity. */
+.glow-soft.animate-float-glow,
+.glow-soft {
+  filter: drop-shadow(0 0 16px rgba(156, 227, 244, 0.12));
 }
 
 /* Tabular figures for amounts/balances/lists */

@@ -1,4 +1,4 @@
-# Parmelia DeFi — Diseño y decisiones
+# Parmelia DeFi - Diseño y decisiones
 
 > Arquitectura DeFi de Parmelia sobre Arbitrum. El **Módulo 2 (swaps internos)
 > está implementado** (ver §2); los módulos 1, 3, 4 y 5 quedan aquí diseñados
@@ -20,7 +20,7 @@
 
 ---
 
-## 1. Módulo 1 — Depósitos cross-chain hacia Arbitrum (diseño)
+## 1. Módulo 1 - Depósitos cross-chain hacia Arbitrum (diseño)
 
 **Objetivo:** fondos en Ethereum/Base/Optimism/Arbitrum → smart account del
 usuario en Arbitrum, terminando en USDC, ETH o WBTC.
@@ -32,12 +32,12 @@ usuario en Arbitrum, terminando en USDC, ETH o WBTC.
    en segundos-minutos, API de quotes pública (`/suggested-fees`). Maduro y
    barato para L2→L2.
 3. **Uniswap Trading API (cross-chain, ERC-7683)** como evolución una vez que el
-   producto lo justifique — unifica swap+bridge en un intent, pero agrega una
+   producto lo justifique - unifica swap+bridge en un intent, pero agrega una
    dependencia de API con key.
 
 **No** construir bridge propio. **No** custodiar fondos en tránsito.
 
-**Flujo:** el usuario conecta una wallet externa (wagmi/walletconnect — única
+**Flujo:** el usuario conecta una wallet externa (wagmi/walletconnect - única
 pantalla donde existe una wallet externa), Parmelia cotiza
 (CCTP/Across), muestra *recibirás ≈ X, fee del puente, fee Parmelia, tiempo
 estimado*, el usuario firma **en su wallet externa** (no con passkey: los fondos
@@ -47,7 +47,7 @@ están fuera), y el backend trackea hasta acreditar en la smart account.
 con ramas `failed / expired / refunded / needs_support`.
 
 **Persistencia:** tabla nueva `crosschain_operations` (NO reutilizar
-`pending_payments`: semántica distinta — multi-paso, multi-chain, horas de vida
+`pending_payments`: semántica distinta - multi-paso, multi-chain, horas de vida
 vs 10 min). Columnas: `op_id, uid, source_chain_id, source_tx_hash, provider
 (cctp|across), token_in, token_out, amount_in, amount_out_expected, recipient
 (smart account), status, status_detail, created_at, updated_at, completed_at`.
@@ -60,7 +60,7 @@ en 4 redes. Es el siguiente módulo natural tras estabilizar swaps.
 
 ---
 
-## 2. Módulo 2 — Swaps internos (IMPLEMENTADO)
+## 2. Módulo 2 - Swaps internos (IMPLEMENTADO)
 
 ### 2.1 Arquitectura
 
@@ -97,16 +97,16 @@ directos en mainnet); multi-hop = TODO consciente.
 ### 2.3 Permit2 y smart accounts (análisis pedido)
 
 Permit2 soporta EIP-1271, y `AccountWebAuthnV2` (ERC-7739) **podría** validar
-una firma typed-data — pero producir esa firma desde WebAuthn exige el flujo de
+una firma typed-data - pero producir esa firma desde WebAuthn exige el flujo de
 nested typed data de ERC-7739 en el cliente, más gas de verificación P256 extra
 on-chain, para ahorrar… nada: una smart account ya batchea `approve + swap`
 atómicamente en una UserOp. Por eso:
 
 - **ERC-20 de entrada:** batch `[token.approve(Permit2, monto_exacto),
   Permit2.approve(token, UniversalRouter, monto_exacto, expiración=deadline),
-  UR.execute(...)]`. Allowances exactas que además expiran (uint48) — nunca
+  UR.execute(...)]`. Allowances exactas que además expiran (uint48) - nunca
   approvals infinitos, sin residuo.
-- **ETH de entrada:** solo `[UR.execute{value}]` — cero approvals.
+- **ETH de entrada:** solo `[UR.execute{value}]` - cero approvals.
 - La firma EIP-712 de Permit2 queda como camino para **wallets externas** en el
   módulo cross-chain, donde sí ahorra una transacción.
 
@@ -126,9 +126,9 @@ atómicamente en una UserOp. Por eso:
 
 ---
 
-## 3. Módulo 3 — Service fees (config implementada, cobro listo para activar)
+## 3. Módulo 3 - Service fees (config implementada, cobro listo para activar)
 
-**Mecanismo elegido: comandos nativos del router** — `TAKE_PORTION` (v4) /
+**Mecanismo elegido: comandos nativos del router** - `TAKE_PORTION` (v4) /
 `PAY_PORTION` (v3) toman un % del output hacia el treasury **dentro del mismo
 swap**. Sin contrato wrapper (gas extra ~0, sin superficie de auditoría nueva),
 sin operación separada, visible on-chain.
@@ -139,8 +139,8 @@ sin operación separada, visible on-chain.
 |---|---|---|
 | `PARMELIA_FEES_ENABLED` | `false` | Solo `"true"` activa fees (modo campaña = apagarlas). |
 | `PARMELIA_SWAP_FEE_BPS` | `0` | Fee de swap en bps (ej. `30` = 0.30%). |
-| `PARMELIA_MAX_FEE_BPS` | `100` | Techo por env; **hard cap en código: 100 bps (1%)** — el env no puede superarlo. |
-| `PARMELIA_TREASURY_ADDRESS` | — | Requerida para activar fees; por red (config de wrangler por entorno). |
+| `PARMELIA_MAX_FEE_BPS` | `100` | Techo por env; **hard cap en código: 100 bps (1%)** - el env no puede superarlo. |
+| `PARMELIA_TREASURY_ADDRESS` | - | Requerida para activar fees; por red (config de wrangler por entorno). |
 
 **Garantías:** fee mostrada en la quote antes de confirmar (`parmeliaFee`,
 `parmeliaFeeBps` en la respuesta y en la UI); `minimumAmountOut` es **post-fee**
@@ -156,20 +156,20 @@ firmas o peor UX).
 
 ---
 
-## 4. Módulo 4 — Earn con posiciones LP (diseño)
+## 4. Módulo 4 - Earn con posiciones LP (diseño)
 
 **Mecanismo:** provisión de liquidez concentrada **Uniswap v3 primero**
 (PositionManager v3, tooling maduro, liquidez profunda en USDC/ETH y
-USDC/WBTC). v4 para Earn cuando los corridors (módulo 5) lo justifiquen — hoy
+USDC/WBTC). v4 para Earn cuando los corridors (módulo 5) lo justifiquen - hoy
 hooks solo agregan complejidad sin edge para LP básico.
 
 **Estrategias por riesgo** (rango alrededor del precio actual):
-- Conservador: ±50% — pocas salidas de rango, menos fees.
+- Conservador: ±50% - pocas salidas de rango, menos fees.
 - Moderado: ±20%.
-- Agresivo: ±8% — más fees, más rebalanceo y riesgo out-of-range.
+- Agresivo: ±8% - más fees, más rebalanceo y riesgo out-of-range.
 
 **Flujo:** elegir estrategia → depósito single-asset (Parmelia hace el **swap
-parcial** con el Módulo 2 para balancear 50/50 — reuso directo) → mint de la
+parcial** con el Módulo 2 para balancear 50/50 - reuso directo) → mint de la
 posición NFT **a nombre de la smart account** (no custodial) → panel con
 composición, fees acumuladas, in/out of range, PnL estimado y advertencia de
 pérdida impermanente → retiro (decrease + collect + swap opcional a un solo
@@ -185,11 +185,11 @@ impermanente". Nunca un APY fijo.
 de monitoreo out-of-range. Todo vía el mismo pipeline UserOp+passkey.
 
 **Performance fee:** % de las **fees cobradas** (no del principal) al hacer
-collect — transfer adicional en el batch de retiro. Mismo sistema de env vars.
+collect - transfer adicional en el batch de retiro. Mismo sistema de env vars.
 
 ---
 
-## 5. Módulo 5 — Parmelia Corridors / recorr-hook (evaluación)
+## 5. Módulo 5 - Parmelia Corridors / recorr-hook (evaluación)
 
 **Veredicto: prometedor como diferencial, NO listo; empezar híbrido off-chain.**
 
@@ -197,7 +197,7 @@ El concepto (intents de DCA/swap agrupados, matching CoW interno, solo el neto
 toca el AMM, dynamic fees por desbalance) es económicamente sólido para
 corredores de flujo recurrente (remesas, DCA semanal). Pero:
 
-1. **Restricción estructural:** un hook no puede añadirse a pools existentes —
+1. **Restricción estructural:** un hook no puede añadirse a pools existentes -
    Parmelia tendría que crear **pools v4 propios** y atraer liquidez inicial
    (LP propio o incentivos). Sin volumen propio demostrado, el pool nace vacío
    y la ejecución sería peor que rutear a pools públicos. **Gate: ≥ ~$100k de
@@ -252,15 +252,15 @@ cd contracts && forge test
 ## 8. TODOs reales (no implementados)
 
 - **Deploy de contratos V2 en Arbitrum** (Sepolia/One) y rellenar
-  factory/paymaster/verifier en `shared/networks.ts` — bloquea todo el flujo E2E.
+  factory/paymaster/verifier en `shared/networks.ts` - bloquea todo el flujo E2E.
 - **Smoke test on-chain del swap en Arbitrum Sepolia** (los encoders están
   verificados por tests de decodificación, pero falta una ejecución real).
 - Liquidez en testnet: los pools de Arbitrum Sepolia pueden no existir para
   todos los pares → la UI ya maneja "sin ruta disponible".
 - Multi-hop routing (hoy single-hop; los 3 pares mainnet tienen pool directo).
-- Price impact numérico en la quote (requiere spot price de referencia —
+- Price impact numérico en la quote (requiere spot price de referencia -
   StateView/slot0; hoy el mínimo garantizado cubre al usuario).
-- Tracking post-ejecución del swap en D1 (`swap_quotes.status='executed'`) —
+- Tracking post-ejecución del swap en D1 (`swap_quotes.status='executed'`) -
   hoy el cliente confirma por txHash + refresh de balances.
 - Módulos 1, 4, 5 según este diseño.
 
@@ -282,7 +282,7 @@ cd contracts && forge test
 - [x] Solo tokens whitelisted (resolución por símbolo server-side)
 - [x] chainId validado en quote y prepare
 - [x] Sin direcciones hardcodeadas sin red (todo en `NETWORKS`, TODOs explícitos)
-- [x] Approvals exactos con expiración — nunca infinitos
+- [x] Approvals exactos con expiración - nunca infinitos
 - [x] Slippage + deadline + minimumAmountOut obligatorios y server-side
 - [x] Quotes con TTL + re-validación on-chain en prepare
 - [x] Calldata nunca construida desde input del cliente

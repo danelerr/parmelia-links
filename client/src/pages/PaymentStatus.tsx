@@ -3,11 +3,14 @@ import { useRef } from "react";
 import Logo from "../components/Logo";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
+import i18n from "../lib/i18n";
 import { downloadCard, shareCard } from "../lib/exportCard";
 
 export default function PaymentStatus() {
 	const [searchParams] = useSearchParams();
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const cardRef = useRef<HTMLDivElement>(null);
 	const txHash = searchParams.get("tx");
 	const amount = searchParams.get("amount");
@@ -31,7 +34,7 @@ export default function PaymentStatus() {
 	async function handleShare() {
 		await shareCard(cardRef.current, {
 			filename: `parmelia-pago-${amount}-${currency}.png`,
-			text: `Pagué ${amount} ${currency} con Parmelia`,
+			text: t("paymentStatus.shareText", { amount, currency }),
 			url: txHash ? getExplorerTxUrl(txHash) : undefined,
 		});
 	}
@@ -41,7 +44,7 @@ export default function PaymentStatus() {
 			<header className="flex items-center">
 				<button
 					onClick={() => navigate("/")}
-					aria-label="Volver al inicio"
+					aria-label={t("pay.goHome")}
 					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -70,13 +73,13 @@ export default function PaymentStatus() {
 					</div>
 
 					{/* Success check */}
-					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky relative z-1">
+					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky-soft relative z-1">
 						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
 							<polyline points="20 6 9 17 4 12" />
 						</svg>
 					</div>
 
-					<p className="text-[15px] text-text-muted mb-1 relative z-1">¡Listo! Pagaste</p>
+					<p className="text-[15px] text-text-muted mb-1 relative z-1">{t("paymentStatus.paidLead")}</p>
 					{amount && (
 						<p className="font-display text-[44px] leading-none mb-4 tabular relative z-1">
 							{amount}
@@ -86,30 +89,30 @@ export default function PaymentStatus() {
 
 					{toLabel && (
 						<p className="text-text-faint text-[13px] mb-1 relative z-1">
-							Para <span className="text-text-muted">{toLabel}</span>
+							{t("paymentStatus.to")} <span className="text-text-muted">{toLabel}</span>
 						</p>
 					)}
 					<p className="text-[12px] text-text-faint relative z-1">
-						Asegurado en {activeNetwork.name}
+						{t("paymentStatus.securedOn", { network: activeNetwork.name })}
 					</p>
 
 					{/* Formal receipt info */}
 					<div className="w-full border-t border-border mt-5 pt-4 relative z-1 flex flex-col gap-1.5">
 						<div className="flex items-center justify-between text-[12px]">
-							<span className="text-text-faint">Fecha</span>
+							<span className="text-text-faint">{t("common.date")}</span>
 							<span className="text-text-muted">
-								{new Date().toLocaleDateString("es", { day: "numeric", month: "long", year: "numeric" })}
+								{new Date().toLocaleDateString(i18n.resolvedLanguage || "es", { day: "numeric", month: "long", year: "numeric" })}
 							</span>
 						</div>
 						<div className="flex items-center justify-between text-[12px]">
-							<span className="text-text-faint">Hora</span>
+							<span className="text-text-faint">{t("common.time")}</span>
 							<span className="text-text-muted">
-								{new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}
+								{new Date().toLocaleTimeString(i18n.resolvedLanguage || "es", { hour: "2-digit", minute: "2-digit" })}
 							</span>
 						</div>
 						{txHash && (
 							<div className="flex items-center justify-between text-[12px] gap-3">
-								<span className="text-text-faint shrink-0">N° de comprobante</span>
+								<span className="text-text-faint shrink-0">{t("receipt.receiptNo")}</span>
 								<span className="text-text-muted font-mono truncate">
 									{txHash.slice(0, 10)}…{txHash.slice(-8)}
 								</span>
@@ -125,7 +128,7 @@ export default function PaymentStatus() {
 							rel="noopener noreferrer"
 							className="text-text-faint text-[12px] mt-3 relative z-1"
 						>
-							Ver comprobante en la red ↗
+							{t("paymentStatus.viewOnNetwork")}
 						</a>
 					)}
 				</div>
@@ -133,10 +136,10 @@ export default function PaymentStatus() {
 
 			<div className="flex gap-3 mt-6">
 				<button onClick={handleShare} className="btn btn-primary flex-1">
-					Compartir
+					{t("paymentStatus.share")}
 				</button>
 				<button onClick={handleDownload} className="btn btn-ghost">
-					Descargar
+					{t("paymentStatus.download")}
 				</button>
 			</div>
 		</div>

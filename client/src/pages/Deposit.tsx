@@ -11,6 +11,7 @@ import { humanizeError } from "../lib/notify";
 import Logo from "../components/Logo";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
 
 type BridgeChain = { id: number; key: string; name: string };
 type Direction = "deposit" | "withdraw";
@@ -26,6 +27,7 @@ type BridgeQuote = {
 
 export default function Deposit({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [enabled, setEnabled] = useState<boolean | null>(null);
 	const [chains, setChains] = useState<BridgeChain[]>([]);
 	const [direction, setDirection] = useState<Direction>("deposit");
@@ -67,7 +69,7 @@ export default function Deposit({ user }: { user: User }) {
 				});
 				setQuote(data);
 			} catch (err) {
-				setError(humanizeError(err, "No pudimos cotizar el puente.").message);
+				setError(humanizeError(err, t("deposit.quoteError")).message);
 			} finally {
 				setQuoting(false);
 			}
@@ -85,7 +87,7 @@ export default function Deposit({ user }: { user: User }) {
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/")}
-					aria-label="Volver"
+					aria-label={t("common.back")}
 					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -93,7 +95,7 @@ export default function Deposit({ user }: { user: User }) {
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<h1 className="text-[22px]">Mover entre redes</h1>
+				<h1 className="text-[22px]">{t("deposit.title")}</h1>
 			</header>
 
 			{enabled === null ? (
@@ -103,10 +105,9 @@ export default function Deposit({ user }: { user: User }) {
 			) : !enabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
-					<p className="text-[15px] text-text mb-1">Disponible muy pronto</p>
+					<p className="text-[15px] text-text mb-1">{t("deposit.comingSoonTitle")}</p>
 					<p className="text-[13px] text-text-muted max-w-[280px] leading-relaxed">
-						Mover dinero entre redes se activa con el lanzamiento en {"Arbitrum"}.
-						Por ahora estás en {activeNetwork.name}.
+						{t("deposit.comingSoonBody", { network: activeNetwork.name })}
 					</p>
 				</div>
 			) : (
@@ -115,8 +116,8 @@ export default function Deposit({ user }: { user: User }) {
 					<div className="seg-track seg-track-block mb-5">
 						{(
 							[
-								["deposit", "Depositar"],
-								["withdraw", "Retirar"],
+								["deposit", t("deposit.deposit")],
+								["withdraw", t("deposit.withdraw")],
 							] as const
 						).map(([value, label]) => (
 							<button
@@ -132,7 +133,7 @@ export default function Deposit({ user }: { user: User }) {
 
 					{/* Network */}
 					<p className="text-[13px] text-text-muted px-1 mb-2">
-						{direction === "deposit" ? "Desde la red" : "Hacia la red"}
+						{direction === "deposit" ? t("deposit.fromNetwork") : t("deposit.toNetwork")}
 					</p>
 					<div className="flex gap-1.5 mb-5 overflow-x-auto -mx-1 px-1 pb-1">
 						{chains.map((chain) => (
@@ -154,8 +155,8 @@ export default function Deposit({ user }: { user: User }) {
 					<div className="bg-surface border border-border rounded-[18px] p-5 mb-5 shadow-e1">
 						<p className="text-[13px] text-text-muted mb-3">
 							{direction === "deposit"
-								? `Monto a traer desde ${externalChainName}`
-								: `Monto a enviar a ${externalChainName}`}
+								? t("deposit.amountFrom", { network: externalChainName })
+								: t("deposit.amountTo", { network: externalChainName })}
 						</p>
 						<div className="flex items-center gap-3">
 							<input
@@ -176,33 +177,33 @@ export default function Deposit({ user }: { user: User }) {
 					{error && <p className="text-glow-pink text-[13px] text-center mb-4">{error}</p>}
 					{quoting && (
 						<p className="text-[13px] text-text-muted text-center mb-4 animate-pulse-soft">
-							Cotizando el mejor camino…
+							{t("deposit.quoting")}
 						</p>
 					)}
 
 					{quote && (
 						<div className="bg-surface border border-border rounded-[18px] px-5 py-4 mb-5">
 							<div className="flex items-center justify-between text-[14px] mb-2">
-								<span className="text-text-muted">Recibirás aproximadamente</span>
+								<span className="text-text-muted">{t("deposit.youReceiveApprox")}</span>
 								<span className="text-text font-medium tabular">
 									{Number(quote.amountOutEstimated).toLocaleString("en-US", { maximumFractionDigits: 2 })} USDC
 								</span>
 							</div>
 							<div className="flex items-center justify-between text-[13px] mb-1.5">
-								<span className="text-text-muted">Costo del puente</span>
+								<span className="text-text-muted">{t("deposit.bridgeCost")}</span>
 								<span className="text-text tabular">
 									{Number(quote.bridgeFee).toLocaleString("en-US", { maximumFractionDigits: 4 })} USDC
 								</span>
 							</div>
 							<div className="flex items-center justify-between text-[13px] mb-1.5">
-								<span className="text-text-muted">Servicio Parmelia</span>
+								<span className="text-text-muted">{t("deposit.parmeliaService")}</span>
 								<span className={Number(quote.parmeliaFee) > 0 ? "text-text tabular" : "text-glow-sky"}>
-									{Number(quote.parmeliaFee) > 0 ? `${quote.parmeliaFee} USDC` : "Gratis"}
+									{Number(quote.parmeliaFee) > 0 ? `${quote.parmeliaFee} USDC` : t("deposit.free")}
 								</span>
 							</div>
 							<div className="flex items-center justify-between text-[13px]">
-								<span className="text-text-muted">Tiempo estimado</span>
-								<span className="text-text">~{quote.estimatedMinutes} min</span>
+								<span className="text-text-muted">{t("deposit.estTime")}</span>
+								<span className="text-text">{t("deposit.minutes", { minutes: quote.estimatedMinutes })}</span>
 							</div>
 						</div>
 					)}
@@ -216,20 +217,19 @@ export default function Deposit({ user }: { user: User }) {
 								disabled={!quote?.acrossUrl}
 								className="btn btn-gradient btn-block"
 							>
-								Continuar
+								{t("deposit.continue")}
 							</button>
 							<p className="text-[12px] text-text-faint text-center mt-3 leading-relaxed">
-								Completarás el depósito con Across, nuestro socio de puentes.
-								Tu dinero llega directo a tu cuenta Parmelia.
+								{t("deposit.depositNote")}
 							</p>
 						</>
 					) : (
 						<>
 							<button disabled className="btn btn-ghost btn-block">
-								Retiros entre redes - muy pronto
+								{t("deposit.withdrawSoon")}
 							</button>
 							<p className="text-[12px] text-text-faint text-center mt-3">
-								Ya puedes ver el costo estimado; los retiros se activan en la próxima actualización.
+								{t("deposit.withdrawNote")}
 							</p>
 						</>
 					)}

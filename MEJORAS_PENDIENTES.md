@@ -8,35 +8,35 @@
 
 ---
 
-## P0 — Pasos para correr en Arbitrum
+## P0 - Pasos para correr en Arbitrum (100% Completado)
 
-Sin esto la app no opera en la nueva cadena.
+La app ya está operativa en Arbitrum Sepolia.
 
 | # | Tarea | Notas |
 |---|---|---|
-| 1 | **Desplegar contratos V2 en Arbitrum** (`forge script ...:DeployV2 --broadcast`) | Usa el deploy determinista (CREATE2) ya listo. El deployer EOA necesita ETH. |
-| 2 | **Rellenar direcciones** en `shared/networks.ts` → `contracts` (verifier/factory/paymaster) | Las imprime el script. |
-| 3 | **Confirmar USDC de Arbitrum Sepolia** (Circle docs) y ponerla | Hoy es `TODO`. Mainnet ya está (`0xaf88...`). |
-| 4 | **Aplicar migración D1 en remoto**: `wrangler d1 migrations apply PARMELIA_DB --remote` | Una sola migración (`0001_schema.sql`, esquema consolidado con DROP-prelude): segura sobre la DB remota vieja — la resetea al esquema v2. |
-| 5 | **Configurar secrets del Worker** en Arbitrum: `RPC_URL` (con ETH en el relayer), `PRIVATE_KEY`, `PAYMASTER_SIGNER_PRIVATE_KEY` | — |
-| 6 | Verificar EntryPoint v0.9 (`0x433709...09`) desplegado en Arbitrum | ✅ ya confirmado en Arbiscan. |
+| 1 | ~~**Desplegar contratos V2 en Arbitrum**~~ | ✅ Hecho (desplegados con CREATE2). |
+| 2 | ~~**Rellenar direcciones** en `shared/networks.ts`~~ | ✅ Hecho (registradas verifier, factory y paymaster). |
+| 3 | ~~**Confirmar USDC de Arbitrum Sepolia**~~ | ✅ Hecho (Circle USDC `0x75fa...` configurado). |
+| 4 | ~~**Aplicar migración D1 en remoto**~~ | ✅ Hecho (aplicada migración v2 consolidada). |
+| 5 | ~~**Configurar secrets del Worker**~~ | ✅ Hecho (claves de API y de firma configuradas). |
+| 6 | ~~Verificar EntryPoint v0.9 (`0x433709...09`)~~ | ✅ Hecho (confirmado en Arbiscan). |
 
 ---
 
-## P1 — Endurecer pre-producción
+## P1 - Endurecer pre-producción
 
 | # | Tarea | Impacto | Esfuerzo |
 |---|---|---|---|
-| 7 | **Least-privilege de claves**: separar deployer / faucet / guardian / relayer en EOAs distintas | Reduce blast radius si una clave se filtra | Bajo (config de deploy) |
-| 8 | **Guardian fuera de la clave caliente** del relayer (clave dedicada o multisig) | El guardian de todas las wallets hoy es el EOA del server | Medio |
-| 9 | **Rate limiting + Turnstile** en endpoints públicos (`/account/create`, `/account/fund`) | Anti-abuso antes de abrir al público | Medio |
-| 10 | ~~Setear `ALLOWED_ORIGINS`~~ | ✅ Hecho: allowlist en `wrangler.jsonc` (parmelia.me + www + localhost). Agregar dominios de preview si se usan. | — |
-| 11 | ~~Label humano del passkey~~ | ✅ Hecho: `createPasskey(uid, label)` — el diálogo del SO muestra email/nombre; el `uid` sigue siendo el id estable. | — |
-| 12 | ~~Fallback `"parmelia-user"`~~ | ✅ Hecho: sin uid se corta con error de sesión en vez de un id compartido. | — |
+| 7 | **Least-privilege de claves**: separar deployer / faucet / guardian / relayer en EOAs distintas | Reduce blast radius si una clave se filtra. **Documentado en `DEPLOY.md` §11** (en testnet una sola EOA es aceptable; separar para mainnet) | Bajo (config de deploy) |
+| 8 | **Guardian fuera de la clave caliente** del relayer (clave dedicada o multisig) | El guardian de todas las wallets hoy es el EOA del server (`account.routes.ts`). Ver `DEPLOY.md` §11 | Medio |
+| 9 | **Rate limiting** en endpoints públicos (`/account/create`, `/account/fund`) | Anti-abuso. ✅ **Turnstile ya hecho** (ver #39); falta rate-limiting de zona (regla de Cloudflare cuando haya dominio propio). | Bajo |
+| 10 | ~~Setear `ALLOWED_ORIGINS`~~ | ✅ Hecho: allowlist en `wrangler.jsonc` (parmelia.me + www + localhost). Agregar dominios de preview si se usan. | - |
+| 11 | ~~Label humano del passkey~~ | ✅ Hecho: `createPasskey(uid, label)` - el diálogo del SO muestra email/nombre; el `uid` sigue siendo el id estable. | - |
+| 12 | ~~Fallback `"parmelia-user"`~~ | ✅ Hecho: sin uid se corta con error de sesión en vez de un id compartido. | - |
 
 ---
 
-## P2 — Al escalar (volumen real)
+## P2 - Al escalar (volumen real)
 
 | # | Tarea | Por qué | Notas |
 |---|---|---|---|
@@ -44,7 +44,7 @@ Sin esto la app no opera en la nueva cadena.
 | 14 | ~~Indexer para historial~~ | ✅ Resuelto **Cloudflare-nativo** (sin Ponder/hosting): tabla `ledger` en D1 escrita al relayar (la app conoce todo lo que pasa por ella, ambos lados si es interno) + **cron indexer** (`services/indexer.ts`, cada 2 min) que ingiere solo transferencias ERC-20 **entrantes externas** con cursor en `sync_state`. `/user/transactions` lee solo D1. `history.ts` eliminado. | Límite conocido: depósitos externos de ETH nativo no emiten logs (Across entrega USDC); sharding del filtro `to` al pasar miles de wallets. |
 | 15 | **`waitForReceipt` async completo**: `submit` responde inmediato + cliente pollea estado | Quita la espera síncrona del request | Toca frontend (por eso quedó pendiente; ya tuneamos polling para Arbitrum) |
 | 16 | **Cola idempotente** para pagos (Cloudflare Queues) | Reconciliar "tx enviada pero recibo no confirmado" | Va de la mano con #13/#15. Las escrituras del ledger ya son idempotentes (índice único). |
-| 17 | ~~Caché de balance/historial~~ | ✅ Resuelto de raíz por #14: el historial ya no toca RPC/explorer en el request (solo D1). El balance sigue on-chain (barato, 2-4 eth_call). | — |
+| 17 | ~~Caché de balance/historial~~ | ✅ Resuelto de raíz por #14: el historial ya no toca RPC/explorer en el request (solo D1). El balance sigue on-chain (barato, 2-4 eth_call). | - |
 
 ---
 
@@ -61,7 +61,7 @@ Sin esto la app no opera en la nueva cadena.
 
 | # | Tarea | Por qué no se hizo ya |
 |---|---|---|
-| 20 | ~~`CHECK (currency ...)` en `payment_links`~~ | ❌ Descartado: la whitelist de monedas ahora es **config por red** (`shared/networks.ts`, incluye WBTC) — un CHECK fijo en la DB pelearía con la config. La validación server-side (`normalizeCurrency` + whitelist) es la fuente de verdad. |
+| 20 | ~~`CHECK (currency ...)` en `payment_links`~~ | ❌ Descartado: la whitelist de monedas ahora es **config por red** (`shared/networks.ts`, incluye WBTC) - un CHECK fijo en la DB pelearía con la config. La validación server-side (`normalizeCurrency` + whitelist) es la fuente de verdad. |
 | 21 | Normalizar direcciones a minúscula | Cambio de comportamiento; las comparaciones críticas ya hacen `lowercase`. |
 | 22 | `amount` como entero raw (smallest unit) | El string decimal está bien; raw habilitaría `SUM()` en SQL pero es cambio mayor (YAGNI). |
 | 23 | ~~Tabla ledger unificada~~ | ✅ Hecho (migración `0005_rebuild_v2`, esquema v2 con datos de testnet reseteados): `ledger` + `sync_state`, `users` con wallet única lowercase + `referral_code`, `pending_payments.meta`, `swap_quotes.status='executed'`. `sent_transactions` absorbida. |
@@ -72,12 +72,33 @@ Sin esto la app no opera en la nueva cadena.
 
 | # | Tarea | Notas |
 |---|---|---|
-| 24 | ~~PWA instalable~~ | 🟡 Casi: manifest + service worker (shell cache-first para assets, network-first para navegación; la API jamás se cachea) + registro solo en prod. **Pendiente:** exportar iconos PNG 192/512 + apple-touch-icon 180px desde los assets de marca (iOS ignora SVG) y push notifications. |
+| 24 | ~~PWA instalable~~ | ✅ Hecho: manifest + service worker (shell cache-first para assets, network-first para navegación; la API jamás se cachea) + registro solo en prod + **iconos PNG 192/512/maskable + apple-touch-icon 180px** (generados del SVG de marca) + meta tags iOS. Push notifications ya implementadas (#41). |
 | 25 | **App nativa (Expo/React Native)** | Post-PMF, enfocada al comerciante. Mismo RP ID de passkeys + push. Las skills de RN ya están instaladas. |
 | 26 | **Tests de cliente / E2E** | Hoy el cliente no tiene tests. |
 | 27 | ~~Comprobantes detallados~~ | ✅ Hecho: fecha, hora y N° de comprobante (tx hash) en el bloque inferior del modal (`ReceiptModal`) y en `PaymentStatus`. |
-| 28 | ~~Pantalla de extractos y filtros temporales~~ | ✅ Hecho: Home compacto ("Actividad reciente", 5 + "Ver extracto completo") y página `/extractos` con rangos rápidos (semana/mes/2 meses), rango personalizado, filtro por moneda y por tipo (enviados/recibidos/cobros por link — campo `kind` del server). |
+| 28 | ~~Pantalla de extractos y filtros temporales~~ | ✅ Hecho: Home compacto ("Actividad reciente", 5 + "Ver extracto completo") y página `/extractos` con rangos rápidos (semana/mes/2 meses), rango personalizado, filtro por moneda y por tipo (enviados/recibidos/cobros por link - campo `kind` del server). |
 | 29 | ~~Contactos e invitaciones~~ | ✅ Hecho: página `/contactos` (agregar por usuario, pagar en un toque, eliminar), invitación con `?ref=` + contador de invitados (migración 0004, `/contacts/*`, atribución en `/account/create`). Entrada en Ajustes. |
+| 45 | ~~i18n cliente (ES/EN)~~ | ✅ Hecho: `react-i18next` + detector (ES si el navegador es español, EN para cualquier otro idioma; fallback EN), selector en Ajustes persistido en `localStorage:parmelia:lang`, ~250 strings en `client/src/locales/{es,en}.json`. Fechas usan `i18n.resolvedLanguage`. SW precachea el shell. |
+| 46 | **i18n de errores del backend (contrato de errores)** | ⚠️ Pendiente — **mejora del enfoque actual**, que funciona pero no es óptimo. Hoy el server responde mensajes en español y el cliente los **re-mapea por coincidencia de texto** en `parsePaymentError` (`client/src/pages/PayPage.tsx`) hacia claves `t("pay.err*")`. Frágil (se rompe si cambia el texto del server) y solo cubre los errores comunes; los desconocidos pueden filtrarse sin traducir. **Opción A (recomendada):** el server devuelve un `code` estable (p. ej. `INSUFFICIENT_BALANCE`, `PASSKEY_NOT_FOUND`) en el JSON de error y el cliente mapea `code → t(...)`; desacopla idioma de la API. **Opción B:** el server localiza por `Accept-Language` (lo vuelve language-aware, hay que traducir sus textos). Tocar `server/src/**` (respuestas de error) + cliente (`api.ts`/`notify.ts`/`parsePaymentError`). |
+
+---
+
+## Plataforma - Firebase y Cloudflare (evaluado jun-2026)
+
+> Clave: el método de login es independiente de las passkeys (estas viven en el
+> gestor del SO: Google Password Manager en Android, Llavero de iCloud en
+> iPhone). Cambiar/añadir login NO afecta la custodia. El server solo verifica
+> el JWT de Firebase → añadir proveedores = cero cambios de backend.
+
+| # | Tarea | Plataforma | Notas |
+|---|---|---|---|
+| 39 | ~~Turnstile en create/fund~~ | Cloudflare | ✅ Hecho. `services/turnstile.ts` + verificación en `/account/create` y `/account/fund`; widget `components/Turnstile.tsx` (Managed) en Onboarding y faucet. Falta del lado consola: `wrangler secret put TURNSTILE_SECRET_KEY` (site key ya en `client/.env`). Feature-flag: sin secret, se omite. |
+| 40 | ~~Login Email link (+ Apple)~~ | Firebase | ✅ Magic link implementado (Login: "Continuar con correo" → enlace → vuelve a `/login` y completa; pantalla "revisa tu correo" + fallback "confirma tu correo" en otro dispositivo). Apple listo en código tras flag `VITE_ENABLE_APPLE_LOGIN=true` (necesita Apple Developer + habilitar en consola). Server sin cambios. **Pendiente consola:** confirmar account-linking "same email". |
+| 41 | ~~FCM push "te pagaron"~~ | Firebase | ✅ `push_token` en D1 (migración 0002), `services/push.ts` (OAuth2 service-account vía jose → FCM HTTP v1), disparos en `/pay/submit` (interno) e indexer (depósito externo). Cliente: `lib/push.ts` + opt-in en Ajustes + handlers `push`/`notificationclick` en `sw.js`. **Pendiente consola:** `wrangler secret put FCM_SERVICE_ACCOUNT` (VAPID pública ya en `.env`). iOS solo con PWA instalada. |
+| 42 | ~~Analytics (GA4)~~ | Firebase | ✅ `lib/analytics.ts` + eventos (`wallet_created`, `link_created`, `payment_sent`, `swap_completed`, `invite_shared`). Dormido hasta poner `VITE_FIREBASE_MEASUREMENT_ID` (habilitar GA4 en consola). |
+| 43 | **Queues** para submit asíncrono | Cloudflare (Workers Paid $5/m) | NO implementado por decisión: requiere plan pago. Retomar al pasar a mainnet (junto a #15/#16). |
+| 44 | **R2** para avatares/archivos | Cloudflare | Cuando exista la feature. |
+| - | **Descartados a propósito** (simplicidad) | - | Firestore/RTDB (ya hay D1), Cloud Functions (ya hay Workers), Durable Objects (innecesario tras bundler #13), Privy, Workers AI. |
 
 ---
 
@@ -100,7 +121,7 @@ Sin esto la app no opera en la nueva cadena.
 | 35 | ~~Soporte de Tokens Adicionales~~ | ✅ Hecho: **WBTC** (8 dec, `0x2f2a...5B0f`) whitelisted en `shared/networks.ts` (Arbitrum One); selector de saldo en Home, pagos/links genéricos por whitelist (server), balance en `/user/balance`. WETH es interno (wrap de rutas), no se muestra al usuario. Sin WBTC canónico en Sepolia (omitido a propósito). |
 | 36 | ~~Intercambios Nativos (Swaps)~~ | ✅ Hecho: `/swap/quote` + `/swap/prepare` (quoters v3+v4 on-chain, Universal Router, fees con hard cap 1%), página `/cambiar` con confirmación passkey. Pendiente: smoke test on-chain tras el deploy P0. |
 | 37 | **Modo Ahorro / Rendimiento (Earn en Arbitrum)** | Diseñado en `DEFI_DESIGN.md` §4 (LP v3 primero, 3 niveles de riesgo, performance fee sobre fees). Implementación pendiente. |
-| 38 | **Depósitos y Retiros Cross-Chain** | 🟡 Parcial: quotes reales vía API pública de Across (`/bridge/config`, `/bridge/quote`) + página `/depositar` (depósitos continúan en Across con la cuenta del usuario prefijada — sin custodia; retiros: cotizados, ejecución desde la smart account = siguiente paso, requiere SpokePool verificado). Direcciones USDC externas: re-verificar contra Circle antes de mainnet. |
+| 38 | **Depósitos y Retiros Cross-Chain** | 🟡 Parcial: quotes reales vía API pública de Across (`/bridge/config`, `/bridge/quote`) + página `/depositar` (depósitos continúan en Across con la cuenta del usuario prefijada - sin custodia; retiros: cotizados, ejecución desde la smart account = siguiente paso, requiere SpokePool verificado). Direcciones USDC externas: re-verificar contra Circle antes de mainnet. |
 
 ---
 

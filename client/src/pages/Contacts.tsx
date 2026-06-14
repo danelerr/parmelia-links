@@ -10,6 +10,7 @@ import { track } from "../lib/analytics";
 import Logo from "../components/Logo";
 import { RowSkeletonList } from "../components/Skeleton";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
@@ -23,6 +24,7 @@ type Contact = {
 
 export default function Contacts({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [contacts, setContacts] = useState<Contact[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [newUsername, setNewUsername] = useState("");
@@ -67,9 +69,9 @@ export default function Contacts({ user }: { user: User }) {
 			});
 			setContacts((prev) => [data.contact, ...prev.filter((c) => c.id !== data.contact.id)]);
 			setNewUsername("");
-			notifySuccess("Contacto agregado");
+			notifySuccess(t("contacts.added"));
 		} catch (err) {
-			notifyError(err, "No se pudo agregar");
+			notifyError(err, t("contacts.addError"));
 		} finally {
 			setAdding(false);
 		}
@@ -87,7 +89,7 @@ export default function Contacts({ user }: { user: User }) {
 
 	async function handleInvite() {
 		track("invite_shared");
-		const text = "Únete a Parmelia: cobra y paga dinero digital como mandar un mensaje.";
+		const text = t("contacts.inviteText");
 		if (navigator.share) {
 			try {
 				await navigator.share({ title: "Parmelia", text, url: inviteUrl });
@@ -97,7 +99,7 @@ export default function Contacts({ user }: { user: User }) {
 			}
 		} else {
 			navigator.clipboard.writeText(inviteUrl);
-			notifySuccess("Link de invitación copiado");
+			notifySuccess(t("contacts.inviteLinkCopied"));
 		}
 	}
 
@@ -106,7 +108,7 @@ export default function Contacts({ user }: { user: User }) {
 			<header className="flex items-center gap-3 mb-7">
 				<button
 					onClick={() => navigate("/settings")}
-					aria-label="Volver"
+					aria-label={t("common.back")}
 					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -114,7 +116,7 @@ export default function Contacts({ user }: { user: User }) {
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<h1 className="text-[22px]">Contactos</h1>
+				<h1 className="text-[22px]">{t("contacts.title")}</h1>
 			</header>
 
 			{/* Invite card */}
@@ -125,28 +127,28 @@ export default function Contacts({ user }: { user: User }) {
 				/>
 				<div className="flex items-center justify-between gap-3 relative z-1">
 					<div className="min-w-0 flex-1">
-						<p className="font-display text-[17px] mb-1">Invita a tus amigos</p>
+						<p className="font-display text-[17px] mb-1">{t("contacts.inviteTitle")}</p>
 						<p className="text-[13px] text-text-muted leading-relaxed">
 							{invited === null
-								? "Comparte tu código y cobra/paga entre amigos."
+								? t("contacts.inviteDefault")
 								: invited === 0
-									? "Aún nadie se unió con tu código. ¡Compártelo!"
-									: `${invited} ${invited === 1 ? "amigo se unió" : "amigos se unieron"} con tu invitación`}
+									? t("contacts.inviteNone")
+									: t("contacts.invited", { count: invited })}
 						</p>
 					</div>
 					<button onClick={handleInvite} className="btn btn-primary btn-sm shrink-0">
-						Invitar
+						{t("contacts.invite")}
 					</button>
 				</div>
 				{referralCode && (
 					<button
 						onClick={() => {
 							navigator.clipboard.writeText(referralCode);
-							notifySuccess("Código copiado");
+							notifySuccess(t("contacts.codeCopied"));
 						}}
 						className="mt-3.5 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-bg/60 border border-border hover:border-border-strong transition-colors relative z-1"
 					>
-						<span className="text-[12px] text-text-faint">Tu código</span>
+						<span className="text-[12px] text-text-faint">{t("contacts.yourCode")}</span>
 						<span className="font-mono text-[14px] tracking-[0.2em] text-glow-gold">
 							{referralCode}
 						</span>
@@ -166,7 +168,7 @@ export default function Contacts({ user }: { user: User }) {
 						value={newUsername}
 						onChange={(e) => setNewUsername(e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase())}
 						onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-						placeholder="usuario"
+						placeholder={t("contacts.usernamePlaceholder")}
 						maxLength={30}
 						className="flex-1 bg-transparent text-[14px] text-text placeholder:text-text-faint min-w-0"
 					/>
@@ -176,7 +178,7 @@ export default function Contacts({ user }: { user: User }) {
 					disabled={adding || !newUsername.trim()}
 					className="btn btn-primary btn-sm h-12 shrink-0"
 				>
-					{adding ? "…" : "Agregar"}
+					{adding ? "…" : t("contacts.add")}
 				</button>
 			</div>
 
@@ -187,7 +189,7 @@ export default function Contacts({ user }: { user: User }) {
 				<div className="flex flex-col items-center text-center py-12 px-6">
 					<Logo className="w-10 mb-4 opacity-40" />
 					<p className="text-[14px] text-text-muted max-w-[240px] leading-relaxed">
-						Agrega a tus amigos por su usuario para pagarles en un toque.
+						{t("contacts.emptyBody")}
 					</p>
 				</div>
 			) : (
@@ -215,11 +217,11 @@ export default function Contacts({ user }: { user: User }) {
 								onClick={() => navigate(`/${ct.username}`)}
 								className="text-[13px] text-glow-sky shrink-0 px-2 py-1.5"
 							>
-								Pagar
+								{t("contacts.pay")}
 							</button>
 							<button
 								onClick={() => handleDelete(ct.id)}
-								aria-label={`Eliminar ${ct.username}`}
+								aria-label={t("contacts.deleteAria", { username: ct.username })}
 								className="w-8 h-8 rounded-full flex items-center justify-center text-text-faint hover:text-glow-pink hover:bg-glow-pink/10 transition-colors shrink-0"
 							>
 								<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

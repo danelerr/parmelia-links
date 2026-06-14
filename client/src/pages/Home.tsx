@@ -8,6 +8,7 @@ import ReceiptModal from "../components/ReceiptModal";
 import { Skeleton, RowSkeletonList } from "../components/Skeleton";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 
 const RECENT_COUNT = 5;
@@ -23,6 +24,7 @@ function formatBalance(symbol: string, value: string | undefined) {
 
 export default function Home({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [copied, setCopied] = useState(false);
 	// Privacy toggle - persisted so the balance stays hidden across sessions.
 	const [hideBalance, setHideBalance] = useState(
@@ -90,8 +92,8 @@ export default function Home({ user }: { user: User }) {
 	// The two core, symmetric actions. Scan lives in the top bar (it's a way to
 	// pay, not a peer action) and Cambiar is a lower-frequency secondary below.
 	const primaryActions = [
-		{ label: "Cobrar", to: "/charge", accent: "#f4a9cf", icon: <IconReceive /> },
-		{ label: "Pagar", to: "/send", accent: "#9ce3f4", icon: <IconSend /> },
+		{ label: t("common.charge"), to: "/charge", accent: "#f4a9cf", icon: <IconReceive /> },
+		{ label: t("common.pay"), to: "/send", accent: "#9ce3f4", icon: <IconSend /> },
 	];
 
 	return (
@@ -110,14 +112,14 @@ export default function Home({ user }: { user: User }) {
 				<div className="flex items-center gap-2">
 					<button
 						onClick={() => navigate("/scan")}
-						aria-label="Escanear QR"
+						aria-label={t("home.scanAria")}
 						className="w-11 h-11 rounded-full bg-sky/15 text-glow-sky flex items-center justify-center hover:bg-sky/25 active:scale-95 transition-all"
 					>
 						<IconScan size={22} />
 					</button>
 					<button
 						onClick={() => navigate("/settings")}
-						aria-label="Ajustes"
+						aria-label={t("common.settings")}
 						className="w-10 h-10 rounded-full overflow-hidden border border-border flex items-center justify-center bg-surface hover:border-border-strong transition-colors"
 					>
 						{user.photoURL ? (
@@ -141,7 +143,7 @@ export default function Home({ user }: { user: User }) {
 				{/* Hide-balance toggle (privacy) */}
 				<button
 					onClick={toggleHideBalance}
-					aria-label={hideBalance ? "Mostrar saldo" : "Ocultar saldo"}
+					aria-label={hideBalance ? t("home.showBalance") : t("home.hideBalance")}
 					aria-pressed={hideBalance}
 					className="absolute top-2.5 right-2.5 z-10 w-11 h-11 rounded-full flex items-center justify-center text-text-faint hover:text-text-muted hover:bg-surface-2 active:scale-95 transition-all"
 				>
@@ -165,7 +167,7 @@ export default function Home({ user }: { user: User }) {
 				</div>
 
 				<div className="flex flex-col items-center mb-5 relative z-1">
-					<p className="text-[13px] text-text-muted mb-1">Tu saldo</p>
+					<p className="text-[13px] text-text-muted mb-1">{t("home.balance")}</p>
 					{balanceLoading ? (
 						<Skeleton className="h-[46px] w-44 rounded-[14px] my-0.5" />
 					) : (
@@ -186,9 +188,9 @@ export default function Home({ user }: { user: User }) {
 					className="mx-auto flex items-center gap-2 px-3.5 py-2 rounded-full text-[12px] text-text-faint hover:text-text-muted hover:bg-surface-2 transition-colors relative z-1"
 				>
 					<span className="font-mono">
-						{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : "Cargando…"}
+						{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : t("common.loading")}
 					</span>
-					<span>{copied ? "Copiado ✓" : "Copiar"}</span>
+					<span>{copied ? t("common.copied") : t("common.copy")}</span>
 				</button>
 				<button
 					onClick={() => navigate("/deposit")}
@@ -198,7 +200,7 @@ export default function Home({ user }: { user: User }) {
 						<circle cx="12" cy="12" r="9" />
 						<path d="M12 7v10M7 12h10" />
 					</svg>
-					Recibir desde otra red
+					{t("home.receiveOtherNetwork")}
 				</button>
 			</div>
 
@@ -227,12 +229,12 @@ export default function Home({ user }: { user: User }) {
 				className="flex items-center justify-center gap-2 mx-auto mb-7 px-4 py-2 rounded-full text-[13px] text-text-muted hover:text-text hover:bg-surface transition-colors"
 			>
 				<IconSwap size={16} />
-				Cambiar
+				{t("common.swap")}
 			</button>
 
 			{/* Recent activity - compact; the full statement lives in /extractos */}
 			<div className="flex items-center justify-between mb-3 px-1">
-				<h2 className="font-display text-[18px]">Actividad reciente</h2>
+				<h2 className="font-display text-[18px]">{t("home.recentActivity")}</h2>
 				{isTxLoading && txData && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
 			</div>
 
@@ -241,12 +243,12 @@ export default function Home({ user }: { user: User }) {
 			) : transactions.length === 0 ? (
 				<div className="flex flex-col items-center text-center py-14 px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
-					<p className="text-[15px] text-text mb-1">Aún no hay movimientos</p>
+					<p className="text-[15px] text-text mb-1">{t("home.noActivity")}</p>
 					<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
-						Crea tu primer link de cobro y compártelo para recibir tu primer pago.
+						{t("home.noActivityBody")}
 					</p>
 					<button onClick={() => navigate("/charge")} className="btn btn-primary btn-sm">
-						Crear un link de cobro
+						{t("home.createFirstLink")}
 					</button>
 				</div>
 			) : (
@@ -284,7 +286,7 @@ export default function Home({ user }: { user: User }) {
 						})}
 					</div>
 					<button onClick={() => navigate("/statement")} className="btn-text w-full mt-3">
-						Ver extracto completo
+						{t("home.viewFullStatement")}
 					</button>
 				</>
 			)}

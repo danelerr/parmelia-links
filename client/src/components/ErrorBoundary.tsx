@@ -4,6 +4,7 @@
 
 import { Component, type ReactNode } from "react";
 import Logo from "./Logo";
+import i18n from "../lib/i18n";
 
 type Props = { children: ReactNode };
 type State = { hasError: boolean };
@@ -24,15 +25,15 @@ export default class ErrorBoundary extends Component<Props, State> {
 		return (
 			<div className="flex flex-col items-center justify-center min-h-dvh px-8 text-center">
 				<Logo className="w-14 mb-6 opacity-60" />
-				<h1 className="font-display text-[22px] mb-2">Algo salió mal</h1>
+				<h1 className="font-display text-[22px] mb-2">{i18n.t("notify.somethingWrong")}</h1>
 				<p className="text-[14px] text-text-muted max-w-[280px] leading-relaxed mb-7">
-					Tu dinero está seguro. Recarga la pantalla para continuar.
+					{i18n.t("error.body")}
 				</p>
 				<button
 					onClick={() => window.location.reload()}
 					className="btn btn-primary btn-sm"
 				>
-					Recargar
+					{i18n.t("common.reload")}
 				</button>
 			</div>
 		);

@@ -7,15 +7,17 @@ import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { useTranslation } from "react-i18next";
 import { downloadCard, shareCard } from "../lib/exportCard";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
 function BackButton({ onClick }: { onClick: () => void }) {
+	const { t } = useTranslation();
 	return (
 		<button
 			onClick={onClick}
-			aria-label="Volver"
+			aria-label={t("common.back")}
 			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 		>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -28,6 +30,7 @@ function BackButton({ onClick }: { onClick: () => void }) {
 
 export default function CreateLink({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [step, setStep] = useState<"form" | "result">("form");
 	const [amount, setAmount] = useState("");
 	const [currency, setCurrency] = useState("USDC");
@@ -47,7 +50,7 @@ export default function CreateLink({ user }: { user: User }) {
 			track("link_created", { currency, openAmount: Number(amount) <= 0 });
 			setStep("result");
 		} catch (err) {
-			notifyError(err, "No se pudo crear el link");
+			notifyError(err, t("createLink.createError"));
 		} finally {
 			setLoading(false);
 		}
@@ -57,12 +60,12 @@ export default function CreateLink({ user }: { user: User }) {
 	async function handleShare() {
 		const shared = await shareCard(cardRef.current, {
 			filename: "parmelia-cobro.png",
-			text: `Págame con Parmelia: ${paymentUrl}`,
+			text: t("createLink.shareText", { url: paymentUrl }),
 			url: paymentUrl,
 		});
 		if (!shared) {
 			navigator.clipboard.writeText(paymentUrl);
-			notifySuccess("Link copiado");
+			notifySuccess(t("createLink.linkCopied"));
 		}
 	}
 
@@ -71,14 +74,14 @@ export default function CreateLink({ user }: { user: User }) {
 		try {
 			await downloadCard(cardRef.current, `parmelia-cobro-${amount || "abierto"}-${currency}.png`);
 		} catch (err) {
-			notifyError(err, "No se pudo descargar");
+			notifyError(err, t("createLink.downloadError"));
 		}
 	}
 
 	// Copiar = solo el link.
 	function handleCopy() {
 		navigator.clipboard.writeText(paymentUrl);
-		notifySuccess("Link copiado");
+		notifySuccess(t("createLink.linkCopied"));
 	}
 
 	if (step === "result") {
@@ -86,7 +89,7 @@ export default function CreateLink({ user }: { user: User }) {
 			<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 				<header className="flex items-center gap-3 mb-6">
 					<BackButton onClick={() => navigate("/")} />
-					<h1 className="text-[22px]">Tu link de cobro</h1>
+					<h1 className="text-[22px]">{t("createLink.resultTitle")}</h1>
 				</header>
 
 				<div className="flex-1 flex flex-col justify-center">
@@ -118,7 +121,7 @@ export default function CreateLink({ user }: { user: User }) {
 								<span className="text-text-muted text-[18px] ml-1.5">{currency}</span>
 							</p>
 						) : (
-							<p className="font-display text-[24px] text-glow-pink mb-2 relative z-1">Monto abierto</p>
+							<p className="font-display text-[24px] text-glow-pink mb-2 relative z-1">{t("createLink.openAmount")}</p>
 						)}
 
 						{reference && (
@@ -127,20 +130,20 @@ export default function CreateLink({ user }: { user: User }) {
 							</p>
 						)}
 						<p className="text-[12px] text-text-faint mt-5 relative z-1">
-							parmelia.me · Pago seguro en {activeNetwork.name}
+							{t("createLink.securePayIn", { network: activeNetwork.name })}
 						</p>
 					</div>
 				</div>
 
 				<button onClick={handleShare} className="btn btn-primary btn-block mt-6">
-					Compartir
+					{t("createLink.share")}
 				</button>
 				<div className="flex gap-3 mt-3">
 					<button onClick={handleDownload} className="btn btn-ghost flex-1">
-						Descargar QR
+						{t("createLink.downloadQr")}
 					</button>
 					<button onClick={handleCopy} className="btn btn-ghost flex-1">
-						Copiar link
+						{t("createLink.copyLink")}
 					</button>
 				</div>
 			</div>
@@ -151,7 +154,7 @@ export default function CreateLink({ user }: { user: User }) {
 		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
 			<header className="flex items-center gap-3 mb-7">
 				<BackButton onClick={() => navigate("/")} />
-				<h1 className="text-[22px]">Cobrar</h1>
+				<h1 className="text-[22px]">{t("createLink.title")}</h1>
 			</header>
 
 			{/* Amount - big input */}
@@ -175,15 +178,15 @@ export default function CreateLink({ user }: { user: User }) {
 					))}
 				</div>
 				<p className="text-[12px] text-text-faint mt-4">
-					Deja el monto en 0 para un cobro de monto abierto.
+					{t("createLink.openAmountHint")}
 				</p>
 			</div>
 
 			{/* Reference */}
 			<div className="bg-surface border border-border rounded-[18px] p-5 mb-6 shadow-e1">
-				<label className="text-[13px] text-text-muted mb-2 block">Referencia (opcional)</label>
+				<label className="text-[13px] text-text-muted mb-2 block">{t("createLink.referenceLabel")}</label>
 				<textarea
-					placeholder="¿Por qué cobras? Ej: Diseño de logo"
+					placeholder={t("createLink.referencePlaceholder")}
 					value={reference}
 					onChange={(e) => setReference(e.target.value)}
 					maxLength={200}
@@ -193,7 +196,7 @@ export default function CreateLink({ user }: { user: User }) {
 			</div>
 
 			<button onClick={handleCreate} disabled={loading} className="btn btn-primary btn-block">
-				{loading ? "Creando…" : "Crear link de cobro"}
+				{loading ? t("createLink.creating") : t("createLink.create")}
 			</button>
 		</div>
 	);

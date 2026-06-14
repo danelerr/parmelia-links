@@ -1,5 +1,7 @@
 // Shared transaction model + parsing for Home and Extractos.
 
+import i18n from "./i18n";
+
 export interface Transaction {
 	type: "sent" | "received";
 	txHash: string;
@@ -14,11 +16,11 @@ export interface Transaction {
 
 /** Human label for a movement row. */
 export function txLabel(t: Transaction): string {
-	if (t.kind === "swap") return t.reference || "Cambio de tokens";
+	if (t.kind === "swap") return t.reference || i18n.t("tx.swap");
 	if (t.type === "received") {
-		return t.reference || (t.kind === "external" ? "Depósito recibido" : "Cobro recibido");
+		return t.reference || (t.kind === "external" ? i18n.t("tx.depositReceived") : i18n.t("tx.chargeReceived"));
 	}
-	return "Pago enviado";
+	return i18n.t("tx.paymentSent");
 }
 
 /** Merge + sort the /user/transactions payload into a single timeline. */
@@ -51,5 +53,8 @@ export function parseTransactions(txData: any): Transaction[] {
 export function formatShortDate(iso: string) {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return "";
-	return d.toLocaleDateString("es", { day: "numeric", month: "short" });
+	return d.toLocaleDateString(i18n.resolvedLanguage || i18n.language || "es", {
+		day: "numeric",
+		month: "short",
+	});
 }

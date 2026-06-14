@@ -2,6 +2,7 @@
 // and type filters. Home only keeps the compact "Actividad reciente".
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
@@ -17,12 +18,13 @@ import { parseTransactions, formatShortDate, txLabel, type Transaction } from ".
 type PeriodOption = "all" | "week" | "month" | "prev-month" | "custom";
 type TypeFilter = "all" | "sent" | "received";
 
+// Label is an i18n key, resolved with t() at render time.
 const PERIOD_OPTIONS: [PeriodOption, string][] = [
-	["all", "Todas las fechas"],
-	["week", "Última semana"],
-	["month", "Este mes"],
-	["prev-month", "Mes anterior"],
-	["custom", "Rango personalizado"],
+	["all", "statement.allDates"],
+	["week", "statement.lastWeek"],
+	["month", "statement.thisMonth"],
+	["prev-month", "statement.prevMonth"],
+	["custom", "statement.customRange"],
 ];
 
 function periodBounds(period: PeriodOption): { start: Date | null; end: Date | null } {
@@ -47,6 +49,7 @@ function periodBounds(period: PeriodOption): { start: Date | null; end: Date | n
 
 export default function Statement({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const { t } = useTranslation();
 	const [period, setPeriod] = useState<PeriodOption>("all");
 	const [fromDate, setFromDate] = useState("");
 	const [toDate, setToDate] = useState("");
@@ -92,7 +95,7 @@ export default function Statement({ user }: { user: User }) {
 			<header className="flex items-center gap-3 mb-6">
 				<button
 					onClick={() => navigate("/")}
-					aria-label="Volver"
+					aria-label={t("common.back")}
 					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -100,7 +103,7 @@ export default function Statement({ user }: { user: User }) {
 						<path d="M12 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<h1 className="text-[22px]">Extracto</h1>
+				<h1 className="text-[22px]">{t("statement.title")}</h1>
 			</header>
 
 			{/* Period dropdown */}
@@ -112,7 +115,7 @@ export default function Statement({ user }: { user: User }) {
 				>
 					{PERIOD_OPTIONS.map(([value, label]) => (
 						<option key={value} value={value}>
-							{label}
+							{t(label)}
 						</option>
 					))}
 				</select>
@@ -136,12 +139,12 @@ export default function Statement({ user }: { user: User }) {
 				<div className="flex gap-2.5 mb-3">
 					{(
 						[
-							["Desde", fromDate, setFromDate],
-							["Hasta", toDate, setToDate],
+							["statement.from", fromDate, setFromDate],
+							["statement.to", toDate, setToDate],
 						] as const
 					).map(([label, value, set]) => (
 						<label key={label} className="flex-1 bg-surface border border-border rounded-[14px] px-3.5 py-2.5">
-							<span className="block text-[11px] text-text-faint mb-0.5">{label}</span>
+							<span className="block text-[11px] text-text-faint mb-0.5">{t(label)}</span>
 							<input
 								type="date"
 								value={value}
@@ -162,16 +165,16 @@ export default function Statement({ user }: { user: User }) {
 						data-active={asset === c}
 						className="seg-item"
 					>
-						{c === "all" ? "Todas" : c}
+						{c === "all" ? t("statement.all") : c}
 					</button>
 				))}
 			</div>
 			<div className="seg-track seg-track-block mb-5">
 				{(
 					[
-						["all", "Todos"],
-						["sent", "Enviados"],
-						["received", "Recibidos"],
+						["all", "statement.allTypes"],
+						["sent", "statement.sent"],
+						["received", "statement.received"],
 					] as const
 				).map(([value, label]) => (
 					<button
@@ -180,7 +183,7 @@ export default function Statement({ user }: { user: User }) {
 						data-active={typeFilter === value}
 						className="seg-item"
 					>
-						{label}
+						{t(label)}
 					</button>
 				))}
 			</div>
@@ -191,12 +194,12 @@ export default function Statement({ user }: { user: User }) {
 			) : filtered.length === 0 ? (
 				<div className="flex flex-col items-center text-center py-14 px-6">
 					<Logo className="w-10 mb-4 opacity-40" />
-					<p className="text-[14px] text-text-muted">No hay movimientos con estos filtros.</p>
+					<p className="text-[14px] text-text-muted">{t("statement.noMovements")}</p>
 				</div>
 			) : (
 				<>
 					<p className="text-[12px] text-text-faint px-1 mb-2">
-						{filtered.length} movimiento{filtered.length === 1 ? "" : "s"}
+						{t("statement.movement", { count: filtered.length })}
 					</p>
 					<div className="flex flex-col gap-1">
 						{filtered.map((tx) => {
@@ -230,7 +233,7 @@ export default function Statement({ user }: { user: User }) {
 										<p className="text-[15px] truncate">{txLabel(tx)}</p>
 										<p className="text-[12px] text-text-faint">
 											{formatShortDate(tx.createdAt)}
-											{tx.kind === "link" && " · Link de cobro"}
+											{tx.kind === "link" && ` · ${t("statement.fromLink")}`}
 										</p>
 									</div>
 									<span

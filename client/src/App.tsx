@@ -5,6 +5,7 @@ import { onAuthChange, type User } from "./lib/firebase";
 import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
 import ErrorBoundary from "./components/ErrorBoundary";
+import DesktopNotice from "./components/DesktopNotice";
 import { SERVER_URL } from "./lib/api";
 import { initAnalytics } from "./lib/analytics";
 
@@ -156,6 +157,7 @@ function App() {
 
 	return (
 		<BrowserRouter>
+			<DesktopNotice />
 			<Toaster
 				position="top-center"
 				theme="dark"
