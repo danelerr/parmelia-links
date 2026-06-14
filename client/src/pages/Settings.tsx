@@ -4,9 +4,11 @@ import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { notifyError, notifySuccess, notifyWarning } from "../lib/notify";
 import { createPasskey, signWithPasskey } from "../lib/webauthn";
+import { enablePush, pushAlreadyEnabled, pushSupported } from "../lib/push";
 import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import Turnstile from "../components/Turnstile";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
@@ -90,6 +92,12 @@ const ICON = {
 			<path d="M12 7v10M9.5 9.5a2.5 2 0 0 1 5 0c0 2-5 1-5 3a2.5 2 0 0 0 5 0" />
 		</svg>
 	),
+	bell: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+			<path d="M13.73 21a2 2 0 0 1-3.46 0" />
+		</svg>
+	),
 };
 
 export default function Settings({ user }: { user: User }) {
@@ -104,7 +112,15 @@ export default function Settings({ user }: { user: User }) {
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [faucetClaimed, setFaucetClaimed] = useState<boolean | null>(null);
 	const [claimingFaucet, setClaimingFaucet] = useState(false);
+	const [faucetToken, setFaucetToken] = useState<string | null>(null);
+	const [pushOn, setPushOn] = useState(pushAlreadyEnabled());
+	const [pushAvailable, setPushAvailable] = useState(false);
+	const [pushBusy, setPushBusy] = useState(false);
 	const [initialLoading, setInitialLoading] = useState(true);
+
+	useEffect(() => {
+		void pushSupported().then(setPushAvailable);
+	}, []);
 
 	async function fetchProfileData(): Promise<ProfileResponse | null> {
 		try {
@@ -232,10 +248,30 @@ export default function Settings({ user }: { user: User }) {
 		}
 	}
 
+	async function handleEnablePush() {
+		setPushBusy(true);
+		try {
+			const ok = await enablePush(user);
+			if (ok) {
+				setPushOn(true);
+				notifySuccess("Avisos activados", "Te avisaremos cuando te paguen.");
+			} else {
+				notifyWarning(
+					"No se activaron los avisos",
+					"Revisa el permiso de notificaciones de tu navegador.",
+				);
+			}
+		} catch (err) {
+			notifyError(err, "No se pudieron activar los avisos");
+		} finally {
+			setPushBusy(false);
+		}
+	}
+
 	async function handleClaimFaucet() {
 		setClaimingFaucet(true);
 		try {
-			await apiFetch("/account/fund", { user, method: "POST" });
+			await apiFetch("/account/fund", { user, method: "POST", body: { turnstileToken: faucetToken } });
 			setFaucetClaimed(true);
 			notifySuccess("¡Listo!", "Recibiste 5 dólares digitales de prueba.");
 		} catch (err) {
@@ -487,15 +523,46 @@ export default function Settings({ user }: { user: User }) {
 											Recibe 5 dólares digitales de prueba para empezar a cobrar y
 											pagar.
 										</p>
+										<div className="mb-3">
+											<Turnstile onToken={setFaucetToken} />
+										</div>
 										<button
 											onClick={handleClaimFaucet}
-											disabled={claimingFaucet}
+											disabled={claimingFaucet || faucetToken === null}
 											className="btn btn-primary btn-sm"
 										>
 											{claimingFaucet ? "Enviando…" : "Obtener dólares de prueba"}
 										</button>
 									</>
 								)}
+							</div>
+						</Section>
+					)}
+
+					{/* Notifications */}
+					{walletAddress && pushAvailable && !pushOn && (
+						<Section title="Notificaciones" icon={ICON.bell} accent="#9ce3f4">
+							<div className="p-5">
+								<p className="text-[13px] text-text-muted leading-relaxed mb-3">
+									Te avisamos al instante cuando recibas un pago o un depósito.
+								</p>
+								<button
+									onClick={handleEnablePush}
+									disabled={pushBusy}
+									className="btn btn-primary btn-sm"
+								>
+									{pushBusy ? "Activando…" : "Activar avisos de pagos"}
+								</button>
+							</div>
+						</Section>
+					)}
+					{walletAddress && pushOn && (
+						<Section title="Notificaciones" icon={ICON.bell} accent="#9ce3f4">
+							<div className="p-5 flex items-center gap-2.5">
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+									<polyline points="20 6 9 17 4 12" />
+								</svg>
+								<p className="text-[14px] text-text-muted">Avisos de pagos activados</p>
 							</div>
 						</Section>
 					)}

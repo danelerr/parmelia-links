@@ -8,6 +8,11 @@ import {ERC7913WebAuthnVerifier} from "../src/ERC7913WebAuthnVerifier.sol";
 import {ParmeliaPaymaster} from "../src/ParmeliaPaymaster.sol";
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
+/// @dev Foundry's default script sender, used when `--sender` is NOT passed.
+///      If the deployer resolves to this, the paymaster owner would not match
+///      the address that signs the owner-only setup calls.
+address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+
 /**
  * @notice Deterministic (CREATE2) deployment of the Parmelia V2 contracts.
  *
@@ -47,8 +52,16 @@ contract DeployV2 is Script {
         AccountFactoryV2 factory = new AccountFactoryV2{salt: SALT}(address(accountImpl));
         console.log("AccountFactoryV2:        ", address(factory));
 
-        // 4. Paymaster
-        ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT);
+        // 4. Paymaster — owner/sponsorSigner = the broadcaster. msg.sender here
+        // must be the real deployer, so you MUST run with `--sender <addr>`
+        // (with only `--account`, msg.sender is Foundry's default and owner would
+        // mismatch the address that signs addStake → OwnableUnauthorizedAccount).
+        address deployer = msg.sender;
+        require(
+            deployer != FOUNDRY_DEFAULT_SENDER,
+            "Run with --sender <your address> (otherwise owner != broadcaster and addStake reverts)"
+        );
+        ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT, deployer);
         console.log("ParmeliaPaymaster:       ", address(paymaster));
         console.log("Paymaster sponsor signer:", paymaster.sponsorSigner());
 
@@ -76,7 +89,12 @@ contract DeployPaymasterV2 is Script {
     function run() external {
         vm.startBroadcast();
 
-        ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT);
+        address deployer = msg.sender;
+        require(
+            deployer != FOUNDRY_DEFAULT_SENDER,
+            "Run with --sender <your address> (otherwise owner != broadcaster and addStake reverts)"
+        );
+        ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT, deployer);
         console.log("ParmeliaPaymaster:", address(paymaster));
         console.log("Sponsor signer:   ", paymaster.sponsorSigner());
 

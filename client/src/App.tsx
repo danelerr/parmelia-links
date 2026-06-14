@@ -6,6 +6,7 @@ import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { SERVER_URL } from "./lib/api";
+import { initAnalytics } from "./lib/analytics";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
 const Login = lazy(() => import("./pages/Login"));
@@ -55,6 +56,10 @@ function App() {
 			setLoading(false);
 		}
 	};
+
+	useEffect(() => {
+		initAnalytics();
+	}, []);
 
 	useEffect(() => {
 		const unsub = onAuthChange((nextUser) => {

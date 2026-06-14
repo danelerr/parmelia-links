@@ -4,6 +4,7 @@ import type { User } from "../lib/firebase";
 import Logo from "../components/Logo";
 import { apiFetch } from "../lib/api";
 import { notifyError, notifySuccess } from "../lib/notify";
+import { track } from "../lib/analytics";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { downloadCard, shareCard } from "../lib/exportCard";
@@ -43,6 +44,7 @@ export default function CreateLink({ user }: { user: User }) {
 				body: { amount, currency, reference },
 			});
 			setPaymentUrl(`${APP_URL}/pay?id=${data.id}`);
+			track("link_created", { currency, openAmount: Number(amount) <= 0 });
 			setStep("result");
 		} catch (err) {
 			notifyError(err, "No se pudo crear el link");

@@ -4,9 +4,12 @@ out = "out"
 libs = ["lib"]
 remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
 via_ir = true
+optimizer = true
+# The optimizer MUST stay ON: without it AccountWebAuthnV2 compiles to 24,988
+# bytes, over the 24,576-byte EIP-170 limit (enforced on Arbitrum and every chain
+# we may port to). With it on, a high runs count favors runtime gas — the impl is
+# delegatecalled on every UserOp — while staying well under the limit (~15 KB).
+# Keep this value FIXED so CREATE2 yields identical addresses across Sepolia/One.
+optimizer_runs = 1000000
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
-
-# Monad Testnet Configuration
-eth-rpc-url = "https://testnet-rpc.monad.xyz"
-chain_id = 10143

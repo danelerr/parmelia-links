@@ -3,6 +3,7 @@ import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { humanizeError, notifyError } from "../lib/notify";
+import { track } from "../lib/analytics";
 import { signWithPasskey } from "../lib/webauthn";
 import { hexToBytes } from "../lib/hex";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
@@ -168,6 +169,7 @@ export default function Swap({ user }: { user: User }) {
 				},
 			});
 
+			track("swap_completed", { from: tokenIn, to: tokenOut });
 			setResult({ txHash: submit.txHash, received: quote.amountOutEstimated });
 			setQuote(null);
 			setAmount("");

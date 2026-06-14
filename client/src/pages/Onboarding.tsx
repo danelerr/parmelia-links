@@ -3,8 +3,10 @@ import { useViewTransitionNavigate } from "../hooks/useNav";
 import { type User, logOut } from "../lib/firebase";
 import { apiFetch } from "../lib/api";
 import { notifyError, notifySuccess } from "../lib/notify";
+import { track } from "../lib/analytics";
 import { createPasskey } from "../lib/webauthn";
 import Logo from "../components/Logo";
+import Turnstile from "../components/Turnstile";
 
 function Reassurance({ children }: { children: string }) {
 	return (
@@ -32,6 +34,8 @@ export default function Onboarding({
 	const [inviteCode, setInviteCode] = useState(
 		() => localStorage.getItem("parmelia:ref") || "",
 	);
+	// Turnstile token. null = not ready yet; "" = not configured (server skips).
+	const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
 	async function handleCreateWallet() {
 		setCreatingWallet(true);
@@ -44,10 +48,11 @@ export default function Onboarding({
 			const ref = inviteCode.trim() || undefined;
 			await apiFetch("/account/create", {
 				user,
-				body: { credentialId, qx, qy, ref },
+				body: { credentialId, qx, qy, ref, turnstileToken },
 			});
 
 			localStorage.removeItem("parmelia:ref");
+			track("wallet_created", { referred: !!ref });
 			notifySuccess("¡Cuenta lista!", "Recibiste 5 dólares digitales de bienvenida.");
 			onComplete();
 			navigate("/");
@@ -105,9 +110,10 @@ export default function Onboarding({
 				className="flex flex-col items-center gap-4 animate-fade-up"
 				style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }}
 			>
+				<Turnstile onToken={setTurnstileToken} />
 				<button
 					onClick={handleCreateWallet}
-					disabled={creatingWallet}
+					disabled={creatingWallet || turnstileToken === null}
 					className="btn btn-primary btn-block"
 				>
 					{creatingWallet ? "Creando tu cuenta…" : "Crear mi cuenta"}

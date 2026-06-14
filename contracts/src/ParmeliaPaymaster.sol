@@ -44,9 +44,9 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
         if (msg.sender != address(ENTRY_POINT)) revert OnlyEntryPoint();
     }
 
-    constructor(IEntryPoint _entryPoint) Ownable(msg.sender) {
+    constructor(IEntryPoint _entryPoint, address initialOwner) Ownable(initialOwner) {
         ENTRY_POINT = _entryPoint;
-        sponsorSigner = msg.sender;
+        sponsorSigner = initialOwner;
     }
 
     /// @notice Update the EOA that authorizes sponsored UserOperations.

@@ -19,7 +19,7 @@ contract ParmeliaPaymasterTest is Test {
 
     function setUp() public {
         sponsor = vm.addr(sponsorPk);
-        paymaster = new ParmeliaPaymaster(IEntryPoint(ENTRY_POINT));
+        paymaster = new ParmeliaPaymaster(IEntryPoint(ENTRY_POINT), address(this));
         paymaster.setSponsorSigner(sponsor);
     }
 

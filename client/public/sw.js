@@ -52,3 +52,42 @@ self.addEventListener("fetch", (event) => {
 		);
 	}
 });
+
+// ===== FCM web push =====
+// FCM delivers a Web Push event; we render it ourselves (no firebase SDK SW).
+self.addEventListener("push", (event) => {
+	let payload = {};
+	try {
+		payload = event.data ? event.data.json() : {};
+	} catch {
+		payload = {};
+	}
+	const info = payload.notification || payload.data || {};
+	const title = info.title || "Parmelia";
+	const body = info.body || "";
+	const link = (payload.data && payload.data.link) || "/";
+	event.waitUntil(
+		self.registration.showNotification(title, {
+			body,
+			icon: "/parmelia.svg",
+			badge: "/parmelia.svg",
+			data: { link },
+		}),
+	);
+});
+
+self.addEventListener("notificationclick", (event) => {
+	event.notification.close();
+	const link = (event.notification.data && event.notification.data.link) || "/";
+	event.waitUntil(
+		self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+			for (const client of list) {
+				if ("focus" in client) {
+					client.navigate(link);
+					return client.focus();
+				}
+			}
+			return self.clients.openWindow(link);
+		}),
+	);
+});

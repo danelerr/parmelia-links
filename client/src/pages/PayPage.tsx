@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams, useParams } from "react-router-dom";
 import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
 import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
+import { track } from "../lib/analytics";
 import { signInWithGoogle, type User } from "../lib/firebase";
 import Logo from "../components/Logo";
 import { signWithPasskey } from "../lib/webauthn";
@@ -207,6 +208,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				},
 			});
 			const to = params.linkId === "username" ? linkData?.username || params.wallet : params.wallet;
+			track("payment_sent", { currency: params.currency, via: params.linkId });
 			navigate(`/pay/status?tx=${txHash}&amount=${params.amount}&currency=${params.currency}&to=${to}`);
 		} catch (err) {
 			if (isUserCancelled(err)) {

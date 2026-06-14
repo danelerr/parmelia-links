@@ -6,6 +6,7 @@ import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { notifyError, notifySuccess } from "../lib/notify";
+import { track } from "../lib/analytics";
 import Logo from "../components/Logo";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 
@@ -84,6 +85,7 @@ export default function Contacts({ user }: { user: User }) {
 	const inviteUrl = inviteRef ? `${APP_URL}/?ref=${inviteRef}` : APP_URL;
 
 	async function handleInvite() {
+		track("invite_shared");
 		const text = "Únete a Parmelia: cobra y paga dinero digital como mandar un mensaje.";
 		if (navigator.share) {
 			try {
