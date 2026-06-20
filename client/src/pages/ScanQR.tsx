@@ -1,5 +1,4 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
-import jsQR from "jsqr";
 import { useTranslation } from "react-i18next";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import i18n from "../lib/i18n";
@@ -47,7 +46,19 @@ const QR_SCAN_CROP_RATIOS = [1, 0.72] as const;
 
 type InversionAttempts = "dontInvert" | "onlyInvert" | "attemptBoth" | "invertFirst";
 
-function decodeWithJsQR(
+// jsQR (~50 KB) is only a FALLBACK for browsers without a native BarcodeDetector.
+// Load it on demand and cache the promise, so devices with native detection
+// (most phones) never download it. The camera pipeline is independent of jsQR.
+type JsQRFn = typeof import("jsqr")["default"];
+let jsQRPromise: Promise<JsQRFn> | null = null;
+function loadJsQR() {
+  if (!jsQRPromise) {
+    jsQRPromise = import("jsqr").then((m) => m.default);
+  }
+  return jsQRPromise;
+}
+
+async function decodeWithJsQR(
   source: CanvasImageSource,
   sourceWidth: number,
   sourceHeight: number,
@@ -56,6 +67,7 @@ function decodeWithJsQR(
   maxAnalysisWidth: number,
   inversionAttempts: InversionAttempts = "attemptBoth",
 ) {
+  const jsQR = await loadJsQR();
   for (const cropRatio of QR_SCAN_CROP_RATIOS) {
     const cropWidth = Math.max(1, Math.floor(sourceWidth * cropRatio));
     const cropHeight = Math.max(1, Math.floor(sourceHeight * cropRatio));
@@ -395,7 +407,7 @@ export default function ScanQR() {
           return;
         }
 
-        const detectedFromJsQR = decodeWithJsQR(
+        const detectedFromJsQR = await decodeWithJsQR(
           image,
           image.naturalWidth || image.width,
           image.naturalHeight || image.height,
@@ -460,7 +472,7 @@ export default function ScanQR() {
 
       // Live scanning targets Parmelia QRs (dark-on-white plaques): skipping the
       // inverted pass halves the per-frame decode cost.
-      const fallbackResult = decodeWithJsQR(
+      const fallbackResult = await decodeWithJsQR(
         video,
         sourceWidth,
         sourceHeight,

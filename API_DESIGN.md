@@ -8,6 +8,13 @@
 > evolución del producto existente, no un arranque de cero. El doc marca fases
 > **Ahora / Siguiente / Horizonte**, no "MVP vs después".
 > Fecha: junio 2026. Relacionado: `ARCHITECTURE.md`, `DEFI_DESIGN.md`.
+>
+> **Estado de implementación (jun-2026):** Flujo A (lazo cerrado) y Flujo B
+> (PaymentRouter) **construidos**: merchants, API keys (`sk_`), payment intents,
+> webhooks firmados con outbox+cron, event log, idempotencia, sandbox
+> "simular pago", el contrato `ParmeliaPaymentRouter` (+11 tests), su firma de
+> autorización y el indexer que reconcilia `InvoicePaid`. **Falta:** desplegar el
+> router on-chain y el dashboard de UI. Ver §15.
 
 ---
 
@@ -67,46 +74,100 @@ conciliación. Los envíos P2P casuales pueden seguir fuera del sistema de inten
 
 ## 5. La decisión núcleo: cómo se atribuye un pago a un intent
 
-Es la pieza que define si esto es "Stripe-like" o "solo P2P con API". Dos modelos,
-ambos soportados:
+Es la pieza que define si esto es "Stripe-like" o "solo P2P con API". Hay **dos
+flujos**, ambos soportados. **Flujo A está construido**; **Flujo B** es el plan
+para que pague cualquiera. En EVM no hay campo "memo", así que cada flujo resuelve
+de forma distinta el atar un pago a su intent.
 
-### Modelo A — pago mediado por Parmelia (lazo cerrado)
-El pagador usa su cuenta Parmelia (passkey) en el checkout; Parmelia construye la
-transferencia, así que **sabe** a qué intent pertenece. Ya existe. Reconciliación
-perfecta, gas patrocinado. Ideal para usuarios Parmelia y P2P.
+### Flujo A (= Modelo A) — el pagador es usuario Parmelia
 
-### Modelo B — pago abierto desde cualquier wallet (Metamask, exchange)
-Lo que hace que pague **cualquiera sin cuenta Parmelia**. En EVM no hay campo
-"memo", así que la atribución se hace por **dirección de depósito única por
-Payment Intent**:
+El cobrador genera un QR/Link; el pagador lo abre **con la app Parmelia** y paga
+con su passkey. Parmelia arma la transacción, así que **sabe** a qué intent
+pertenece (atribución perfecta) y el paymaster patrocina el gas. El pagador
+**tiene que ser usuario Parmelia** (o crear su cuenta en el momento).
 
-1. Al crear el intent se deriva una `deposit_address` única (CREATE2, vía la
-   factory) — **counterfactual**: no se despliega nada hasta que llega dinero.
-2. El indexer vigila esa dirección. Cuando entra USDC ≥ `amount`, atribuye el
-   pago al intent por dirección destino.
-3. Se barre (sweep) el USDC al **settlement** del comercio y se dispara el webhook.
+```
+[Cobrador] crea cobro pi_123  →  comparte QR / Link
+       │
+[Pagador Parmelia] abre el link en la app  →  confirma con passkey
+       │  (el backend arma el UserOp; Parmelia ya sabe que es pi_123)
+       ▼
+EntryPoint v0.9 ─► AccountWebAuthnV2 (pagador) ─► USDC.transfer ─► AccountWebAuthnV2 (cobrador)
+       ▲                                                              (− fee ─► Tesorería Parmelia)
+ParmeliaPaymaster patrocina el gas
+       │
+backend marca pi_123 = paid  →  webhook payment.paid (firmado)
+```
+Contratos: `EntryPoint v0.9`, `AccountWebAuthnV2` (pagador y cobrador), `USDC`,
+`ParmeliaPaymaster`. No hace falta router (Parmelia arma la tx). **Ya implementado:**
+el cobro se respalda en un `payment_links` y el gancho vive en `/pay/submit`.
 
-**Mecanismo recomendado:** un contrato "forwarder" minimal por intent en una
-dirección CREATE2 (patrón clásico de direcciones de depósito de exchanges), que
-reenvía el USDC entrante al comercio. Alternativa interim más simple: EOAs
-efímeras derivadas de una semilla HD del servidor (el server barre). Tradeoff:
-el forwarder es más limpio y casi sin custodia; la EOA HD es más rápida de
-construir pero el server custodia claves efímeras. **Esto es lo primero a
-especificar en detalle** cuando pasemos a contrato.
+### Flujo B (= Modelo B) — paga cualquier wallet externa
 
-### Dos problemas que el Modelo B obliga a decidir desde el diseño
+Para que pague **alguien sin cuenta Parmelia** (Metamask, un exchange, otra dapp).
+La atribución se resuelve con el contrato **PaymentRouter** (§5.1): el pagador
+llama `payInvoice(pi_123, ...)` y el USDC va **directo a la cuenta del cobrador**,
+con un evento que ata el pago al intent. Parmelia nunca toca los fondos.
+
+```
+[Cobrador] crea cobro pi_123  →  comparte QR / Link
+       │
+[Pagador externo] abre el checkout  →  su wallet firma:
+   (a) USDC.approve(PaymentRouter, X)
+   (b) PaymentRouter.payInvoice(pi_123, USDC, X)
+       │
+       ▼
+PaymentRouter:  transferFrom(pagador →)   X − fee ─► AccountWebAuthnV2 (cobrador)
+                                          fee     ─► Tesorería Parmelia
+                emite InvoicePaid(pi_123, payer, token, amount, merchant, fee)
+       │
+indexer escucha InvoicePaid  →  marca pi_123 = paid  →  webhook payment.paid
+```
+Contratos: `USDC`, `PaymentRouter` (nuevo), `AccountWebAuthnV2` (cobrador),
+tesorería. El pagador **paga su propio gas**. **No-custodial.** Contrato, firma de
+autorización (`GET /v1/payment_intents/:id/onchain`) e indexer (escucha
+`InvoicePaid`) **ya implementados**; falta **desplegar** `ParmeliaPaymentRouter`.
+
+### 5.1 Contrato PaymentRouter (Parmelia, no-custodial)
+
+Patrón **ya validado en AvaSettle** (proyecto hermano sobre Avalanche), con UN
+cambio clave: AvaSettle envía a una **tesorería de la plataforma** (custodial);
+Parmelia envía **directo a la smart account del comercio** (no-custodial).
+
+```solidity
+payInvoice(bytes32 intentId, IERC20 token, uint256 amount, address merchant, bytes metadata)
+```
+- token whitelisted + `amount ≥ minAmount` (anti-dust).
+- guard `invoicePaid[intentId]` → un intent no se paga dos veces.
+- `transferFrom(payer → merchant, amount − fee)` y, si `feeBps > 0`,
+  `transferFrom(payer → treasury, fee)`. El destino `merchant` es la cuenta del
+  **cobrador**, no una caja de Parmelia.
+- emite `InvoicePaid(intentId, payer, token, amount, merchant, fee, metadata)`.
+- `Ownable2Step` + `Pausable` + `ReentrancyGuard`; `emergencyWithdraw` solo dueño.
+
+**Seguridad del destino:** `merchant` no puede venir libre del pagador (podría
+redirigir el cobro). Opciones: (a) registrar on-chain el `merchant` esperado por
+`intentId` antes de cobrar; (b) que el contrato lea un registro firmado por
+Parmelia. A definir al implementar — es la decisión central del contrato.
+
+**Alternativa (sin contrato):** dirección de depósito única por intent (forwarder
+CREATE2, o EOA HD con barrido como hace AvaSettle). Más simple para el pagador
+(una transferencia normal), pero reintroduce barrido + gas + custodia. El router
+es la opción **no-custodial** preferida para Parmelia.
+
+### 5.2 Finalidad y montos (Flujo B)
 - **Política de finalidad:** ¿cuándo es `paid`? En Arbitrum el sequencer confirma
   casi instantáneo, pero hay riesgo de reorg hasta finalidad L1 (~minutos).
-  Diseño: `confirmation_policy` por tramo de monto (montos chicos = inclusión del
-  sequencer; montos grandes = N confirmaciones / finalidad). Configurable y
-  documentado, nunca prometido como "instantáneo siempre".
-- **Under/overpayment:** un pagador externo puede mandar de más o de menos →
-  estado `under_review` y, a futuro, pagos parciales. La dirección-por-intent lo
-  hace tratable (sabes exactamente cuánto llegó a esa dirección).
+  `confirmation_policy` por tramo de monto (chicos = inclusión del sequencer;
+  grandes = N confirmaciones). Nunca prometer "instantáneo siempre".
+- **Monto exacto:** con el router el `amount` lo fija el intent; si el evento trae
+  un monto distinto del esperado → `under_review`. (En la variante de dirección de
+  depósito hay que manejar under/overpayment explícitamente.)
 
 ### Quién paga el gas
-- Modelo A (pagador Parmelia): gas patrocinado por el paymaster.
-- Modelo B (wallet externa): el pagador paga su propio gas (ya es usuario crypto).
+- Flujo A (pagador Parmelia): gas **patrocinado** por el paymaster.
+- Flujo B (wallet externa): el pagador paga su propio gas (ya es usuario crypto)
+  — por eso el Flujo B es **más barato de operar** para Parmelia.
 
 ## 6. Máquina de estados (mínima, accionable)
 
@@ -287,14 +348,22 @@ casuales pueden vivir fuera de intents; los cobros, nunca.
 ## 15. Roadmap por fases (no "MVP")
 
 **Ahora — núcleo de la API:**
-1. merchant/account + API keys (test/live, secreto hasheado).
-2. Payment Intent rico (generaliza `payment_links`).
-3. Checkout session alojado + link + QR.
-4. Confirmación USDC on-chain: Modelo A ya; **dirección única por intent
-   (Modelo B)** + `confirmation_policy`.
-5. Webhooks (outbox + cron + firma + reintentos + idempotencia) + event log.
-6. Sandbox con "simular pago".
-7. Dashboard de integración: keys, endpoints, logs, reenviar evento.
+1. [x] merchant/account + API keys (test/live, secreto hasheado SHA-256). — `merchant.routes.ts`, `services/apiKeys.ts`, `middlewares/apiAuth.ts`.
+2. [x] Payment Intent (respaldado por `payment_links`; metadata, idempotencia, expiración). — `routes/v1.routes.ts`.
+3. [x] Checkout vía link + QR (reusa la página `/pay`); `checkout_url` en el intent. ([ ] checkout_session con branding propio = Siguiente.)
+4. [x] Confirmación on-chain **Flujo A** (gancho en `/pay/submit`) **y Flujo B**
+   (`ParmeliaPaymentRouter` + firma `services/paymentRouter.ts` + `GET .../onchain`
+   + `runRouterWatcher` que escucha `InvoicePaid`). Pendiente: **desplegar** el
+   router on-chain + `confirmation_policy` por tramo de monto.
+5. [x] Webhooks (outbox `webhook_deliveries` + cron + firma HMAC + reintentos con backoff + idempotencia) + event log. — `services/webhooks.ts`, migración `0002_api.sql`.
+6. [x] Sandbox con "simular pago": `POST /v1/payment_intents/:id/simulate_payment` (solo claves `test`) marca `paid` y dispara el webhook sin on-chain.
+7. [ ] Dashboard de integración (los endpoints `/merchant/keys` y `/merchant/webhooks` existen; falta la UI).
+
+**Implementado en este pase:** `POST /v1/payment_intents` (+ `GET`, `cancel`),
+`GET /v1/events`, gestión `/merchant/keys` y `/merchant/webhooks` (Firebase auth),
+eventos `payment.created` y `payment.paid`, entrega de webhooks firmados por
+outbox+cron. Migración `0002_api.sql` (merchants, api_keys, payment_intents,
+webhook_endpoints, events, webhook_deliveries).
 
 **Siguiente:**
 - Refunds / cancelaciones; under/overpayment con pagos parciales.
@@ -328,6 +397,39 @@ casuales pueden vivir fuera de intents; los cobros, nunca.
   claves de `DEPLOY.md §11`).
 - **Auth máquina-a-máquina** — subsistema nuevo (keys, hashing, scopes, rotación).
 - **Entrega de webhooks** — outbox+cron ahora; evaluar Queues con volumen.
+
+## 18. Modelo de negocio (cómo se monetiza)
+
+Mismo modelo que Stripe/MercadoPago — **comisión por pago exitoso (% del
+volumen)** — pero sobre rieles stablecoin, donde liquidar cuesta centavos (no hay
+redes de tarjetas). Eso permite cobrar mucho menos y aun así tener gran margen.
+
+**1. Fee por transacción (el núcleo).** Un % por cobro cobrado, tomado en la
+**misma transacción**:
+- **Flujo B:** el `PaymentRouter` manda `monto − fee` al comercio y `fee` a la
+  tesorería (visible on-chain).
+- **Flujo A:** el fee va en el batch del UserOp. Infra ya existente:
+  `PARMELIA_FEES_ENABLED`, `PARMELIA_SWAP_FEE_BPS`, `PARMELIA_TREASURY_ADDRESS`,
+  hard cap 1% en código.
+- Referencia: Stripe ~2.9% + $0.30; MercadoPago más. A **0.5%–1%** eres mucho más
+  barato y rentable. Ej.: un comercio con $10.000/mes a 1% = $100/mes. El negocio
+  es **volumen × comercios**.
+
+**2. Spread de on/off-ramp (el moat grande, a futuro).** Al sumar USDC↔BOBT, QR
+bancario y retiros a banco, se toma un spread (~0.5%–1.5%). En LatAm el dinero
+real está en la **rampa fiat**, no en el movimiento on-chain.
+
+**3. Secundarios:** fee de swap (ya implementado, off por defecto), spread de
+depósitos cross-chain, fee de payout, y planes/SaaS (límites más altos,
+sub-cuentas, reporting) más adelante.
+
+**Sin float:** Parmelia es **no-custodial** (los fondos quedan en la cuenta del
+usuario), así que no se gana reteniendo saldos como un banco. El análogo legítimo
+es el **performance fee** del Earn (sobre el rendimiento, no el principal).
+
+**Costo:** el gas. Flujo A lo patrocina Parmelia (centavos en Arbitrum, cubierto
+de sobra por el fee); Flujo B lo paga el pagador (costo cero). Las fees se muestran
+**antes de confirmar** (ya se hace en swaps) y tienen hard cap en código.
 
 ---
 

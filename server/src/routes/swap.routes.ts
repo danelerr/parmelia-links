@@ -16,7 +16,7 @@
 
 import { Hono } from "hono";
 import { formatUnits, parseUnits, type Hex } from "viem";
-import { erc20Abi, getNetworkConfig, getTokenBySymbol } from "../../../shared";
+import { erc20Abi, getNetworkConfig, getTokenBySymbol, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import { getPublicClient } from "../services/clients";
 import {
@@ -81,17 +81,17 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
 		if (!network.uniswap) {
-			return c.json({ error: "Los cambios no están disponibles en esta red.", requestId }, 400);
+			return c.json({ error: "Los cambios no están disponibles en esta red.", error_code: ERR.SWAPS_DISABLED, requestId }, 400);
 		}
 
 		// --- Validate inputs strictly against the whitelist ---
 		const tokenIn = typeof body.tokenIn === "string" ? getTokenBySymbol(network, body.tokenIn) : null;
 		const tokenOut = typeof body.tokenOut === "string" ? getTokenBySymbol(network, body.tokenOut) : null;
 		if (!tokenIn || !tokenOut) {
-			return c.json({ error: "Token no soportado.", requestId }, 400);
+			return c.json({ error: "Token no soportado.", error_code: ERR.UNSUPPORTED_TOKEN, requestId }, 400);
 		}
 		if (tokenIn.symbol === tokenOut.symbol) {
-			return c.json({ error: "Elige dos tokens distintos.", requestId }, 400);
+			return c.json({ error: "Elige dos tokens distintos.", error_code: ERR.SAME_TOKEN, requestId }, 400);
 		}
 
 		const amountRawStr = typeof body.amountIn === "string" ? body.amountIn.trim() : "";
@@ -99,17 +99,17 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 		try {
 			amountIn = parseUnits(amountRawStr, tokenIn.decimals);
 		} catch {
-			return c.json({ error: "Monto inválido.", requestId }, 400);
+			return c.json({ error: "Monto inválido.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 		if (amountIn <= 0n) {
-			return c.json({ error: "El monto debe ser mayor a 0.", requestId }, 400);
+			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
 		let slippageBps = DEFAULT_SLIPPAGE_BPS;
 		if (body.slippageBps !== undefined) {
 			const parsed = Number(body.slippageBps);
 			if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_SLIPPAGE_BPS) {
-				return c.json({ error: "Slippage fuera de rango.", requestId }, 400);
+				return c.json({ error: "Slippage fuera de rango.", error_code: ERR.SLIPPAGE_OUT_OF_RANGE, requestId }, 400);
 			}
 			slippageBps = parsed;
 		}
@@ -117,7 +117,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 		const profile = await getUserByUid(c.env, user.sub);
 		const account = profile?.walletAddress as `0x${string}` | undefined;
 		if (!account) {
-			return c.json({ error: "Necesitas una cuenta para cambiar tokens.", requestId }, 400);
+			return c.json({ error: "Necesitas una cuenta para cambiar tokens.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
 		// --- Balance check (friendly error before quoting) ---
@@ -134,6 +134,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json(
 				{
 					error: `Saldo insuficiente (tienes ${formatUnits(balance, tokenIn.decimals)} ${tokenIn.symbol}).`,
+					error_code: ERR.INSUFFICIENT_BALANCE,
 					requestId,
 				},
 				400,
@@ -144,7 +145,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 		const best = await quoteBestRoute(c.env, network, tokenIn, tokenOut, amountIn);
 		if (!best) {
 			return c.json(
-				{ error: "Por ahora no hay una ruta disponible para este par.", requestId },
+				{ error: "Por ahora no hay una ruta disponible para este par.", error_code: ERR.NO_ROUTE, requestId },
 				404,
 			);
 		}
@@ -207,7 +208,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 		});
 	} catch (error) {
 		logError("swap_quote_failed", error, { requestId });
-		return c.json({ error: "No pudimos cotizar el cambio. Intenta de nuevo.", requestId }, 500);
+		return c.json({ error: "No pudimos cotizar el cambio. Intenta de nuevo.", error_code: ERR.QUOTE_FAILED, requestId }, 500);
 	}
 });
 
@@ -218,27 +219,27 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		const body = (await c.req.json()) as Record<string, unknown>;
 		const quoteId = typeof body.quoteId === "string" ? body.quoteId : "";
 		if (!quoteId) {
-			return c.json({ error: "Falta la cotización.", requestId }, 400);
+			return c.json({ error: "Falta la cotización.", error_code: ERR.QUOTE_MISSING, requestId }, 400);
 		}
 
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
 		if (!network.uniswap) {
-			return c.json({ error: "Los cambios no están disponibles en esta red.", requestId }, 400);
+			return c.json({ error: "Los cambios no están disponibles en esta red.", error_code: ERR.SWAPS_DISABLED, requestId }, 400);
 		}
 
 		const quote = await getSwapQuote(c.env, quoteId, user.sub);
 		if (!quote) {
-			return c.json({ error: "Cotización no encontrada.", requestId }, 404);
+			return c.json({ error: "Cotización no encontrada.", error_code: ERR.QUOTE_NOT_FOUND, requestId }, 404);
 		}
 		if (quote.status !== "quoted") {
-			return c.json({ error: "Esta cotización ya fue usada. Cotiza de nuevo.", requestId }, 409);
+			return c.json({ error: "Esta cotización ya fue usada. Cotiza de nuevo.", error_code: ERR.QUOTE_USED, requestId }, 409);
 		}
 		if (new Date(quote.expiresAt).getTime() <= Date.now()) {
 			await updateSwapQuoteStatus(c.env, quoteId, "expired");
-			return c.json({ error: "La cotización expiró. Cotiza de nuevo.", requestId }, 409);
+			return c.json({ error: "La cotización expiró. Cotiza de nuevo.", error_code: ERR.QUOTE_EXPIRED, requestId }, 409);
 		}
 		if (quote.chainId !== network.chainId) {
-			return c.json({ error: "La cotización es de otra red.", requestId }, 409);
+			return c.json({ error: "La cotización es de otra red.", error_code: ERR.QUOTE_WRONG_NETWORK, requestId }, 409);
 		}
 
 		// Resolve everything from server-side state - never from the client.
@@ -248,7 +249,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		const profile = await getUserByUid(c.env, user.sub);
 		if (!profile?.walletAddress || profile.walletAddress.toLowerCase() !== account.toLowerCase()) {
 			logWarn("swap_prepare_recipient_mismatch", { requestId, uid: user.sub, quoteId });
-			return c.json({ error: "La cotización no corresponde a tu cuenta.", requestId }, 403);
+			return c.json({ error: "La cotización no corresponde a tu cuenta.", error_code: ERR.QUOTE_WRONG_ACCOUNT, requestId }, 403);
 		}
 
 		const amountIn = BigInt(quote.amountIn);
@@ -265,12 +266,12 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		const { feeBps, treasury } = resolveFeePolicy(c.env);
 		if (!fresh) {
 			await updateSwapQuoteStatus(c.env, quoteId, "expired");
-			return c.json({ error: "La ruta ya no está disponible. Cotiza de nuevo.", requestId }, 409);
+			return c.json({ error: "La ruta ya no está disponible. Cotiza de nuevo.", error_code: ERR.NO_ROUTE, requestId }, 409);
 		}
 		const freshNet = applyFee(fresh.amountOut, feeBps).netAmount;
 		if (freshNet < minimumAmountOut) {
 			await updateSwapQuoteStatus(c.env, quoteId, "expired");
-			return c.json({ error: "El precio cambió. Cotiza de nuevo.", requestId }, 409);
+			return c.json({ error: "El precio cambió. Cotiza de nuevo.", error_code: ERR.PRICE_MOVED, requestId }, 409);
 		}
 
 		const deadline = BigInt(Math.floor(Date.now() / 1000) + EXECUTION_WINDOW_SECONDS);
@@ -374,7 +375,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		});
 	} catch (error) {
 		logError("swap_prepare_failed", error, { requestId });
-		return c.json({ error: "No pudimos preparar el cambio. Intenta de nuevo.", requestId }, 500);
+		return c.json({ error: "No pudimos preparar el cambio. Intenta de nuevo.", error_code: ERR.SWAP_PREPARE_FAILED, requestId }, 500);
 	}
 });
 

@@ -18,6 +18,8 @@ export type ContractAddresses = {
 	paymaster: `0x${string}`;
 	/** ERC-7913 WebAuthn verifier (V2 only). */
 	verifier: `0x${string}`;
+	/** Open-payment router for Flow B (any external wallet → merchant). */
+	paymentRouter: `0x${string}`;
 	usdc: `0x${string}`;
 	usdcDecimals: number;
 };
@@ -97,6 +99,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			factory: "0x8c91e55b11287c9c3970b64602fe50763fac0345",
 			paymaster: "0xa1DC7ad6f4d2d0ea20bF5668F132c38c4f3c172D",
 			verifier: "0x0000000000000000000000000000000000000000",
+			paymentRouter: TODO_DEPLOY,
 			usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 			usdcDecimals: 6,
 		},
@@ -118,6 +121,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			factory: "0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB",
 			paymaster: "0x31f357a64cF5899da21337f0D9e28ef8D6385753",
 			verifier: "0xb7fA10dEe75042D6973676A7d7882e4621B806d6",
+			paymentRouter: TODO_DEPLOY, // TODO: deploy ParmeliaPaymentRouter (Flow B)
 			// Circle's official testnet USDC on Arbitrum Sepolia.
 			usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
 			usdcDecimals: 6,
@@ -165,6 +169,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			factory: TODO_DEPLOY, // TODO: deploy V2 to Arbitrum One, then fill
 			paymaster: TODO_DEPLOY, // TODO
 			verifier: TODO_DEPLOY, // TODO
+			paymentRouter: TODO_DEPLOY, // TODO
 			usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // native Circle USDC
 			usdcDecimals: 6,
 		},

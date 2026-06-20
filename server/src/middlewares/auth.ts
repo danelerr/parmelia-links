@@ -26,10 +26,19 @@ export type Bindings = {
 	TURNSTILE_SECRET_KEY?: string;
 	/** Firebase service account JSON (one line). Unset => push notifications off. */
 	FCM_SERVICE_ACCOUNT?: string;
+	/** Public app URL for building checkout links (default https://app.parmelia.me). */
+	APP_URL?: string;
+	/** Signs PaymentRouter invoice authorizations (Flow B). Falls back to the paymaster signer. */
+	PAYMENT_ROUTER_SIGNER_PRIVATE_KEY?: string;
+	/** Platform fee in bps for payments via the router (capped at 100 in code). */
+	PARMELIA_PAYMENT_FEE_BPS?: string;
 };
 
 export type Variables = {
 	user: { sub: string; email?: string; name?: string; picture?: string } | null;
+	/** Set by the API-key middleware on /v1 routes. */
+	merchantId?: string;
+	apiMode?: "test" | "live";
 };
 
 export type AppContext = { Bindings: Bindings; Variables: Variables };

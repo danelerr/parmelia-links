@@ -21,7 +21,6 @@ Copia `client/.env.example` a `client/.env` y complétalo (gitignored):
 | `VITE_CHAIN_KEY` | Red activa (`arbitrum-sepolia` / `arbitrum-one`) |
 | `VITE_TURNSTILE_SITE_KEY` | Site key de Turnstile (pública) |
 | `VITE_FIREBASE_VAPID_KEY` | VAPID pública para web push |
-| `VITE_ENABLE_APPLE_LOGIN` | `"true"` para mostrar el botón de Apple |
 
 ## Notas
 

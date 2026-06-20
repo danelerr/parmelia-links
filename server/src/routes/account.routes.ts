@@ -5,6 +5,7 @@ import {
 	accountFactoryV2Abi,
 	erc20Abi,
 	getNetworkConfig,
+	ERR,
 } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
@@ -82,17 +83,17 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const existingUser = await getUserByUid(c.env, user.sub);
 	if (existingUser?.walletAddress) {
-		return c.json({ error: "Account already exists", accountAddress: existingUser.walletAddress }, 409);
+		return c.json({ error: "Account already exists", error_code: ERR.ACCOUNT_EXISTS, accountAddress: existingUser.walletAddress }, 409);
 	}
 
 	const { credentialId, qx, qy, ref, turnstileToken } = await c.req.json();
 	if (!credentialId || !qx || !qy) {
-		return c.json({ error: "Missing credentialId, qx, or qy from passkey" }, 400);
+		return c.json({ error: "Missing credentialId, qx, or qy from passkey", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 	}
 
 	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"));
 	if (!humanOk) {
-		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo." }, 403);
+		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo.", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
 	}
 
 	try {
@@ -153,7 +154,7 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 
 		return c.json({ success: true, accountAddress: predictedAddress, transactionHash });
 	} catch (error) {
-		return c.json({ error: `Failed to create account: ${error}` }, 500);
+		return c.json({ error: `Failed to create account: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 
@@ -209,12 +210,12 @@ accountRoutes.put("/passkey", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const profile = await getUserByUid(c.env, user.sub);
 	if (!profile?.walletAddress) {
-		return c.json({ error: "No wallet found. Create one first." }, 400);
+		return c.json({ error: "No wallet found. Create one first.", error_code: ERR.NO_WALLET }, 400);
 	}
 
 	const { qx, qy } = await c.req.json();
 	if (!qx || !qy) {
-		return c.json({ error: "Missing qx or qy" }, 400);
+		return c.json({ error: "Missing qx or qy", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 	}
 
 	try {
@@ -233,7 +234,7 @@ accountRoutes.put("/passkey", requireAuth, async (c) => {
 			message: "Use this calldata as the UserOp callData, signed by your current passkey, to add the new passkey to your wallet.",
 		});
 	} catch (error) {
-		return c.json({ error: `Error adding passkey: ${error}` }, 500);
+		return c.json({ error: `Error adding passkey: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 
@@ -242,12 +243,12 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
 	if (!walletAddress) {
-		return c.json({ error: "No wallet found. Create one first." }, 400);
+		return c.json({ error: "No wallet found. Create one first.", error_code: ERR.NO_WALLET }, 400);
 	}
 
 	const { callData } = await c.req.json();
 	if (typeof callData !== "string" || !/^0x[0-9a-fA-F]*$/.test(callData)) {
-		return c.json({ error: "Invalid callData" }, 400);
+		return c.json({ error: "Invalid callData", error_code: ERR.INVALID_CALLDATA }, 400);
 	}
 
 	try {
@@ -271,7 +272,7 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 
 		return c.json({ userOpHash, credentialId: profile?.credentialId ?? null });
 	} catch (error) {
-		return c.json({ error: `Error preparing passkey update: ${error}` }, 500);
+		return c.json({ error: `Error preparing passkey update: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 
@@ -279,16 +280,16 @@ accountRoutes.post("/fund", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
-	if (!walletAddress) return c.json({ error: "Necesitas crear una wallet primero" }, 400);
+	if (!walletAddress) return c.json({ error: "Necesitas crear una wallet primero", error_code: ERR.NO_WALLET }, 400);
 
 	if (profile?.fundedAt) {
-		return c.json({ error: "Ya canjeaste tus 5 USDC de prueba", alreadyFunded: true }, 409);
+		return c.json({ error: "Ya canjeaste tus 5 USDC de prueba", error_code: ERR.FAUCET_ALREADY_CLAIMED, alreadyFunded: true }, 409);
 	}
 
 	const { turnstileToken } = await c.req.json().catch(() => ({ turnstileToken: undefined }));
 	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"));
 	if (!humanOk) {
-		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo." }, 403);
+		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo.", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
 	}
 
 	try {
@@ -318,7 +319,7 @@ accountRoutes.post("/fund", requireAuth, async (c) => {
 		]);
 		return c.json({ success: true, txHash, amount: "5", currency: "USDC" });
 	} catch (error) {
-		return c.json({ error: `Error al fondear cuenta: ${error}` }, 500);
+		return c.json({ error: `Error al fondear cuenta: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 
@@ -334,12 +335,12 @@ accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
 	if (!walletAddress) {
-		return c.json({ error: "No wallet found." }, 400);
+		return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
 	}
 
 	const { qx, qy } = await c.req.json();
 	if (!qx || !qy) {
-		return c.json({ error: "Missing qx or qy" }, 400);
+		return c.json({ error: "Missing qx or qy", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 	}
 
 	try {
@@ -352,7 +353,7 @@ accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
 			functionName: "isRecoveryPending",
 		})) as boolean;
 		if (isRecoveryPending) {
-			return c.json({ error: "Ya hay una recuperacion en proceso." }, 400);
+			return c.json({ error: "Ya hay una recuperacion en proceso.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
 		}
 
 		const newSigner = buildWebAuthnSigner(verifier, qx as Hex, qy as Hex);
@@ -366,7 +367,7 @@ accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
 
 		return c.json({ success: true, txHash, message: "Recuperación iniciada. Estará lista en 48 horas." });
 	} catch (error) {
-		return c.json({ error: `Recovery error: ${error}` }, 500);
+		return c.json({ error: `Recovery error: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 
@@ -375,10 +376,10 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
-	if (!walletAddress) return c.json({ error: "No wallet found." }, 400);
+	if (!walletAddress) return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
 
 	const { credentialId } = await c.req.json();
-	if (!credentialId) return c.json({ error: "Missing new credentialId" }, 400);
+	if (!credentialId) return c.json({ error: "Missing new credentialId", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 
 	try {
 		const { publicClient, walletClient } = getClients(c.env);
@@ -390,9 +391,9 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 		})) as [bigint, Hex[], bigint];
 
 		const executeAfter = Number(pendingRecovery[0]);
-		if (executeAfter === 0) return c.json({ error: "No hay recuperacion en proceso." }, 400);
+		if (executeAfter === 0) return c.json({ error: "No hay recuperacion en proceso.", error_code: ERR.RECOVERY_NONE }, 409);
 		if (Date.now() / 1000 < executeAfter) {
-			return c.json({ error: `La recuperacion estara disponible el ${new Date(executeAfter * 1000).toLocaleString()}` }, 400);
+			return c.json({ error: `La recuperacion estara disponible el ${new Date(executeAfter * 1000).toLocaleString()}`, error_code: ERR.RECOVERY_NOT_READY }, 409);
 		}
 
 		const txHash = await walletClient.writeContract({
@@ -406,7 +407,7 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 
 		return c.json({ success: true, txHash, message: "Cuenta recuperada exitosamente." });
 	} catch (error) {
-		return c.json({ error: `Execution error: ${error}` }, 500);
+		return c.json({ error: `Execution error: ${error}`, error_code: ERR.SERVER_ERROR }, 500);
 	}
 });
 

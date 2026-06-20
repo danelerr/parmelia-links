@@ -13,6 +13,7 @@ import { RowSkeletonList } from "../components/Skeleton";
 import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
+import { formatAmount } from "../lib/format";
 
 
 type PeriodOption = "all" | "week" | "month" | "prev-month" | "custom";
@@ -242,7 +243,7 @@ export default function Statement({ user }: { user: User }) {
 										}`}
 									>
 										{received ? "+" : "−"}
-										{tx.amount} {tx.currency}
+										{formatAmount(tx.amount, tx.currency)} {tx.currency}
 									</span>
 								</button>
 							);

@@ -5,6 +5,7 @@ import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
 import i18n from "../lib/i18n";
+import { formatAmount } from "../lib/format";
 import { downloadCard, shareCard } from "../lib/exportCard";
 
 export default function PaymentStatus() {
@@ -81,8 +82,8 @@ export default function PaymentStatus() {
 
 					<p className="text-[15px] text-text-muted mb-1 relative z-1">{t("paymentStatus.paidLead")}</p>
 					{amount && (
-						<p className="font-display text-[44px] leading-none mb-4 tabular relative z-1">
-							{amount}
+						<p className="font-display text-[44px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
+							{formatAmount(amount, currency ?? "")}
 							<span className="text-text-muted text-[22px] ml-1.5">{currency}</span>
 						</p>
 					)}

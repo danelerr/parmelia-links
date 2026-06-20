@@ -10,6 +10,7 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
+import { formatAmount } from "../lib/format";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const APP_HOST = new URL(APP_URL).hostname;
@@ -133,8 +134,8 @@ function ManualConfirmSheet({
 					<span className="text-[13px] text-text-muted">{t("pay.confirmTitle")}</span>
 				</div>
 				<p className="text-[13px] text-text-muted text-center mb-1">{t("pay.youWillSend")}</p>
-				<p className="font-display text-[40px] leading-none tabular text-center mb-5">
-					{tx.amount}
+				<p className="font-display text-[40px] leading-tight tabular text-center mb-5 max-w-full break-words">
+					{formatAmount(tx.amount, tx.currency)}
 					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
 				</p>
 				<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
@@ -287,8 +288,12 @@ export default function PayPage({ user }: { user: User | null }) {
 				notifyWarning(t("notify.cancelled"), t("pay.paymentNotMade"));
 				setError("");
 			} else {
-				const raw = err instanceof Error ? err.message : t("pay.processError");
-				const msg = parsePaymentError(raw);
+				// Prefer the server's stable error_code (language-independent); fall
+				// back to the message-text heuristics for codeless/SDK errors.
+				const code = err instanceof ApiError ? err.code : undefined;
+				const msg = code
+					? t(`err.${code}`, { defaultValue: err instanceof Error ? err.message : t("pay.processError") })
+					: parsePaymentError(err instanceof Error ? err.message : t("pay.processError"));
 				notifyError(
 					new ApiError(msg, {
 						status: 400,
@@ -435,6 +440,12 @@ export default function PayPage({ user }: { user: User | null }) {
 
 	// Manual pay (open the app with no link)
 	if (!linkData && manualMode) {
+		// Amount must be a positive number. We surface a gentle hint only once the
+		// user has typed a destination AND a non-positive amount (e.g. 0) — never
+		// on an empty field, so it doesn't nag before they've started.
+		const manualAmountNum = Number(payAmount);
+		const manualAmountInvalid = !payAmount || !Number.isFinite(manualAmountNum) || manualAmountNum <= 0;
+		const showAmountHint = !!manualWallet.trim() && payAmount.trim() !== "" && manualAmountInvalid;
 		return (
 			<div className={screen}>
 				<PayingOverlay stage={payStage} />
@@ -504,16 +515,21 @@ export default function PayPage({ user }: { user: User | null }) {
 
 				{!user ? (
 					<button onClick={handleLogin} className="btn btn-primary btn-block">
-						Inicia sesión para pagar
+						{t("pay.signInToPay")}
 					</button>
 				) : (
 					<button
 						onClick={handleManualPay}
-						disabled={paying || resolvingUsername || !manualWallet || !payAmount}
+						disabled={paying || resolvingUsername || !manualWallet || manualAmountInvalid}
 						className="btn btn-gradient btn-block"
 					>
 						{resolvingUsername ? t("pay.searchingUser") : t("common.pay")}
 					</button>
+				)}
+				{showAmountHint && (
+					<p className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
+						{t("pay.amountMustBePositive")}
+					</p>
 				)}
 			</div>
 		);
@@ -567,8 +583,8 @@ export default function PayPage({ user }: { user: User | null }) {
 						</svg>
 					</div>
 					<p className="text-[15px] text-text-muted mb-1">{t("pay.alreadyPaid")}</p>
-					<p className="font-display text-[40px] tabular">
-						{linkData.amount}
+					<p className="font-display text-[40px] tabular leading-tight max-w-full break-words text-center">
+						{formatAmount(linkData.amount, linkData.currency)}
 						<span className="text-text-muted text-[20px] ml-1.5">{linkData.currency}</span>
 					</p>
 					{linkData.reference && <p className="text-text-muted text-[14px] mt-3">{linkData.reference}</p>}
@@ -593,8 +609,8 @@ export default function PayPage({ user }: { user: User | null }) {
 			{/* Amount */}
 			<div className="flex flex-col items-center mb-6">
 				{hasFixedAmount ? (
-					<p className="font-display text-[56px] leading-none tabular">
-						{linkData.amount}
+					<p className="font-display text-[56px] leading-tight tabular max-w-full break-words text-center">
+						{formatAmount(linkData.amount, linkData.currency)}
 						<span className="text-text-muted text-[24px] ml-2">{linkData.currency}</span>
 					</p>
 				) : (

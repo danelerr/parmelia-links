@@ -4,7 +4,6 @@ import {
 	browserLocalPersistence,
 	getAuth,
 	GoogleAuthProvider,
-	OAuthProvider,
 	getRedirectResult,
 	isSignInWithEmailLink,
 	onAuthStateChanged,
@@ -68,7 +67,7 @@ const POPUP_FALLBACK_CODES = new Set([
  * result is picked up by onAuthChange on return.
  */
 async function signInWithProvider(
-	provider: GoogleAuthProvider | OAuthProvider,
+	provider: GoogleAuthProvider,
 ): Promise<UserCredential | null> {
 	if (isStandalonePWA()) {
 		await signInWithRedirect(auth, provider);
@@ -88,13 +87,6 @@ async function signInWithProvider(
 
 export async function signInWithGoogle() {
 	return signInWithProvider(googleProvider);
-}
-
-export async function signInWithApple() {
-	const provider = new OAuthProvider("apple.com");
-	provider.addScope("email");
-	provider.addScope("name");
-	return signInWithProvider(provider);
 }
 
 // ===== Email magic link (passwordless) =====

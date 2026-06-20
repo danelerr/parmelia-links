@@ -2,6 +2,7 @@ packages:
   - client
   - server
   - shared
+  - dashboard
 allowBuilds:
   '@swc/core': false
   esbuild: false

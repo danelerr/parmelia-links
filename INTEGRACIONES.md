@@ -5,9 +5,11 @@
 > Todo el código está hecho con feature-flags: sin la key configurada, la app
 > sigue funcionando exactamente como hoy.
 >
-> **Estado (jun-2026): el código de 1, 2, 3 y 4 ya está implementado.** Lo que
-> queda es la configuración de consola/secrets marcada en cada sección.
-> Queues (5) NO se implementó: requiere plan pago.
+> **Estado (jun-2026):** Turnstile (1), Email link (2), FCM push (3) y Analytics
+> GA4 (4) están **implementados y en vivo** (secrets/consola configurados; FCM
+> verificado con depósitos externos desde MetaMask). **Login con Apple: descartado
+> por decisión** (no se integrará). Queues (5) NO se implementó: requiere plan pago.
+> Verificar que `VITE_FIREBASE_MEASUREMENT_ID` esté también en Vercel (no solo local).
 
 ---
 
@@ -40,30 +42,23 @@ Me avisas "Turnstile listo" + me pasas la **site key** (la secret no - esa ya qu
 
 ---
 
-## 2. Login con Email (magic link) + Apple - Firebase Auth, cero cambios de server
+## 2. Login con Email (magic link) - Firebase Auth, cero cambios de server
 
-### Parte A.1 - Email link (~5 min, gratis)
+> **Apple: descartado por decisión** (no se integrará). El código de Apple se
+> eliminó del cliente; el login es Google + magic link por correo.
+
+### Parte A - Email link (~5 min, gratis)
 1. https://console.firebase.google.com → proyecto **proyecto-prueba-push-firebase**.
 2. **Authentication → Sign-in method → Add new provider → Email/Password** → habilítalo **y activa el toggle "Email link (passwordless sign-in)"** → Save.
 3. **Authentication → Settings → Authorized domains:** verifica que estén `parmelia.me` y `localhost`.
 4. **Authentication → Settings → User account linking:** selecciona **"Link accounts that use the same email"** (así Google y magic link del mismo correo = misma cuenta = misma wallet).
 5. (Opcional, recomendado) **Authentication → Templates →** edita la plantilla del email: idioma **español**, nombre del remitente **Parmelia**.
 
-### Parte A.2 - Apple (requiere Apple Developer Program, $99/año)
-> Si aún no tienes la cuenta de Apple Developer, lanza solo Email link primero - Apple puede sumarse después sin tocar nada más.
-1. En https://developer.apple.com → **Certificates, Identifiers & Profiles → Identifiers → (+)**:
-   - Crea un **Services ID** (ej. `me.parmelia.signin`), habilita **Sign In with Apple** → Configure:
-     - **Domains:** `parmelia.me` y `proyecto-prueba-push-firebase.firebaseapp.com`
-     - **Return URL:** `https://proyecto-prueba-push-firebase.firebaseapp.com/__/auth/handler`
-2. **Keys → (+)**: crea una Key con **Sign In with Apple** habilitado → descarga el `.p8` → anota **Key ID** y tu **Team ID**.
-3. Firebase console → **Authentication → Sign-in method → Apple** → Enable → pega: Services ID, Team ID, Key ID y el contenido del `.p8` → Save.
-
 ### Parte B - Qué entregar
-Solo el aviso: "Email link habilitado" (y "Apple habilitado" si aplica). No hay keys que pasarme - el cliente ya tiene la config de Firebase.
+Solo el aviso: "Email link habilitado". No hay keys que pasarme - el cliente ya tiene la config de Firebase.
 
-### Qué implemento yo después
-- Login: botón **"Continuar con correo"** → input → `sendSignInLinkToEmail` → pantalla "Revisa tu correo"; al volver por el link, la app detecta `isSignInWithEmailLink` y completa la sesión.
-- Botón **"Continuar con Apple"** (`OAuthProvider('apple.com')`).
+### Estado
+- Login: botón **"Continuar con correo"** → input → `sendSignInLinkToEmail` → pantalla "Revisa tu correo"; al volver por el link, la app detecta `isSignInWithEmailLink` y completa la sesión. **Implementado.**
 - Server: **cero cambios** (mismo JWT de Firebase).
 
 ---
@@ -87,9 +82,9 @@ cd server && npx wrangler secret put FCM_SERVICE_ACCOUNT
 ```
 
 ### Qué implemento yo después
-- **D1:** columna `push_token` en `users` (un dispositivo por usuario en v1; multi-dispositivo después).
+- **D1:** tabla `push_tokens` (migración 0004, una fila por dispositivo; `ON CONFLICT` mueve el token si el navegador inicia con otra cuenta). Multi-dispositivo real.
 - **Cliente:** prompt de opt-in ("Activar avisos de pagos" - el permiso del navegador exige gesto del usuario), `getToken()` con la VAPID key sobre nuestro service worker existente, y registro del token en el server. Handler de `push` en `sw.js` que muestra la notificación y abre la app al tocarla.
-- **Server:** `services/push.ts` - token OAuth2 firmado con el service account (con `jose`, ya en uso) → `POST fcm.googleapis.com/v1/.../messages:send`. **Gatillos ya existentes:** la fila "in" del ledger en `/pay/submit` (pago/cobro interno) y el cron indexer (depósito externo). Fallos de push = silenciosos, jamás bloquean un pago.
+- **Server:** `services/push.ts` - token OAuth2 firmado con el service account (con `jose`, ya en uso) → `POST fcm.googleapis.com/v1/.../messages:send`. `notifyUser` hace fan-out a todos los dispositivos del usuario y poda solo los tokens muertos (404). **Gatillos:** `/pay/submit` (pago/cobro interno), cron indexer (depósito externo) y `runRecoveryWatcher` (aviso de seguridad ante `RecoveryProposed`). Fallos de push = silenciosos, jamás bloquean un pago.
 - Nota iOS: en iPhone el push web **solo funciona con la PWA instalada** (limitación de Apple, iOS 16.4+). Android/desktop: funciona en el navegador normal.
 
 ---
@@ -115,7 +110,7 @@ cd server && npx wrangler secret put FCM_SERVICE_ACCOUNT
 ## Orden sugerido de ejecución
 
 1. **Turnstile** (5 min de consola, gratis) → me pasas site key → implemento.
-2. **Email link** (5 min, gratis) → me avisas → implemento Login nuevo. (Apple cuando tengas la cuenta de developer.)
+2. **Email link** (5 min, gratis) → me avisas → implemento Login nuevo.
 3. **FCM** (5 min de consola) → me pasas VAPID + secret configurado → implemento push.
 4. **GA4** (1 clic) → implemento eventos.
 5. **Queues** → decisión de plan; implementación cuando haya volumen o junto a FCM.

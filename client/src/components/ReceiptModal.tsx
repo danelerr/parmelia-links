@@ -9,6 +9,7 @@ import { notifyError } from "../lib/notify";
 import Logo from "./Logo";
 import i18n from "../lib/i18n";
 import { getExplorerTxUrl } from "../lib/activeNetwork";
+import { formatAmount } from "../lib/format";
 import { downloadCard } from "../lib/exportCard";
 import type { Transaction } from "../lib/transactions";
 
@@ -26,6 +27,8 @@ export default function ReceiptModal({
 	const { t } = useTranslation();
 	const cardRef = useRef<HTMLDivElement>(null);
 	const received = tx.type === "received";
+	// The other party: origin wallet on received, destination wallet on sent.
+	const counterparty = received ? tx.from : tx.to;
 	const date = new Date(tx.createdAt);
 	const hasDate = !Number.isNaN(date.getTime());
 
@@ -69,15 +72,20 @@ export default function ReceiptModal({
 				<p className="text-[14px] text-text-muted mb-1 relative z-1">
 					{received ? t("receipt.received") : t("receipt.sent")}
 				</p>
-				<p className="font-display text-[40px] leading-none mb-4 tabular relative z-1">
+				<p className="font-display text-[40px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
 					{received ? "+" : "−"}
-					{tx.amount}
+					{formatAmount(tx.amount, tx.currency)}
 					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
 				</p>
-				{tx.to && (
-					<p className="text-text-faint text-[12px] font-mono break-all text-center mb-1 relative z-1">
-						{t("receipt.to")} {tx.to.slice(0, 6)}…{tx.to.slice(-4)}
-					</p>
+				{counterparty && (
+					<div className="flex items-center justify-center gap-2 mb-1 relative z-1">
+						<span className="text-[11px] uppercase tracking-[0.08em] text-text-faint">
+							{received ? t("receipt.from") : t("receipt.to")}
+						</span>
+						<span className="text-[13px] font-mono text-text-muted bg-surface-2 rounded-full px-2.5 py-0.5">
+							{counterparty.slice(0, 6)}…{counterparty.slice(-4)}
+						</span>
+					</div>
 				)}
 				{tx.reference && (
 					<p className="text-text-muted text-[14px] text-center mb-1 relative z-1">{tx.reference}</p>

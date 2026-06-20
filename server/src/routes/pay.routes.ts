@@ -18,6 +18,7 @@ import {
 	erc20Abi,
 	getNetworkConfig,
 	getTokenBySymbol,
+	ERR,
 } from "../../../shared";
 import {
 	createPendingPayment,
@@ -28,6 +29,9 @@ import {
 	getUserByUid,
 	getUserByWallet,
 	markPaymentLinkPaid,
+	markPaymentIntentPaid,
+	getMerchantById,
+	getPaymentIntentByLinkId,
 	savePasskey,
 	saveUser,
 	updateSwapQuoteStatus,
@@ -35,6 +39,7 @@ import {
 	type LedgerEntry,
 } from "../services/storage";
 import { notifyUser } from "../services/push";
+import { deliverPendingWebhooks, emitEvent } from "../services/webhooks";
 import {
 	PAYMASTER_POST_OP_GAS_LIMIT,
 	PAYMASTER_VERIFICATION_GAS_LIMIT,
@@ -133,7 +138,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		const senderAddress = profile?.walletAddress ?? undefined;
 		if (!senderAddress) {
 			logWarn("payment_prepare_missing_wallet", { requestId, uid: user.sub });
-			return c.json({ error: "You need a wallet to pay. Create one first.", requestId }, 400);
+			return c.json({ error: "You need a wallet to pay. Create one first.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
 		const credentialId = profile?.credentialId ?? null;
@@ -152,11 +157,11 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			const link = await getPaymentLinkById(c.env, linkId);
 			if (!link) {
 				logWarn("payment_prepare_link_not_found", { requestId, uid: user.sub, linkId });
-				return c.json({ error: "Link de pago no encontrado", requestId }, 404);
+				return c.json({ error: "Link de pago no encontrado", error_code: ERR.LINK_NOT_FOUND, requestId }, 404);
 			}
 			if (link.status === "paid") {
 				logWarn("payment_prepare_link_already_paid", { requestId, uid: user.sub, linkId });
-				return c.json({ error: "Este link ya fue pagado", requestId }, 400);
+				return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
 			}
 
 			recipientAddress = normalizeWalletAddress(link.wallet);
@@ -174,15 +179,15 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 		if (!recipientAddress) {
 			logWarn("payment_prepare_invalid_recipient", { requestId, uid: user.sub });
-			return c.json({ error: "Wallet inválida", requestId }, 400);
+			return c.json({ error: "Wallet inválida", error_code: ERR.INVALID_WALLET, requestId }, 400);
 		}
 		if (!paymentCurrency) {
 			logWarn("payment_prepare_invalid_currency", { requestId, uid: user.sub });
-			return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})`, requestId }, 400);
+			return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})`, error_code: ERR.UNSUPPORTED_CURRENCY, requestId }, 400);
 		}
 		if (!paymentAmount) {
 			logWarn("payment_prepare_invalid_amount", { requestId, uid: user.sub, currency: paymentCurrency });
-			return c.json({ error: "El monto debe ser mayor a 0", requestId }, 400);
+			return c.json({ error: "El monto debe ser mayor a 0", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
 		// Resolve the asset from the whitelist; legacy chains without a token
@@ -200,7 +205,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 				rawAmount = parseUnits(paymentAmount, tokenDecimals);
 			} catch {
 				logWarn("payment_prepare_invalid_erc20_amount", { requestId, uid: user.sub, amount: paymentAmount, currency: paymentCurrency });
-				return c.json({ error: `Monto inválido para ${paymentCurrency}`, requestId }, 400);
+				return c.json({ error: `Monto inválido para ${paymentCurrency}`, error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 			}
 
 			const erc20Balance = (await publicClient.readContract({
@@ -221,6 +226,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 				return c.json(
 					{
 						error: `Saldo ${paymentCurrency} insuficiente (tienes ${formatUnits(erc20Balance, tokenDecimals)} ${paymentCurrency})`,
+						error_code: ERR.INSUFFICIENT_BALANCE,
 						requestId,
 					},
 					400,
@@ -234,7 +240,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 				ethAmount = parseEther(paymentAmount);
 			} catch {
 				logWarn("payment_prepare_invalid_native_amount", { requestId, uid: user.sub, amount: paymentAmount });
-				return c.json({ error: "Monto inválido para ETH", requestId }, 400);
+				return c.json({ error: "Monto inválido para ETH", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 			}
 
 			const ethBalance = await publicClient.getBalance({ address: senderAddress as `0x${string}` });
@@ -248,6 +254,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 				});
 				return c.json({
 					error: `Saldo ETH insuficiente (tienes ${formatEther(ethBalance)} ETH)`,
+					error_code: ERR.INSUFFICIENT_BALANCE,
 					requestId,
 				}, 400);
 			}
@@ -482,7 +489,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 				userOpHash: userOpHashForLog,
 				txHash,
 			});
-			return c.json({ error: "Transaction reverted", requestId, txHash }, 500);
+			return c.json({ error: "Transaction reverted", error_code: ERR.TX_REVERTED, requestId, txHash }, 500);
 		}
 
 		if (credentialId) {
@@ -510,6 +517,41 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 					paidAt: createdAt,
 					paidBy: pending.senderAddress || "",
 				});
+
+				// If this link backs an API payment intent, settle it and fire the
+				// payment.paid webhook (flushed after the response via waitUntil).
+				const intent = await getPaymentIntentByLinkId(c.env, linkId);
+				if (intent && intent.status === "awaiting_payment") {
+					await markPaymentIntentPaid(c.env, intent.id, txHash, createdAt);
+					const merchant = await getMerchantById(c.env, intent.merchantId);
+					if (merchant) {
+						const flush = (async () => {
+							await emitEvent(c.env, {
+								merchantId: intent.merchantId,
+								mode: intent.mode,
+								type: "payment.paid",
+								objectId: intent.id,
+								data: {
+									id: intent.id,
+									object: "payment_intent",
+									status: "paid",
+									amount: intent.amount,
+									currency: intent.currency,
+									reference: intent.reference,
+									metadata: intent.metadata ?? {},
+									tx_hash: txHash,
+									mode: intent.mode,
+								},
+							});
+							await deliverPendingWebhooks(c.env);
+						})();
+						try {
+							c.executionCtx.waitUntil(flush);
+						} catch {
+							void flush;
+						}
+					}
+				}
 			}
 		}
 
@@ -610,9 +652,9 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			uid: user?.sub ?? null,
 			userOpHash: userOpHashForLog,
 		});
-		if (msg.includes("AA24")) return c.json({ error: "Error de firma: esta passkey no coincide con tu wallet.", requestId }, 500);
-		if (msg.includes("AA21")) return c.json({ error: "Tu wallet no tiene fondos suficientes para cubrir el gas.", requestId }, 500);
-		if (msg.includes("AA95")) return c.json({ error: "La transaccion de handleOps no tenia gas suficiente. Revisa el gas limit del relayer.", requestId }, 500);
+		if (msg.includes("AA24")) return c.json({ error: "Error de firma: esta passkey no coincide con tu wallet.", error_code: ERR.PASSKEY_MISMATCH, requestId }, 500);
+		if (msg.includes("AA21")) return c.json({ error: "Tu wallet no tiene fondos suficientes para cubrir el gas.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
+		if (msg.includes("AA95")) return c.json({ error: "La transaccion de handleOps no tenia gas suficiente. Revisa el gas limit del relayer.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
 		if (msg.includes("InvalidPaymasterSignature") || msg.includes("AA33") || msg.includes("AA34")) {
 			return c.json({
 				error: "El paymaster rechazo la operacion. Revisa sponsorSigner on-chain, PAYMASTER_SIGNER_PRIVATE_KEY y el deposito del paymaster.",
@@ -625,7 +667,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		if (msg.includes("FailedOp")) {
 			return c.json({ error: msg, requestId }, 500);
 		}
-		return c.json({ error: msg || "Error al procesar el pago. Intenta de nuevo.", requestId }, 500);
+		return c.json({ error: msg || "Error al procesar el pago. Intenta de nuevo.", error_code: ERR.PAYMENT_FAILED, requestId }, 500);
 	}
 });
 

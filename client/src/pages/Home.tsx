@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
+import { notifySuccess } from "../lib/notify";
 import Logo from "../components/Logo";
 import ReceiptModal from "../components/ReceiptModal";
 import { Skeleton, RowSkeletonList } from "../components/Skeleton";
@@ -10,17 +11,9 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
+import { formatAmount } from "../lib/format";
 
 const RECENT_COUNT = 5;
-
-function formatBalance(symbol: string, value: string | undefined) {
-	const n = Number(value ?? "0");
-	if (!Number.isFinite(n)) return value ?? "0";
-	if (symbol === "USDC") {
-		return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-	}
-	return n.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
 
 export default function Home({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
@@ -73,8 +66,27 @@ export default function Home({ user }: { user: User }) {
 	function handleCopyAddress() {
 		if (!walletAddress) return;
 		navigator.clipboard.writeText(walletAddress);
+		// Subtle haptic tick on supported devices.
+		if ("vibrate" in navigator) navigator.vibrate(15);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 2000);
+	}
+
+	// Empty-state nudge: share your wallet address so others can pay you to it.
+	// Native share sheet when available; otherwise copy with a toast.
+	async function handleShareAddress() {
+		if (!walletAddress) return;
+		const text = t("home.shareAddressText", { address: walletAddress });
+		if (navigator.share) {
+			try {
+				await navigator.share({ title: "Parmelia", text });
+				return;
+			} catch {
+				/* user dismissed the share sheet */
+			}
+		}
+		navigator.clipboard.writeText(walletAddress);
+		notifySuccess(t("settings.addressCopied"));
 	}
 
 	function toggleHideBalance() {
@@ -175,7 +187,7 @@ export default function Home({ user }: { user: User }) {
 							{selectedCurrency === "USDC" && (
 								<span className="text-text-muted text-[28px] align-top mr-0.5">$</span>
 							)}
-							{hideBalance ? "••••" : formatBalance(selectedCurrency, balances[selectedCurrency])}
+							{hideBalance ? "••••" : formatAmount(balances[selectedCurrency], selectedCurrency)}
 							{selectedCurrency !== "USDC" && (
 								<span className="text-text-muted text-[20px] ml-2">{selectedCurrency}</span>
 							)}
@@ -183,15 +195,24 @@ export default function Home({ user }: { user: User }) {
 					)}
 				</div>
 
-				<button
-					onClick={handleCopyAddress}
-					className="mx-auto flex items-center gap-2 px-3.5 py-2 rounded-full text-[12px] text-text-faint hover:text-text-muted hover:bg-surface-2 transition-colors relative z-1"
-				>
-					<span className="font-mono">
-						{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : t("common.loading")}
+				<div className="flex flex-col items-center gap-1 relative z-1">
+					<span className="text-[10px] uppercase tracking-[0.1em] text-text-faint">
+						{t("home.yourAddress")}
 					</span>
-					<span>{copied ? t("common.copied") : t("common.copy")}</span>
-				</button>
+					<button
+						onClick={handleCopyAddress}
+						disabled={!walletAddress}
+						aria-label={copied ? t("common.copied") : t("common.copy")}
+						className="flex items-center gap-2 px-3.5 py-1.5 rounded-full text-[13px] text-text-muted hover:text-text hover:bg-surface-2 active:scale-95 transition-all"
+					>
+						<span className="font-mono">
+							{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : t("common.loading")}
+						</span>
+						<span className={copied ? "text-glow-sky" : "text-text-faint"}>
+							{copied ? <IconCheck /> : <IconCopy />}
+						</span>
+					</button>
+				</div>
 				<button
 					onClick={() => navigate("/deposit")}
 					className="mx-auto mt-1 flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12px] text-text-faint hover:text-text-muted transition-colors relative z-1"
@@ -250,6 +271,11 @@ export default function Home({ user }: { user: User }) {
 					<button onClick={() => navigate("/charge")} className="btn btn-primary btn-sm">
 						{t("home.createFirstLink")}
 					</button>
+					{walletAddress && (
+						<button onClick={handleShareAddress} className="btn-text mt-2 text-[13px]">
+							{t("home.shareAddressNudge")}
+						</button>
+					)}
 				</div>
 			) : (
 				<>
@@ -279,7 +305,7 @@ export default function Home({ user }: { user: User }) {
 										}`}
 									>
 										{!hideBalance && (received ? "+" : "−")}
-										{hideBalance ? "••••" : `${tx.amount} ${tx.currency}`}
+										{hideBalance ? "••••" : `${formatAmount(tx.amount, tx.currency)} ${tx.currency}`}
 									</span>
 								</button>
 							);
@@ -343,6 +369,23 @@ function IconEyeOff() {
 			<path d="M6.6 6.6A16.8 16.8 0 0 0 2 12s3.5 7 10 7a10.3 10.3 0 0 0 5.4-1.6" />
 			<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
 			<path d="m3 3 18 18" />
+		</svg>
+	);
+}
+
+function IconCopy() {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<rect x="9" y="9" width="13" height="13" rx="2" />
+			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+		</svg>
+	);
+}
+
+function IconCheck() {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+			<polyline points="20 6 9 17 4 12" />
 		</svg>
 	);
 }

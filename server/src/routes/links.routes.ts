@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getNetworkConfig } from "../../../shared";
+import { getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	createPaymentLink,
@@ -22,7 +22,7 @@ linksRoutes.post("/", requireAuth, async (c) => {
 
 	const normalizedAmount = normalizeLinkAmount(amount);
 	if (normalizedAmount.error) {
-		return c.json({ error: normalizedAmount.error }, 400);
+		return c.json({ error: normalizedAmount.error, error_code: ERR.INVALID_AMOUNT }, 400);
 	}
 
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
@@ -31,14 +31,14 @@ linksRoutes.post("/", requireAuth, async (c) => {
 		: ["USDC", "ETH"];
 	const normalizedCurrency = normalizeCurrency(currency, allowedCurrencies, "USDC");
 	if (!normalizedCurrency) {
-		return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})` }, 400);
+		return c.json({ error: `Moneda no soportada (usa ${allowedCurrencies.join(", ")})`, error_code: ERR.UNSUPPORTED_CURRENCY }, 400);
 	}
 
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
 
 	if (!walletAddress) {
-		return c.json({ error: "Necesitas crear una wallet antes de crear un link de cobro" }, 400);
+		return c.json({ error: "Necesitas crear una wallet antes de crear un link de cobro", error_code: ERR.NO_WALLET }, 400);
 	}
 
 	const link: PaymentLinkRecord = {
@@ -69,7 +69,7 @@ linksRoutes.get("/", requireAuth, async (c) => {
 linksRoutes.get("/:id", async (c) => {
 	const id = c.req.param("id");
 	const link = await getPaymentLinkById(c.env, id);
-	if (!link) return c.json({ error: "Link not found" }, 404);
+	if (!link) return c.json({ error: "Link not found", error_code: ERR.LINK_NOT_FOUND }, 404);
 	return c.json(link);
 });
 

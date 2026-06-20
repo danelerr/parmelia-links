@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { formatEther, formatUnits } from "viem";
-import { erc20Abi, getNetworkConfig } from "../../../shared";
+import { erc20Abi, getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import { getPublicClient } from "../services/clients";
-import { getUserByUid, getUserByUsername, saveUser, setPushToken } from "../services/storage";
+import { getUserByUid, getUserByUsername, saveUser, addPushToken } from "../services/storage";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -31,7 +31,7 @@ userRoutes.put("/username", requireAuth, async (c) => {
 	const { username } = await c.req.json();
 
 	if (!username || !/^[a-z0-9_-]{3,30}$/.test(username)) {
-		return c.json({ error: "Username invalido. Solo letras minusculas, numeros, guiones. 3-30 caracteres." }, 400);
+		return c.json({ error: "Username invalido. Solo letras minusculas, numeros, guiones. 3-30 caracteres.", error_code: ERR.INVALID_USERNAME }, 400);
 	}
 
 	// Must cover every client route (the public pay page lives at /:username)
@@ -49,12 +49,12 @@ userRoutes.put("/username", requireAuth, async (c) => {
 		"parmelia", "www", "root",
 	];
 	if (reserved.includes(username)) {
-		return c.json({ error: "Username reservado" }, 400);
+		return c.json({ error: "Username reservado", error_code: ERR.USERNAME_RESERVED }, 400);
 	}
 
 	const existingUser = await getUserByUsername(c.env, username);
 	if (existingUser && existingUser.uid !== user.sub) {
-		return c.json({ error: "Username ya esta en uso" }, 409);
+		return c.json({ error: "Username ya esta en uso", error_code: ERR.USERNAME_TAKEN }, 409);
 	}
 
 	await saveUser(c.env, {
@@ -70,7 +70,7 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
-	if (!walletAddress) return c.json({ error: "No wallet" }, 404);
+	if (!walletAddress) return c.json({ error: "No wallet", error_code: ERR.NO_WALLET }, 404);
 
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
 	const { usdc, usdcDecimals } = network.contracts;
@@ -118,14 +118,14 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	});
 });
 
-// Register (or clear) this device's FCM web-push token.
+// Register this device's FCM web-push token (one row per device; multi-device).
 userRoutes.put("/push-token", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const { token } = await c.req.json().catch(() => ({ token: null }));
-	if (token !== null && (typeof token !== "string" || token.length < 20 || token.length > 4096)) {
-		return c.json({ error: "Token inválido" }, 400);
+	if (typeof token !== "string" || token.length < 20 || token.length > 4096) {
+		return c.json({ error: "Token inválido", error_code: ERR.INVALID_TOKEN }, 400);
 	}
-	await setPushToken(c.env, user.sub, token);
+	await addPushToken(c.env, user.sub, token);
 	return c.json({ success: true });
 });
 
@@ -133,7 +133,7 @@ userRoutes.put("/push-token", requireAuth, async (c) => {
 userRoutes.get("/:username", async (c) => {
 	const username = c.req.param("username");
 	const profile = await getUserByUsername(c.env, username);
-	if (!profile) return c.json({ error: "User not found" }, 404);
+	if (!profile) return c.json({ error: "User not found", error_code: ERR.USER_NOT_FOUND }, 404);
 
 	return c.json({
 		username: profile.username,

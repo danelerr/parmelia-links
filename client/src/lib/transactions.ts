@@ -7,7 +7,10 @@ export interface Transaction {
 	txHash: string;
 	amount: string;
 	currency: string;
+	/** Destination wallet (set on sent movements). */
 	to?: string;
+	/** Origin wallet — who the money came from (set on received movements). */
+	from?: string;
 	reference?: string;
 	createdAt: string;
 	/** Ledger kind: payment, link (cobro), swap, fund (faucet), external (depósito). */
@@ -23,26 +26,45 @@ export function txLabel(t: Transaction): string {
 	return i18n.t("tx.paymentSent");
 }
 
+/** Raw ledger row as returned by GET /user/transactions (loosely typed). */
+interface RawLedgerRow {
+	txHash?: string;
+	amount?: string;
+	currency?: string;
+	to?: string;
+	paidBy?: string;
+	reference?: string;
+	createdAt?: string;
+	kind?: string;
+}
+
+interface RawTxPayload {
+	sent?: RawLedgerRow[];
+	received?: RawLedgerRow[];
+}
+
 /** Merge + sort the /user/transactions payload into a single timeline. */
-export function parseTransactions(txData: any): Transaction[] {
+export function parseTransactions(txData: RawTxPayload | null | undefined): Transaction[] {
 	if (!txData) return [];
-	const sent = (txData.sent || []).map((t: any) => ({
+	const sent: Transaction[] = (txData.sent || []).map((t) => ({
 		type: "sent" as const,
-		txHash: t.txHash,
-		amount: t.amount,
-		currency: t.currency,
+		txHash: t.txHash ?? "",
+		amount: t.amount ?? "0",
+		currency: t.currency ?? "",
 		to: t.to,
 		reference: t.reference,
-		createdAt: t.createdAt,
+		createdAt: t.createdAt ?? "",
 		kind: t.kind ?? "payment",
 	}));
-	const received = (txData.received || []).map((t: any) => ({
+	const received: Transaction[] = (txData.received || []).map((t) => ({
 		type: "received" as const,
-		txHash: t.txHash,
-		amount: t.amount,
-		currency: t.currency,
+		txHash: t.txHash ?? "",
+		amount: t.amount ?? "0",
+		currency: t.currency ?? "",
+		// Server sends the origin wallet as `paidBy` on incoming movements.
+		from: t.paidBy,
 		reference: t.reference,
-		createdAt: t.createdAt,
+		createdAt: t.createdAt ?? "",
 		kind: t.kind ?? "payment",
 	}));
 	return [...sent, ...received].sort(

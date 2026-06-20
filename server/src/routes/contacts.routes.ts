@@ -3,6 +3,7 @@
 // so paying a contact is always paying a verified smart account.
 
 import { Hono } from "hono";
+import { ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	addContact,
@@ -39,7 +40,7 @@ contactsRoutes.post("/", requireAuth, async (c) => {
 			? body.username.trim().toLowerCase().replace(/^@/, "")
 			: "";
 	if (!username || !/^[a-z0-9_-]{3,30}$/.test(username)) {
-		return c.json({ error: "Escribe un usuario válido." }, 400);
+		return c.json({ error: "Escribe un usuario válido.", error_code: ERR.INVALID_USERNAME }, 400);
 	}
 
 	const alias =
@@ -49,10 +50,10 @@ contactsRoutes.post("/", requireAuth, async (c) => {
 
 	const target = await getUserByUsername(c.env, username);
 	if (!target || !target.walletAddress) {
-		return c.json({ error: "Ese usuario no existe en Parmelia." }, 404);
+		return c.json({ error: "Ese usuario no existe en Parmelia.", error_code: ERR.USER_NOT_FOUND }, 404);
 	}
 	if (target.uid === user.sub) {
-		return c.json({ error: "No puedes agregarte a ti mismo." }, 400);
+		return c.json({ error: "No puedes agregarte a ti mismo.", error_code: ERR.CANNOT_ADD_SELF }, 400);
 	}
 
 	const contact = {
@@ -80,7 +81,7 @@ contactsRoutes.post("/", requireAuth, async (c) => {
 contactsRoutes.delete("/:id", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const id = c.req.param("id");
-	if (!id) return c.json({ error: "Falta el contacto." }, 400);
+	if (!id) return c.json({ error: "Falta el contacto.", error_code: ERR.MISSING_CONTACT }, 400);
 	await deleteContact(c.env, user.sub, id);
 	return c.json({ success: true });
 });

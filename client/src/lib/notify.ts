@@ -39,7 +39,11 @@ export function humanizeError(
 	fallback = i18n.t("notify.tryAgain"),
 ): { message: string; requestId?: string } {
 	if (err instanceof ApiError) {
-		// Server messages are already written for humans.
+		// Prefer the stable error_code (localized to the active language); fall back
+		// to the server's human message when there's no code or no matching key.
+		if (err.code) {
+			return { message: i18n.t(`err.${err.code}`, { defaultValue: err.message }), requestId: err.requestId };
+		}
 		return { message: err.message, requestId: err.requestId };
 	}
 	if (err instanceof Error && err.message) {

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
 	signInWithGoogle,
-	signInWithApple,
 	sendEmailLink,
 	isEmailSignInLink,
 	completeEmailLink,
@@ -9,8 +8,6 @@ import {
 import { isUserCancelled, notifyError } from "../lib/notify";
 import Logo from "../components/Logo";
 import { useTranslation } from "react-i18next";
-
-const APPLE_ENABLED = import.meta.env.VITE_ENABLE_APPLE_LOGIN === "true";
 
 type Mode = "buttons" | "email" | "sent" | "completing" | "need-email";
 
@@ -21,14 +18,6 @@ function GoogleIcon() {
       <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.35 0-4.34-1.58-5.05-3.71H.96v2.33A9 9 0 0 0 9 18Z" />
       <path fill="#FBBC05" d="M3.95 10.71a5.4 5.4 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l2.99-2.33Z" />
       <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.96l2.99 2.33C4.66 5.16 6.65 3.58 9 3.58Z" />
-    </svg>
-  );
-}
-
-function AppleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M16.36 1.43c0 1.14-.42 2.2-1.25 3.06-.86.9-1.96 1.4-3.05 1.32a3.5 3.5 0 0 1 1.27-3.05A4.46 4.46 0 0 1 16.36 1.43ZM20.7 17.2c-.5 1.15-.74 1.67-1.38 2.69-.9 1.42-2.17 3.2-3.74 3.21-1.4.02-1.76-.91-3.66-.9-1.9.01-2.29.92-3.69.9-1.57-.01-2.77-1.6-3.67-3.03C1.96 16.2 1.7 11.5 3.26 9c1.1-1.77 2.84-2.8 4.47-2.8 1.66 0 2.71.92 4.08.92 1.34 0 2.15-.92 4.08-.92 1.45 0 2.99.79 4.09 2.16-3.6 1.97-3 7.1.72 8.84Z" />
     </svg>
   );
 }
@@ -71,15 +60,6 @@ export default function Login() {
     try {
       // null => a redirect was started; onAuthChange completes it on return.
       const credential = await signInWithGoogle();
-      if (credential) await credential.user.getIdToken(true);
-    } catch (err) {
-      if (!isUserCancelled(err)) notifyError(err, t("login.signInError"));
-    }
-  }
-
-  async function handleApple() {
-    try {
-      const credential = await signInWithApple();
       if (credential) await credential.user.getIdToken(true);
     } catch (err) {
       if (!isUserCancelled(err)) notifyError(err, t("login.signInError"));
@@ -216,12 +196,6 @@ export default function Login() {
               <GoogleIcon />
               {t("login.continueGoogle")}
             </button>
-            {APPLE_ENABLED && (
-              <button onClick={handleApple} className="btn btn-ghost btn-block">
-                <AppleIcon />
-                {t("login.continueApple")}
-              </button>
-            )}
             <button onClick={() => setMode("email")} className="btn btn-ghost btn-block">
               <MailIcon />
               {t("login.continueEmail")}

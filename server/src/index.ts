@@ -2,8 +2,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { AppContext, authMiddleware, type Bindings } from "./middlewares/auth";
-import { runIndexer } from "./services/indexer";
+import { runIndexer, runRouterWatcher, runRecoveryWatcher } from "./services/indexer";
+import { deliverPendingWebhooks } from "./services/webhooks";
 import { getRequestId, logError } from "./services/logger";
+import { ERR } from "../../shared";
 
 import userRoutes from "./routes/user.routes";
 import accountRoutes from "./routes/account.routes";
@@ -13,6 +15,8 @@ import payRoutes from "./routes/pay.routes";
 import swapRoutes from "./routes/swap.routes";
 import contactsRoutes from "./routes/contacts.routes";
 import bridgeRoutes from "./routes/bridge.routes";
+import v1Routes from "./routes/v1.routes";
+import merchantRoutes from "./routes/merchant.routes";
 
 const app = new Hono<AppContext>();
 
@@ -49,6 +53,8 @@ app.route("/pay", payRoutes);
 app.route("/swap", swapRoutes);
 app.route("/contacts", contactsRoutes);
 app.route("/bridge", bridgeRoutes);
+app.route("/v1", v1Routes);
+app.route("/merchant", merchantRoutes);
 
 app.onError((error, c) => {
 	const requestId = getRequestId((name) => c.req.header(name));
@@ -57,13 +63,17 @@ app.onError((error, c) => {
 		method: c.req.method,
 		path: new URL(c.req.url).pathname,
 	});
-	return c.json({ error: "Internal server error", requestId }, 500);
+	return c.json({ error: "Internal server error", error_code: ERR.SERVER_ERROR, requestId }, 500);
 });
 
 export default {
 	fetch: app.fetch,
-	// Cron: ingest external incoming transfers into the ledger (see services/indexer).
+	// Cron: ingest external incoming transfers into the ledger (see services/indexer)
+	// and flush/retry the webhook outbox (see services/webhooks).
 	async scheduled(_controller, env, ctx) {
 		ctx.waitUntil(runIndexer(env));
+		ctx.waitUntil(runRouterWatcher(env));
+		ctx.waitUntil(runRecoveryWatcher(env));
+		ctx.waitUntil(deliverPendingWebhooks(env));
 	},
 } satisfies ExportedHandler<Bindings>;

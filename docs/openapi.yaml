@@ -1,0 +1,315 @@
+openapi: 3.1.0
+info:
+  title: Parmelia Payments API
+  version: "1.0.0"
+  description: >
+    Accept stablecoin payments (USDC on Arbitrum) with a Stripe-style flow:
+    create a Payment Intent, share a checkout link or QR, and receive a signed
+    webhook when it's paid. Create keys and webhooks in the dashboard
+    (https://dashboard.parmelia.me). See api.md for the full guide.
+servers:
+  - url: https://server.parmelia.workers.dev
+    description: Production worker
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Payment Intents
+  - name: Events
+
+paths:
+  /v1/payment_intents:
+    post:
+      tags: [Payment Intents]
+      summary: Create a payment intent
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema: { type: string }
+          description: Retrying with the same key returns the original intent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePaymentIntent" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "200":
+          description: Idempotent replay — the existing intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      tags: [Payment Intents]
+      summary: List payment intents
+      responses:
+        "200":
+          description: A list of payment intents (most recent first)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntentList" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/payment_intents/{id}:
+    get:
+      tags: [Payment Intents]
+      summary: Retrieve a payment intent
+      parameters: [{ $ref: "#/components/parameters/IntentId" }]
+      responses:
+        "200":
+          description: The payment intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/payment_intents/{id}/cancel:
+    post:
+      tags: [Payment Intents]
+      summary: Cancel a payment intent
+      description: Only valid while the intent is `awaiting_payment`.
+      parameters: [{ $ref: "#/components/parameters/IntentId" }]
+      responses:
+        "200":
+          description: The canceled intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/payment_intents/{id}/onchain:
+    get:
+      tags: [Payment Intents]
+      summary: Get an on-chain authorization (Flow B)
+      description: >
+        Returns a Parmelia-signed authorization for the payer's wallet to call
+        PaymentRouter.payInvoice. Funds go directly to the merchant.
+      parameters: [{ $ref: "#/components/parameters/IntentId" }]
+      responses:
+        "200":
+          description: Signed router authorization
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RouterAuthorization" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/payment_intents/{id}/simulate_payment:
+    post:
+      tags: [Payment Intents]
+      summary: Simulate a payment (test mode only)
+      description: >
+        Marks a TEST intent paid without an on-chain payment and fires the
+        payment.paid webhook. Requires a test-mode key.
+      parameters: [{ $ref: "#/components/parameters/IntentId" }]
+      responses:
+        "200":
+          description: The paid intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/events:
+    get:
+      tags: [Events]
+      summary: List events
+      responses:
+        "200":
+          description: A list of events (most recent first)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventList" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/events/{id}:
+    get:
+      tags: [Events]
+      summary: Retrieve an event
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Secret API key: Authorization: Bearer sk_live_… (or sk_test_…)."
+
+  parameters:
+    IntentId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: Payment intent id (pi_…).
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid, or revoked API key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Conflicts with the resource's current state
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, description: Human-readable message (do not parse). }
+        error_code: { type: string, description: Stable machine-readable code. }
+        requestId: { type: string }
+      required: [error]
+
+    CreatePaymentIntent:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: string
+          description: Decimal amount, > 0.
+          example: "25.00"
+        currency:
+          type: string
+          default: USDC
+          description: Asset symbol supported on the active chain.
+          example: USDC
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Opaque key/values echoed back in the object and webhooks (max 8 KB).
+          example: { order_id: "A-1042", customer_id: "u_88" }
+        reference:
+          type: string
+          maxLength: 200
+          description: Short free-text note.
+        expires_in:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          default: 3600
+          description: Seconds until the intent expires.
+
+    PaymentIntent:
+      type: object
+      properties:
+        id: { type: string, example: "pi_3b1c…" }
+        object: { type: string, enum: [payment_intent] }
+        status:
+          type: string
+          enum: [awaiting_payment, paid, canceled, expired]
+        amount: { type: string, example: "25.00" }
+        currency: { type: string, example: USDC }
+        reference: { type: [string, "null"] }
+        metadata: { type: object, additionalProperties: true }
+        checkout_url: { type: [string, "null"], description: Hosted checkout link (Flow A). }
+        tx_hash: { type: [string, "null"] }
+        mode: { type: string, enum: [test, live] }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    PaymentIntentList:
+      type: object
+      properties:
+        object: { type: string, enum: [list] }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentIntent" }
+
+    RouterAuthorization:
+      type: object
+      description: Signed authorization for PaymentRouter.payInvoice (Flow B).
+      properties:
+        router: { type: string, description: PaymentRouter contract address. }
+        chainId: { type: integer, example: 421614 }
+        invoiceId: { type: string, description: bytes32 invoice id. }
+        token: { type: string, description: ERC-20 token address (USDC). }
+        amount: { type: string, description: Amount in atomic units (USDC = 6 decimals). }
+        merchant: { type: string, description: Recipient (merchant) address. }
+        feeBps: { type: integer, description: Platform fee in basis points. }
+        deadline: { type: integer, description: Unix seconds the signature is valid until. }
+        signature: { type: string }
+        call:
+          type: object
+          properties:
+            function: { type: string }
+            args: { type: string }
+
+    Event:
+      type: object
+      properties:
+        id: { type: string, example: "evt_…" }
+        merchantId: { type: string }
+        type: { type: string, enum: [payment.created, payment.paid] }
+        objectId: { type: [string, "null"] }
+        payload: { type: object, additionalProperties: true }
+        mode: { type: string, enum: [test, live] }
+        createdAt: { type: string, format: date-time }
+
+    EventList:
+      type: object
+      properties:
+        object: { type: string, enum: [list] }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }

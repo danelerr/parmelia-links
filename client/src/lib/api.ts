@@ -15,16 +15,19 @@ export class ApiError extends Error {
 	/** Server correlation id - surface it so support can find the log line. */
 	requestId?: string;
 	network: boolean;
+	/** Stable, language-independent error code (see shared/errors.ts), when present. */
+	code?: string;
 
 	constructor(
 		message: string,
-		opts: { status?: number; requestId?: string; network?: boolean } = {},
+		opts: { status?: number; requestId?: string; network?: boolean; code?: string } = {},
 	) {
 		super(message);
 		this.name = "ApiError";
 		this.status = opts.status ?? 0;
 		this.requestId = opts.requestId;
 		this.network = opts.network ?? false;
+		this.code = opts.code;
 	}
 }
 
@@ -61,7 +64,7 @@ export async function apiFetch<T = Record<string, unknown>>(
 	}
 
 	const data = (await res.json().catch(() => null)) as
-		| (Record<string, unknown> & { error?: unknown; requestId?: unknown })
+		| (Record<string, unknown> & { error?: unknown; error_code?: unknown; requestId?: unknown })
 		| null;
 
 	if (!res.ok) {
@@ -78,6 +81,7 @@ export async function apiFetch<T = Record<string, unknown>>(
 		throw new ApiError(serverMessage ?? fallback, {
 			status: res.status,
 			requestId: typeof data?.requestId === "string" ? data.requestId : undefined,
+			code: typeof data?.error_code === "string" ? data.error_code : undefined,
 		});
 	}
 

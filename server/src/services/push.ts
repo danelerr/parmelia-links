@@ -10,7 +10,7 @@
 
 import { importPKCS8, SignJWT } from "jose";
 import type { Bindings } from "../middlewares/auth";
-import { getUserByUid, setPushToken } from "./storage";
+import { listPushTokens, deletePushToken } from "./storage";
 import { logError } from "./logger";
 
 type ServiceAccount = {
@@ -63,17 +63,22 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
 	return data.access_token;
 }
 
+/** Result of a single send: delivered, token is dead (prune it), or a transient
+ *  error (keep the token - a retry may succeed). */
+type SendResult = "ok" | "dead" | "error";
+
 /**
- * Send a push to a single device token. Returns false on failure; prunes the
- * stored token if FCM reports it's gone (404/UNREGISTERED). Never throws.
+ * Send a push to a single device token. Returns "dead" ONLY when FCM says the
+ * token is gone (404 / UNREGISTERED), so transient failures never prune a valid
+ * token. Never throws.
  */
 async function sendToToken(
 	env: Bindings,
 	token: string,
 	payload: { title: string; body: string; link?: string },
-): Promise<boolean> {
+): Promise<SendResult> {
 	const sa = parseServiceAccount(env);
-	if (!sa) return false;
+	if (!sa) return "error";
 	try {
 		const accessToken = await getAccessToken(sa);
 		const res = await fetch(
@@ -97,21 +102,21 @@ async function sendToToken(
 				}),
 			},
 		);
-		if (res.ok) return true;
-		// 404 / UNREGISTERED → the token is dead; we let the caller prune it.
-		if (res.status === 404) return false;
+		if (res.ok) return "ok";
+		// 404 / UNREGISTERED → the token is dead; the caller prunes it.
+		if (res.status === 404) return "dead";
 		logError("push_send_failed", new Error(`FCM ${res.status}`), {});
-		return false;
+		return "error";
 	} catch (error) {
 		logError("push_send_error", error, {});
-		return false;
+		return "error";
 	}
 }
 
 /**
- * Notify a Parmelia user by uid. Best-effort: looks up their stored token,
- * sends, and clears the token if it's no longer valid. Safe to await-or-ignore
- * inside a payment flow - it swallows all errors.
+ * Notify a Parmelia user by uid across ALL their registered devices. Best-effort:
+ * sends to every token in parallel and prunes any token FCM reports as dead. Safe
+ * to await-or-ignore inside a payment flow - it swallows all errors.
  */
 export async function notifyUser(
 	env: Bindings,
@@ -120,10 +125,14 @@ export async function notifyUser(
 ): Promise<void> {
 	try {
 		if (!env.FCM_SERVICE_ACCOUNT) return;
-		const user = await getUserByUid(env, uid);
-		if (!user?.pushToken) return;
-		const ok = await sendToToken(env, user.pushToken, payload);
-		if (!ok) await setPushToken(env, uid, null).catch(() => {});
+		const tokens = await listPushTokens(env, uid);
+		if (tokens.length === 0) return;
+		await Promise.all(
+			tokens.map(async (token) => {
+				const result = await sendToToken(env, token, payload);
+				if (result === "dead") await deletePushToken(env, token).catch(() => {});
+			}),
+		);
 	} catch (error) {
 		logError("notify_user_error", error, {});
 	}

@@ -6,6 +6,7 @@ import {AccountWebAuthnV2} from "../src/AccountWebAuthnV2.sol";
 import {AccountFactoryV2} from "../src/AccountFactoryV2.sol";
 import {ERC7913WebAuthnVerifier} from "../src/ERC7913WebAuthnVerifier.sol";
 import {ParmeliaPaymaster} from "../src/ParmeliaPaymaster.sol";
+import {ParmeliaPaymentRouter} from "../src/ParmeliaPaymentRouter.sol";
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
 /// @dev Foundry's default script sender, used when `--sender` is NOT passed.
@@ -100,6 +101,32 @@ contract DeployPaymasterV2 is Script {
 
         paymaster.addStake{value: 0.001 ether}(86400);
         paymaster.deposit{value: 0.01 ether}();
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @notice Deterministic PaymentRouter deployment (Flow B: open payments to any wallet).
+/// @dev On testnet the deployer is owner = treasury = invoiceSigner. For mainnet,
+///      separate them with setTreasury/setInvoiceSigner (see DEPLOY.md §11), and
+///      enable tokens with setTokenSupported(USDC, true, minAmount).
+contract DeployPaymentRouter is Script {
+    bytes32 internal constant SALT = keccak256("parmelia.v2.paymentRouter");
+
+    function run() external {
+        vm.startBroadcast();
+
+        address deployer = msg.sender;
+        require(
+            deployer != FOUNDRY_DEFAULT_SENDER,
+            "Run with --sender <your address> (otherwise owner != broadcaster)"
+        );
+
+        ParmeliaPaymentRouter router =
+            new ParmeliaPaymentRouter{salt: SALT}(deployer, deployer, deployer);
+        console.log("ParmeliaPaymentRouter:", address(router));
+        console.log("  owner/treasury/signer:", deployer);
+        console.log("Next: setTokenSupported(USDC, true, minAmount) and (mainnet) split treasury/signer.");
 
         vm.stopBroadcast();
     }
