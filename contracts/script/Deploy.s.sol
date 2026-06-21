@@ -7,6 +7,8 @@ import {AccountFactoryV2} from "../src/AccountFactoryV2.sol";
 import {ERC7913WebAuthnVerifier} from "../src/ERC7913WebAuthnVerifier.sol";
 import {ParmeliaPaymaster} from "../src/ParmeliaPaymaster.sol";
 import {ParmeliaPaymentRouter} from "../src/ParmeliaPaymentRouter.sol";
+import {ParmeliaCrosschainRouter, ITokenMessengerV2} from "../src/ParmeliaCrosschainRouter.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
 /// @dev Foundry's default script sender, used when `--sender` is NOT passed.
@@ -127,6 +129,38 @@ contract DeployPaymentRouter is Script {
         console.log("ParmeliaPaymentRouter:", address(router));
         console.log("  owner/treasury/signer:", deployer);
         console.log("Next: setTokenSupported(USDC, true, minAmount) and (mainnet) split treasury/signer.");
+
+        vm.stopBroadcast();
+    }
+}
+
+/// @notice Deterministic CrosschainRouter deployment (Flow B outbound: USDC via CCTP v2).
+/// @dev Reads USDC and the CCTP v2 TokenMessenger from env. On testnet the deployer
+///      is owner = treasury; for mainnet split with setTreasury (see DEPLOY.md §11).
+///      env: USDC_ADDRESS, CCTP_TOKEN_MESSENGER.
+contract DeployCrosschainRouter is Script {
+    bytes32 internal constant SALT = keccak256("parmelia.v2.crosschainRouter");
+
+    function run() external {
+        address usdc = vm.envAddress("USDC_ADDRESS");
+        address messenger = vm.envAddress("CCTP_TOKEN_MESSENGER");
+
+        vm.startBroadcast();
+
+        address deployer = msg.sender;
+        require(
+            deployer != FOUNDRY_DEFAULT_SENDER,
+            "Run with --sender <your address> (otherwise owner != broadcaster)"
+        );
+
+        ParmeliaCrosschainRouter router = new ParmeliaCrosschainRouter{salt: SALT}(
+            deployer, IERC20(usdc), ITokenMessengerV2(messenger), deployer
+        );
+        console.log("ParmeliaCrosschainRouter:", address(router));
+        console.log("  owner/treasury:", deployer);
+        console.log("  USDC:", usdc);
+        console.log("  TokenMessengerV2:", messenger);
+        console.log("Next (mainnet): setTreasury to split owner/treasury.");
 
         vm.stopBroadcast();
     }
