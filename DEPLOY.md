@@ -258,3 +258,69 @@ Pasos:
 - **Least-privilege (#7):** idealmente deployer / faucet / guardian / relayer en EOAs distintas.
 - **Depósito del paymaster:** el script deja 0.01 ETH; recargar según volumen real.
 - **Mismo `foundry.toml`** (solc + optimizer) entre testnet y mainnet para que CREATE2 dé las mismas direcciones.
+
+## 12. Routers opcionales (Payments API Flow B + Cross-chain)
+
+> Scripts en `contracts/script/Deploy.s.sol`: **`DeployPaymentRouter`** y
+> **`DeployCrosschainRouter`**. Son independientes del deploy base (§2); el resto
+> de la app funciona sin ellos (los endpoints quedan deshabilitados hasta que la
+> dirección esté en `shared/networks.ts`). Ambos usan CREATE2 con salt fijo y la
+> guarda de `--sender`.
+
+### 12.1 PaymentRouter (Payments API, Flow B - paga cualquier wallet externa)
+
+```bash
+cd contracts
+forge script script/Deploy.s.sol:DeployPaymentRouter \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --account wallet-0x75 \
+  --sender 0x75464f762bc50d0A0B127ab5a085504BF102Bb88 \
+  --broadcast
+```
+
+En testnet el deployer queda como `owner = treasury = invoiceSigner`. Después:
+1. `cast send <PAYMENT_ROUTER> "setTokenSupported(address,bool,uint256)" <USDC> true <MIN> --account wallet-0x75` (p. ej. `MIN = 1000000` = 1 USDC).
+2. Rellenar `contracts.paymentRouter` en `shared/networks.ts` (arbitrum-sepolia).
+3. Secrets del worker: `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` (= la EOA del `invoiceSigner`) y `PARMELIA_PAYMENT_FEE_BPS`.
+
+### 12.2 CrosschainRouter (cross-chain Flow B outbound - CCTP v2)
+
+Necesita dos env vars: la **USDC** local y el **TokenMessengerV2** de CCTP v2.
+
+```bash
+cd contracts
+# Arbitrum Sepolia: USDC + CCTP v2 TokenMessenger (verificados, deterministas)
+export USDC_ADDRESS=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d
+export CCTP_TOKEN_MESSENGER=0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
+forge script script/Deploy.s.sol:DeployCrosschainRouter \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --account wallet-0x75 \
+  --sender 0x75464f762bc50d0A0B127ab5a085504BF102Bb88 \
+  --broadcast
+```
+
+> En PowerShell, en vez de `export`: `$env:USDC_ADDRESS="0x75fa..."; $env:CCTP_TOKEN_MESSENGER="0x8FE6..."`.
+
+En testnet el deployer queda como `owner = treasury`. Después:
+1. Rellenar `contracts.crosschainRouter` en `shared/networks.ts` (arbitrum-sepolia).
+2. Secret del worker: `PARMELIA_CROSSCHAIN_FEE_BPS` (ya existe en `auth.ts`).
+3. No hay whitelist de tokens: la USDC es inmutable en el constructor.
+
+> CCTP v2 (verificado): TokenMessengerV2 `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`,
+> MessageTransmitterV2 `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` (mismas en
+> Arbitrum y Base Sepolia). Dominios: Arbitrum 3, Base 6. Detalle en `CROSSCHAIN_DESIGN.md` §11.
+
+### 12.3 Verificación (opcional, Sourcify)
+
+```bash
+# PaymentRouter - constructor(address owner, address treasury, address signer)
+forge verify-contract <PAYMENT_ROUTER> src/ParmeliaPaymentRouter.sol:ParmeliaPaymentRouter \
+  --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
+  --constructor-args $(cast abi-encode "constructor(address,address,address)" <DEPLOYER> <DEPLOYER> <DEPLOYER>)
+
+# CrosschainRouter - constructor(address owner, address usdc, address messenger, address treasury)
+forge verify-contract <CROSSCHAIN_ROUTER> src/ParmeliaCrosschainRouter.sol:ParmeliaCrosschainRouter \
+  --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
+  --constructor-args $(cast abi-encode "constructor(address,address,address,address)" \
+    <DEPLOYER> 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA <DEPLOYER>)
+```

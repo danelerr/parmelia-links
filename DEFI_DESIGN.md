@@ -22,6 +22,11 @@
 
 ## 1. Módulo 1 - Depósitos cross-chain hacia Arbitrum (diseño)
 
+> **Diseño autoritativo: ver `CROSSCHAIN_DESIGN.md`.** Esta sección es el boceto
+> original; la decisión afinada (CCTP v2 directo USDC-only con relayer propio,
+> Flow A/B, fees verificadas, modelo de seguridad) vive en ese doc. Lo de abajo se
+> conserva como contexto histórico.
+
 **Objetivo:** fondos en Ethereum/Base/Optimism/Arbitrum → smart account del
 usuario en Arbitrum, terminando en USDC, ETH o WBTC.
 
