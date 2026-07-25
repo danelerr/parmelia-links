@@ -6,11 +6,20 @@ import { track } from "../lib/analytics";
 import { signInWithGoogle, type User } from "../lib/firebase";
 import Logo from "../components/Logo";
 import { signWithPasskey } from "../lib/webauthn";
+import { submitUserOp } from "../lib/submit";
 import { activeNetwork } from "../lib/activeNetwork";
 import { hexToBytes } from "../lib/hex";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
 import { formatAmount } from "../lib/format";
+import { parseTransactions, formatShortDate, type Transaction } from "../lib/transactions";
+import OptionCard from "../components/OptionCard";
+import AmountInput from "../components/AmountInput";
+import Screen from "../components/Screen";
+import BackHeader from "../components/BackHeader";
+import StageOverlay from "../components/StageOverlay";
+import ConfirmSheet from "../components/ConfirmSheet";
+import TxResult from "../components/TxResult";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const APP_HOST = new URL(APP_URL).hostname;
@@ -30,6 +39,13 @@ interface LinkData {
 interface UserProfile {
 	username: string;
 	walletAddress: string;
+	displayName?: string | null;
+	socialUrl?: string | null;
+}
+
+/** "https://www.instagram.com/juan" -> "instagram.com/juan" for display. */
+function socialLabel(url: string): string {
+	return url.replace(/^https:\/\/(www\.)?/, "");
 }
 
 // A pending manual payment awaiting explicit confirmation (free-typed,
@@ -41,22 +57,6 @@ type ManualConfirm = {
 	isAddress: boolean;
 	username?: string;
 };
-
-function BackButton({ onClick }: { onClick: () => void }) {
-	const { t } = useTranslation();
-	return (
-		<button
-			onClick={onClick}
-			aria-label={t("common.back")}
-			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-		>
-			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M19 12H5" />
-				<path d="M12 19l-7-7 7-7" />
-			</svg>
-		</button>
-	);
-}
 
 /** Anti-phishing trust seal - always visible when paying. */
 function TrustBadge() {
@@ -71,91 +71,33 @@ function TrustBadge() {
 	);
 }
 
-function Recipient({ label }: { label: string }) {
+function Recipient({ label, name }: { label: string; name?: string | null }) {
 	const { t } = useTranslation();
 	return (
 		<div className="flex flex-col items-center gap-2 mb-6">
 			<div className="w-12 h-12 rounded-full bg-pink/15 flex items-center justify-center font-display text-[18px] text-glow-pink uppercase">
-				{label.replace(/^@/, "")[0] || "?"}
+				{(name || label).replace(/^@/, "")[0] || "?"}
 			</div>
-			<p className="text-[14px] text-text-muted">
-				{t("pay.payingTo")} <span className="text-text font-medium">{label}</span>
-			</p>
+			<h1 className="text-[14px] text-text-muted">
+				{t("pay.payingTo")} <span className="text-text font-medium">{name || label}</span>
+				{name && <span className="text-text-faint"> · {label}</span>}
+			</h1>
 		</div>
 	);
 }
 
-function PayingOverlay({ stage }: { stage: PayStage }) {
+/** Detail block inside the shared ConfirmSheet: the resolved destination of a
+ *  manual (free-typed) payment, surfaced in full before the biometric prompt. */
+function ConfirmDestination({ tx }: { tx: ManualConfirm }) {
 	const { t } = useTranslation();
-	const copy: Record<Exclude<PayStage, "idle">, string> = {
-		preparing: t("pay.stagePreparing"),
-		signing: t("pay.stageSigning"),
-		securing: t("pay.stageSecuring"),
-	};
-	if (stage === "idle") return null;
 	return (
-		<div className="fixed inset-0 z-50 bg-bg/92 backdrop-blur-sm flex flex-col items-center justify-center gap-6 animate-fade-in">
-			<Logo className="w-16 animate-float-glow glow-soft" />
-			<div className="flex flex-col items-center gap-3">
-				{stage !== "signing" && (
-					<div className="w-6 h-6 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
-				)}
-				<p className="text-[16px] text-text font-display">{copy[stage]}</p>
-			</div>
-		</div>
-	);
-}
-
-/** Confirmation sheet shown before signing a manual (free-typed) payment.
- *  Surfaces the full destination so the user can verify an irreversible send. */
-function ManualConfirmSheet({
-	tx,
-	onConfirm,
-	onCancel,
-}: {
-	tx: ManualConfirm | null;
-	onConfirm: () => void;
-	onCancel: () => void;
-}) {
-	const { t } = useTranslation();
-	if (!tx) return null;
-	return (
-		<div
-			className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center px-5 animate-fade-in"
-			style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
-			onClick={onCancel}
-		>
-			<div
-				className="w-full max-w-sm bg-surface border border-border rounded-[24px] p-6 shadow-e3 animate-fade-up"
-				onClick={(e) => e.stopPropagation()}
-			>
-				<div className="flex items-center justify-center gap-2 mb-5">
-					<Logo className="w-6" />
-					<span className="text-[13px] text-text-muted">{t("pay.confirmTitle")}</span>
-				</div>
-				<p className="text-[13px] text-text-muted text-center mb-1">{t("pay.youWillSend")}</p>
-				<p className="font-display text-[40px] leading-tight tabular text-center mb-5 max-w-full break-words">
-					{formatAmount(tx.amount, tx.currency)}
-					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
-				</p>
-				<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
-					<span className="text-[12px] text-text-muted block mb-1">{t("pay.to")}</span>
-					{tx.isAddress ? (
-						<span className="text-[13px] text-text font-mono break-all">{tx.wallet}</span>
-					) : (
-						<span className="text-[15px] text-text">@{tx.username}</span>
-					)}
-				</div>
-				<p className="text-[12px] text-text-faint text-center mb-5 leading-relaxed">
-					{t("pay.confirmWarning")}
-				</p>
-				<button onClick={onConfirm} className="btn btn-gradient btn-block">
-					{t("pay.confirmAndPay")}
-				</button>
-				<button onClick={onCancel} className="btn-text w-full mt-1">
-					{t("pay.cancel")}
-				</button>
-			</div>
+		<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
+			<span className="text-[12px] text-text-muted block mb-1">{t("pay.to")}</span>
+			{tx.isAddress ? (
+				<span className="text-[13px] text-text font-mono break-all">{tx.wallet}</span>
+			) : (
+				<span className="text-[15px] text-text">@{tx.username}</span>
+			)}
 		</div>
 	);
 }
@@ -180,6 +122,19 @@ export default function PayPage({ user }: { user: User | null }) {
 	const [destType, setDestType] = useState<"address" | "username">("username");
 	const [resolvingUsername, setResolvingUsername] = useState(false);
 	const [confirmTx, setConfirmTx] = useState<ManualConfirm | null>(null);
+	// Saved contacts, surfaced as one-tap destinations in manual mode.
+	const [contacts, setContacts] = useState<{ id: string; username: string; alias: string | null }[]>([]);
+	// Own balance, visible at the moment of paying (top ask from field testing).
+	const [balances, setBalances] = useState<Record<string, string>>({});
+	// Payment history with this recipient (derived client-side from the ledger's
+	// to/from wallets). Signed-in users on the username profile page only.
+	const [payHistory, setPayHistory] = useState<{ count: number; last: Transaction | null } | null>(null);
+
+	const stageCopy: Record<Exclude<PayStage, "idle">, string> = {
+		preparing: t("pay.stagePreparing"),
+		signing: t("pay.stageSigning"),
+		securing: t("pay.stageSecuring"),
+	};
 
 	const linkId = searchParams.get("id");
 	const amountParam = searchParams.get("amount");
@@ -188,9 +143,22 @@ export default function PayPage({ user }: { user: User | null }) {
 	const walletParam = searchParams.get("wallet");
 
 	useEffect(() => {
-		const slowTimer = setTimeout(() => setSlowConnection(true), 5000);
+		// Slow-connection hint scoped to the INITIAL fetch only: armed when a
+		// request actually starts and disarmed the moment it settles, so it can't
+		// fire while the user idles on the form. The submit flow arms its own
+		// timer inside executePay.
+		let slowTimer: ReturnType<typeof setTimeout> | null = null;
+		function armSlowHint() {
+			slowTimer = setTimeout(() => setSlowConnection(true), 5000);
+		}
+		function disarmSlowHint() {
+			if (slowTimer) clearTimeout(slowTimer);
+			slowTimer = null;
+			setSlowConnection(false);
+		}
 
 		async function fetchLink(id: string) {
+			armSlowHint();
 			try {
 				const res = await fetch(`${SERVER_URL}/links/${id}`);
 				if (!res.ok) throw new Error("Link no encontrado");
@@ -198,11 +166,13 @@ export default function PayPage({ user }: { user: User | null }) {
 			} catch {
 				setError(t("pay.linkNotFound"));
 			} finally {
+				disarmSlowHint();
 				setLoading(false);
 			}
 		}
 
 		async function fetchByUsername(uname: string) {
+			armSlowHint();
 			try {
 				const res = await fetch(`${SERVER_URL}/user/${uname}`);
 				if (!res.ok) throw new Error("Usuario no encontrado");
@@ -220,6 +190,7 @@ export default function PayPage({ user }: { user: User | null }) {
 			} catch {
 				setError(t("pay.userNotFound"));
 			} finally {
+				disarmSlowHint();
 				setLoading(false);
 			}
 		}
@@ -243,10 +214,66 @@ export default function PayPage({ user }: { user: User | null }) {
 			setLoading(false);
 		}
 
-		return () => clearTimeout(slowTimer);
+		return () => {
+			if (slowTimer) clearTimeout(slowTimer);
+		};
 		// Depend on the parsed primitives only - searchParams is a fresh object
 		// each render and would re-run this fetch effect unnecessarily.
-	}, [linkId, username, amountParam, currencyParam, refParam, walletParam]);
+	}, [linkId, username, amountParam, currencyParam, refParam, walletParam, t]);
+
+	// Balance for the "tu saldo" line (non-blocking).
+	useEffect(() => {
+		if (!user) return;
+		(async () => {
+			try {
+				const data = await apiFetch<{ tokens?: Record<string, string>; usdc?: string; eth?: string }>(
+					"/user/balance",
+					{ user },
+				);
+				setBalances(data.tokens || { USDC: data.usdc ?? "", ETH: data.eth ?? "" });
+			} catch {
+				/* non-blocking */
+			}
+		})();
+	}, [user]);
+
+	// History with this recipient - "3 pagos, último el martes" turns the empty
+	// profile page into a relationship (non-blocking enhancement).
+	useEffect(() => {
+		const targetWallet = linkData?.wallet;
+		if (!user || !username || !targetWallet) return;
+		(async () => {
+			try {
+				const data = await apiFetch<Parameters<typeof parseTransactions>[0]>(
+					"/user/transactions",
+					{ user },
+				);
+				const target = targetWallet.toLowerCase();
+				const sentTo = parseTransactions(data).filter(
+					(tx) => tx.type === "sent" && tx.to?.toLowerCase() === target,
+				);
+				setPayHistory({ count: sentTo.length, last: sentTo[0] ?? null });
+			} catch {
+				/* non-blocking */
+			}
+		})();
+	}, [user, username, linkData?.wallet]);
+
+	// Contacts for the one-tap row (manual mode only; non-blocking).
+	useEffect(() => {
+		if (!user || !manualMode) return;
+		(async () => {
+			try {
+				const data = await apiFetch<{ contacts?: { id: string; username: string; alias: string | null }[] }>(
+					"/contacts",
+					{ user },
+				);
+				setContacts((data.contacts ?? []).slice(0, 8));
+			} catch {
+				/* non-blocking */
+			}
+		})();
+	}, [user, manualMode]);
 
 	/** Two-step pay: prepare → biometric sign → submit, with human micro-states. */
 	async function executePay(params: { linkId: string; wallet: string; amount: string; currency: string }) {
@@ -266,22 +293,18 @@ export default function PayPage({ user }: { user: User | null }) {
 			const assertion = await signWithPasskey(challengeBytes, credentialId);
 
 			setPayStage("securing");
-			const { txHash } = await apiFetch<{ txHash: string }>("/pay/submit", {
-				user,
-				body: {
-					userOpHash,
-					authenticatorData: assertion.authenticatorData,
-					clientDataJSON: assertion.clientDataJSON,
-					r: assertion.r,
-					s: assertion.s,
-					credentialId: assertion.credentialId,
-					qx: assertion.qx,
-					qy: assertion.qy,
-				},
-			});
+			const submit = await submitUserOp(user, userOpHash, assertion);
 			const to = params.linkId === "username" ? linkData?.username || params.wallet : params.wallet;
 			track("payment_sent", { currency: params.currency, via: params.linkId });
-			navigate(`/pay/status?tx=${txHash}&amount=${params.amount}&currency=${params.currency}&to=${to}`);
+			// Not confirmed yet (broadcast timed out / duplicate submit): the status
+			// page keeps polling and flips to the receipt when the payment settles.
+			const q = new URLSearchParams({ amount: params.amount, currency: params.currency, to });
+			if (submit.txHash) q.set("tx", submit.txHash);
+			if (!submit.confirmed) {
+				q.set("pending", "1");
+				q.set("uoh", userOpHash);
+			}
+			navigate(`/pay/status?${q.toString()}`);
 		} catch (err) {
 			if (isUserCancelled(err)) {
 				// The user dismissed the passkey prompt - calm notice, no red.
@@ -294,12 +317,18 @@ export default function PayPage({ user }: { user: User | null }) {
 				const msg = code
 					? t(`err.${code}`, { defaultValue: err instanceof Error ? err.message : t("pay.processError") })
 					: parsePaymentError(err instanceof Error ? err.message : t("pay.processError"));
+				// "No key on this device" won't be fixed by retrying - point at the
+				// recovery door instead (signed-in users only; /recover needs auth).
+				const noKeyOnDevice = msg === t("pay.errNoPasskeys", { host: APP_HOST });
 				notifyError(
 					new ApiError(msg, {
 						status: 400,
 						requestId: err instanceof ApiError ? err.requestId : undefined,
 					}),
 					t("pay.payError"),
+					noKeyOnDevice && user
+						? { title: t("recover.bannerCta"), onClick: () => navigate("/recover") }
+						: { title: t("common.retry"), onClick: () => void executePay(params) },
 				);
 				setError(msg);
 			}
@@ -413,7 +442,6 @@ export default function PayPage({ user }: { user: User | null }) {
 		}
 	}
 
-	const screen = "flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto";
 	const bigInput =
 		"w-full max-w-[260px] bg-transparent text-center font-display text-[56px] leading-none text-text placeholder:text-text-faint tabular";
 
@@ -447,40 +475,79 @@ export default function PayPage({ user }: { user: User | null }) {
 		const manualAmountInvalid = !payAmount || !Number.isFinite(manualAmountNum) || manualAmountNum <= 0;
 		const showAmountHint = !!manualWallet.trim() && payAmount.trim() !== "" && manualAmountInvalid;
 		return (
-			<div className={screen}>
-				<PayingOverlay stage={payStage} />
-				<ManualConfirmSheet
-					tx={confirmTx}
-					onConfirm={confirmAndPay}
-					onCancel={() => setConfirmTx(null)}
-				/>
-				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate("/")} />
-					<h1 className="text-[22px]">{t("pay.payOrSend")}</h1>
-				</header>
+			<Screen animate={false}>
+				<StageOverlay label={payStage === "idle" ? null : stageCopy[payStage]} spinner={payStage !== "signing"} />
+				{confirmTx && (
+					<ConfirmSheet
+						title={t("pay.confirmTitle")}
+						amountLabel={t("pay.youWillSend")}
+						amount={formatAmount(confirmTx.amount, confirmTx.currency)}
+						unit={confirmTx.currency}
+						warning={t("pay.confirmWarning")}
+						confirmLabel={t("pay.confirmAndPay")}
+						onConfirm={confirmAndPay}
+						onCancel={() => setConfirmTx(null)}
+					>
+						<ConfirmDestination tx={confirmTx} />
+					</ConfirmSheet>
+				)}
+				<BackHeader onClick={() => navigate("/")} title={t("pay.payOrSend")} className="mb-6" />
 
 				<TrustBadge />
 
 				<div className="flex flex-col items-center mb-6">
-					<input
-						type="number"
+					<AmountInput
+						name="amount"
+						aria-label={t("pay.amountLabel")}
 						placeholder="0"
 						value={payAmount}
-						onChange={(e) => setPayAmount(e.target.value)}
-						step="any"
-						min="0"
-						inputMode="decimal"
-						autoFocus
+						onChange={setPayAmount}
 						className={bigInput}
 					/>
 					<div className="seg-track mt-4">
 						{activeNetwork.currencies.map((c) => (
-							<button key={c} onClick={() => setPayCurrency(c)} data-active={payCurrency === c} className="seg-item">
+							<button
+								key={c}
+								onClick={() => setPayCurrency(c)}
+								aria-pressed={payCurrency === c}
+								data-active={payCurrency === c}
+								className="seg-item"
+							>
 								{c}
 							</button>
 						))}
 					</div>
+					{user && balances[payCurrency] !== undefined && (
+						<p className="text-[12px] text-text-faint mt-3">
+							{t("pay.yourBalance", { balance: formatAmount(balances[payCurrency], payCurrency), currency: payCurrency })}
+						</p>
+					)}
 				</div>
+
+				{/* One-tap destinations: contacts pay without typing (UX_DESIGN §4.3). */}
+				{user && contacts.length > 0 && (
+					<div className="mb-5">
+						<p className="text-[11px] uppercase tracking-[0.1em] text-text-faint mb-3 px-1">
+							{t("pay.yourContacts")}
+						</p>
+						<div className="flex gap-3 overflow-x-auto -mx-1 px-1 pb-1">
+							{contacts.map((c) => (
+								<button
+									key={c.id}
+									onClick={() => navigate(`/${c.username}`)}
+									className="flex flex-col items-center gap-1.5 shrink-0 w-16"
+								>
+									<span className="w-12 h-12 rounded-full bg-pink/15 flex items-center justify-center font-display text-[18px] text-glow-pink uppercase">
+										{(c.alias || c.username)[0]}
+									</span>
+									<span className="text-[11px] text-text-muted truncate w-full text-center">
+										{c.alias || c.username}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
+				)}
 
 				<div className="bg-surface border border-border rounded-[18px] p-5 mb-5 shadow-e1">
 					<div className="seg-track seg-track-block mb-4">
@@ -491,6 +558,7 @@ export default function PayPage({ user }: { user: User | null }) {
 									setDestType(dt);
 									setManualWallet("");
 								}}
+								aria-pressed={destType === dt}
 								data-active={destType === dt}
 								className="seg-item"
 							>
@@ -500,6 +568,9 @@ export default function PayPage({ user }: { user: User | null }) {
 					</div>
 					<input
 						type="text"
+						name="destination"
+						autoComplete="off"
+						aria-label={destType === "address" ? t("pay.wallet") : t("pay.user")}
 						placeholder={destType === "address" ? "0x…" : "tunombre"}
 						value={manualWallet}
 						onChange={(e) =>
@@ -511,7 +582,11 @@ export default function PayPage({ user }: { user: User | null }) {
 					/>
 				</div>
 
-				{error && <p className="text-glow-pink text-[13px] text-center mb-4">{error}</p>}
+				{error && (
+					<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+						{error}
+					</p>
+				)}
 
 				{!user ? (
 					<button onClick={handleLogin} className="btn btn-primary btn-block">
@@ -527,11 +602,30 @@ export default function PayPage({ user }: { user: User | null }) {
 					</button>
 				)}
 				{showAmountHint && (
-					<p className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
+					<p role="status" aria-live="polite" className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
 						{t("pay.amountMustBePositive")}
 					</p>
 				)}
-			</div>
+				{user && (
+					<div className="mt-8">
+						<p className="text-[11px] uppercase tracking-[0.1em] text-text-faint mb-3 px-1">
+							{t("pay.otherOptions")}
+						</p>
+						<OptionCard
+							accent="#f4a9cf"
+							title={t("pay.sendOtherNetwork")}
+							desc={t("pay.sendOtherNetworkDesc")}
+							to="/crosschain"
+							icon={
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<path d="M7 17 17 7" />
+									<path d="M7 7h10v10" />
+								</svg>
+							}
+						/>
+					</div>
+				)}
+			</Screen>
 		);
 	}
 
@@ -543,21 +637,52 @@ export default function PayPage({ user }: { user: User | null }) {
 		? `@${linkData.username}`
 		: linkData.wallet
 		? `${linkData.wallet.slice(0, 6)}…${linkData.wallet.slice(-4)}`
-		: "esta cuenta";
+		: t("pay.thisAccount");
 
 	// Username profile page
 	if (username && userProfile && !showPayForm) {
 		return (
-			<div className={screen}>
-				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate("/")} />
-				</header>
+			<Screen animate={false}>
+				<BackHeader onClick={() => navigate("/")} className="mb-6" />
 				<div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
 					<div className="w-20 h-20 rounded-full bg-pink/15 flex items-center justify-center font-display text-[32px] text-glow-pink uppercase mb-5">
-						{userProfile.username[0]}
+						{(userProfile.displayName || userProfile.username)[0]}
 					</div>
-					<h1 className="font-display text-[28px] mb-1">@{userProfile.username}</h1>
+					<h1 className="font-display text-[28px] mb-1">
+						{userProfile.displayName || `@${userProfile.username}`}
+					</h1>
+					{userProfile.displayName && (
+						<p className="text-[15px] text-text-muted mb-1">@{userProfile.username}</p>
+					)}
 					<p className="text-[14px] text-text-muted">{t("pay.receivesPaymentsOn", { network: activeNetwork.name })}</p>
+					{userProfile.socialUrl && (
+						<a
+							href={userProfile.socialUrl}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="mt-3 text-[13px] text-glow-sky underline underline-offset-2 break-all px-6"
+						>
+							{socialLabel(userProfile.socialUrl)}
+						</a>
+					)}
+					{user && payHistory && (
+						payHistory.count > 0 && payHistory.last ? (
+							<div className="mt-6 bg-surface border border-border rounded-[16px] px-5 py-3.5">
+								<p className="text-[13px] text-text-muted">
+									{t("pay.paidBefore", { count: payHistory.count })}
+								</p>
+								<p className="text-[12px] text-text-faint mt-0.5">
+									{t("pay.lastPayment", {
+										amount: formatAmount(payHistory.last.amount, payHistory.last.currency),
+										currency: payHistory.last.currency,
+										date: formatShortDate(payHistory.last.createdAt),
+									})}
+								</p>
+							</div>
+						) : (
+							<p className="mt-6 text-[13px] text-text-faint">{t("pay.firstTime")}</p>
+						)
+					)}
 				</div>
 				<button
 					onClick={() => (user ? setShowPayForm(true) : handleLogin())}
@@ -565,46 +690,38 @@ export default function PayPage({ user }: { user: User | null }) {
 				>
 					{user ? t("pay.payTo", { name: userProfile.username }) : t("pay.signInToPay")}
 				</button>
-			</div>
+			</Screen>
 		);
 	}
 
 	// Paid link
 	if (linkData.status === "paid") {
 		return (
-			<div className={screen}>
-				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate("/")} />
-				</header>
-				<div className="flex-1 flex flex-col items-center justify-center text-center">
-					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky">
-						<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-							<polyline points="20 6 9 17 4 12" />
-						</svg>
-					</div>
-					<p className="text-[15px] text-text-muted mb-1">{t("pay.alreadyPaid")}</p>
-					<p className="font-display text-[40px] tabular leading-tight max-w-full break-words text-center">
-						{formatAmount(linkData.amount, linkData.currency)}
-						<span className="text-text-muted text-[20px] ml-1.5">{linkData.currency}</span>
-					</p>
+			<Screen animate={false}>
+				<BackHeader onClick={() => navigate("/")} className="mb-6" />
+				<TxResult
+					state="success"
+					lead={t("pay.alreadyPaid")}
+					amount={formatAmount(linkData.amount, linkData.currency)}
+					unit={linkData.currency}
+				>
 					{linkData.reference && <p className="text-text-muted text-[14px] mt-3">{linkData.reference}</p>}
-				</div>
-			</div>
+				</TxResult>
+			</Screen>
 		);
 	}
 
 	// Payment form (fixed link, open link, or username transfer)
 	const isOpenAmount = !hasFixedAmount;
+	const payingCurrency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
 
 	return (
-		<div className={screen}>
-			<PayingOverlay stage={payStage} />
-			<header className="flex items-center gap-3 mb-6">
-				<BackButton onClick={() => (showPayForm ? setShowPayForm(false) : navigate("/"))} />
-			</header>
+		<Screen animate={false}>
+			<StageOverlay label={payStage === "idle" ? null : stageCopy[payStage]} spinner={payStage !== "signing"} />
+			<BackHeader onClick={() => (showPayForm ? setShowPayForm(false) : navigate("/"))} className="mb-6" />
 
 			<TrustBadge />
-			<Recipient label={recipientLabel} />
+			<Recipient label={recipientLabel} name={linkData.username ? userProfile?.displayName : null} />
 
 			{/* Amount */}
 			<div className="flex flex-col items-center mb-6">
@@ -615,15 +732,12 @@ export default function PayPage({ user }: { user: User | null }) {
 					</p>
 				) : (
 					<>
-						<input
-							type="number"
+						<AmountInput
+							name="amount"
+							aria-label={t("pay.amountLabel")}
 							placeholder="0"
 							value={payAmount}
-							onChange={(e) => setPayAmount(e.target.value)}
-							step="any"
-							min="0"
-							inputMode="decimal"
-							autoFocus
+							onChange={setPayAmount}
 							className={bigInput}
 						/>
 						<div className="seg-track mt-4">
@@ -636,6 +750,7 @@ export default function PayPage({ user }: { user: User | null }) {
 										key={c}
 										disabled={fixed && c !== linkData.currency}
 										onClick={() => !fixed && setPayCurrency(c)}
+										aria-pressed={value === c}
 										data-active={value === c}
 										className={`seg-item ${fixed && c !== linkData.currency ? "opacity-30" : ""}`}
 									>
@@ -647,6 +762,11 @@ export default function PayPage({ user }: { user: User | null }) {
 						<p className="text-[12px] text-text-faint mt-3">{t("pay.chooseCurrency")}</p>
 					</>
 				)}
+				{user && balances[payingCurrency] !== undefined && (
+					<p className="text-[12px] text-text-faint mt-3">
+						{t("pay.yourBalance", { balance: formatAmount(balances[payingCurrency], payingCurrency), currency: payingCurrency })}
+					</p>
+				)}
 			</div>
 
 			{linkData.reference && (
@@ -657,11 +777,15 @@ export default function PayPage({ user }: { user: User | null }) {
 
 			<p className="text-[12px] text-text-faint text-center mb-5">{t("common.noNetworkFees")}</p>
 
-			{error && <p className="text-glow-pink text-[13px] text-center mb-4">{error}</p>}
+			{error && (
+				<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+					{error}
+				</p>
+			)}
 
 			{!user ? (
 				<button onClick={handleLogin} className="btn btn-primary btn-block">
-					Inicia sesión para pagar
+					{t("pay.signInToPay")}
 				</button>
 			) : (
 				<button
@@ -669,14 +793,14 @@ export default function PayPage({ user }: { user: User | null }) {
 					disabled={paying || (isOpenAmount && !payAmount)}
 					className="btn btn-gradient btn-block"
 				>
-					Pagar
+					{t("common.pay")}
 				</button>
 			)}
 			{slowConnection && paying && (
-				<p className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
+				<p role="status" aria-live="polite" className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
 					{t("pay.networkSlow")}
 				</p>
 			)}
-		</div>
+		</Screen>
 	);
 }

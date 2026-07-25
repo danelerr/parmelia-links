@@ -5,11 +5,12 @@ import { useCallback, useEffect, useState } from "react";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
-import { notifyError, notifySuccess } from "../lib/notify";
+import { notifyError, notifyPromise, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
 import Logo from "../components/Logo";
+import LinkButton from "../components/LinkButton";
+import BackHeader from "../components/BackHeader";
 import { RowSkeletonList } from "../components/Skeleton";
-import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
@@ -23,7 +24,6 @@ type Contact = {
 };
 
 export default function Contacts({ user }: { user: User }) {
-	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
 	const [contacts, setContacts] = useState<Contact[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -32,6 +32,8 @@ export default function Contacts({ user }: { user: User }) {
 	const [invited, setInvited] = useState<number | null>(null);
 	const [myUsername, setMyUsername] = useState<string | null>(null);
 	const [referralCode, setReferralCode] = useState<string | null>(null);
+	// Row whose delete is awaiting inline confirmation.
+	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		try {
@@ -63,25 +65,39 @@ export default function Contacts({ user }: { user: User }) {
 		if (!username) return;
 		setAdding(true);
 		try {
-			const data = await apiFetch<{ contact: Contact }>("/contacts", {
-				user,
-				body: { username },
-			});
+			const data = await notifyPromise(
+				apiFetch<{ contact: Contact }>("/contacts", {
+					user,
+					body: { username },
+				}),
+				{
+					loading: t("contacts.adding"),
+					success: t("contacts.added"),
+					error: t("contacts.addError"),
+				},
+			);
 			setContacts((prev) => [data.contact, ...prev.filter((c) => c.id !== data.contact.id)]);
 			setNewUsername("");
-			notifySuccess(t("contacts.added"));
-		} catch (err) {
-			notifyError(err, t("contacts.addError"));
+		} catch {
+			// notifyPromise already surfaced the error toast.
 		} finally {
 			setAdding(false);
 		}
 	}
 
+	// Optimistic removal WITH rollback: if the DELETE fails the row comes back
+	// and the user is told, so the list never lies about what the server has.
 	async function handleDelete(id: string) {
+		setConfirmDeleteId(null);
+		const previous = contacts;
 		setContacts((prev) => prev.filter((c) => c.id !== id));
-		await fetchWithAuth(user, `${SERVER_URL}/contacts/${id}`, { method: "DELETE" }).catch(() => {
-			void load();
-		});
+		try {
+			const res = await fetchWithAuth(user, `${SERVER_URL}/contacts/${id}`, { method: "DELETE" });
+			if (!res.ok) throw new Error();
+		} catch {
+			setContacts(previous);
+			notifyError(new Error(t("contacts.deleteError")));
+		}
 	}
 
 	const inviteRef = referralCode || myUsername;
@@ -105,19 +121,7 @@ export default function Contacts({ user }: { user: User }) {
 
 	return (
 		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<header className="flex items-center gap-3 mb-7">
-				<button
-					onClick={() => navigate("/settings")}
-					aria-label={t("common.back")}
-					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-				>
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" />
-						<path d="M12 19l-7-7 7-7" />
-					</svg>
-				</button>
-				<h1 className="text-[22px]">{t("contacts.title")}</h1>
-			</header>
+			<BackHeader to="/settings" title={t("contacts.title")} />
 
 			{/* Invite card */}
 			<div className="relative overflow-hidden bg-surface border border-border rounded-[20px] p-5 mb-6 shadow-e1">
@@ -165,6 +169,10 @@ export default function Contacts({ user }: { user: User }) {
 				<div className="flex-1 min-w-0 flex items-center gap-1.5 bg-surface border border-border rounded-full h-12 px-4 focus-within:border-border-strong transition-colors">
 					<span className="text-text-faint text-[14px] shrink-0">@</span>
 					<input
+						type="text"
+						name="username"
+						autoComplete="off"
+						aria-label={t("contacts.usernameLabel")}
 						value={newUsername}
 						onChange={(e) => setNewUsername(e.target.value.replace(/[^a-z0-9_-]/gi, "").toLowerCase())}
 						onKeyDown={(e) => e.key === "Enter" && handleAdd()}
@@ -199,8 +207,8 @@ export default function Contacts({ user }: { user: User }) {
 							key={ct.id}
 							className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors"
 						>
-							<button
-								onClick={() => navigate(`/${ct.username}`)}
+							<LinkButton
+								to={`/${ct.username}`}
 								className="flex items-center gap-3.5 flex-1 min-w-0 text-left"
 							>
 								<span className="w-10 h-10 rounded-full bg-pink/15 text-glow-pink font-display flex items-center justify-center uppercase shrink-0">
@@ -212,24 +220,44 @@ export default function Contacts({ user }: { user: User }) {
 										<span className="block text-[12px] text-text-faint truncate">@{ct.username}</span>
 									)}
 								</span>
-							</button>
-							<button
-								onClick={() => navigate(`/${ct.username}`)}
-								className="text-[13px] text-glow-sky shrink-0 px-2 py-1.5"
-							>
-								{t("contacts.pay")}
-							</button>
-							<button
-								onClick={() => handleDelete(ct.id)}
-								aria-label={t("contacts.deleteAria", { username: ct.username })}
-								className="w-8 h-8 rounded-full flex items-center justify-center text-text-faint hover:text-glow-pink hover:bg-glow-pink/10 transition-colors shrink-0"
-							>
-								<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<path d="M3 6h18" />
-									<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-									<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-								</svg>
-							</button>
+							</LinkButton>
+							{confirmDeleteId === ct.id ? (
+								// Inline confirmation - deleting is one tap too easy otherwise.
+								<div className="flex items-center gap-1 shrink-0">
+									<button
+										onClick={() => handleDelete(ct.id)}
+										className="text-[13px] text-danger font-medium px-2.5 py-1.5 rounded-full hover:bg-danger/10 transition-colors"
+									>
+										{t("contacts.deleteConfirm")}
+									</button>
+									<button
+										onClick={() => setConfirmDeleteId(null)}
+										className="text-[13px] text-text-muted px-2 py-1.5 rounded-full hover:bg-surface-2 transition-colors"
+									>
+										{t("common.cancel")}
+									</button>
+								</div>
+							) : (
+								<>
+									<LinkButton
+										to={`/${ct.username}`}
+										className="text-[13px] text-glow-sky shrink-0 px-2 py-1.5"
+									>
+										{t("contacts.pay")}
+									</LinkButton>
+									<button
+										onClick={() => setConfirmDeleteId(ct.id)}
+										aria-label={t("contacts.deleteAria", { username: ct.username })}
+										className="w-8 h-8 rounded-full flex items-center justify-center text-text-faint hover:text-glow-pink hover:bg-glow-pink/10 transition-colors shrink-0"
+									>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<path d="M3 6h18" />
+											<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+											<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+										</svg>
+									</button>
+								</>
+							)}
 						</div>
 					))}
 				</div>

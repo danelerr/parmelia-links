@@ -1,43 +1,71 @@
 import { useState, useRef } from "react";
+import useSWR from "swr";
 import { QRCodeSVG } from "qrcode.react";
 import type { User } from "../lib/firebase";
 import Logo from "../components/Logo";
+import Screen from "../components/Screen";
+import BackHeader from "../components/BackHeader";
+import AmountInput from "../components/AmountInput";
+import TxResult from "../components/TxResult";
+import { RowSkeletonList } from "../components/Skeleton";
 import { apiFetch } from "../lib/api";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
-import { activeNetwork } from "../lib/activeNetwork";
-import { useViewTransitionNavigate } from "../hooks/useNav";
+import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useTranslation } from "react-i18next";
 import { downloadCard, shareCard } from "../lib/exportCard";
+import { formatAmount, formatDate, formatDateTime } from "../lib/format";
 
 const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 
-function BackButton({ onClick }: { onClick: () => void }) {
-	const { t } = useTranslation();
-	return (
-		<button
-			onClick={onClick}
-			aria-label={t("common.back")}
-			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-		>
-			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M19 12H5" />
-				<path d="M12 19l-7-7 7-7" />
-			</svg>
-		</button>
-	);
-}
+// GET /links shape (server PaymentLinkRecord, owner-scoped, latest 20).
+type ChargeLink = {
+	id: string;
+	amount: string;
+	currency: string;
+	reference: string;
+	status: "pending" | "paid";
+	txHash: string | null;
+	paidAt: string | null;
+	createdAt: string;
+};
 
 export default function CreateLink({ user }: { user: User }) {
-	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
-	const [step, setStep] = useState<"form" | "result">("form");
+	const [step, setStep] = useState<"form" | "result" | "detail">("form");
 	const [amount, setAmount] = useState("");
 	const [currency, setCurrency] = useState("USDC");
 	const [reference, setReference] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [paymentUrl, setPaymentUrl] = useState("");
+	const [detailLink, setDetailLink] = useState<ChargeLink | null>(null);
 	const cardRef = useRef<HTMLDivElement>(null);
+
+	// "Tus cobros": the link stops being fire-and-forget - pending ones reopen
+	// with their QR, paid ones show the receipt. Fetched only while on the form.
+	const { data: linksData, isLoading: linksLoading, mutate: mutateLinks } = useSWR(
+		step === "form" ? "/links" : null,
+		(path: string) => apiFetch<{ links: ChargeLink[] }>(path, { user }),
+	);
+	const charges = linksData?.links ?? [];
+	// Bounded on both ends: 5 visible by default, "Ver todos" expands to the
+	// server's cap (latest 20). Full history with pagination is a later page.
+	const [showAllCharges, setShowAllCharges] = useState(false);
+	const visibleCharges = showAllCharges ? charges : charges.slice(0, 5);
+
+	function openCharge(link: ChargeLink) {
+		if (link.status === "paid") {
+			setDetailLink(link);
+			setStep("detail");
+			return;
+		}
+		// Reopen the pending link exactly as when it was created.
+		setPaymentUrl(`${APP_URL}/pay?id=${link.id}`);
+		setAmount(Number(link.amount) > 0 ? link.amount : "");
+		setCurrency(link.currency);
+		setReference(link.reference || "");
+		setStep("result");
+	}
 
 	async function handleCreate() {
 		setLoading(true);
@@ -48,6 +76,7 @@ export default function CreateLink({ user }: { user: User }) {
 			});
 			setPaymentUrl(`${APP_URL}/pay?id=${data.id}`);
 			track("link_created", { currency, openAmount: Number(amount) <= 0 });
+			void mutateLinks();
 			setStep("result");
 		} catch (err) {
 			notifyError(err, t("createLink.createError"));
@@ -78,19 +107,54 @@ export default function CreateLink({ user }: { user: User }) {
 		}
 	}
 
-	// Copiar = solo el link.
+	// Copiar = solo el link. Ofrecemos Compartir como accion directa en el toast.
 	function handleCopy() {
 		navigator.clipboard.writeText(paymentUrl);
-		notifySuccess(t("createLink.linkCopied"));
+		notifySuccess(t("createLink.linkCopied"), undefined, {
+			title: t("common.share"),
+			onClick: () => void handleShare(),
+		});
+	}
+
+	if (step === "detail" && detailLink) {
+		return (
+			<Screen>
+				<BackHeader onClick={() => setStep("form")} title={t("createLink.detailTitle")} className="mb-6" />
+				<TxResult
+					state="success"
+					lead={t("createLink.detailPaidLead")}
+					amount={
+						Number(detailLink.amount) > 0
+							? formatAmount(detailLink.amount, detailLink.currency)
+							: t("createLink.openAmount")
+					}
+					unit={Number(detailLink.amount) > 0 ? detailLink.currency : undefined}
+					body={detailLink.paidAt ? formatDateTime(detailLink.paidAt) : undefined}
+				>
+					{detailLink.reference && (
+						<p className="text-[13px] text-text-muted leading-relaxed max-w-[300px] mt-1">
+							{detailLink.reference}
+						</p>
+					)}
+					{detailLink.txHash && (
+						<a
+							href={getExplorerTxUrl(detailLink.txHash)}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="btn-text mt-5"
+						>
+							{t("settings.viewExplorer")}
+						</a>
+					)}
+				</TxResult>
+			</Screen>
+		);
 	}
 
 	if (step === "result") {
 		return (
-			<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-				<header className="flex items-center gap-3 mb-6">
-					<BackButton onClick={() => navigate("/")} />
-					<h1 className="text-[22px]">{t("createLink.resultTitle")}</h1>
-				</header>
+			<Screen>
+				<BackHeader onClick={() => setStep("form")} title={t("createLink.resultTitle")} className="mb-6" />
 
 				<div className="flex-1 flex flex-col justify-center">
 					<div
@@ -146,33 +210,42 @@ export default function CreateLink({ user }: { user: User }) {
 						{t("createLink.copyLink")}
 					</button>
 				</div>
-			</div>
+				{/* WhatsApp is where LATAM charges actually travel - one tap, no share sheet. */}
+				<a
+					href={`https://wa.me/?text=${encodeURIComponent(t("createLink.shareText", { url: paymentUrl }))}`}
+					target="_blank"
+					rel="noopener noreferrer"
+					className="btn btn-ghost btn-block mt-3"
+				>
+					{t("createLink.whatsapp")}
+				</a>
+			</Screen>
 		);
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<header className="flex items-center gap-3 mb-7">
-				<BackButton onClick={() => navigate("/")} />
-				<h1 className="text-[22px]">{t("createLink.title")}</h1>
-			</header>
+		<Screen>
+			<BackHeader to="/" title={t("createLink.title")} />
 
 			{/* Amount - big input */}
 			<div className="flex flex-col items-center mt-6 mb-8">
-				<input
-					type="number"
+				<AmountInput
+					name="amount"
+					aria-label={t("createLink.amountLabel")}
 					placeholder="0"
 					value={amount}
-					onChange={(e) => setAmount(e.target.value)}
-					step="any"
-					min="0"
-					inputMode="decimal"
-					autoFocus
+					onChange={setAmount}
 					className="w-full max-w-[260px] bg-transparent text-center font-display text-[60px] leading-none text-text placeholder:text-text-faint tabular"
 				/>
 				<div className="seg-track mt-4">
 					{activeNetwork.currencies.map((c) => (
-						<button key={c} onClick={() => setCurrency(c)} data-active={currency === c} className="seg-item">
+						<button
+							key={c}
+							onClick={() => setCurrency(c)}
+							aria-pressed={currency === c}
+							data-active={currency === c}
+							className="seg-item"
+						>
 							{c}
 						</button>
 					))}
@@ -184,8 +257,12 @@ export default function CreateLink({ user }: { user: User }) {
 
 			{/* Reference */}
 			<div className="bg-surface border border-border rounded-[18px] p-5 mb-6 shadow-e1">
-				<label className="text-[13px] text-text-muted mb-2 block">{t("createLink.referenceLabel")}</label>
+				<label htmlFor="create-link-reference" className="text-[13px] text-text-muted mb-2 block">
+					{t("createLink.referenceLabel")}
+				</label>
 				<textarea
+					id="create-link-reference"
+					name="reference"
 					placeholder={t("createLink.referencePlaceholder")}
 					value={reference}
 					onChange={(e) => setReference(e.target.value)}
@@ -198,6 +275,59 @@ export default function CreateLink({ user }: { user: User }) {
 			<button onClick={handleCreate} disabled={loading} className="btn btn-primary btn-block">
 				{loading ? t("createLink.creating") : t("createLink.create")}
 			</button>
-		</div>
+
+			{/* Tus cobros: pending reopens the QR view, paid opens the receipt. */}
+			{(linksLoading || charges.length > 0) && (
+				<div className="mt-9">
+					<h2 className="text-[15px] font-display mb-3">{t("createLink.myCharges")}</h2>
+					{linksLoading ? (
+						<RowSkeletonList count={3} />
+					) : (
+						<div className="bg-surface border border-border rounded-[18px] shadow-e1 divide-y divide-border overflow-hidden">
+							{visibleCharges.map((link) => (
+								<button
+									key={link.id}
+									onClick={() => openCharge(link)}
+									className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left hover:bg-surface-2 transition-colors"
+								>
+									<div className="min-w-0">
+										<p className="text-[14px] truncate">
+											{Number(link.amount) > 0
+												? `${formatAmount(link.amount, link.currency)} ${link.currency}`
+												: t("createLink.openAmount")}
+										</p>
+										<p className="text-[12px] text-text-faint truncate">
+											{formatDate(link.createdAt, { day: "numeric", month: "short" })}
+											{link.reference ? ` · ${link.reference}` : ""}
+										</p>
+									</div>
+									<span
+										className={`text-[11px] rounded-full px-2.5 py-1 shrink-0 ${
+											link.status === "paid"
+												? "bg-sky/15 text-glow-sky"
+												: "bg-surface-2 text-text-muted"
+										}`}
+									>
+										{link.status === "paid"
+											? t("createLink.statusPaid")
+											: t("createLink.statusPending")}
+									</span>
+								</button>
+							))}
+						</div>
+					)}
+					{!linksLoading && charges.length > 5 && (
+						<button
+							onClick={() => setShowAllCharges((v) => !v)}
+							className="btn-text mx-auto mt-3"
+						>
+							{showAllCharges
+								? t("createLink.viewLess")
+								: t("createLink.viewAll", { count: charges.length })}
+						</button>
+					)}
+				</div>
+			)}
+		</Screen>
 	);
 }

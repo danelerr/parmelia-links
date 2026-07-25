@@ -36,6 +36,7 @@ export default function Login() {
   const [mode, setMode] = useState<Mode>("buttons");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recoverIntent, setRecoverIntent] = useState(false);
 
   // Completing a magic-link return (the link points back here at /login).
   useEffect(() => {
@@ -54,7 +55,7 @@ export default function Login() {
           setMode("buttons");
         }
       });
-  }, []);
+  }, [t]);
 
   async function handleGoogle() {
     try {
@@ -136,18 +137,28 @@ export default function Login() {
         <p className="text-[14px] text-text-muted max-w-[300px] leading-relaxed mb-6">
           {t("login.confirmEmailBody")}
         </p>
-        <input
-          type="email"
-          inputMode="email"
-          autoFocus
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder={t("login.emailPlaceholder")}
-          className="w-full max-w-[320px] bg-surface border border-border rounded-full h-12 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors mb-4"
-        />
-        <button onClick={handleCompleteWithEmail} disabled={busy} className="btn btn-primary btn-block max-w-[320px]">
-          {busy ? t("login.entering") : t("login.enter")}
-        </button>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleCompleteWithEmail();
+          }}
+          className="w-full max-w-[320px] flex flex-col items-center"
+        >
+          <input
+            type="email"
+            name="email"
+            inputMode="email"
+            autoComplete="email"
+            aria-label={t("login.emailLabel")}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={t("login.emailPlaceholder")}
+            className="w-full bg-surface border border-border rounded-full h-12 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors mb-4"
+          />
+          <button type="submit" disabled={busy} className="btn btn-primary btn-block">
+            {busy ? t("login.entering") : t("login.enter")}
+          </button>
+        </form>
       </div>
     );
   }
@@ -172,20 +183,29 @@ export default function Login() {
       >
         {mode === "email" ? (
           <>
-            <input
-              type="email"
-              inputMode="email"
-              autoFocus
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendLink()}
-              placeholder={t("login.emailPlaceholder")}
-              className="w-full bg-surface border border-border rounded-full h-13 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors"
-              style={{ height: "3.25rem" }}
-            />
-            <button onClick={handleSendLink} disabled={busy} className="btn btn-primary btn-block">
-              {busy ? t("login.sending") : t("login.sendLink")}
-            </button>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleSendLink();
+              }}
+              className="w-full flex flex-col items-center gap-3"
+            >
+              <input
+                type="email"
+                name="email"
+                inputMode="email"
+                autoComplete="email"
+                aria-label={t("login.emailLabel")}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t("login.emailPlaceholder")}
+                className="w-full bg-surface border border-border rounded-full h-13 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors"
+                style={{ height: "3.25rem" }}
+              />
+              <button type="submit" disabled={busy} className="btn btn-primary btn-block">
+                {busy ? t("login.sending") : t("login.sendLink")}
+              </button>
+            </form>
             <button onClick={() => setMode("buttons")} className="btn-text">
               {t("common.back")}
             </button>
@@ -203,6 +223,27 @@ export default function Login() {
             <p className="text-text-faint text-[13px] mt-1">
               {t("login.noPasswords")}
             </p>
+            {/* Losing the passkey does NOT lose the account: sign in as usual and
+                App redirects to /recover (flag survives the auth roundtrip). */}
+            {recoverIntent ? (
+              <p className="text-[13px] text-text-muted max-w-[300px] leading-relaxed text-center">
+                {t("recover.loginHint")}
+              </p>
+            ) : (
+              <button
+                onClick={() => {
+                  try {
+                    localStorage.setItem("parmelia:recover-intent", "1");
+                  } catch {
+                    /* storage unavailable */
+                  }
+                  setRecoverIntent(true);
+                }}
+                className="btn-text"
+              >
+                {t("recover.loginLink")}
+              </button>
+            )}
           </>
         )}
       </div>

@@ -7,10 +7,10 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { notifyError } from "../lib/notify";
 import Logo from "./Logo";
-import i18n from "../lib/i18n";
 import { getExplorerTxUrl } from "../lib/activeNetwork";
-import { formatAmount } from "../lib/format";
+import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard } from "../lib/exportCard";
+import { useDialog } from "../hooks/useDialog";
 import type { Transaction } from "../lib/transactions";
 
 function shortHash(hash: string) {
@@ -26,11 +26,14 @@ export default function ReceiptModal({
 }) {
 	const { t } = useTranslation();
 	const cardRef = useRef<HTMLDivElement>(null);
+	const dialogRef = useDialog<HTMLDivElement>(onClose);
 	const received = tx.type === "received";
 	// The other party: origin wallet on received, destination wallet on sent.
 	const counterparty = received ? tx.from : tx.to;
 	const date = new Date(tx.createdAt);
 	const hasDate = !Number.isNaN(date.getTime());
+	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
+	const hideBalance = localStorage.getItem("parmelia:hideBalance") === "1";
 
 	return createPortal(
 		<div
@@ -38,9 +41,17 @@ export default function ReceiptModal({
 			onClick={onClose}
 		>
 			<div
-				ref={cardRef}
-				className="relative overflow-hidden w-full max-w-sm bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
+				ref={dialogRef}
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="receipt-title"
+				tabIndex={-1}
+				className="w-full max-w-sm flex flex-col items-center gap-4"
 				onClick={(e) => e.stopPropagation()}
+			>
+			<div
+				ref={cardRef}
+				className="relative overflow-hidden w-full bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
 			>
 				<div
 					className="absolute top-0 left-0 right-0 h-1"
@@ -69,13 +80,19 @@ export default function ReceiptModal({
 						<polyline points="20 6 9 17 4 12" />
 					</svg>
 				</div>
-				<p className="text-[14px] text-text-muted mb-1 relative z-1">
+				<p id="receipt-title" className="text-[14px] text-text-muted mb-1 relative z-1">
 					{received ? t("receipt.received") : t("receipt.sent")}
 				</p>
 				<p className="font-display text-[40px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
-					{received ? "+" : "−"}
-					{formatAmount(tx.amount, tx.currency)}
-					<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
+					{hideBalance ? (
+						"••••"
+					) : (
+						<>
+							{received ? "+" : "−"}
+							{formatAmount(tx.amount, tx.currency)}
+							<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
+						</>
+					)}
 				</p>
 				{counterparty && (
 					<div className="flex items-center justify-center gap-2 mb-1 relative z-1">
@@ -97,15 +114,11 @@ export default function ReceiptModal({
 						<>
 							<div className="flex items-center justify-between text-[12px]">
 								<span className="text-text-faint">{t("common.date")}</span>
-								<span className="text-text-muted">
-									{date.toLocaleDateString(i18n.resolvedLanguage || "es", { day: "numeric", month: "long", year: "numeric" })}
-								</span>
+								<span className="text-text-muted">{formatDate(date)}</span>
 							</div>
 							<div className="flex items-center justify-between text-[12px]">
 								<span className="text-text-faint">{t("common.time")}</span>
-								<span className="text-text-muted">
-									{date.toLocaleTimeString(i18n.resolvedLanguage || "es", { hour: "2-digit", minute: "2-digit" })}
-								</span>
+								<span className="text-text-muted">{formatTime(date)}</span>
 							</div>
 						</>
 					)}
@@ -129,7 +142,7 @@ export default function ReceiptModal({
 				</div>
 			</div>
 
-			<div className="flex gap-3 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+			<div className="flex gap-3 w-full">
 				<button
 					onClick={async () => {
 						try {
@@ -145,6 +158,7 @@ export default function ReceiptModal({
 				<button onClick={onClose} className="btn btn-ghost shrink-0">
 					{t("common.close")}
 				</button>
+			</div>
 			</div>
 		</div>,
 		document.body,

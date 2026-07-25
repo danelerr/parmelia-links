@@ -6,9 +6,19 @@
 //   - server requestIds are surfaced ("Ref: ...") so support can find the log;
 //   - identical toasts within a short window are deduped (no double-tap spam).
 
-import { sileo } from "sileo";
+import { sileo, type SileoButton } from "sileo";
 import { ApiError } from "./api";
 import i18n from "./i18n";
+
+// How long each kind of toast stays on screen (ms). Confirmations leave quickly,
+// errors linger so they can be read, and anything actionable stays long enough
+// for the user to actually reach for the button.
+const DURATION = {
+	success: 3500,
+	warning: 5000,
+	error: 6500,
+	actionable: 10000,
+} as const;
 
 let lastKey = "";
 let lastAt = 0;
@@ -55,7 +65,11 @@ export function humanizeError(
 	return { message: fallback };
 }
 
-export function notifyError(err: unknown, title = i18n.t("notify.somethingWrong")) {
+export function notifyError(
+	err: unknown,
+	title = i18n.t("notify.somethingWrong"),
+	action?: SileoButton,
+) {
 	if (isUserCancelled(err)) {
 		notifyWarning(i18n.t("notify.cancelled"), i18n.t("notify.noChange"));
 		return;
@@ -65,15 +79,69 @@ export function notifyError(err: unknown, title = i18n.t("notify.somethingWrong"
 		? `${message} · Ref: ${String(requestId).slice(0, 8)}`
 		: message;
 	if (deduped(`e:${title}:${description}`)) return;
-	sileo.error({ title, description });
+	sileo.error({
+		title,
+		description,
+		button: action,
+		duration: action ? DURATION.actionable : DURATION.error,
+	});
 }
 
-export function notifySuccess(title: string, description?: string) {
+export function notifySuccess(title: string, description?: string, action?: SileoButton) {
 	if (deduped(`s:${title}:${description ?? ""}`)) return;
-	sileo.success({ title, description });
+	sileo.success({
+		title,
+		description,
+		button: action,
+		duration: action ? DURATION.actionable : DURATION.success,
+	});
 }
 
 export function notifyWarning(title: string, description?: string) {
 	if (deduped(`w:${title}:${description ?? ""}`)) return;
-	sileo.warning({ title, description });
+	sileo.warning({ title, description, duration: DURATION.warning });
+}
+
+/**
+ * Drive a single toast through loading -> success/error for a background task
+ * that has no full-screen overlay of its own (faucet claim, enabling push,
+ * saving a username, adding a contact). Pay and swap keep their own overlays.
+ * Returns the original promise so callers can still await the result.
+ */
+export function notifyPromise<T>(
+	promise: Promise<T>,
+	messages: {
+		loading: string;
+		success: string | ((value: T) => string);
+		error?: string;
+	},
+): Promise<T> {
+	sileo.promise(promise, {
+		loading: { title: messages.loading },
+		success: (value: T) => ({
+			title:
+				typeof messages.success === "function"
+					? messages.success(value)
+					: messages.success,
+			duration: DURATION.success,
+		}),
+		error: (err: unknown) => {
+			if (isUserCancelled(err)) {
+				return {
+					title: i18n.t("notify.cancelled"),
+					description: i18n.t("notify.noChange"),
+					duration: DURATION.warning,
+				};
+			}
+			const { message, requestId } = humanizeError(err);
+			return {
+				title: messages.error ?? i18n.t("notify.somethingWrong"),
+				description: requestId
+					? `${message} · Ref: ${String(requestId).slice(0, 8)}`
+					: message,
+				duration: DURATION.error,
+			};
+		},
+	});
+	return promise;
 }

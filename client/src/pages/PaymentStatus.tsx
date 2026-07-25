@@ -1,22 +1,36 @@
 import { useSearchParams } from "react-router-dom";
 import { useRef } from "react";
 import Logo from "../components/Logo";
+import Screen from "../components/Screen";
+import BackHeader from "../components/BackHeader";
+import { IconCheck, IconCross, Spinner } from "../components/icons";
+import type { User } from "../lib/firebase";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { useTranslation } from "react-i18next";
-import i18n from "../lib/i18n";
-import { formatAmount } from "../lib/format";
+import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard, shareCard } from "../lib/exportCard";
 
-export default function PaymentStatus() {
+export default function PaymentStatus({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
 	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
 	const cardRef = useRef<HTMLDivElement>(null);
-	const txHash = searchParams.get("tx");
 	const amount = searchParams.get("amount");
 	const currency = searchParams.get("currency");
 	const to = searchParams.get("to");
+
+	// A payment arrives here unconfirmed (202 accepted broadcast or a
+	// duplicate submit). We poll its lifecycle and flip this same screen from
+	// "in progress" to the receipt (or to a calm failure) when it settles.
+	const pendingParam = searchParams.get("pending") === "1";
+	const userOpHash = searchParams.get("uoh");
+	const poll = usePaymentStatus(pendingParam ? user : null, pendingParam ? userOpHash : null);
+	const failed = pendingParam && poll.status === "failed";
+	const confirmed = !pendingParam || poll.status === "confirmed";
+	const pending = !confirmed && !failed;
+	const txHash = searchParams.get("tx") || poll.txHash;
 
 	const toLabel = to
 		? to.startsWith("0x")
@@ -41,19 +55,8 @@ export default function PaymentStatus() {
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<header className="flex items-center">
-				<button
-					onClick={() => navigate("/")}
-					aria-label={t("pay.goHome")}
-					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-				>
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" />
-						<path d="M12 19l-7-7 7-7" />
-					</svg>
-				</button>
-			</header>
+		<Screen>
+			<BackHeader onClick={() => navigate("/")} ariaLabel={t("pay.goHome")} className="" />
 			<div className="flex-1 flex flex-col justify-center">
 				<div
 					ref={cardRef}
@@ -73,14 +76,30 @@ export default function PaymentStatus() {
 						<span className="font-display text-[16px]">Parmelia</span>
 					</div>
 
-					{/* Success check */}
-					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky-soft relative z-1">
-						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-							<polyline points="20 6 9 17 4 12" />
-						</svg>
-					</div>
+					{/* Status icon: check (confirmed) / spinner (in flight) / cross (failed) */}
+					{confirmed && (
+						<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky-soft relative z-1">
+							<IconCheck />
+						</div>
+					)}
+					{pending && (
+						<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 relative z-1">
+							<Spinner className="w-7 h-7" />
+						</div>
+					)}
+					{failed && (
+						<div className="w-16 h-16 rounded-full bg-pink/15 flex items-center justify-center mb-6 relative z-1">
+							<IconCross />
+						</div>
+					)}
 
-					<p className="text-[15px] text-text-muted mb-1 relative z-1">{t("paymentStatus.paidLead")}</p>
+					<p className="text-[15px] text-text-muted mb-1 relative z-1">
+						{confirmed
+							? t("paymentStatus.paidLead")
+							: failed
+								? t("paymentStatus.failedLead")
+								: t("paymentStatus.pendingLead")}
+					</p>
 					{amount && (
 						<p className="font-display text-[44px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
 							{formatAmount(amount, currency ?? "")}
@@ -93,23 +112,31 @@ export default function PaymentStatus() {
 							{t("paymentStatus.to")} <span className="text-text-muted">{toLabel}</span>
 						</p>
 					)}
-					<p className="text-[12px] text-text-faint relative z-1">
-						{t("paymentStatus.securedOn", { network: activeNetwork.name })}
-					</p>
+					{confirmed && (
+						<p className="text-[12px] text-text-faint relative z-1">
+							{t("paymentStatus.securedOn", { network: activeNetwork.name })}
+						</p>
+					)}
+					{pending && (
+						<p role="status" aria-live="polite" className="text-[12px] text-text-faint text-center leading-relaxed relative z-1 animate-pulse-soft">
+							{poll.ended ? t("paymentStatus.pendingSlow") : t("paymentStatus.pendingBody")}
+						</p>
+					)}
+					{failed && (
+						<p role="status" aria-live="polite" className="text-[12px] text-text-faint text-center leading-relaxed relative z-1">
+							{t("paymentStatus.failedBody")}
+						</p>
+					)}
 
 					{/* Formal receipt info */}
 					<div className="w-full border-t border-border mt-5 pt-4 relative z-1 flex flex-col gap-1.5">
 						<div className="flex items-center justify-between text-[12px]">
 							<span className="text-text-faint">{t("common.date")}</span>
-							<span className="text-text-muted">
-								{new Date().toLocaleDateString(i18n.resolvedLanguage || "es", { day: "numeric", month: "long", year: "numeric" })}
-							</span>
+							<span className="text-text-muted">{formatDate(new Date())}</span>
 						</div>
 						<div className="flex items-center justify-between text-[12px]">
 							<span className="text-text-faint">{t("common.time")}</span>
-							<span className="text-text-muted">
-								{new Date().toLocaleTimeString(i18n.resolvedLanguage || "es", { hour: "2-digit", minute: "2-digit" })}
-							</span>
+							<span className="text-text-muted">{formatTime(new Date())}</span>
 						</div>
 						{txHash && (
 							<div className="flex items-center justify-between text-[12px] gap-3">
@@ -135,14 +162,21 @@ export default function PaymentStatus() {
 				</div>
 			</div>
 
-			<div className="flex gap-3 mt-6">
-				<button onClick={handleShare} className="btn btn-primary flex-1">
-					{t("paymentStatus.share")}
+			{/* Share/download only make sense for a settled receipt. */}
+			{confirmed ? (
+				<div className="flex gap-3 mt-6">
+					<button onClick={handleShare} className="btn btn-primary flex-1">
+						{t("paymentStatus.share")}
+					</button>
+					<button onClick={handleDownload} className="btn btn-ghost">
+						{t("paymentStatus.download")}
+					</button>
+				</div>
+			) : (
+				<button onClick={() => navigate("/")} className="btn btn-primary btn-block mt-6">
+					{t("pay.goHome")}
 				</button>
-				<button onClick={handleDownload} className="btn btn-ghost">
-					{t("paymentStatus.download")}
-				</button>
-			</div>
-		</div>
+			)}
+		</Screen>
 	);
 }

@@ -1,27 +1,31 @@
 // Full statement: every movement with quick ranges, custom date range, asset
 // and type filters. Home only keeps the compact "Actividad reciente".
+// Filters live in the URL (useSearchParams): a filtered view can be shared and
+// back/forward walks through filter changes; defaults keep the URL clean.
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
+import BackHeader from "../components/BackHeader";
 import ReceiptModal from "../components/ReceiptModal";
 import { RowSkeletonList } from "../components/Skeleton";
 import { activeNetwork } from "../lib/activeNetwork";
-import { useViewTransitionNavigate } from "../hooks/useNav";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 import { formatAmount } from "../lib/format";
 
 
-type PeriodOption = "all" | "week" | "month" | "prev-month" | "custom";
+type PeriodOption = "all" | "today" | "week" | "month" | "prev-month" | "custom";
 type TypeFilter = "all" | "sent" | "received";
 
 // Label is an i18n key, resolved with t() at render time.
 const PERIOD_OPTIONS: [PeriodOption, string][] = [
 	["all", "statement.allDates"],
+	["today", "statement.today"],
 	["week", "statement.lastWeek"],
 	["month", "statement.thisMonth"],
 	["prev-month", "statement.prevMonth"],
@@ -30,6 +34,9 @@ const PERIOD_OPTIONS: [PeriodOption, string][] = [
 
 function periodBounds(period: PeriodOption): { start: Date | null; end: Date | null } {
 	const now = new Date();
+	if (period === "today") {
+		return { start: new Date(now.getFullYear(), now.getMonth(), now.getDate()), end: null };
+	}
 	if (period === "week") {
 		const start = new Date(now);
 		start.setDate(now.getDate() - 7);
@@ -49,14 +56,36 @@ function periodBounds(period: PeriodOption): { start: Date | null; end: Date | n
 }
 
 export default function Statement({ user }: { user: User }) {
-	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
-	const [period, setPeriod] = useState<PeriodOption>("all");
-	const [fromDate, setFromDate] = useState("");
-	const [toDate, setToDate] = useState("");
-	const [asset, setAsset] = useState("all");
-	const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+	const [searchParams, setSearchParams] = useSearchParams();
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
+	const hideBalance = localStorage.getItem("parmelia:hideBalance") === "1";
+
+	// Filters come FROM the URL (validated; anything unknown falls back to the
+	// default so a mangled shared link still renders).
+	const periodParam = searchParams.get("period");
+	const period: PeriodOption = PERIOD_OPTIONS.some(([value]) => value === periodParam)
+		? (periodParam as PeriodOption)
+		: "all";
+	const fromDate = searchParams.get("from") ?? "";
+	const toDate = searchParams.get("to") ?? "";
+	const assetParam = searchParams.get("asset");
+	const asset = assetParam && activeNetwork.currencies.includes(assetParam) ? assetParam : "all";
+	const typeParam = searchParams.get("type");
+	const typeFilter: TypeFilter =
+		typeParam === "sent" || typeParam === "received" ? typeParam : "all";
+
+	// Write filters TO the URL. Defaults ("all" / empty) are removed so the
+	// default view keeps a clean /statement URL.
+	function setFilter(patch: Partial<Record<"period" | "from" | "to" | "asset" | "type", string>>) {
+		const next = new URLSearchParams(searchParams);
+		for (const [key, value] of Object.entries(patch)) {
+			if (!value || value === "all") next.delete(key);
+			else next.set(key, value);
+		}
+		setSearchParams(next);
+	}
 
 	const fetcher = async (url: string) => {
 		const res = await fetchWithAuth(user, url);
@@ -93,25 +122,18 @@ export default function Statement({ user }: { user: User }) {
 
 	return (
 		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<header className="flex items-center gap-3 mb-6">
-				<button
-					onClick={() => navigate("/")}
-					aria-label={t("common.back")}
-					className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-				>
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-						<path d="M19 12H5" />
-						<path d="M12 19l-7-7 7-7" />
-					</svg>
-				</button>
-				<h1 className="text-[22px]">{t("statement.title")}</h1>
-			</header>
+			<BackHeader to="/" title={t("statement.title")} className="mb-6" />
 
 			{/* Period dropdown */}
 			<div className="relative mb-3">
 				<select
 					value={period}
-					onChange={(e) => setPeriod(e.target.value as PeriodOption)}
+					aria-label={t("statement.periodLabel")}
+					onChange={(e) => {
+						const value = e.target.value as PeriodOption;
+						// Leaving "custom" drops the stale date range from the URL.
+						setFilter({ period: value, ...(value !== "custom" ? { from: "", to: "" } : {}) });
+					}}
 					className="w-full h-12 appearance-none bg-surface border border-border rounded-[14px] pl-4 pr-10 text-[14px] text-text [color-scheme:dark] focus:border-border-strong transition-colors"
 				>
 					{PERIOD_OPTIONS.map(([value, label]) => (
@@ -140,16 +162,17 @@ export default function Statement({ user }: { user: User }) {
 				<div className="flex gap-2.5 mb-3">
 					{(
 						[
-							["statement.from", fromDate, setFromDate],
-							["statement.to", toDate, setToDate],
+							["statement.from", "from", fromDate],
+							["statement.to", "to", toDate],
 						] as const
-					).map(([label, value, set]) => (
+					).map(([label, param, value]) => (
 						<label key={label} className="flex-1 bg-surface border border-border rounded-[14px] px-3.5 py-2.5">
 							<span className="block text-[11px] text-text-faint mb-0.5">{t(label)}</span>
 							<input
 								type="date"
+								name={param}
 								value={value}
-								onChange={(e) => set(e.target.value)}
+								onChange={(e) => setFilter({ [param]: e.target.value })}
 								className="w-full bg-transparent text-[13px] text-text [color-scheme:dark]"
 							/>
 						</label>
@@ -162,7 +185,8 @@ export default function Statement({ user }: { user: User }) {
 				{["all", ...activeNetwork.currencies].map((c) => (
 					<button
 						key={c}
-						onClick={() => setAsset(c)}
+						onClick={() => setFilter({ asset: c })}
+						aria-pressed={asset === c}
 						data-active={asset === c}
 						className="seg-item"
 					>
@@ -170,23 +194,51 @@ export default function Statement({ user }: { user: User }) {
 					</button>
 				))}
 			</div>
-			<div className="seg-track seg-track-block mb-5">
-				{(
-					[
-						["all", "statement.allTypes"],
-						["sent", "statement.sent"],
-						["received", "statement.received"],
-					] as const
-				).map(([value, label]) => (
-					<button
-						key={value}
-						onClick={() => setTypeFilter(value)}
-						data-active={typeFilter === value}
-						className="seg-item"
-					>
-						{t(label)}
-					</button>
-				))}
+			<div className="flex justify-center mb-5">
+				<div className="seg-track">
+					{(
+						[
+							["all", "statement.allTypes", null],
+							["received", "statement.received", "in"],
+							["sent", "statement.sent", "out"],
+						] as const
+					).map(([value, label, dir]) => (
+						<button
+							key={value}
+							onClick={() => setFilter({ type: value })}
+							aria-pressed={typeFilter === value}
+							data-active={typeFilter === value}
+							className="seg-item gap-1.5"
+						>
+							{dir && (
+								<svg
+									width="13"
+									height="13"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2.5"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									className={dir === "in" ? "text-glow-sky" : "text-glow-pink"}
+								>
+									{dir === "in" ? (
+										<>
+											<path d="M12 5v14" />
+											<path d="m19 12-7 7-7-7" />
+										</>
+									) : (
+										<>
+											<path d="M12 19V5" />
+											<path d="m5 12 7-7 7 7" />
+										</>
+									)}
+								</svg>
+							)}
+							{t(label)}
+						</button>
+					))}
+				</div>
 			</div>
 
 			{/* List */}
@@ -207,7 +259,7 @@ export default function Statement({ user }: { user: User }) {
 							const received = tx.type === "received";
 							return (
 								<button
-									key={tx.txHash + tx.type}
+									key={tx.id}
 									onClick={() => setSelectedTx(tx)}
 									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
 								>
@@ -239,11 +291,11 @@ export default function Statement({ user }: { user: User }) {
 									</div>
 									<span
 										className={`text-[15px] font-medium tabular shrink-0 ${
-											received ? "text-glow-sky" : "text-glow-pink"
+											hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
 										}`}
 									>
-										{received ? "+" : "−"}
-										{formatAmount(tx.amount, tx.currency)} {tx.currency}
+										{!hideBalance && (received ? "+" : "−")}
+										{hideBalance ? "••••" : `${formatAmount(tx.amount, tx.currency)} ${tx.currency}`}
 									</span>
 								</button>
 							);

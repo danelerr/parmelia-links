@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sileo";
+import { useTranslation } from "react-i18next";
 import { onAuthChange, type User } from "./lib/firebase";
 import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
@@ -21,7 +22,13 @@ const ScanQR = lazy(() => import("./pages/ScanQR"));
 const Swap = lazy(() => import("./pages/Swap"));
 const Statement = lazy(() => import("./pages/Statement"));
 const Contacts = lazy(() => import("./pages/Contacts"));
-const Deposit = lazy(() => import("./pages/Deposit"));
+const CrosschainSend = lazy(() => import("./pages/CrosschainSend"));
+const CrosschainReceive = lazy(() => import("./pages/CrosschainReceive"));
+const Receive = lazy(() => import("./pages/Receive"));
+const Earn = lazy(() => import("./pages/Earn"));
+const BinanceDeposit = lazy(() => import("./pages/BinanceDeposit"));
+const Recover = lazy(() => import("./pages/Recover"));
+const Security = lazy(() => import("./pages/Security"));
 
 // Capture ?ref=<username> from invitation links before the router strips it;
 // Onboarding attaches it to account creation for referral attribution.
@@ -31,10 +38,13 @@ if (refParam && /^[a-z0-9_-]{3,30}$/i.test(refParam)) {
 }
 
 function App() {
+	const { t } = useTranslation();
 	const [user, setUser] = useState<User | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [hasWallet, setHasWallet] = useState<boolean | null>(null);
-	const [walletCheckError, setWalletCheckError] = useState("");
+	// Flag, not a message: the copy is resolved with t() at render time so it
+	// always follows the active language.
+	const [walletCheckFailed, setWalletCheckFailed] = useState(false);
 
 	const checkWallet = async (currentUser: User) => {
 		try {
@@ -46,13 +56,11 @@ function App() {
 
 			const data = await res.json();
 			setHasWallet(!!data.walletAddress);
-			setWalletCheckError("");
+			setWalletCheckFailed(false);
 		} catch (error) {
 			console.error("Wallet check failed", error);
 			setHasWallet(null);
-			setWalletCheckError(
-				"No pudimos validar tu cuenta todavía. Reintenta en un momento.",
-			);
+			setWalletCheckFailed(true);
 		} finally {
 			setLoading(false);
 		}
@@ -68,11 +76,11 @@ function App() {
 
 			if (nextUser) {
 				setLoading(true);
-				setWalletCheckError("");
+				setWalletCheckFailed(false);
 				void checkWallet(nextUser);
 			} else {
 				setHasWallet(null);
-				setWalletCheckError("");
+				setWalletCheckFailed(false);
 				setLoading(false);
 			}
 		});
@@ -84,18 +92,18 @@ function App() {
 			<div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center">
 				<Logo className="w-20 animate-pulse" />
 				<p className="text-sm text-muted mt-5 max-w-xs">
-					{walletCheckError || "Cargando tu cuenta..."}
+					{walletCheckFailed ? t("app.walletCheckError") : t("app.loadingAccount")}
 				</p>
-				{walletCheckError && user && (
+				{walletCheckFailed && user && (
 					<button
 						onClick={() => {
 							setLoading(true);
-							setWalletCheckError("");
+							setWalletCheckFailed(false);
 							void checkWallet(user);
 						}}
 						className="mt-5 bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-sm font-medium"
 					>
-						Reintentar
+						{t("common.retry")}
 					</button>
 				)}
 			</div>
@@ -152,7 +160,18 @@ function App() {
 		if (loading) {
 			return splash;
 		}
-		return user ? <Navigate to="/" /> : <Login />;
+		if (user) {
+			// "Lost your key?" tapped before signing in (Login saves the flag, same
+			// pattern as parmelia:ref): consume it once and land on /recover instead
+			// of Home. If the magic link opened in another browser the flag is simply
+			// absent - the Home banner is the fallback entry.
+			if (localStorage.getItem("parmelia:recover-intent")) {
+				localStorage.removeItem("parmelia:recover-intent");
+				return <Navigate to="/recover" />;
+			}
+			return <Navigate to="/" />;
+		}
+		return <Login />;
 	}
 
 	return (
@@ -161,6 +180,7 @@ function App() {
 			<Toaster
 				position="top-center"
 				theme="dark"
+				offset={{ top: "calc(env(safe-area-inset-top) + 0.75rem)" }}
 				options={{
 					fill: "#1a1a1a",
 					roundness: 12,
@@ -192,7 +212,7 @@ function App() {
 						path="/send"
 						element={renderProtectedRoute(user ? <PayPage user={user} /> : null)}
 					/>
-					<Route path="/scan" element={renderProtectedRoute(<ScanQR />)} />
+					<Route path="/scan" element={renderProtectedRoute(user ? <ScanQR user={user} /> : null)} />
 					<Route
 						path="/swap"
 						element={renderProtectedRoute(user ? <Swap user={user} /> : null)}
@@ -206,15 +226,36 @@ function App() {
 						element={renderProtectedRoute(user ? <Contacts user={user} /> : null)}
 					/>
 					<Route
-						path="/deposit"
-						element={renderProtectedRoute(user ? <Deposit user={user} /> : null)}
+						path="/receive"
+						element={renderProtectedRoute(user ? <Receive user={user} /> : null)}
+					/>
+					<Route
+						path="/crosschain"
+						element={renderProtectedRoute(user ? <CrosschainSend user={user} /> : null)}
+					/>
+					<Route
+						path="/earn"
+						element={renderProtectedRoute(user ? <Earn user={user} /> : null)}
+					/>
+					<Route
+						path="/deposit/binance"
+						element={renderProtectedRoute(user ? <BinanceDeposit user={user} /> : null)}
 					/>
 					<Route
 						path="/settings"
 						element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
 					/>
+					<Route
+						path="/recover"
+						element={renderProtectedRoute(user ? <Recover user={user} /> : null)}
+					/>
+					<Route
+						path="/security"
+						element={renderProtectedRoute(user ? <Security user={user} /> : null)}
+					/>
 					<Route path="/pay" element={<PayPage user={user} />} />
-					<Route path="/pay/status" element={<PaymentStatus />} />
+					<Route path="/pay/status" element={<PaymentStatus user={user} />} />
+					<Route path="/cc/:recipient" element={<CrosschainReceive />} />
 					<Route path="/:username" element={<PayPage user={user} />} />
 				</Routes>
 				</Suspense>

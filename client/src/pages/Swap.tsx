@@ -5,11 +5,19 @@ import { fetchWithAuth } from "../lib/authFetch";
 import { humanizeError, notifyError } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { signWithPasskey } from "../lib/webauthn";
+import { submitUserOp } from "../lib/submit";
 import { hexToBytes } from "../lib/hex";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { useTranslation } from "react-i18next";
+import { formatNumber } from "../lib/format";
 import Logo from "../components/Logo";
+import AmountInput from "../components/AmountInput";
+import Screen from "../components/Screen";
+import BackHeader from "../components/BackHeader";
+import StageOverlay from "../components/StageOverlay";
+import TxResult from "../components/TxResult";
 
 type SwapToken = { symbol: string; name: string; decimals: number; isNative: boolean };
 
@@ -29,43 +37,6 @@ type Quote = {
 
 type SwapStage = "idle" | "preparing" | "signing" | "sending";
 
-function BackButton({ onClick }: { onClick: () => void }) {
-	const { t } = useTranslation();
-	return (
-		<button
-			onClick={onClick}
-			aria-label={t("common.back")}
-			className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-		>
-			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M19 12H5" />
-				<path d="M12 19l-7-7 7-7" />
-			</svg>
-		</button>
-	);
-}
-
-function StageOverlay({ stage }: { stage: SwapStage }) {
-	const { t } = useTranslation();
-	if (stage === "idle") return null;
-	const copy: Record<Exclude<SwapStage, "idle">, string> = {
-		preparing: t("swap.stagePreparing"),
-		signing: t("swap.stageSigning"),
-		sending: t("swap.stageSending"),
-	};
-	return (
-		<div className="fixed inset-0 z-50 bg-bg/92 backdrop-blur-sm flex flex-col items-center justify-center gap-6 animate-fade-in">
-			<Logo className="w-16 animate-float-glow glow-soft" />
-			<div className="flex flex-col items-center gap-3">
-				{stage !== "signing" && (
-					<div className="w-6 h-6 border-2 border-surface-2 border-t-sky rounded-full animate-spin" />
-				)}
-				<p className="text-[16px] text-text font-display">{copy[stage]}</p>
-			</div>
-		</div>
-	);
-}
-
 export default function Swap({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
@@ -80,8 +51,20 @@ export default function Swap({ user }: { user: User }) {
 	const [quoteError, setQuoteError] = useState("");
 	const [stage, setStage] = useState<SwapStage>("idle");
 	const [showDetails, setShowDetails] = useState(false);
-	const [result, setResult] = useState<{ txHash: string; received: string } | null>(null);
+	const [result, setResult] = useState<{
+		txHash: string | null;
+		received: string;
+		pending: boolean;
+		userOpHash: string;
+	} | null>(null);
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	// When the submit came back in flight (202/duplicate), keep polling on the
+	// success screen and flip the copy when the swap settles.
+	const poll = usePaymentStatus(
+		result?.pending ? user : null,
+		result?.pending ? result.userOpHash : null,
+	);
 
 	const loadBalances = useCallback(async () => {
 		try {
@@ -93,6 +76,11 @@ export default function Swap({ user }: { user: User }) {
 			/* non-blocking */
 		}
 	}, [user]);
+
+	// The balances only reflect the swap once it settles on-chain.
+	useEffect(() => {
+		if (poll.status === "confirmed") void loadBalances();
+	}, [poll.status, loadBalances]);
 
 	useEffect(() => {
 		(async () => {
@@ -135,7 +123,7 @@ export default function Swap({ user }: { user: User }) {
 		return () => {
 			if (debounceRef.current) clearTimeout(debounceRef.current);
 		};
-	}, [amount, tokenIn, tokenOut, user]);
+	}, [amount, tokenIn, tokenOut, user, t]);
 
 	function flip() {
 		setTokenIn(tokenOut);
@@ -159,22 +147,15 @@ export default function Swap({ user }: { user: User }) {
 			);
 
 			setStage("sending");
-			const submit = await apiFetch<{ txHash: string }>("/pay/submit", {
-				user,
-				body: {
-					userOpHash: prep.userOpHash,
-					authenticatorData: assertion.authenticatorData,
-					clientDataJSON: assertion.clientDataJSON,
-					r: assertion.r,
-					s: assertion.s,
-					credentialId: assertion.credentialId,
-					qx: assertion.qx,
-					qy: assertion.qy,
-				},
-			});
+			const submit = await submitUserOp(user, prep.userOpHash, assertion);
 
 			track("swap_completed", { from: tokenIn, to: tokenOut });
-			setResult({ txHash: submit.txHash, received: quote.amountOutEstimated });
+			setResult({
+				txHash: submit.txHash,
+				received: quote.amountOutEstimated,
+				pending: !submit.confirmed,
+				userOpHash: prep.userOpHash,
+			});
 			setQuote(null);
 			setAmount("");
 			void loadBalances();
@@ -187,49 +168,49 @@ export default function Swap({ user }: { user: User }) {
 
 	const balanceIn = balances[tokenIn];
 	const tokenOptions = tokens.map((t) => t.symbol);
+	const stageCopy: Record<Exclude<SwapStage, "idle">, string> = {
+		preparing: t("swap.stagePreparing"),
+		signing: t("swap.stageSigning"),
+		sending: t("swap.stageSending"),
+	};
 
-	// ===== Success screen =====
+	// ===== Success screen (also hosts the in-flight and failed states) =====
 	if (result) {
+		const swapFailed = result.pending && poll.status === "failed";
+		const settled = !result.pending || poll.status === "confirmed";
+		const effectiveTx = result.txHash ?? poll.txHash;
 		return (
-			<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-				<header className="flex items-center">
-					<BackButton onClick={() => navigate("/")} />
-				</header>
-				<div className="flex-1 flex flex-col items-center justify-center text-center">
-					<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky">
-						<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9ce3f4" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-							<polyline points="20 6 9 17 4 12" />
-						</svg>
-					</div>
-					<p className="text-[15px] text-text-muted mb-1">{t("swap.successLead")}</p>
-					<p className="font-display text-[40px] leading-none tabular mb-4">
-						{Number(result.received).toLocaleString("en-US", { maximumFractionDigits: 6 })}
-						<span className="text-text-muted text-[20px] ml-1.5">{tokenOut}</span>
-					</p>
-					<p className="text-[13px] text-text-faint mb-2">{t("swap.fundsUpdated")}</p>
-					<a
-						href={getExplorerTxUrl(result.txHash)}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="text-text-faint text-[12px]"
-					>
-						{t("swap.viewOnNetwork")}
-					</a>
-				</div>
+			<Screen>
+				<BackHeader onClick={() => navigate("/")} className="" />
+				<TxResult
+					state={swapFailed ? "failed" : settled ? "success" : "pending"}
+					lead={swapFailed ? t("swap.failedLead") : settled ? t("swap.successLead") : t("swap.pendingLead")}
+					amount={formatNumber(result.received, 6)}
+					unit={tokenOut}
+					body={swapFailed ? t("swap.failedBody") : settled ? t("swap.fundsUpdated") : t("swap.pendingBody")}
+				>
+					{effectiveTx && (
+						<a
+							href={getExplorerTxUrl(effectiveTx)}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-text-faint text-[12px]"
+						>
+							{t("swap.viewOnNetwork")}
+						</a>
+					)}
+				</TxResult>
 				<button onClick={() => setResult(null)} className="btn btn-primary btn-block">
 					{t("swap.doAnother")}
 				</button>
-			</div>
+			</Screen>
 		);
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<StageOverlay stage={stage} />
-			<header className="flex items-center gap-3 mb-7">
-				<BackButton onClick={() => navigate("/")} />
-				<h1 className="text-[22px]">{t("swap.title")}</h1>
-			</header>
+		<Screen>
+			<StageOverlay label={stage === "idle" ? null : stageCopy[stage]} spinner={stage !== "signing"} />
+			<BackHeader onClick={() => navigate("/")} title={t("swap.title")} />
 
 			{!swapsEnabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
@@ -250,20 +231,17 @@ export default function Swap({ user }: { user: User }) {
 									onClick={() => setAmount(balanceIn)}
 									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
 								>
-									{t("swap.balanceUseAll", { balance: Number(balanceIn).toLocaleString("en-US", { maximumFractionDigits: 6 }) })}
+									{t("swap.balanceUseAll", { balance: formatNumber(balanceIn, 6) })}
 								</button>
 							)}
 						</div>
 						<div className="flex items-center gap-3">
-							<input
-								type="number"
+							<AmountInput
+								name="amount"
+								aria-label={t("swap.youSwap")}
 								placeholder="0"
 								value={amount}
-								onChange={(e) => setAmount(e.target.value)}
-								step="any"
-								min="0"
-								inputMode="decimal"
-								autoFocus
+								onChange={setAmount}
 								className="flex-1 min-w-0 bg-transparent font-display text-[34px] leading-none text-text placeholder:text-text-faint tabular"
 							/>
 							<div className="seg-track shrink-0">
@@ -274,6 +252,7 @@ export default function Swap({ user }: { user: User }) {
 											if (s === tokenOut) flip();
 											else setTokenIn(s);
 										}}
+										aria-pressed={tokenIn === s}
 										data-active={tokenIn === s}
 										className="seg-item"
 									>
@@ -309,7 +288,7 @@ export default function Swap({ user }: { user: User }) {
 						<div className="flex items-center gap-3">
 							<p className="flex-1 min-w-0 font-display text-[34px] leading-none tabular truncate text-text">
 								{quote
-									? Number(quote.amountOutEstimated).toLocaleString("en-US", { maximumFractionDigits: 6 })
+									? formatNumber(quote.amountOutEstimated, 6)
 									: quoting
 										? "…"
 										: "0"}
@@ -322,6 +301,7 @@ export default function Swap({ user }: { user: User }) {
 											if (s === tokenIn) flip();
 											else setTokenOut(s);
 										}}
+										aria-pressed={tokenOut === s}
 										data-active={tokenOut === s}
 										className="seg-item"
 									>
@@ -333,7 +313,9 @@ export default function Swap({ user }: { user: User }) {
 					</div>
 
 					{quoteError && (
-						<p className="text-glow-pink text-[13px] text-center mb-4">{quoteError}</p>
+						<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+							{quoteError}
+						</p>
 					)}
 
 					{quote && (
@@ -341,7 +323,7 @@ export default function Swap({ user }: { user: User }) {
 							<div className="flex items-center justify-between text-[13px] mb-1.5">
 								<span className="text-text-muted">{t("swap.minReceived")}</span>
 								<span className="text-text tabular">
-									{Number(quote.minimumAmountOut).toLocaleString("en-US", { maximumFractionDigits: 6 })} {quote.tokenOut}
+									{formatNumber(quote.minimumAmountOut, 6)} {quote.tokenOut}
 								</span>
 							</div>
 							<div className="flex items-center justify-between text-[13px]">
@@ -352,7 +334,7 @@ export default function Swap({ user }: { user: User }) {
 								<div className="flex items-center justify-between text-[13px] mt-1.5">
 									<span className="text-text-muted">{t("swap.parmeliaService", { pct: (quote.parmeliaFeeBps / 100).toFixed(2) })}</span>
 									<span className="text-text tabular">
-										{Number(quote.parmeliaFee).toLocaleString("en-US", { maximumFractionDigits: 6 })} {quote.tokenOut}
+										{formatNumber(quote.parmeliaFee, 6)} {quote.tokenOut}
 									</span>
 								</div>
 							)}
@@ -386,6 +368,6 @@ export default function Swap({ user }: { user: User }) {
 					</p>
 				</>
 			)}
-		</div>
+		</Screen>
 	);
 }

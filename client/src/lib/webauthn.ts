@@ -1,5 +1,7 @@
 // WebAuthn helpers for P256 passkey creation and signing
 
+import i18n from "./i18n";
+
 const PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
 
 type RememberedPasskey = {
@@ -79,6 +81,29 @@ function writeRememberedPasskeys(passkeys: Record<string, RememberedPasskey>) {
 	window.localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeys));
 }
 
+/**
+ * Whether any passkey remembered on this device is a REGISTERED signer of the
+ * account. Signers are ERC-7913 bytes (verifier(20) || qx(32) || qy(32)), so
+ * matching by qx||qy suffix works across verifier redeploys. Precise where
+ * "has any remembered passkey" is not: orphan credentials (created but never
+ * registered on-chain) don't count. Still a heuristic for ABSENCE - synced
+ * passkeys can sign without a local hint - so use it only to SUGGEST recovery,
+ * never to block.
+ */
+export function hasUsableKeyForSigners(signers: readonly string[]): boolean {
+	const remembered = Object.values(readRememberedPasskeys());
+	if (remembered.length === 0 || signers.length === 0) return false;
+	return remembered.some((passkey) => {
+		const suffix = (
+			passkey.qx.replace(/^0x/, "") + passkey.qy.replace(/^0x/, "")
+		).toLowerCase();
+		if (suffix.length !== 128) return false;
+		return signers.some(
+			(signer) => typeof signer === "string" && signer.toLowerCase().endsWith(suffix),
+		);
+	});
+}
+
 function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
 	const remembered = readRememberedPasskeys();
 	const existing = remembered[passkey.credentialId];
@@ -146,7 +171,7 @@ export async function createPasskey(
 }> {
 	const challenge = crypto.getRandomValues(new Uint8Array(32));
 	const rpId = getRelyingPartyId();
-	const displayLabel = label?.trim() || "Cuenta Parmelia";
+	const displayLabel = label?.trim() || i18n.t("webauthn.accountLabel");
 
 	const credential = (await navigator.credentials.create({
 		publicKey: {
@@ -168,7 +193,7 @@ export async function createPasskey(
 		},
 	})) as PublicKeyCredential | null;
 
-	if (!credential) throw new Error("No se pudo crear la credencial");
+	if (!credential) throw new Error(i18n.t("webauthn.createError"));
 
 	const attestation = credential.response as AuthenticatorAttestationResponse;
 	const { qx, qy } = extractP256PublicKey(attestation);
@@ -185,12 +210,12 @@ export async function createPasskey(
 /** Extract P256 public key (qx, qy) from AuthenticatorAttestationResponse */
 function extractP256PublicKey(attestation: AuthenticatorAttestationResponse): { qx: string; qy: string } {
 	const spkiDer = attestation.getPublicKey();
-	if (!spkiDer) throw new Error("No se pudo obtener la clave publica");
+	if (!spkiDer) throw new Error(i18n.t("webauthn.publicKeyError"));
 
 	const spki = new Uint8Array(spkiDer);
 	const uncompressedOffset = spki.length - 65;
 	if (spki[uncompressedOffset] !== 0x04) {
-		throw new Error("Formato de clave publica inesperado");
+		throw new Error(i18n.t("webauthn.publicKeyFormatError"));
 	}
 	const x = spki.slice(uncompressedOffset + 1, uncompressedOffset + 33);
 	const y = spki.slice(uncompressedOffset + 33, uncompressedOffset + 65);
@@ -257,6 +282,15 @@ export async function signWithPasskey(
 			assertion = await attempt();
 			if (assertion) break;
 		} catch (error) {
+			// A dismissed/blocked prompt (NotAllowedError/AbortError) must NOT chain
+			// straight into a second prompt - propagate so the UI shows the calm
+			// "cancelled" notice and the user retries explicitly.
+			if (
+				error instanceof DOMException &&
+				(error.name === "NotAllowedError" || error.name === "AbortError")
+			) {
+				throw error;
+			}
 			requestError = error;
 		}
 	}
@@ -265,7 +299,7 @@ export async function signWithPasskey(
 		if (requestError instanceof Error) {
 			throw requestError;
 		}
-		throw new Error("Firma cancelada");
+		throw new Error(i18n.t("webauthn.cancelled"));
 	}
 
 	const response = assertion.response as AuthenticatorAssertionResponse;

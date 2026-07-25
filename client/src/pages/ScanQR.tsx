@@ -1,6 +1,12 @@
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import BackHeader from "../components/BackHeader";
+import AddressQRCard from "../components/AddressQRCard";
+import { QRCodeSVG } from "qrcode.react";
+import type { User } from "../lib/firebase";
+import { SERVER_URL } from "../lib/api";
+import { fetchWithAuth } from "../lib/authFetch";
 import i18n from "../lib/i18n";
 
 type FocusCapabilities = MediaTrackCapabilities & {
@@ -216,7 +222,7 @@ function getNavigationTargetFromQr(rawValue: string) {
   return null;
 }
 
-export default function ScanQR() {
+export default function ScanQR({ user }: { user: User }) {
   const navigate = useViewTransitionNavigate();
   const { t } = useTranslation();
 
@@ -237,6 +243,26 @@ export default function ScanQR() {
   const [message, setMessage] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [scannerVersion, setScannerVersion] = useState(0);
+  // "Mi QR": the payable profile code lives INSIDE the scanner screen
+  // (UX_DESIGN §6bis) — one place for both sides of a QR moment.
+  const [view, setView] = useState<"scan" | "myqr">("scan");
+  const [profile, setProfile] = useState<{ username: string | null; walletAddress: string | null } | null>(null);
+
+  // Lazy profile fetch, first time the Mi QR tab opens.
+  useEffect(() => {
+    if (view !== "myqr" || profile) return;
+    (async () => {
+      try {
+        const res = await fetchWithAuth(user, `${SERVER_URL}/user/profile`);
+        if (res.ok) {
+          const data = await res.json();
+          setProfile({ username: data.username || null, walletAddress: data.walletAddress || null });
+        }
+      } catch {
+        /* non-blocking; the tab shows a retry-able error state */
+      }
+    })();
+  }, [view, profile, user]);
 
   const getOrCreateBarcodeDetector = useCallback(async () => {
     if (barcodeDetectorRef.current) {
@@ -368,7 +394,7 @@ export default function ScanQR() {
 
       setMessage(t("scan.notParmelia"));
     },
-    [navigate, playDetectedFeedback, stopCamera],
+    [navigate, playDetectedFeedback, stopCamera, t],
   );
 
   const handleImportFile = useCallback(
@@ -429,10 +455,12 @@ export default function ScanQR() {
         setIsImporting(false);
       }
     },
-    [getOrCreateBarcodeDetector, handleQRResult],
+    [getOrCreateBarcodeDetector, handleQRResult, t],
   );
 
   useEffect(() => {
+    // Mi QR tab: camera stays off (the previous run's cleanup stopped it).
+    if (view !== "scan") return;
     let cancelled = false;
 
     function scheduleNextFrame(
@@ -676,24 +704,55 @@ export default function ScanQR() {
         audioContextRef.current = null;
       }
     };
-  }, [getOrCreateBarcodeDetector, handleQRResult, scannerVersion, stopCamera]);
+  }, [getOrCreateBarcodeDetector, handleQRResult, scannerVersion, stopCamera, t, view]);
 
   return (
     <div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-      <header className="flex items-center gap-3 mb-7">
-        <button
-          onClick={() => navigate("/")}
-          aria-label={t("common.back")}
-          className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-surface transition-colors"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M19 12H5" />
-            <path d="M12 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <h1 className="text-[22px]">{t("scan.title")}</h1>
-      </header>
+      <BackHeader onClick={() => navigate("/")} title={t("scan.title")} />
 
+      <div className="seg-track seg-track-block mb-5">
+        {(["scan", "myqr"] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            aria-pressed={view === v}
+            data-active={view === v}
+            className="seg-item"
+          >
+            {v === "scan" ? t("scan.tabScan") : t("scan.tabMyQr")}
+          </button>
+        ))}
+      </div>
+
+      {view === "myqr" ? (
+        <div className="flex-1 flex flex-col items-center">
+          <div className="w-full max-w-[340px] bg-surface border border-border rounded-[22px] p-6 shadow-e1">
+            {!profile ? (
+              <p className="text-[13px] text-text-muted text-center py-10">{t("common.loading")}</p>
+            ) : profile.username ? (
+              <>
+                <div className="flex justify-center mb-4">
+                  <div className="p-3 bg-white rounded-2xl">
+                    <QRCodeSVG
+                      value={`${APP_URL}/${profile.username}`}
+                      size={200}
+                      bgColor="#ffffff"
+                      fgColor="#0A0A0B"
+                      level="M"
+                    />
+                  </div>
+                </div>
+                <p className="text-center font-display text-[18px] mb-1">@{profile.username}</p>
+                <p className="text-[12px] text-text-muted text-center leading-relaxed">{t("scan.myQrHint")}</p>
+              </>
+            ) : profile.walletAddress ? (
+              <AddressQRCard address={profile.walletAddress} qrSize={200} label={t("scan.myQrAddressHint")} />
+            ) : (
+              <p className="text-[13px] text-text-muted text-center py-10">{t("scan.myQrError")}</p>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="flex-1 flex flex-col items-center">
         {cameraError ? (
           <div className="w-full max-w-[340px] aspect-square rounded-[22px] overflow-hidden border border-glow-pink/40 mb-6 bg-surface flex items-center justify-center px-8 text-center">
@@ -766,6 +825,7 @@ export default function ScanQR() {
 
         <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImportFile} />
       </div>
+      )}
     </div>
   );
 }

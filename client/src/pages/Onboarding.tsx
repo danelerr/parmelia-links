@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { type User, logOut } from "../lib/firebase";
 import { apiFetch } from "../lib/api";
+import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { createPasskey } from "../lib/webauthn";
@@ -48,10 +49,11 @@ export default function Onboarding({
 
 			// Referral attribution: invite link (?ref) or the manually entered code.
 			const ref = inviteCode.trim() || undefined;
-			await apiFetch("/account/create", {
+			const operation = await apiFetch<AccountOperationResponse>("/account/create", {
 				user,
 				body: { credentialId, qx, qy, ref, turnstileToken },
 			});
+			await waitForAccountOperation(user, operation);
 
 			localStorage.removeItem("parmelia:ref");
 			track("wallet_created", { referred: !!ref });

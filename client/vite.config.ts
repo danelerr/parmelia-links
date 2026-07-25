@@ -11,9 +11,13 @@ export default defineConfig({
         // Split Firebase Auth into its own chunk. It's the heaviest dependency
         // and almost never changes, so isolating it lets the browser keep it
         // cached across deploys of our own (frequently changing) app code.
-        manualChunks: {
-          firebase: ["firebase/app", "firebase/auth"],
-        },
+		manualChunks(id) {
+		  if (id.includes("/node_modules/firebase/") || id.includes("/node_modules/@firebase/")) return "firebase";
+		  if (id.includes("/node_modules/react/") || id.includes("/node_modules/react-dom/") || id.includes("/node_modules/react-router")) return "react";
+		  if (id.includes("/node_modules/i18next")) return "i18n";
+		  if (id.includes("/node_modules/swr/")) return "data";
+		  if (id.includes("/node_modules/sileo/")) return "notifications";
+		},
       },
     },
   },

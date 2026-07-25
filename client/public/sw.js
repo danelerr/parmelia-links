@@ -51,12 +51,16 @@ self.addEventListener("fetch", (event) => {
 	}
 
 	// App navigations → network-first, offline falls back to the cached shell.
+	// Only OK responses are cached: a 404/500 (or an error page) must never
+	// replace the working shell and get served offline forever.
 	if (request.mode === "navigate") {
 		event.respondWith(
 			fetch(request)
 				.then((res) => {
-					const copy = res.clone();
-					caches.open(CACHE).then((cache) => cache.put(SHELL, copy));
+					if (res.ok) {
+						const copy = res.clone();
+						caches.open(CACHE).then((cache) => cache.put(SHELL, copy));
+					}
 					return res;
 				})
 				.catch(() => caches.match(SHELL)),
