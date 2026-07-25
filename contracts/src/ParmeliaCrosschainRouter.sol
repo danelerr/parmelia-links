@@ -54,9 +54,11 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     error InvalidTreasury();
     error InvalidRecipient();
     error InvalidAmount();
+    error InvalidOpId();
     error FeeTooHigh(uint256 fee, uint256 maxAllowed);
 
     event TreasuryUpdated(address indexed previous, address indexed current);
+    event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
     event CrosschainSent(
         bytes32 indexed opId,
         address indexed sender,
@@ -72,8 +74,8 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     constructor(address initialOwner, IERC20 usdc, ITokenMessengerV2 messenger, address initialTreasury)
         Ownable(initialOwner)
     {
-        if (address(usdc) == address(0)) revert InvalidToken();
-        if (address(messenger) == address(0)) revert InvalidMessenger();
+        if (address(usdc).code.length == 0) revert InvalidToken();
+        if (address(messenger).code.length == 0) revert InvalidMessenger();
         if (initialTreasury == address(0)) revert InvalidTreasury();
         USDC = usdc;
         TOKEN_MESSENGER = messenger;
@@ -89,14 +91,20 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         treasury = newTreasury;
     }
 
-    function pause() external onlyOwner { _pause(); }
-    function unpause() external onlyOwner { _unpause(); }
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
 
     /// @notice Recover tokens sent here by mistake (the router holds no funds between txs).
     function emergencyWithdraw(address token, address to, uint256 amount) external onlyOwner {
         if (token == address(0)) revert InvalidToken();
         if (to == address(0)) revert InvalidTreasury();
         IERC20(token).safeTransfer(to, amount);
+        emit EmergencyWithdraw(token, to, amount);
     }
 
     // ─── Core ─────────────────────────────────────────────────────────────────
@@ -113,6 +121,8 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
      * @param maxFee Max CCTP fee accepted for a Fast transfer (atomic units).
      * @param minFinalityThreshold 1000 = Fast, 2000 = Standard (CCTP semantics).
      */
+    // USDC capitalization is part of the deployed public ABI.
+    // forge-lint: disable-next-line(mixed-case-function)
     function bridgeUSDC(
         bytes32 opId,
         uint256 amount,
@@ -122,6 +132,9 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 maxFee,
         uint32 minFinalityThreshold
     ) external nonReentrant whenNotPaused {
+        // opId keys the off-chain reconciliation of this burn; a zero id would
+        // produce an unattributable CrosschainSent event.
+        if (opId == bytes32(0)) revert InvalidOpId();
         if (amount == 0) revert InvalidAmount();
         if (mintRecipient == bytes32(0)) revert InvalidRecipient();
 
@@ -129,7 +142,6 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         if (fee > maxAllowed) revert FeeTooHigh(fee, maxAllowed);
 
         uint256 net = amount - fee;
-        if (net == 0) revert InvalidAmount();
 
         // Effects/interactions: pull fee + net, then burn the net via CCTP.
         if (fee > 0) USDC.safeTransferFrom(msg.sender, treasury, fee);

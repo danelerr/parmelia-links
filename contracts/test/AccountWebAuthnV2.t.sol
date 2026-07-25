@@ -357,6 +357,153 @@ contract AccountWebAuthnV2Test is Test {
         account.executeRecovery();
     }
 
+    // ========== Recovery Proposal Validation (griefing hardening) ==========
+    // A malformed proposal used to be accepted and only revert inside
+    // executeRecovery 48h later — for a user who lost their passkey and could
+    // not cancel, that bricked recovery permanently.
+
+    function test_recovery_proposeRejectsEmptySigners() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory none = new bytes[](0);
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(none, 1);
+    }
+
+    function test_recovery_proposeRejectsZeroThreshold() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(newSigners, 0);
+    }
+
+    function test_recovery_proposeRejectsThresholdAboveCount() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(newSigners, 2);
+    }
+
+    function test_recovery_proposeRejectsDuplicateSigners() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](2);
+        newSigners[0] = _buildSigner(QX2, QY2);
+        newSigners[1] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(newSigners, 1);
+    }
+
+    function test_recovery_proposeRejectsShortSignerBytes() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = hex"deadbeef"; // < 20 bytes: not a valid ERC-7913 signer
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(newSigners, 1);
+    }
+
+    function test_recovery_proposeRejectsOversizedProposal() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](33);
+        for (uint256 i = 0; i < 33; i++) {
+            newSigners[i] = abi.encodePacked(address(verifier), bytes32(i + 1), bytes32(i + 2));
+        }
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.InvalidRecoveryProposal.selector);
+        account.proposeRecovery(newSigners, 1);
+    }
+
+    function test_recovery_proposeWithoutGuardianRevertsNoGuardianSet() public {
+        // Account deployed WITHOUT a guardian: the error must be NoGuardianSet
+        // (previously unreachable — OnlyGuardian shadowed it).
+        bytes[] memory signers = new bytes[](1);
+        signers[0] = _buildSigner(QX, QY);
+        bytes memory initData = _buildInitData(signers, 1, address(0));
+        AccountWebAuthnV2 account = AccountWebAuthnV2(payable(factory.createAccount(initData)));
+
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(attacker);
+        vm.expectRevert(AccountWebAuthnV2.NoGuardianSet.selector);
+        account.proposeRecovery(newSigners, 1);
+    }
+
+    // ========== Guardian Cancel + Guardian Rotation ==========
+
+    function test_recovery_guardianCanCancelOwnProposal() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        account.proposeRecovery(newSigners, 1);
+
+        vm.prank(guardian);
+        account.guardianCancelRecovery();
+
+        assertFalse(account.isRecoveryPending(), "guardian cancel should clear the proposal");
+
+        // Re-propose restarts the FULL timelock (cancel grants no shortcut).
+        vm.prank(guardian);
+        account.proposeRecovery(newSigners, 1);
+        (uint256 executeAfter,,) = account.getPendingRecovery();
+        assertEq(executeAfter, block.timestamp + 48 hours, "re-propose restarts the 48h clock");
+    }
+
+    function test_recovery_attackerCannotGuardianCancel() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        account.proposeRecovery(newSigners, 1);
+
+        vm.prank(attacker);
+        vm.expectRevert(AccountWebAuthnV2.OnlyGuardian.selector);
+        account.guardianCancelRecovery();
+    }
+
+    function test_recovery_guardianCancelRequiresProposal() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+
+        vm.prank(guardian);
+        vm.expectRevert(AccountWebAuthnV2.RecoveryNotProposed.selector);
+        account.guardianCancelRecovery();
+    }
+
+    function test_recovery_setGuardianClearsPendingProposal() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+
+        vm.prank(guardian);
+        account.proposeRecovery(newSigners, 1);
+        assertTrue(account.isRecoveryPending());
+
+        // Rotating (or removing) the guardian voids the old guardian's proposal.
+        vm.prank(address(account));
+        account.setGuardian(makeAddr("newGuardian"));
+
+        assertFalse(account.isRecoveryPending(), "pending recovery must not survive a guardian rotation");
+
+        // Even past the old timelock, nothing is executable.
+        vm.warp(block.timestamp + 48 hours + 1);
+        vm.expectRevert(AccountWebAuthnV2.RecoveryNotProposed.selector);
+        account.executeRecovery();
+    }
+
     // ========== UUPS Upgrade Tests ==========
 
     function test_upgrade_onlyEntryPointOrSelf() public {
@@ -376,6 +523,41 @@ contract AccountWebAuthnV2Test is Test {
         // Self can upgrade (simulating a signed UserOp execution)
         vm.prank(address(account));
         account.upgradeToAndCall(address(newImpl), "");
+    }
+
+    /// Upgrade-path regression (AUDIT M-3): a V3 that only APPENDS storage must
+    /// preserve every V2 slot — signers, guardian, and the pending recovery —
+    /// and its appended variable must work without clobbering them.
+    function test_upgrade_preservesStateWithAppendedStorage() public {
+        AccountWebAuthnV2 account = _deploySingleSignerAccount();
+
+        // Build meaningful pre-upgrade state, including mid-flight recovery.
+        bytes[] memory newSigners = new bytes[](1);
+        newSigners[0] = _buildSigner(QX2, QY2);
+        vm.prank(guardian);
+        account.proposeRecovery(newSigners, 1);
+        (uint256 executeAfterBefore,,) = account.getPendingRecovery();
+
+        AccountV3AppendedStorageMock newImpl = new AccountV3AppendedStorageMock();
+        vm.prank(address(account));
+        account.upgradeToAndCall(address(newImpl), "");
+
+        AccountV3AppendedStorageMock upgraded = AccountV3AppendedStorageMock(payable(address(account)));
+
+        // Every V2 slot survived.
+        assertEq(upgraded.guardian(), guardian, "guardian must survive the upgrade");
+        assertTrue(upgraded.isSigner(_buildSigner(QX, QY)), "signer set must survive the upgrade");
+        assertTrue(upgraded.isRecoveryPending(), "pending recovery must survive the upgrade");
+        (uint256 executeAfterAfter, bytes[] memory pending,) = upgraded.getPendingRecovery();
+        assertEq(executeAfterAfter, executeAfterBefore, "recovery timelock must survive");
+        assertEq(keccak256(pending[0]), keccak256(newSigners[0]), "pending signers must survive");
+
+        // The appended variable works and does not clobber earlier slots.
+        vm.prank(address(upgraded));
+        upgraded.setNewFeature(42);
+        assertEq(upgraded.newFeature(), 42, "appended storage must be writable");
+        assertEq(upgraded.guardian(), guardian, "appended writes must not clobber V2 slots");
+        assertTrue(upgraded.isRecoveryPending(), "appended writes must not clobber recovery state");
     }
 
     // ========== ERC7821 Executor Tests ==========
@@ -399,5 +581,16 @@ contract AccountWebAuthnV2Test is Test {
         bytes[] memory signers = account.getSigners(0, type(uint64).max);
         assertEq(signers.length, 1, "should return 1 signer");
         assertEq(keccak256(signers[0]), keccak256(_buildSigner(QX, QY)), "signer should match");
+    }
+}
+
+/// @dev A future V3 done RIGHT: inherits V2 unchanged so every existing slot
+///      keeps its position, and only APPENDS new state after it. Used by the
+///      upgrade-path regression test (AUDIT M-3).
+contract AccountV3AppendedStorageMock is AccountWebAuthnV2 {
+    uint256 public newFeature;
+
+    function setNewFeature(uint256 value) external onlyEntryPointOrSelf {
+        newFeature = value;
     }
 }

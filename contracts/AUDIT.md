@@ -4,18 +4,27 @@ Revisión interna de seguridad del conjunto de contratos en `contracts/src`.
 Enfoque principal: **seguridad de fondos** y **actualizabilidad** (la preocupación
 declarada tras pérdidas previas en Base), más una revisión general.
 
-- Fecha: 2026-06-16
-- Alcance: 5 contratos (commit de trabajo actual, rama `main`)
-- Solidity `^0.8.27`, OpenZeppelin Contracts v5, Foundry (`via_ir`, optimizer on, runs 1.000.000)
-- Estado de pruebas: **43/43 pasan** (`forge test`)
+- Fecha: 2026-06-16 · Actualizado: 2026-07-14 (tercera pasada: gate semántico
+  append-only de storage layout, cobertura por contrato bloqueante, guardas de
+  EntryPoint/implementation/sponsor cero, política mainnet fail-closed de roles
+  de deploy, eventos de rotación y pruebas administrativas completas;
+  segunda pasada: M-4 stake
+  irrecuperable + L-4 encontrados y resueltos; L-1 y L-3 resueltos en código;
+  test de upgrade M-3; solc pineado a 0.8.28; fuzz de conservación en ambos
+  routers, tampering de digest/userOp, ciclo de stake; cap inicial de gas en el
+  script de deploy)
+- Alcance: 6 contratos (commit de trabajo actual, rama `main`)
+- Solidity `0.8.28` (pineado), OpenZeppelin Contracts v5, Foundry (`via_ir`, optimizer on, runs 1.000.000)
+- Estado de pruebas: **124/124 pasan** (`forge test`), incluyendo fuzz (256 runs por propiedad)
 - Tamaños de bytecode (límite EIP-170 = 24.576):
 
 | Contrato | Runtime (bytes) | Margen |
 |---|---|---|
-| AccountWebAuthnV2 | 15.393 | OK (62% del límite) |
+| AccountWebAuthnV2 | 15.690 | OK (64% del límite) |
 | AccountFactoryV2 | 1.793 | OK |
-| ParmeliaPaymaster | 4.513 | OK |
-| ParmeliaPaymentRouter | 5.668 | OK |
+| ParmeliaPaymaster | 5.307 | OK |
+| ParmeliaPaymentRouter | 6.215 | OK |
+| ParmeliaCrosschainRouter | 4.203 | OK |
 | ERC7913WebAuthnVerifier | 5.196 | OK |
 
 ## Veredicto
@@ -37,9 +46,11 @@ Ver la sección "Actualizabilidad y por qué ya no se pierden fondos".
 | M-1 | Media | AccountWebAuthnV2 | Guardian compartido (clave del backend) |
 | M-2 | Media | Paymaster / Router / Account | Gestión de claves del backend (firmante/guardian) |
 | M-3 | Media | AccountWebAuthnV2 | Disciplina de layout de almacenamiento en upgrades |
-| L-1 | Baja | ParmeliaPaymaster | Sin tope on-chain de coste de gas por op |
-| L-2 | Baja | ParmeliaPaymentRouter | Tokens fee-on-transfer / rebasing |
-| L-3 | Baja | AccountWebAuthnV2 | Griefing de recovery (propuesta inválida bloquea) |
+| M-4 | Media | ParmeliaPaymaster | Stake irrecuperable: `addStake` sin `unlockStake`/`withdrawStake` — resuelto en código, pendiente redeploy |
+| L-1 | Baja | ParmeliaPaymaster | Sin tope on-chain de coste de gas por op — resuelto en código, pendiente redeploy |
+| L-2 | Baja | ParmeliaPaymentRouter | Tokens fee-on-transfer / rebasing — política documentada en `setTokenSupported` |
+| L-3 | Baja | AccountWebAuthnV2 | Griefing de recovery — resuelto en código, pendiente redeploy |
+| L-4 | Baja | ParmeliaCrosschainRouter | `opId` cero no validado + `emergencyWithdraw` sin evento — resuelto en código |
 | I-x | Info | Varios | Notas informativas (ver detalle) |
 
 ---
@@ -87,14 +98,28 @@ Recomendaciones:
 - Documentar el procedimiento de respuesta ante incidente (rotar guardian vía
   `setGuardian` en una UserOp).
 
-### L-3 (Baja) — Griefing de recovery
+### L-3 (Baja) — Griefing de recovery — RESUELTO EN CÓDIGO (2026-07-02, pendiente redeploy)
 
-`RecoveryAlreadyProposed` impide proponer una nueva recovery mientras haya una
-pendiente. Un guardian malicioso podría proponer signers inválidos (p. ej. threshold
-0, que `MultiSignerERC7913` rechaza), dejando la propuesta atascada hasta que el dueño
-ejecute `cancelRecovery`. Impacto: molestia (el usuario gasta una operación en
-cancelar), no robo. El peor caso (toma de control) ya está cubierto por el timelock +
-cancel. Aceptable.
+Hallazgo original: `RecoveryAlreadyProposed` impide proponer una nueva recovery
+mientras haya una pendiente, y una propuesta malformada (threshold 0, threshold >
+count, duplicados) solo revertía dentro de `executeRecovery` — 48h después, para
+un usuario que por definición perdió su passkey y NO puede ejecutar
+`cancelRecovery`. Es decir: peor que una molestia, podía dejar la recovery
+inutilizable de forma permanente para el caso real de uso.
+
+Resolución implementada:
+- `proposeRecovery` valida la propuesta al proponer: signers no vacíos (1..32),
+  threshold en rango (1..count), sin duplicados, cada signer con al menos 20
+  bytes (`InvalidRecoveryProposal`). El orden de checks se corrigió
+  (`NoGuardianSet` ahora es alcanzable).
+- `guardianCancelRecovery()`: el guardian puede cancelar su propia propuesta
+  (p. ej. un signer que ya existe, que `_addSigners` rechazaría en execute).
+  No otorga poder extra: solo puede re-proponer, reiniciando el timelock de 48h.
+- `setGuardian` cancela cualquier propuesta pendiente: una recovery propuesta
+  bajo la autoridad del guardian anterior no sobrevive a su rotación/remoción.
+
+Cubierto por 11 tests nuevos (validación negativa, cancel del guardian,
+rotación). NOTA: rige on-chain recién tras el redeploy de la implementación.
 
 ### Informativo
 
@@ -147,15 +172,45 @@ con ventana `[validAfter, validUntil]` firmada.
 - `Ownable2Step`: transferencia de propiedad en dos pasos (evita enviar el control a
   una dirección equivocada).
 - `setSponsorSigner`, `withdrawTo`, `addStake` bajo `onlyOwner`.
+- `SponsorSignerSet` deja toda rotación del firmante indexable; el deploy mainnet
+  configura el signer y abre el handoff `Ownable2Step` antes de finalizar.
 
-### L-1 (Baja) — Sin tope on-chain de coste por operación
+### L-1 (Baja) — Sin tope on-chain de coste por operación — RESUELTO EN CÓDIGO (2026-07-02, pendiente redeploy)
 
-El paymaster patrocina el gas en su totalidad sin un límite máximo de coste por op a
-nivel de contrato; el control recae en la firma del backend. Si la clave
-`sponsorSigner` se filtra, un atacante podría drenar el depósito del paymaster en el
-EntryPoint patrocinando operaciones. Mitigaciones: mantener el depósito acotado,
-monitorizar, y rotar el firmante. Como defensa en profundidad, se podría añadir un
-tope de coste de gas on-chain. Ver también M-2.
+Hallazgo original: el paymaster patrocinaba el gas sin límite máximo de coste por
+op a nivel de contrato; el control recaía solo en la firma del backend. Si la
+clave `sponsorSigner` se filtra, un atacante podría drenar el depósito del
+paymaster patrocinando operaciones enormes.
+
+Resolución implementada:
+- `maxSponsoredGasCost` (owner-settable via `setMaxSponsoredGasCost`, 0 =
+  sin tope): `validatePaymasterUserOp` rechaza cualquier op cuyo `maxCost`
+  supere el tope, aunque la firma del sponsor sea válida. Defensa en
+  profundidad ante fuga del firmante; setear un valor tras el deploy.
+- Además, un mismatch de firma ahora DEVUELVE `SIG_VALIDATION_FAILED`
+  (authorizer = address(1)) en vez de revertir, como recomienda la spec
+  ERC-4337 (los bundlers distinguen firma inválida de paymaster roto). Los
+  problemas estructurales (datos faltantes, tope excedido) siguen revirtiendo.
+
+Cubierto por tests nuevos. NOTA: rige on-chain recién tras el redeploy.
+Mitigaciones operativas vigentes mientras tanto: depósito acotado,
+monitorización y rotación del firmante. Ver también M-2.
+
+### M-4 (Media) — Stake irrecuperable en el EntryPoint — RESUELTO EN CÓDIGO (2026-07-02, pendiente redeploy)
+
+Hallazgo: el paymaster exponía `addStake` (y `withdrawTo` para el **depósito**),
+pero NO `unlockStake()` ni `withdrawStake()` del EntryPoint. Como el stake se
+acredita a `address(paymaster)` y solo el propio contrato puede pedir su
+desbloqueo/retiro, cualquier ETH stakeado quedaba **bloqueado para siempre**
+(puerta de una sola dirección). Impacto acotado a fondos del operador (no de
+usuarios), pero es pérdida permanente y el script de deploy stakea en cada
+despliegue.
+
+Resolución: `unlockStake()` y `withdrawStake(address payable)` bajo `onlyOwner`,
+con test del ciclo completo (`test_stakeLifecycleForwardsToEntryPoint`).
+NOTA: el paymaster desplegado hoy (`0x31f3…`) tiene este defecto: su stake de
+testnet (0.001 ETH) es irrecuperable. Asumirlo como coste hundido y no stakear
+más en esa instancia; el próximo deploy usa el contrato corregido.
 
 ### Informativo
 
@@ -206,8 +261,10 @@ defensa en profundidad.
 
 Con un token que cobra comisión en transfer, el merchant recibiría menos de
 `amount - fee`. Como `supportedTokens` es una whitelist del owner (USDC/WBTC,
-ERC-20 estándar), no aplica en la práctica. Recomendación: no listar tokens con
-fee-on-transfer/rebasing.
+ERC-20 estándar), no aplica en la práctica. La política (solo ERC-20 estándar,
+nunca fee-on-transfer/rebasing, y por qué el contrato no mide deltas de balance
+a propósito) quedó documentada en el natspec de `setTokenSupported` — el punto
+exacto donde un futuro owner tomaría la decisión.
 
 ### Informativo
 
@@ -254,18 +311,26 @@ Formas en que *todavía* se podrían perder fondos (y cómo evitarlas):
 - **Migración de cadena**: los fondos quedan en la cadena origen. No es un bug de
   contrato, es una decisión de despliegue. Nunca "migrar" redeployando; usar un
   bridge.
-- **M-3 (Media) — Upgrade con layout de almacenamiento roto.** Las variables propias
-  de AccountWebAuthnV2 (`guardian`, `recoveryExecutableAfter`, `_pendingSigners`,
-  `_pendingThreshold`) usan almacenamiento secuencial clásico (los mixins de OZ v5 sí
-  usan almacenamiento namespaced ERC-7201, así que no colisionan entre sí). En un
-  futuro V3 la regla es **solo añadir** variables nuevas al final; nunca reordenar,
-  insertar entre medias ni cambiar tipos. Recomendaciones:
-  - Añadir un chequeo de **storage-layout diff en CI** (`forge inspect <C> storage-layout`
-    o el plugin de upgrades de OZ) antes de cada upgrade.
-  - Añadir un test de ruta de upgrade: desplegar proxy V2 → upgrade a V3 → afirmar que
-    saldos y signers se preservan.
-  - Opcional: migrar las variables propias a un struct namespaced (ERC-7201) o añadir
-    un `__gap`, para máxima robustez.
+- **M-3 (Media) — Upgrade con layout de almacenamiento roto.** TODO el layout es
+  almacenamiento secuencial clásico: tanto las variables propias de
+  AccountWebAuthnV2 (`guardian`, `recoveryExecutableAfter`, `_pendingSigners`,
+  `_pendingThreshold`) como las de los mixins heredados — verificado en el
+  código de OZ v5: `MultiSignerERC7913` declara `EnumerableSet.BytesSet private
+  _signers` plano, SIN namespacing ERC-7201 (corrección a una versión anterior
+  de este documento que afirmaba lo contrario). Consecuencia: la regla de
+  **solo añadir al final** aplica a toda la cadena de herencia, y actualizar la
+  versión de OpenZeppelin también puede mover slots de las bases. Estado:
+  - ✅ **Test de ruta de upgrade añadido** (2026-07-02):
+    `test_upgrade_preservesStateWithAppendedStorage` despliega el proxy V2,
+    establece estado (signers, guardian, recovery en curso), actualiza a un V3
+    mock que solo añade storage, y afirma que todos los slots V2 sobreviven y
+    que la variable nueva funciona sin pisarlos.
+  - ✅ **Storage-layout diff en CI:** `pnpm check:contracts:storage` compara los
+    snapshots versionados con `forge inspect`, normaliza IDs inestables del AST
+    y sólo acepta entradas nuevas al final; movimientos, cambios de offset o
+    mutaciones de tipos/structs bloquean el build.
+  - Opcional: migrar las variables propias a un struct namespaced (ERC-7201) o
+    añadir un `__gap`, para máxima robustez.
 - **Compromiso de claves** (guardian/firmantes): ver M-1 y M-2.
 
 ---
@@ -277,7 +342,8 @@ El backend tiene tres roles de firma: `sponsorSigner` (paymaster), `invoiceSigne
 custodia de estas claves. Recomendaciones para mainnet:
 
 - **Claves distintas por rol** y separación caliente/frío (firmantes en línea ≠ owner
-  que controla fondos/retiros). Recogido en `DEPLOY.md` §11.
+  que controla fondos/retiros). `DeploymentRoles` lo hace bloqueante para chain
+  42161 y cubre todas las colisiones en tests; recogido en `DEPLOY.md` §11.
 - Almacenar firmantes en HSM/KMS; nunca en el repositorio ni en variables planas
   compartidas.
 - **Playbook de rotación** documentado: `setSponsorSigner`, `setInvoiceSigner`,
@@ -289,13 +355,17 @@ custodia de estas claves. Recomendaciones para mainnet:
 
 ## Recomendaciones generales
 
-- Fijar versión exacta del compilador (`0.8.28`) y lockfile de OpenZeppelin para
-  builds reproducibles y direcciones CREATE2 estables.
+- ✅ Versión exacta del compilador fijada (`solc = "0.8.28"` en `foundry.toml`);
+  mantener también el lockfile de OpenZeppelin para builds reproducibles y
+  direcciones CREATE2 estables.
 - Mantener `optimizer_runs` **fijo** (ya documentado en `foundry.toml`): cambiarlo
   altera el bytecode y, por tanto, las direcciones derivadas.
-- Ampliar la batería de tests: fuzzing de montos/comisiones en el router, tests de
-  invariantes (el router nunca debe quedar con saldo), y el test de ruta de upgrade
-  (M-3).
+- ✅ Batería de tests ampliada (2026-07-02): fuzz de conservación de fondos en
+  ambos routers (merchant+treasury == amount; el router nunca retiene saldo),
+  tampering de cada término del digest de invoice (incl. replay cross-chain vía
+  `vm.chainId`), tampering de cada campo del UserOp firmado por el paymaster,
+  ciclo completo de stake, casos negativos de recovery y el test de ruta de
+  upgrade (M-3).
 - Para escalar TVL real en mainnet: **auditoría externa** y/o programa de bug bounty
   antes de aumentar los límites de fondos.
 

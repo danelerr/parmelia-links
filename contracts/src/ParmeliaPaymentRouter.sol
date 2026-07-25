@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -91,6 +92,11 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         invoiceSigner = newSigner;
     }
 
+    /// @notice Whitelist policy (AUDIT L-2): list ONLY standard ERC-20s. A
+    ///         fee-on-transfer or rebasing token would make the merchant receive
+    ///         less than the `amount` recorded in the InvoicePaid event that
+    ///         drives accounting. The contract does not measure balance deltas
+    ///         on purpose (gas); the whitelist is the enforcement point.
     /// @param minimum Minimum accepted atomic amount (0 = no minimum).
     function setTokenSupported(address token, bool supported, uint256 minimum) external onlyOwner {
         if (token == address(0)) revert InvalidToken();
@@ -123,6 +129,9 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 feeBps,
         uint256 deadline
     ) public view returns (bytes32) {
+        // Keep the signed payload explicit and auditable; this path is not a
+        // transaction hot loop, so the assembly-only gas saving is not worth it.
+        // forge-lint: disable-next-line(asm-keccak256)
         return keccak256(
             abi.encode(block.chainid, address(this), invoiceId, token, amount, merchant, feeBps, deadline)
         );
@@ -145,6 +154,48 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         bytes calldata signature,
         bytes calldata metadata
     ) external nonReentrant whenNotPaused {
+        _settle(invoiceId, token, amount, merchant, feeBps, deadline, signature, metadata);
+    }
+
+    /**
+     * @notice Same as {payInvoice} but consumes an EIP-2612 permit first, so the
+     *         payer needs no separate `approve` (one transaction instead of two).
+     * @dev The permit is wrapped in try/catch: if a front-runner already submitted
+     *      the same signature (consuming the nonce) the allowance is still in place,
+     *      so the payment proceeds; any genuine allowance shortfall reverts in the
+     *      transferFrom inside {_settle}. `token` must support EIP-2612 (USDC does).
+     * @param permitDeadline EIP-2612 signature deadline (unix seconds).
+     * @param v,r,s          Components of the payer's permit signature.
+     */
+    function payInvoiceWithPermit(
+        bytes32 invoiceId,
+        IERC20 token,
+        uint256 amount,
+        address merchant,
+        uint256 feeBps,
+        uint256 deadline,
+        bytes calldata signature,
+        bytes calldata metadata,
+        uint256 permitDeadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant whenNotPaused {
+        try IERC20Permit(address(token)).permit(msg.sender, address(this), amount, permitDeadline, v, r, s) {} catch {}
+        _settle(invoiceId, token, amount, merchant, feeBps, deadline, signature, metadata);
+    }
+
+    /// @dev Shared settlement body. Callers MUST carry `nonReentrant` + `whenNotPaused`.
+    function _settle(
+        bytes32 invoiceId,
+        IERC20 token,
+        uint256 amount,
+        address merchant,
+        uint256 feeBps,
+        uint256 deadline,
+        bytes calldata signature,
+        bytes calldata metadata
+    ) private {
         if (block.timestamp > deadline) revert AuthorizationExpired();
         if (invoiceId == bytes32(0)) revert InvalidInvoiceId();
         if (merchant == address(0)) revert InvalidMerchant();

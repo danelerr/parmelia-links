@@ -1,0 +1,136 @@
+{
+  "storage": [
+    {
+      "astId": 12635,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_nameFallback",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_string_storage"
+    },
+    {
+      "astId": 12637,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_versionFallback",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_string_storage"
+    },
+    {
+      "astId": 13872,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_signers",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_struct(BytesSet)19412_storage"
+    },
+    {
+      "astId": 13874,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_threshold",
+      "offset": 0,
+      "slot": "4",
+      "type": "t_uint64"
+    },
+    {
+      "astId": 19767,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "guardian",
+      "offset": 8,
+      "slot": "4",
+      "type": "t_address"
+    },
+    {
+      "astId": 19770,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "recoveryExecutableAfter",
+      "offset": 0,
+      "slot": "5",
+      "type": "t_uint256"
+    },
+    {
+      "astId": 19774,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_pendingSigners",
+      "offset": 0,
+      "slot": "6",
+      "type": "t_array(t_bytes_storage)dyn_storage"
+    },
+    {
+      "astId": 19777,
+      "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+      "label": "_pendingThreshold",
+      "offset": 0,
+      "slot": "7",
+      "type": "t_uint64"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_array(t_bytes_storage)dyn_storage": {
+      "encoding": "dynamic_array",
+      "label": "bytes[]",
+      "numberOfBytes": "32",
+      "base": "t_bytes_storage"
+    },
+    "t_bytes_memory_ptr": {
+      "encoding": "bytes",
+      "label": "bytes",
+      "numberOfBytes": "32"
+    },
+    "t_bytes_storage": {
+      "encoding": "bytes",
+      "label": "bytes",
+      "numberOfBytes": "32"
+    },
+    "t_mapping(t_bytes_memory_ptr,t_uint256)": {
+      "encoding": "mapping",
+      "key": "t_bytes_memory_ptr",
+      "label": "mapping(bytes => uint256)",
+      "numberOfBytes": "32",
+      "value": "t_uint256"
+    },
+    "t_string_storage": {
+      "encoding": "bytes",
+      "label": "string",
+      "numberOfBytes": "32"
+    },
+    "t_struct(BytesSet)19412_storage": {
+      "encoding": "inplace",
+      "label": "struct EnumerableSet.BytesSet",
+      "numberOfBytes": "64",
+      "members": [
+        {
+          "astId": 19407,
+          "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+          "label": "_values",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_array(t_bytes_storage)dyn_storage"
+        },
+        {
+          "astId": 19411,
+          "contract": "src/AccountWebAuthnV2.sol:AccountWebAuthnV2",
+          "label": "_positions",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_mapping(t_bytes_memory_ptr,t_uint256)"
+        }
+      ]
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    },
+    "t_uint64": {
+      "encoding": "inplace",
+      "label": "uint64",
+      "numberOfBytes": "8"
+    }
+  }
+}

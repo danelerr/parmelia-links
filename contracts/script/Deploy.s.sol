@@ -10,11 +10,7 @@ import {ParmeliaPaymentRouter} from "../src/ParmeliaPaymentRouter.sol";
 import {ParmeliaCrosschainRouter, ITokenMessengerV2} from "../src/ParmeliaCrosschainRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-
-/// @dev Foundry's default script sender, used when `--sender` is NOT passed.
-///      If the deployer resolves to this, the paymaster owner would not match
-///      the address that signs the owner-only setup calls.
-address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+import {DeploymentRoles} from "./DeploymentRoles.sol";
 
 /**
  * @notice Deterministic (CREATE2) deployment of the Parmelia V2 contracts.
@@ -34,13 +30,17 @@ address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d
  */
 contract DeployV2 is Script {
     // Canonical ERC-4337 EntryPoint v0.9 (same address on every chain).
-    IEntryPoint internal constant ENTRY_POINT =
-        IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
+    IEntryPoint internal constant ENTRY_POINT = IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
 
     // Fixed salt → deterministic, reproducible addresses across chains.
     bytes32 internal constant SALT = keccak256("parmelia.v2");
 
     function run() external {
+        address deployer = msg.sender;
+        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
+        address sponsorSigner = vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer);
+        DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
+
         vm.startBroadcast();
 
         // 1. WebAuthn verifier (stateless, one per chain)
@@ -55,22 +55,19 @@ contract DeployV2 is Script {
         AccountFactoryV2 factory = new AccountFactoryV2{salt: SALT}(address(accountImpl));
         console.log("AccountFactoryV2:        ", address(factory));
 
-        // 4. Paymaster - owner/sponsorSigner = the broadcaster. msg.sender here
-        // must be the real deployer, so you MUST run with `--sender <addr>`
-        // (with only `--account`, msg.sender is Foundry's default and owner would
-        // mismatch the address that signs addStake → OwnableUnauthorizedAccount).
-        address deployer = msg.sender;
-        require(
-            deployer != FOUNDRY_DEFAULT_SENDER,
-            "Run with --sender <your address> (otherwise owner != broadcaster and addStake reverts)"
-        );
+        // 4. Configure the paymaster while the broadcaster is its temporary owner.
         ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT, deployer);
+        if (sponsorSigner != deployer) paymaster.setSponsorSigner(sponsorSigner);
         console.log("ParmeliaPaymaster:       ", address(paymaster));
         console.log("Paymaster sponsor signer:", paymaster.sponsorSigner());
 
         // Stake + deposit so the paymaster can sponsor gas (native = ETH on Arbitrum).
         paymaster.addStake{value: 0.001 ether}(86400);
         paymaster.deposit{value: 0.01 ether}();
+        // Per-op sponsored gas cap (defense in depth for a leaked sponsor key).
+        // Generous for Arbitrum ops; tune per network conditions.
+        paymaster.setMaxSponsoredGasCost(0.005 ether);
+        if (finalOwner != deployer) paymaster.transferOwnership(finalOwner);
 
         vm.stopBroadcast();
 
@@ -80,87 +77,94 @@ contract DeployV2 is Script {
         console.log("  verifier: ", address(verifier));
         console.log("  factory:  ", address(factory));
         console.log("  paymaster:", address(paymaster));
+        console.log("Paymaster current owner: ", paymaster.owner());
+        console.log("Paymaster pending owner: ", paymaster.pendingOwner());
+        if (finalOwner != deployer) console.log("ACTION REQUIRED: final owner must call acceptOwnership().");
     }
 }
 
 /// @notice Standalone deterministic Paymaster deployment (re-deploy paymaster only).
 contract DeployPaymasterV2 is Script {
-    IEntryPoint internal constant ENTRY_POINT =
-        IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
+    IEntryPoint internal constant ENTRY_POINT = IEntryPoint(0x433709009B8330FDa32311DF1C2AFA402eD8D009);
     bytes32 internal constant SALT = keccak256("parmelia.v2.paymaster");
 
     function run() external {
+        address deployer = msg.sender;
+        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
+        address sponsorSigner = vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer);
+        DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
+
         vm.startBroadcast();
 
-        address deployer = msg.sender;
-        require(
-            deployer != FOUNDRY_DEFAULT_SENDER,
-            "Run with --sender <your address> (otherwise owner != broadcaster and addStake reverts)"
-        );
         ParmeliaPaymaster paymaster = new ParmeliaPaymaster{salt: SALT}(ENTRY_POINT, deployer);
+        if (sponsorSigner != deployer) paymaster.setSponsorSigner(sponsorSigner);
         console.log("ParmeliaPaymaster:", address(paymaster));
         console.log("Sponsor signer:   ", paymaster.sponsorSigner());
 
         paymaster.addStake{value: 0.001 ether}(86400);
         paymaster.deposit{value: 0.01 ether}();
+        paymaster.setMaxSponsoredGasCost(0.005 ether);
+        if (finalOwner != deployer) paymaster.transferOwnership(finalOwner);
 
         vm.stopBroadcast();
+
+        console.log("Current owner: ", paymaster.owner());
+        console.log("Pending owner: ", paymaster.pendingOwner());
+        if (finalOwner != deployer) console.log("ACTION REQUIRED: final owner must call acceptOwnership().");
     }
 }
 
 /// @notice Deterministic PaymentRouter deployment (Flow B: open payments to any wallet).
-/// @dev On testnet the deployer is owner = treasury = invoiceSigner. For mainnet,
-///      separate them with setTreasury/setInvoiceSigner (see DEPLOY.md §11), and
-///      enable tokens with setTokenSupported(USDC, true, minAmount).
+/// @dev Reads PARMELIA_CONTRACT_OWNER, PARMELIA_TREASURY and
+///      PARMELIA_PAYMENT_ROUTER_SIGNER. Testnet defaults to the deployer; Arbitrum
+///      One requires all roles and the broadcaster to be distinct.
 contract DeployPaymentRouter is Script {
     bytes32 internal constant SALT = keccak256("parmelia.v2.paymentRouter");
 
     function run() external {
+        address deployer = msg.sender;
+        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
+        address treasury = vm.envOr("PARMELIA_TREASURY", deployer);
+        address invoiceSigner = vm.envOr("PARMELIA_PAYMENT_ROUTER_SIGNER", deployer);
+        DeploymentRoles.validatePaymentRouter(block.chainid, deployer, finalOwner, treasury, invoiceSigner);
+
         vm.startBroadcast();
 
-        address deployer = msg.sender;
-        require(
-            deployer != FOUNDRY_DEFAULT_SENDER,
-            "Run with --sender <your address> (otherwise owner != broadcaster)"
-        );
-
-        ParmeliaPaymentRouter router =
-            new ParmeliaPaymentRouter{salt: SALT}(deployer, deployer, deployer);
+        ParmeliaPaymentRouter router = new ParmeliaPaymentRouter{salt: SALT}(finalOwner, treasury, invoiceSigner);
         console.log("ParmeliaPaymentRouter:", address(router));
-        console.log("  owner/treasury/signer:", deployer);
-        console.log("Next: setTokenSupported(USDC, true, minAmount) and (mainnet) split treasury/signer.");
+        console.log("  owner:   ", finalOwner);
+        console.log("  treasury:", treasury);
+        console.log("  signer:  ", invoiceSigner);
+        console.log("Next: owner calls setTokenSupported(USDC, true, minAmount).");
 
         vm.stopBroadcast();
     }
 }
 
 /// @notice Deterministic CrosschainRouter deployment (Flow B outbound: USDC via CCTP v2).
-/// @dev Reads USDC and the CCTP v2 TokenMessenger from env. On testnet the deployer
-///      is owner = treasury; for mainnet split with setTreasury (see DEPLOY.md §11).
-///      env: USDC_ADDRESS, CCTP_TOKEN_MESSENGER.
+/// @dev Reads USDC_ADDRESS, CCTP_TOKEN_MESSENGER, PARMELIA_CONTRACT_OWNER and
+///      PARMELIA_TREASURY. Testnet defaults roles to the deployer; Arbitrum One
+///      requires broadcaster, owner and treasury to be distinct.
 contract DeployCrosschainRouter is Script {
     bytes32 internal constant SALT = keccak256("parmelia.v2.crosschainRouter");
 
     function run() external {
         address usdc = vm.envAddress("USDC_ADDRESS");
         address messenger = vm.envAddress("CCTP_TOKEN_MESSENGER");
+        address deployer = msg.sender;
+        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
+        address treasury = vm.envOr("PARMELIA_TREASURY", deployer);
+        DeploymentRoles.validateCrosschainRouter(block.chainid, deployer, finalOwner, treasury);
 
         vm.startBroadcast();
 
-        address deployer = msg.sender;
-        require(
-            deployer != FOUNDRY_DEFAULT_SENDER,
-            "Run with --sender <your address> (otherwise owner != broadcaster)"
-        );
-
-        ParmeliaCrosschainRouter router = new ParmeliaCrosschainRouter{salt: SALT}(
-            deployer, IERC20(usdc), ITokenMessengerV2(messenger), deployer
-        );
+        ParmeliaCrosschainRouter router =
+            new ParmeliaCrosschainRouter{salt: SALT}(finalOwner, IERC20(usdc), ITokenMessengerV2(messenger), treasury);
         console.log("ParmeliaCrosschainRouter:", address(router));
-        console.log("  owner/treasury:", deployer);
+        console.log("  owner:", finalOwner);
+        console.log("  treasury:", treasury);
         console.log("  USDC:", usdc);
         console.log("  TokenMessengerV2:", messenger);
-        console.log("Next (mainnet): setTreasury to split owner/treasury.");
 
         vm.stopBroadcast();
     }

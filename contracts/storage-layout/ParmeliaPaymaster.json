@@ -1,0 +1,48 @@
+{
+  "storage": [
+    {
+      "astId": 8,
+      "contract": "src/ParmeliaPaymaster.sol:ParmeliaPaymaster",
+      "label": "_owner",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_address"
+    },
+    {
+      "astId": 156,
+      "contract": "src/ParmeliaPaymaster.sol:ParmeliaPaymaster",
+      "label": "_pendingOwner",
+      "offset": 0,
+      "slot": "1",
+      "type": "t_address"
+    },
+    {
+      "astId": 11565,
+      "contract": "src/ParmeliaPaymaster.sol:ParmeliaPaymaster",
+      "label": "sponsorSigner",
+      "offset": 0,
+      "slot": "2",
+      "type": "t_address"
+    },
+    {
+      "astId": 11568,
+      "contract": "src/ParmeliaPaymaster.sol:ParmeliaPaymaster",
+      "label": "maxSponsoredGasCost",
+      "offset": 0,
+      "slot": "3",
+      "type": "t_uint256"
+    }
+  ],
+  "types": {
+    "t_address": {
+      "encoding": "inplace",
+      "label": "address",
+      "numberOfBytes": "20"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    }
+  }
+}

@@ -12,6 +12,7 @@ export * from "./errors";
 export { abi as accountWebAuthnV2Abi } from "../contracts/out/AccountWebAuthnV2.sol/AccountWebAuthnV2.json";
 export { abi as accountFactoryV2Abi } from "../contracts/out/AccountFactoryV2.sol/AccountFactoryV2.json";
 export { abi as paymentRouterAbi } from "../contracts/out/ParmeliaPaymentRouter.sol/ParmeliaPaymentRouter.json";
+export { abi as crosschainRouterAbi } from "../contracts/out/ParmeliaCrosschainRouter.sol/ParmeliaCrosschainRouter.json";
 
 export const erc20Abi = [
 	{

@@ -73,6 +73,7 @@ contract AccountWebAuthnV2 is
     error RecoveryNotProposed();
     error RecoveryNotReady();
     error RecoveryAlreadyProposed();
+    error InvalidRecoveryProposal();
 
     // ========== Constructor (implementation contract) ==========
 
@@ -142,26 +143,51 @@ contract AccountWebAuthnV2 is
     /**
      * @notice Set or change the recovery guardian.
      * @dev Only callable by EntryPoint (via UserOp) or by the account itself.
+     *      Any pending recovery is cancelled: it was proposed under the OLD
+     *      guardian's authority and must not survive rotating or removing it.
      * @param newGuardian The new guardian address (address(0) to remove guardian).
      */
     function setGuardian(address newGuardian) public onlyEntryPointOrSelf {
         address old = guardian;
         guardian = newGuardian;
+        if (recoveryExecutableAfter != 0) {
+            _clearRecovery();
+            emit RecoveryCancelled(msg.sender);
+        }
         emit GuardianSet(old, newGuardian);
     }
 
     // ========== Recovery Flow ==========
 
+    /// @dev Recovery proposals are bounded so executeRecovery stays executable.
+    uint256 private constant MAX_RECOVERY_SIGNERS = 32;
+
     /**
      * @notice Propose a recovery operation. Only the guardian can call this.
      * @dev Starts a 48-hour timelock. The current signer(s) can cancel within this window.
+     *      The proposal is validated up-front: without this, a malformed proposal
+     *      (empty signers, threshold 0 or > count, duplicates) would only surface
+     *      as a revert inside executeRecovery — 48 hours later, for a user who by
+     *      definition lost their passkey and cannot cancel, permanently bricking
+     *      recovery for that account.
      * @param newSigners The new signers to set after the timelock.
      * @param newThreshold The new threshold to set after the timelock.
      */
     function proposeRecovery(bytes[] memory newSigners, uint64 newThreshold) external {
-        if (msg.sender != guardian) revert OnlyGuardian();
         if (guardian == address(0)) revert NoGuardianSet();
+        if (msg.sender != guardian) revert OnlyGuardian();
         if (recoveryExecutableAfter != 0) revert RecoveryAlreadyProposed();
+
+        uint256 count = newSigners.length;
+        if (count == 0 || count > MAX_RECOVERY_SIGNERS) revert InvalidRecoveryProposal();
+        if (newThreshold == 0 || newThreshold > count) revert InvalidRecoveryProposal();
+        for (uint256 i = 0; i < count; i++) {
+            // ERC-7913 signer bytes are at least a 20-byte verifier/EOA address.
+            if (newSigners[i].length < 20) revert InvalidRecoveryProposal();
+            for (uint256 j = i + 1; j < count; j++) {
+                if (keccak256(newSigners[i]) == keccak256(newSigners[j])) revert InvalidRecoveryProposal();
+            }
+        }
 
         recoveryExecutableAfter = block.timestamp + RECOVERY_DELAY;
         _pendingSigners = newSigners;
@@ -176,12 +202,30 @@ contract AccountWebAuthnV2 is
      */
     function cancelRecovery() public onlyEntryPointOrSelf {
         if (recoveryExecutableAfter == 0) revert RecoveryNotProposed();
+        _clearRecovery();
+        emit RecoveryCancelled(msg.sender);
+    }
 
+    /**
+     * @notice Cancel a pending recovery as the guardian (e.g. a wrong proposal).
+     * @dev Grants no extra power: the guardian can only clear its OWN pending
+     *      proposal and re-propose, which restarts the full 48h timelock. Without
+     *      this, a semantically-bad proposal (e.g. a signer that already exists,
+     *      which executeRecovery's _addSigners rejects) could only be cancelled
+     *      by the owner — the exact passkey the recovery exists to replace.
+     */
+    function guardianCancelRecovery() external {
+        if (msg.sender != guardian) revert OnlyGuardian();
+        if (recoveryExecutableAfter == 0) revert RecoveryNotProposed();
+        _clearRecovery();
+        emit RecoveryCancelled(msg.sender);
+    }
+
+    /// @dev Reset all pending-recovery state.
+    function _clearRecovery() private {
         recoveryExecutableAfter = 0;
         delete _pendingSigners;
         _pendingThreshold = 0;
-
-        emit RecoveryCancelled(msg.sender);
     }
 
     /**
@@ -212,10 +256,7 @@ contract AccountWebAuthnV2 is
             _removeSigners(oldSigners);
         }
 
-        // Clear recovery state
-        recoveryExecutableAfter = 0;
-        delete _pendingSigners;
-        _pendingThreshold = 0;
+        _clearRecovery();
 
         emit RecoveryExecuted(msg.sender);
     }

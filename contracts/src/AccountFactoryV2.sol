@@ -25,10 +25,12 @@ import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 contract AccountFactoryV2 {
     address public immutable IMPLEMENTATION;
 
+    error InvalidImplementation();
+
     event AccountCreated(address indexed account, bytes32 indexed salt);
 
     constructor(address implementation_) {
-        require(implementation_.code.length > 0, "AccountFactoryV2: impl must be a contract");
+        if (implementation_.code.length == 0) revert InvalidImplementation();
         IMPLEMENTATION = implementation_;
     }
 

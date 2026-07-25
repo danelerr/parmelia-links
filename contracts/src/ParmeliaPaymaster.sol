@@ -26,14 +26,25 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     IEntryPoint public immutable ENTRY_POINT;
     address public sponsorSigner;
 
+    /// @notice On-chain cap on the max gas cost this paymaster will sponsor per
+    ///         UserOperation (0 = uncapped). Defense in depth for a leaked
+    ///         sponsor key: a forged signature can still not drain the deposit
+    ///         with single monster ops, and the owner can tighten it any time.
+    uint256 public maxSponsoredGasCost;
+
     // ERC-4337 mandated header is 52 bytes (20 addr + 16 + 16).
     uint256 private constant PAYMASTER_DATA_OFFSET = 52;
     // Signed validity window: validAfter (6) + validUntil (6).
     uint256 private constant SIGNATURE_OFFSET = PAYMASTER_DATA_OFFSET + 12; // 64
 
     error OnlyEntryPoint();
-    error InvalidPaymasterSignature();
+    error InvalidEntryPoint();
+    error InvalidSponsorSigner();
     error MissingPaymasterSignature();
+    error MaxSponsoredGasCostExceeded(uint256 maxCost, uint256 cap);
+
+    event SponsorSignerSet(address indexed previousSigner, address indexed newSigner);
+    event MaxSponsoredGasCostSet(uint256 previousCap, uint256 newCap);
 
     modifier onlyEntryPoint() {
         _checkEntryPoint();
@@ -45,14 +56,23 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     }
 
     constructor(IEntryPoint _entryPoint, address initialOwner) Ownable(initialOwner) {
+        if (address(_entryPoint).code.length == 0) revert InvalidEntryPoint();
         ENTRY_POINT = _entryPoint;
         sponsorSigner = initialOwner;
+        emit SponsorSignerSet(address(0), initialOwner);
     }
 
     /// @notice Update the EOA that authorizes sponsored UserOperations.
     function setSponsorSigner(address newSponsorSigner) external onlyOwner {
-        require(newSponsorSigner != address(0), "invalid signer");
+        if (newSponsorSigner == address(0)) revert InvalidSponsorSigner();
+        emit SponsorSignerSet(sponsorSigner, newSponsorSigner);
         sponsorSigner = newSponsorSigner;
+    }
+
+    /// @notice Set the per-operation sponsored gas cost cap (0 = uncapped).
+    function setMaxSponsoredGasCost(uint256 newCap) external onlyOwner {
+        emit MaxSponsoredGasCostSet(maxSponsoredGasCost, newCap);
+        maxSponsoredGasCost = newCap;
     }
 
     /// @dev Digest the backend signs. Binds the op AND the validity window so neither
@@ -99,7 +119,12 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     /// @notice Approves only UserOperations explicitly signed by the trusted backend
     ///         signer, within the signed [validAfter, validUntil] window enforced by
     ///         the EntryPoint via the returned validationData.
-    function validatePaymasterUserOp(PackedUserOperation calldata userOp, bytes32, uint256)
+    /// @dev A signature mismatch RETURNS SIG_VALIDATION_FAILED instead of reverting,
+    ///      per the ERC-4337 spec ("SHOULD return SIG_VALIDATION_FAILED on signature
+    ///      mismatch, and not revert") so bundlers can distinguish a bad signature
+    ///      from a broken paymaster. Structural problems (missing data, cost above
+    ///      the cap) still revert — those are misconfigurations, not signatures.
+    function validatePaymasterUserOp(PackedUserOperation calldata userOp, bytes32, uint256 maxCost)
         external
         view
         onlyEntryPoint
@@ -108,13 +133,18 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
         bytes calldata paymasterAndData = userOp.paymasterAndData;
         if (paymasterAndData.length <= SIGNATURE_OFFSET) revert MissingPaymasterSignature();
 
+        uint256 cap = maxSponsoredGasCost;
+        if (cap != 0 && maxCost > cap) revert MaxSponsoredGasCostExceeded(maxCost, cap);
+
         uint48 validAfter = uint48(bytes6(paymasterAndData[PAYMASTER_DATA_OFFSET:PAYMASTER_DATA_OFFSET + 6]));
         uint48 validUntil = uint48(bytes6(paymasterAndData[PAYMASTER_DATA_OFFSET + 6:SIGNATURE_OFFSET]));
         bytes calldata paymasterSignature = paymasterAndData[SIGNATURE_OFFSET:];
 
         bytes32 digest = MessageHashUtils.toEthSignedMessageHash(_sponsorDigest(userOp, validAfter, validUntil));
-        if (ECDSA.recover(digest, paymasterSignature) != sponsorSigner) {
-            revert InvalidPaymasterSignature();
+        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, paymasterSignature);
+        if (err != ECDSA.RecoverError.NoError || recovered != sponsorSigner) {
+            // authorizer = 1 (SIG_VALIDATION_FAILED); the EntryPoint rejects the op.
+            return ("", ERC4337Utils.packValidationData(false, validAfter, validUntil));
         }
 
         // authorizer = 0 (success); EntryPoint enforces the [validAfter, validUntil] window.
@@ -137,6 +167,18 @@ contract ParmeliaPaymaster is IPaymaster, Ownable2Step {
     /// @notice Stake at the EntryPoint (required for paymasters).
     function addStake(uint32 unstakeDelaySec) external payable onlyOwner {
         ENTRY_POINT.addStake{value: msg.value}(unstakeDelaySec);
+    }
+
+    /// @notice Start the EntryPoint's unstake delay. Without this (and
+    ///         {withdrawStake}) the stake would be locked in the EntryPoint
+    ///         forever — addStake alone is a one-way door.
+    function unlockStake() external onlyOwner {
+        ENTRY_POINT.unlockStake();
+    }
+
+    /// @notice Withdraw the stake after the unstake delay has passed.
+    function withdrawStake(address payable to) external onlyOwner {
+        ENTRY_POINT.withdrawStake(to);
     }
 
     /// @notice Withdraw deposit from the EntryPoint.
