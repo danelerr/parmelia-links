@@ -7,6 +7,7 @@ import { AppContext } from "./auth";
 import { apiError } from "../services/apiError";
 import { sha256Hex } from "../services/apiKeys";
 import { getApiKeyByHash, touchApiKey } from "../services/storage";
+import { logWarn } from "../services/logger";
 
 export const requireApiKey = async (c: Context<AppContext>, next: Next) => {
 	const header = c.req.header("Authorization");
@@ -26,10 +27,16 @@ export const requireApiKey = async (c: Context<AppContext>, next: Next) => {
 	c.set("merchantId", key.merchantId);
 	c.set("apiMode", key.mode);
 	// Best-effort usage timestamp; never block the request.
+	const touch = touchApiKey(c.env, key.id).catch((error) =>
+		logWarn("api_key_last_used_update_failed", {
+			requestId: c.get("requestId"),
+			reason: error instanceof Error ? error.name : "unknown",
+		}),
+	);
 	try {
-		c.executionCtx.waitUntil(touchApiKey(c.env, key.id));
+		c.executionCtx.waitUntil(touch);
 	} catch {
-		void touchApiKey(c.env, key.id);
+		await touch;
 	}
 	await next();
 };

@@ -22,6 +22,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 		.map((e) => ({
 			txHash: e.txHash,
 			amount: e.amount,
+			amountSource: e.amountSource ?? "executed",
 			currency: e.token,
 			to: e.counterparty ?? "",
 			reference: e.reference ?? "",
@@ -34,6 +35,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 		.map((e) => ({
 			txHash: e.txHash,
 			amount: e.amount,
+			amountSource: e.amountSource ?? "executed",
 			currency: e.token,
 			reference: e.reference ?? "",
 			paidBy: e.counterparty ?? "",

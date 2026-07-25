@@ -11,29 +11,29 @@
 // Sandbox: POST /payment_intents/:id/simulate_payment marks a TEST intent paid
 // without any on-chain payment, so a dev can exercise their webhook in minutes.
 
-import { Context, Hono } from "hono";
+import { Hono } from "hono";
 import { parseUnits } from "viem";
 import { ERR, getNetworkConfig, getTokenBySymbol } from "../../../shared";
 import { AppContext } from "../middlewares/auth";
 import { requireApiKey } from "../middlewares/apiAuth";
 import {
-	createPaymentIntent,
-	createPaymentLink,
+	createPaymentIntentTransaction,
 	getEvent,
 	getMerchantById,
 	getPaymentIntentById,
 	getPaymentIntentByIdempotency,
 	getUserByUid,
+	isIntentPayable,
 	listEvents,
 	listPaymentIntents,
-	markPaymentIntentPaid,
+	markPaymentIntentPaidWithOutbox,
 	updatePaymentIntentStatus,
 	type PaymentIntentRecord,
 } from "../services/storage";
-import { deliverPendingWebhooks, emitEvent } from "../services/webhooks";
+import { deliverPendingWebhooks, prepareEventOutbox } from "../services/webhooks";
 import { buildRouterAuthorization, intentToInvoiceId, RouterError } from "../services/paymentRouter";
 import { apiError } from "../services/apiError";
-import { getRequestId, logError } from "../services/logger";
+import { logError } from "../services/logger";
 
 const v1 = new Hono<AppContext>();
 const DEFAULT_INTENT_TTL_SECONDS = 3600;
@@ -59,27 +59,8 @@ function serializeIntent(intent: PaymentIntentRecord) {
 	};
 }
 
-/** Build + send the payment.paid event and flush webhooks (after the response). */
-function emitPaid(c: Context<AppContext>, intent: PaymentIntentRecord, txHash: string) {
-	const flush = (async () => {
-		await emitEvent(c.env, {
-			merchantId: intent.merchantId,
-			mode: intent.mode,
-			type: "payment.paid",
-			objectId: intent.id,
-			data: { ...serializeIntent(intent), status: "paid", tx_hash: txHash },
-		});
-		await deliverPendingWebhooks(c.env);
-	})();
-	try {
-		c.executionCtx.waitUntil(flush);
-	} catch {
-		void flush;
-	}
-}
-
 v1.post("/payment_intents", async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	try {
 		const merchantId = c.get("merchantId")!;
 		const mode = c.get("apiMode")!;
@@ -136,7 +117,7 @@ v1.post("/payment_intents", async (c) => {
 
 		// Backing payment_link — reuses the existing checkout/pay flow unchanged.
 		const linkId = crypto.randomUUID();
-		await createPaymentLink(c.env, {
+		const link = {
 			id: linkId,
 			amount: amountStr,
 			currency,
@@ -148,7 +129,7 @@ v1.post("/payment_intents", async (c) => {
 			paidAt: null,
 			paidBy: null,
 			createdAt: now.toISOString(),
-		});
+		} as const;
 
 		const intentId = `pi_${crypto.randomUUID().replace(/-/g, "")}`;
 		const intent: PaymentIntentRecord = {
@@ -169,21 +150,24 @@ v1.post("/payment_intents", async (c) => {
 			createdAt: now.toISOString(),
 			updatedAt: now.toISOString(),
 		};
-		await createPaymentIntent(c.env, intent);
-
-		// Best-effort payment.created event (webhook delivery flushed after response).
+		const createdOutbox = await prepareEventOutbox(c.env, {
+			merchantId,
+			mode,
+			type: "payment.created",
+			objectId: intent.id,
+			data: serializeIntent(intent),
+		});
 		try {
-			c.executionCtx.waitUntil(
-				emitEvent(c.env, {
-					merchantId,
-					mode,
-					type: "payment.created",
-					objectId: intent.id,
-					data: serializeIntent(intent),
-				}),
-			);
-		} catch {
-			/* non-blocking */
+			await createPaymentIntentTransaction(c.env, link, intent, createdOutbox);
+		} catch (error) {
+			// Idempotency race: two concurrent requests with the same key both miss
+			// the read above; the loser hits the unique index here. Return the
+			// winner's intent instead of a 500 (Stripe semantics).
+			if (idemKey && /UNIQUE|constraint/i.test(error instanceof Error ? error.message : String(error))) {
+				const winner = await getPaymentIntentByIdempotency(c.env, merchantId, idemKey);
+				if (winner) return c.json(serializeIntent(winner), 200);
+			}
+			throw error;
 		}
 
 		return c.json(serializeIntent(intent), 201);
@@ -214,19 +198,23 @@ v1.post("/payment_intents/:id/cancel", async (c) => {
 	if (intent.status !== "awaiting_payment") {
 		return apiError(c, ERR.INTENT_NOT_PAYABLE, `Cannot cancel an intent in status '${intent.status}'.`);
 	}
-	await updatePaymentIntentStatus(c.env, id, merchantId, "canceled");
+	if (!(await updatePaymentIntentStatus(c.env, id, merchantId, "canceled"))) {
+		return apiError(c, ERR.INTENT_NOT_PAYABLE, "Payment is already being processed.");
+	}
 	const updated = await getPaymentIntentById(c.env, id, merchantId);
 	return c.json(serializeIntent(updated!));
 });
 
 // Flow B — signed authorization for an external wallet to call PaymentRouter.
 v1.get("/payment_intents/:id/onchain", async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	const merchantId = c.get("merchantId")!;
 	const intent = await getPaymentIntentById(c.env, c.req.param("id"), merchantId);
 	if (!intent) return apiError(c, ERR.INTENT_NOT_FOUND, "Payment intent not found.");
-	if (intent.status !== "awaiting_payment") {
-		return apiError(c, ERR.INTENT_NOT_PAYABLE, `Intent is '${intent.status}', not payable.`);
+	// isIntentPayable also enforces expires_at: an expired intent must not get a
+	// fresh on-chain authorization (deadline alone would extend its life 1h).
+	if (!isIntentPayable(intent)) {
+		return apiError(c, ERR.INTENT_NOT_PAYABLE, `Intent is '${intent.status}' or expired, not payable.`);
 	}
 	const merchant = await getMerchantById(c.env, merchantId);
 	const profile = merchant ? await getUserByUid(c.env, merchant.ownerUid) : null;
@@ -255,14 +243,23 @@ v1.post("/payment_intents/:id/simulate_payment", async (c) => {
 	}
 	const intent = await getPaymentIntentById(c.env, id, merchantId);
 	if (!intent) return apiError(c, ERR.INTENT_NOT_FOUND, "Payment intent not found.");
-	if (intent.status !== "awaiting_payment") {
-		return apiError(c, ERR.INTENT_NOT_PAYABLE, `Intent is '${intent.status}', not payable.`);
+	if (!isIntentPayable(intent)) {
+		return apiError(c, ERR.INTENT_NOT_PAYABLE, `Intent is '${intent.status}' or expired, not payable.`);
 	}
 
 	const txHash = `simulated_${id}`;
-	await markPaymentIntentPaid(c.env, id, txHash, new Date().toISOString());
+	const paidOutbox = await prepareEventOutbox(c.env, {
+		merchantId: intent.merchantId,
+		mode: intent.mode,
+		type: "payment.paid",
+		objectId: intent.id,
+		data: { ...serializeIntent(intent), status: "paid", tx_hash: txHash },
+	});
+	if (!(await markPaymentIntentPaidWithOutbox(c.env, id, txHash, new Date().toISOString(), paidOutbox))) {
+		return apiError(c, ERR.INTENT_NOT_PAYABLE, "Payment is already being processed.");
+	}
 	const updated = (await getPaymentIntentById(c.env, id, merchantId))!;
-	emitPaid(c, updated, txHash);
+	c.executionCtx.waitUntil(deliverPendingWebhooks(c.env));
 	return c.json(serializeIntent(updated));
 });
 

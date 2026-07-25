@@ -15,20 +15,20 @@
 import { formatUnits, parseAbiItem, parseUnits, type Address } from "viem";
 import { getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
-import { getPublicClient } from "./clients";
+import { getFaucetAccount, getPublicClient, getServerAccount } from "./clients";
 import {
 	getMerchantById,
 	getPaymentIntentByOnchainId,
 	getSyncCursor,
 	getUserByUid,
 	listUserWallets,
-	markPaymentIntentPaid,
+	markPaymentIntentPaidWithOutbox,
 	setSyncCursor,
 	writeLedgerEntries,
 	type LedgerEntry,
 } from "./storage";
 import { notifyUser } from "./push";
-import { deliverPendingWebhooks, emitEvent } from "./webhooks";
+import { deliverPendingWebhooks, prepareEventOutbox } from "./webhooks";
 import { logError, logInfo } from "./logger";
 
 const TRANSFER_EVENT = parseAbiItem(
@@ -47,6 +47,68 @@ const RECOVERY_PROPOSED_EVENT = parseAbiItem(
 const BACKFILL_BLOCKS = 5000n;
 /** eth_getLogs chunk size (Arbitrum public RPCs handle this comfortably). */
 const LOG_CHUNK = 2000n;
+/**
+ * Hard cap of blocks scanned per cron tick. Without it, a cursor that falls
+ * behind makes every tick retry an ever-growing range until the Worker's
+ * subrequest/CPU budget kills the run BEFORE the cursor advances — a
+ * permanent stall (jul-2026: 11 days behind = ~1,900 getLogs per tick, every
+ * tick died, deposits stopped being credited). With the cap, each tick
+ * processes a bounded window and commits the cursor, so any backlog drains at
+ * ~20k blocks per tick.
+ */
+const MAX_BLOCKS_PER_RUN = 20_000n;
+/** Shallow-reorg buffer when an RPC does not implement the `safe` block tag. */
+const SAFE_HEAD_FALLBACK_BLOCKS = 64n;
+/** Avoid turning a provider's stale L1-derived safe head into a long product delay. */
+const MAX_SAFE_HEAD_LAG_BLOCKS = 512n;
+
+type ScanHeadClient = {
+	getBlockNumber(): Promise<bigint>;
+	getBlock(parameters: { blockTag: "safe" }): Promise<{ number: bigint | null }>;
+};
+
+export type IndexerScanHead = {
+	latest: bigint;
+	scanHead: bigint;
+	finalitySource: "safe" | "confirmations";
+};
+
+/**
+ * Never index the mutable chain tip. Prefer the RPC's canonical `safe` head;
+ * providers without that tag retain a short confirmation buffer instead.
+ */
+export async function getIndexerScanHead(publicClient: ScanHeadClient): Promise<IndexerScanHead> {
+	const latestPromise = publicClient.getBlockNumber();
+	try {
+		const safe = await publicClient.getBlock({ blockTag: "safe" });
+		const latest = await latestPromise;
+		if (
+			safe.number !== null &&
+			safe.number <= latest &&
+			latest - safe.number <= MAX_SAFE_HEAD_LAG_BLOCKS
+		) {
+			return { latest, scanHead: safe.number, finalitySource: "safe" };
+		}
+		return {
+			latest,
+			scanHead: latest > SAFE_HEAD_FALLBACK_BLOCKS ? latest - SAFE_HEAD_FALLBACK_BLOCKS : 0n,
+			finalitySource: "confirmations",
+		};
+	} catch {
+		const latest = await latestPromise;
+		return {
+			latest,
+			scanHead: latest > SAFE_HEAD_FALLBACK_BLOCKS ? latest - SAFE_HEAD_FALLBACK_BLOCKS : 0n,
+			finalitySource: "confirmations",
+		};
+	}
+}
+
+/** End of this tick's scan window: bounded progress that always commits. */
+function scanWindowEnd(fromBlock: bigint, latest: bigint): bigint {
+	const capped = fromBlock + MAX_BLOCKS_PER_RUN - 1n;
+	return capped > latest ? latest : capped;
+}
 
 export async function runIndexer(env: Bindings): Promise<void> {
 	try {
@@ -58,21 +120,23 @@ export async function runIndexer(env: Bindings): Promise<void> {
 		if (wallets.length === 0) return;
 		const byWallet = new Map(wallets.map((w) => [w.walletAddress.toLowerCase(), w.uid]));
 		const walletAddresses = wallets.map((w) => w.walletAddress as Address);
+		const internalSenders = internalTransferSenderAddresses(env);
 
 		const publicClient = getPublicClient(env);
-		const latest = await publicClient.getBlockNumber();
+		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `transfers:${network.chainId}`;
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
-			cursor !== null ? cursor + 1n : latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
-		if (fromBlock > latest) return;
+			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
+		if (fromBlock > scanHead) return;
+		const scanEnd = scanWindowEnd(fromBlock, scanHead);
 
 		const entries: LedgerEntry[] = [];
 		const blockTimes = new Map<string, string>();
 
 		for (const token of erc20Tokens) {
-			for (let start = fromBlock; start <= latest; start += LOG_CHUNK) {
-				const end = start + LOG_CHUNK - 1n > latest ? latest : start + LOG_CHUNK - 1n;
+			for (let start = fromBlock; start <= scanEnd; start += LOG_CHUNK) {
+				const end = start + LOG_CHUNK - 1n > scanEnd ? scanEnd : start + LOG_CHUNK - 1n;
 				const logs = await publicClient.getLogs({
 					address: token.address!,
 					event: TRANSFER_EVENT,
@@ -86,15 +150,24 @@ export async function runIndexer(env: Bindings): Promise<void> {
 					const to = (log.args.to ?? "").toLowerCase();
 					const value = log.args.value ?? 0n;
 					if (!log.transactionHash || log.blockNumber === null || value <= 0n) continue;
-					// Internal senders are already covered at submit time.
-					if (byWallet.has(from)) continue;
+					// Internal sends are already covered at submit time.
+					if (byWallet.has(from) || internalSenders.has(from)) continue;
 					const uid = byWallet.get(to);
 					if (!uid) continue;
 
 					const blockKey = log.blockNumber.toString();
 					if (!blockTimes.has(blockKey)) {
-						const block = await publicClient.getBlock({ blockNumber: log.blockNumber });
-						blockTimes.set(blockKey, new Date(Number(block.timestamp) * 1000).toISOString());
+						// Same failure family as the cursor stall: one getBlock per
+						// distinct block is unbounded during a busy catch-up window and
+						// can exhaust the Worker's subrequest budget mid-tick. Cap the
+						// lookups; past the cap, an approximate timestamp beats a dead
+						// tick (ordering still holds via block-derived created_at).
+						if (blockTimes.size < 15) {
+							const block = await publicClient.getBlock({ blockNumber: log.blockNumber });
+							blockTimes.set(blockKey, new Date(Number(block.timestamp) * 1000).toISOString());
+						} else {
+							blockTimes.set(blockKey, new Date().toISOString());
+						}
 					}
 
 					entries.push({
@@ -114,9 +187,13 @@ export async function runIndexer(env: Bindings): Promise<void> {
 		}
 
 		if (entries.length > 0) {
-			await writeLedgerEntries(env, entries);
-			// Best-effort "deposit received" push per ingested transfer.
-			for (const e of entries) {
+			const inserted = await writeLedgerEntries(env, entries);
+			// Best-effort "deposit received" push — ONLY for rows this pass actually
+			// inserted. A re-scan of the same range (cursor not advanced after an
+			// error) is deduped by the ledger index, so it must not re-notify.
+			for (let i = 0; i < entries.length; i++) {
+				if (!inserted[i]) continue;
+				const e = entries[i];
 				await notifyUser(env, e.uid, {
 					title: "Recibiste un depósito",
 					body: `Te llegaron ${e.amount} ${e.token}`,
@@ -124,12 +201,15 @@ export async function runIndexer(env: Bindings): Promise<void> {
 				});
 			}
 		}
-		await setSyncCursor(env, cursorKey, latest);
+		await setSyncCursor(env, cursorKey, scanEnd);
 
 		logInfo("indexer_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: latest.toString(),
+			toBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - scanEnd).toString(),
+			unconfirmedBlocks: (latest - scanHead).toString(),
+			finalitySource,
 			wallets: wallets.length,
 			ingested: entries.length,
 		});
@@ -138,6 +218,15 @@ export async function runIndexer(env: Bindings): Promise<void> {
 		// run retries the same range (writes are idempotent).
 		logError("indexer_failed", error, {});
 	}
+}
+
+/** Addresses whose transfers are finalized by Parmelia and must not be re-indexed. */
+export function internalTransferSenderAddresses(env: Bindings): Set<string> {
+	const addresses = new Set([getServerAccount(env).address.toLowerCase()]);
+	if (env.FAUCET_PRIVATE_KEY?.trim()) {
+		addresses.add(getFaucetAccount(env).address.toLowerCase());
+	}
+	return addresses;
 }
 
 /**
@@ -153,16 +242,18 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 		if (!router || router === "0x0000000000000000000000000000000000000000" || !env.RPC_URL) return;
 
 		const publicClient = getPublicClient(env);
-		const latest = await publicClient.getBlockNumber();
+		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `router:${network.chainId}`;
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
-			cursor !== null ? cursor + 1n : latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
-		if (fromBlock > latest) return;
+			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
+		if (fromBlock > scanHead) return;
+		const scanEnd = scanWindowEnd(fromBlock, scanHead);
 
 		let confirmed = 0;
-		for (let start = fromBlock; start <= latest; start += LOG_CHUNK) {
-			const end = start + LOG_CHUNK - 1n > latest ? latest : start + LOG_CHUNK - 1n;
+		const blockTimestamps = new Map<bigint, bigint>();
+		for (let start = fromBlock; start <= scanEnd; start += LOG_CHUNK) {
+			const end = start + LOG_CHUNK - 1n > scanEnd ? scanEnd : start + LOG_CHUNK - 1n;
 			const logs = await publicClient.getLogs({
 				address: router,
 				event: INVOICE_PAID_EVENT,
@@ -175,7 +266,7 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 				const merchant = ((log.args.merchant ?? "") as string).toLowerCase();
 				const token = ((log.args.token ?? "") as string).toLowerCase();
 				const amount = log.args.amount ?? 0n;
-				if (!invoiceId || !log.transactionHash) continue;
+				if (!invoiceId || !log.transactionHash || log.blockNumber === null) continue;
 
 				const intent = await getPaymentIntentByOnchainId(env, invoiceId);
 				if (!intent || intent.status !== "awaiting_payment") continue;
@@ -199,10 +290,21 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 					});
 					continue;
 				}
+				if (intent.expiresAt) {
+					let paidAt = blockTimestamps.get(log.blockNumber);
+					if (paidAt === undefined) {
+						paidAt = (await publicClient.getBlock({ blockNumber: log.blockNumber })).timestamp;
+						blockTimestamps.set(log.blockNumber, paidAt);
+					}
+					if (paidAt * 1000n > BigInt(new Date(intent.expiresAt).getTime())) {
+						logError("router_invoice_after_expiry", new Error("invoice was paid after intent expiry"), {
+							intentId: intent.id,
+						});
+						continue;
+					}
+				}
 
-				await markPaymentIntentPaid(env, intent.id, log.transactionHash, new Date().toISOString());
-				confirmed++;
-				await emitEvent(env, {
+				const paidOutbox = await prepareEventOutbox(env, {
 					merchantId: intent.merchantId,
 					mode: intent.mode,
 					type: "payment.paid",
@@ -219,15 +321,27 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 						mode: intent.mode,
 					},
 				});
+				if (
+					await markPaymentIntentPaidWithOutbox(
+						env,
+						intent.id,
+						log.transactionHash,
+						new Date().toISOString(),
+						paidOutbox,
+					)
+				) confirmed++;
 			}
 		}
 
 		if (confirmed > 0) await deliverPendingWebhooks(env);
-		await setSyncCursor(env, cursorKey, latest);
+		await setSyncCursor(env, cursorKey, scanEnd);
 		logInfo("router_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: latest.toString(),
+			toBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - scanEnd).toString(),
+			unconfirmedBlocks: (latest - scanHead).toString(),
+			finalitySource,
 			confirmed,
 		});
 	} catch (error) {
@@ -253,16 +367,17 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 		const walletAddresses = wallets.map((w) => w.walletAddress as Address);
 
 		const publicClient = getPublicClient(env);
-		const latest = await publicClient.getBlockNumber();
+		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `recovery:${network.chainId}`;
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
-			cursor !== null ? cursor + 1n : latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
-		if (fromBlock > latest) return;
+			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
+		if (fromBlock > scanHead) return;
+		const scanEnd = scanWindowEnd(fromBlock, scanHead);
 
 		let alerted = 0;
-		for (let start = fromBlock; start <= latest; start += LOG_CHUNK) {
-			const end = start + LOG_CHUNK - 1n > latest ? latest : start + LOG_CHUNK - 1n;
+		for (let start = fromBlock; start <= scanEnd; start += LOG_CHUNK) {
+			const end = start + LOG_CHUNK - 1n > scanEnd ? scanEnd : start + LOG_CHUNK - 1n;
 			const logs = await publicClient.getLogs({
 				address: walletAddresses,
 				event: RECOVERY_PROPOSED_EVENT,
@@ -283,11 +398,14 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 			}
 		}
 
-		await setSyncCursor(env, cursorKey, latest);
+		await setSyncCursor(env, cursorKey, scanEnd);
 		logInfo("recovery_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: latest.toString(),
+			toBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - scanEnd).toString(),
+			unconfirmedBlocks: (latest - scanHead).toString(),
+			finalitySource,
 			alerted,
 		});
 	} catch (error) {

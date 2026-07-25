@@ -10,14 +10,17 @@
 //     it needs the verified SpokePool ABI/address + a testnet smoke test.
 
 import { formatUnits, parseUnits } from "viem";
+import { discardResponseBody, readJsonBounded } from "./http";
 
 const ACROSS_API_BASE = "https://app.across.to/api";
 const USDC_DECIMALS = 6;
+const ACROSS_TIMEOUT_MS = 8_000;
+const ACROSS_MAX_BYTES = 64 * 1024;
 
 /**
- * Origin/destination chains offered in the UI. USDC addresses from Circle's
- * official list - TODO: re-verify against developers.circle.com before
- * enabling on mainnet traffic.
+ * Origin/destination chains offered in the UI. Native USDC addresses verified
+ * against Circle's official contract list on 2026-07-14:
+ * https://developers.circle.com/stablecoins/usdc-contract-addresses
  */
 export const BRIDGE_CHAINS = [
 	{ id: 1, key: "ethereum", name: "Ethereum", usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
@@ -85,11 +88,12 @@ export async function quoteBridge(params: {
 		`&originChainId=${originChainId}&destinationChainId=${destinationChainId}` +
 		`&amount=${amountRaw.toString()}&recipient=${params.recipient}`;
 
-	const res = await fetch(url);
+	const res = await fetch(url, { signal: AbortSignal.timeout(ACROSS_TIMEOUT_MS) });
 	if (!res.ok) {
+		await discardResponseBody(res);
 		throw new BridgeError("La cotización del puente no está disponible ahora. Intenta de nuevo.");
 	}
-	const data = (await res.json()) as AcrossSuggestedFees;
+	const data = await readJsonBounded<AcrossSuggestedFees>(res, ACROSS_MAX_BYTES);
 	if (data.isAmountTooLow) {
 		throw new BridgeError("El monto es muy bajo para moverlo entre redes.");
 	}

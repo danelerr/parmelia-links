@@ -19,11 +19,22 @@ const CHAIN_MAP: Record<SupportedChainKey, Chain> = {
 /**
  * Get the active chain configuration.
  *
- * Reads from CHAIN_KEY env var. Defaults to "monad-testnet".
- * The RPC URL is always overridden by the RPC_URL env var.
+ * Reads from CHAIN_KEY env var; unset/unknown falls back to DEFAULT_CHAIN_KEY
+ * (arbitrum-sepolia). The RPC URL is always overridden by the RPC_URL env var.
  */
 export function getActiveChain(chainKey?: string): Chain {
 	const key =
 		chainKey && isSupportedChainKey(chainKey) ? chainKey : DEFAULT_CHAIN_KEY;
 	return CHAIN_MAP[key];
+}
+
+/** viem Chain by EVM chainId (used by the cross-chain relayer for destinations). */
+const CHAIN_BY_ID: Record<number, Chain> = {
+	84532: baseSepolia,
+	421614: arbitrumSepolia,
+	42161: arbitrum,
+};
+
+export function getChainById(chainId: number): Chain | null {
+	return CHAIN_BY_ID[chainId] ?? null;
 }

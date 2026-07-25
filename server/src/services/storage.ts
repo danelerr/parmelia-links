@@ -1,4 +1,5 @@
 import type { Bindings } from "../middlewares/auth";
+import { logError } from "./logger";
 
 export type UserRecord = {
 	uid: string;
@@ -8,6 +9,8 @@ export type UserRecord = {
 	credentialId: string | null;
 	fundedAt: string | null;
 	invitedBy: string | null;
+	displayName: string | null;
+	socialUrl: string | null;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -23,8 +26,20 @@ export type PaymentLinkRecord = {
 	txHash: string | null;
 	paidAt: string | null;
 	paidBy: string | null;
+	paymentClaim?: string | null;
+	paymentClaimExpiresAt?: string | null;
+	paymentClaimTxHash?: string | null;
 	createdAt: string;
 };
+
+/**
+ * Payment lifecycle (migration 0007). One-way transitions, each guarded by an
+ * atomic compare-and-set so a Worker death or a duplicate request can never
+ * fork the state:
+ *   prepared -> submitting -> submitted -> confirmed | failed
+ * The reconciler cron resolves rows stranded in submitting/submitted.
+ */
+export type PendingPaymentStatus = "prepared" | "submitting" | "submitted" | "confirmed" | "failed";
 
 export type PendingPaymentRecord = {
 	userOpHash: string;
@@ -37,6 +52,8 @@ export type PendingPaymentRecord = {
 	userOp: Record<string, unknown>;
 	/** Free-form context for submit (e.g. swap quote details). */
 	meta: Record<string, unknown> | null;
+	status: PendingPaymentStatus;
+	submittedTxHash: string | null;
 	createdAt: string;
 	expiresAt: string;
 };
@@ -50,6 +67,39 @@ export type PasskeyRecord = {
 	lastUsedAt: string;
 };
 
+export type AccountOperationKind =
+	| "account_create"
+	| "faucet"
+	| "recovery_propose"
+	| "recovery_execute"
+	| "recovery_cancel";
+
+export type AccountOperationStatus =
+	| "prepared"
+	| "submitted"
+	| "confirmed"
+	| "failed"
+	| "needs_review";
+
+export type AccountOperationRecord = {
+	id: string;
+	uid: string;
+	kind: AccountOperationKind;
+	status: AccountOperationStatus;
+	txHash: `0x${string}`;
+	rawTransaction: `0x${string}`;
+	signerAddress: `0x${string}`;
+	nonce: number;
+	metadata: Record<string, unknown>;
+	attemptCount: number;
+	lastError: string | null;
+	errorCode: string | null;
+	createdAt: string;
+	updatedAt: string;
+	confirmedAt: string | null;
+	expiresAt: string;
+};
+
 type UserRow = {
 	uid: string;
 	wallet_address: string | null;
@@ -58,12 +108,14 @@ type UserRow = {
 	credential_id: string | null;
 	funded_at: string | null;
 	invited_by: string | null;
+	display_name: string | null;
+	social_url: string | null;
 	created_at: string | null;
 	updated_at: string | null;
 };
 
 const USER_COLUMNS =
-	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, created_at, updated_at";
+	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, display_name, social_url, created_at, updated_at";
 
 type PaymentLinkRow = {
 	id: string;
@@ -76,8 +128,14 @@ type PaymentLinkRow = {
 	tx_hash: string | null;
 	paid_at: string | null;
 	paid_by: string | null;
+	payment_claim: string | null;
+	payment_claim_expires_at: string | null;
+	payment_claim_tx_hash: string | null;
 	created_at: string;
 };
+
+const PAYMENT_LINK_COLUMNS =
+	"id, owner_uid, wallet_address, amount, currency, reference, status, tx_hash, paid_at, paid_by, payment_claim, payment_claim_expires_at, payment_claim_tx_hash, created_at";
 
 type PendingPaymentRow = {
 	user_op_hash: string;
@@ -89,9 +147,14 @@ type PendingPaymentRow = {
 	currency: string;
 	user_op_json: string;
 	meta: string | null;
+	status: PendingPaymentStatus;
+	submitted_tx_hash: string | null;
 	created_at: string;
 	expires_at: string;
 };
+
+const PENDING_COLS =
+	"user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, created_at, expires_at";
 
 type PasskeyRow = {
 	credential_id: string;
@@ -101,6 +164,28 @@ type PasskeyRow = {
 	created_at: string;
 	last_used_at: string;
 };
+
+type AccountOperationRow = {
+	id: string;
+	uid: string;
+	kind: AccountOperationKind;
+	status: AccountOperationStatus;
+	tx_hash: `0x${string}`;
+	raw_transaction: `0x${string}`;
+	signer_address: `0x${string}`;
+	nonce: number;
+	metadata: string;
+	attempt_count: number;
+	last_error: string | null;
+	error_code: string | null;
+	created_at: string;
+	updated_at: string;
+	confirmed_at: string | null;
+	expires_at: string;
+};
+
+const ACCOUNT_OPERATION_COLUMNS =
+	"id, uid, kind, status, tx_hash, raw_transaction, signer_address, nonce, metadata, attempt_count, last_error, error_code, created_at, updated_at, confirmed_at, expires_at";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -116,7 +201,12 @@ async function d1All<Row>(env: Bindings, query: string, params: unknown[] = []):
 }
 
 async function d1Run(env: Bindings, query: string, params: unknown[] = []) {
-	await env.PARMELIA_DB.prepare(query).bind(...params).run();
+	return await env.PARMELIA_DB.prepare(query).bind(...params).run();
+}
+
+/** True when the statement actually wrote a row (atomic claim / guarded update). */
+function didWrite(result: { meta?: { changes?: number } }): boolean {
+	return (result.meta?.changes ?? 0) > 0;
 }
 
 function mapUserRow(row: UserRow): UserRecord {
@@ -128,6 +218,8 @@ function mapUserRow(row: UserRow): UserRecord {
 		credentialId: row.credential_id,
 		fundedAt: row.funded_at,
 		invitedBy: row.invited_by,
+		displayName: row.display_name,
+		socialUrl: row.social_url,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	};
@@ -145,6 +237,9 @@ function mapPaymentLinkRow(row: PaymentLinkRow): PaymentLinkRecord {
 		txHash: row.tx_hash,
 		paidAt: row.paid_at,
 		paidBy: row.paid_by,
+		paymentClaim: row.payment_claim,
+		paymentClaimExpiresAt: row.payment_claim_expires_at,
+		paymentClaimTxHash: row.payment_claim_tx_hash,
 		createdAt: row.created_at,
 	};
 }
@@ -160,7 +255,30 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 		currency: row.currency,
 		userOp: JSON.parse(row.user_op_json) as Record<string, unknown>,
 		meta: row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : null,
+		status: row.status ?? "prepared",
+		submittedTxHash: row.submitted_tx_hash ?? null,
 		createdAt: row.created_at,
+		expiresAt: row.expires_at,
+	};
+}
+
+function mapAccountOperationRow(row: AccountOperationRow): AccountOperationRecord {
+	return {
+		id: row.id,
+		uid: row.uid,
+		kind: row.kind,
+		status: row.status,
+		txHash: row.tx_hash,
+		rawTransaction: row.raw_transaction,
+		signerAddress: row.signer_address,
+		nonce: row.nonce,
+		metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+		attemptCount: row.attempt_count,
+		lastError: row.last_error,
+		errorCode: row.error_code,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+		confirmedAt: row.confirmed_at,
 		expiresAt: row.expires_at,
 	};
 }
@@ -177,16 +295,15 @@ export async function saveUser(
 		updatedAt?: string | null;
 	},
 ) {
-	const existing = await getUserByUid(env, user.uid);
 	const timestamp = user.updatedAt ?? nowIso();
-	const createdAt = existing?.createdAt ?? user.createdAt ?? timestamp;
 	// Addresses are stored lowercase so the ledger / indexer can do exact
 	// reverse lookups (address → user) without case games.
-	const walletAddress =
-		user.walletAddress !== undefined
-			? (user.walletAddress?.toLowerCase() ?? null)
-			: (existing?.walletAddress ?? null);
+	const walletAddress = user.walletAddress?.toLowerCase() ?? null;
 
+	// Single atomic upsert: omitted fields keep their stored value (COALESCE), so
+	// concurrent partial saves can't clobber each other (no read-modify-write).
+	// Consequence: this function can SET fields but never NULL them out — use a
+	// dedicated statement for that (e.g. releaseFaucetClaim).
 	await d1Run(
 		env,
 		`INSERT INTO users (
@@ -199,21 +316,56 @@ export async function saveUser(
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uid) DO UPDATE SET
-			wallet_address = excluded.wallet_address,
-			username = excluded.username,
-			credential_id = excluded.credential_id,
-			funded_at = excluded.funded_at,
+			wallet_address = COALESCE(excluded.wallet_address, users.wallet_address),
+			username = COALESCE(excluded.username, users.username),
+			credential_id = COALESCE(excluded.credential_id, users.credential_id),
+			funded_at = COALESCE(excluded.funded_at, users.funded_at),
 			updated_at = excluded.updated_at`,
 		[
 			user.uid,
 			walletAddress,
-			user.username !== undefined ? user.username : existing?.username ?? null,
-			user.credentialId !== undefined ? user.credentialId : existing?.credentialId ?? null,
-			user.fundedAt !== undefined ? user.fundedAt : existing?.fundedAt ?? null,
-			createdAt,
+			user.username ?? null,
+			user.credentialId ?? null,
+			user.fundedAt ?? null,
+			user.createdAt ?? timestamp,
 			timestamp,
 		],
 	);
+}
+
+/**
+ * Set the public profile fields. Explicit UPDATE (not saveUser's COALESCE
+ * upsert) so empty values CAN clear a field.
+ */
+export async function updateProfileFields(
+	env: Bindings,
+	uid: string,
+	fields: { displayName: string | null; socialUrl: string | null },
+): Promise<void> {
+	await d1Run(
+		env,
+		`UPDATE users SET display_name = ?, social_url = ?, updated_at = ? WHERE uid = ?`,
+		[fields.displayName, fields.socialUrl, nowIso(), uid],
+	);
+}
+
+/**
+ * Atomically claim the one-time welcome faucet for a user. Returns true only for
+ * the single caller that flipped funded_at from NULL — concurrent claims lose.
+ * Claim BEFORE transferring; on transfer failure, releaseFaucetClaim() re-opens it.
+ */
+export async function claimFaucet(env: Bindings, uid: string): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE users SET funded_at = ?, updated_at = ? WHERE uid = ? AND funded_at IS NULL`,
+		[nowIso(), nowIso(), uid],
+	);
+	return didWrite(result);
+}
+
+/** Re-open the faucet claim after a failed transfer (compensation for claimFaucet). */
+export async function releaseFaucetClaim(env: Bindings, uid: string): Promise<void> {
+	await d1Run(env, `UPDATE users SET funded_at = NULL, updated_at = ? WHERE uid = ?`, [nowIso(), uid]);
 }
 
 export async function getUserByUid(env: Bindings, uid: string): Promise<UserRecord | null> {
@@ -315,7 +467,7 @@ export async function createPaymentLink(env: Bindings, link: PaymentLinkRecord) 
 export async function getPaymentLinkById(env: Bindings, id: string): Promise<PaymentLinkRecord | null> {
 	const row = await d1First<PaymentLinkRow>(
 		env,
-		`SELECT id, owner_uid, wallet_address, amount, currency, reference, status, tx_hash, paid_at, paid_by, created_at
+		`SELECT ${PAYMENT_LINK_COLUMNS}
 		 FROM payment_links
 		 WHERE id = ?
 		 LIMIT 1`,
@@ -327,7 +479,7 @@ export async function getPaymentLinkById(env: Bindings, id: string): Promise<Pay
 export async function listPaymentLinksByOwner(env: Bindings, ownerUid: string, limit = 20): Promise<PaymentLinkRecord[]> {
 	const rows = await d1All<PaymentLinkRow>(
 		env,
-		`SELECT id, owner_uid, wallet_address, amount, currency, reference, status, tx_hash, paid_at, paid_by, created_at
+		`SELECT ${PAYMENT_LINK_COLUMNS}
 		 FROM payment_links
 		 WHERE owner_uid = ?
 		 ORDER BY datetime(created_at) DESC
@@ -337,35 +489,92 @@ export async function listPaymentLinksByOwner(env: Bindings, ownerUid: string, l
 	return rows.map(mapPaymentLinkRow);
 }
 
-export async function listPaidLinksByOwner(env: Bindings, ownerUid: string, limit = 100): Promise<PaymentLinkRecord[]> {
-	const rows = await d1All<PaymentLinkRow>(
-		env,
-		`SELECT id, owner_uid, wallet_address, amount, currency, reference, status, tx_hash, paid_at, paid_by, created_at
-		 FROM payment_links
-		 WHERE owner_uid = ? AND status = 'paid'
-		 ORDER BY datetime(COALESCE(paid_at, created_at)) DESC
-		 LIMIT ?`,
-		[ownerUid, limit],
-	);
-	return rows.map(mapPaymentLinkRow);
-}
-
+/**
+ * Flip a link to paid — only from 'pending' (atomic guard). Returns false when
+ * the link was already paid, so a second concurrent payment can never overwrite
+ * the first payer's tx_hash/paid_by/amount.
+ */
 export async function markPaymentLinkPaid(
 	env: Bindings,
-	params: { id: string; amount: string; txHash: string; paidAt: string; paidBy: string },
-) {
+	params: { id: string; amount: string; txHash: string; paidAt: string; paidBy: string; claimOwner?: string | null },
+): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE payment_links
+		 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?,
+			 payment_claim = NULL, payment_claim_expires_at = NULL, payment_claim_tx_hash = NULL
+		 WHERE id = ? AND status = 'pending'
+			 AND (payment_claim IS NULL OR payment_claim = ?)`,
+		[params.amount, params.txHash, params.paidAt, params.paidBy, params.id, params.claimOwner ?? null],
+	);
+	return didWrite(result);
+}
+
+/** Reserve a pending link for one UserOperation before any funds are broadcast. */
+export async function claimPaymentLinkForSubmit(
+	env: Bindings,
+	id: string,
+	claimOwner: string,
+	expiresAt: string,
+): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE payment_links
+		 SET payment_claim = ?, payment_claim_expires_at = ?, payment_claim_tx_hash = NULL
+		 WHERE id = ? AND status = 'pending' AND (
+			payment_claim IS NULL OR payment_claim = ? OR (
+				payment_claim_tx_hash IS NULL AND payment_claim_expires_at <= ?
+			)
+		) AND NOT EXISTS (
+			SELECT 1 FROM payment_intents
+			WHERE payment_intents.link_id = payment_links.id
+				AND (
+					payment_intents.status != 'awaiting_payment' OR
+					(payment_intents.expires_at IS NOT NULL AND payment_intents.expires_at <= ?)
+				)
+		)`,
+		[claimOwner, expiresAt, id, claimOwner, nowIso(), nowIso()],
+	);
+	return didWrite(result);
+}
+
+/** Make a link claim non-expiring once its on-chain transaction exists. */
+export async function markPaymentLinkClaimBroadcast(
+	env: Bindings,
+	id: string,
+	claimOwner: string,
+	txHash: string,
+): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE payment_links
+		 SET payment_claim_tx_hash = ?, payment_claim_expires_at = NULL
+		 WHERE id = ? AND status = 'pending' AND payment_claim = ?`,
+		[txHash, id, claimOwner],
+	);
+	return didWrite(result);
+}
+
+/** Release only this operation's claim; broadcast claims require known failure. */
+export async function releasePaymentLinkClaim(
+	env: Bindings,
+	id: string,
+	claimOwner: string,
+	allowBroadcast = false,
+): Promise<void> {
 	await d1Run(
 		env,
 		`UPDATE payment_links
-		 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?
-		 WHERE id = ?`,
-		[params.amount, params.txHash, params.paidAt, params.paidBy, params.id],
+		 SET payment_claim = NULL, payment_claim_expires_at = NULL, payment_claim_tx_hash = NULL
+		 WHERE id = ? AND status = 'pending' AND payment_claim = ?
+			 AND (? = 1 OR payment_claim_tx_hash IS NULL)`,
+		[id, claimOwner, allowBroadcast ? 1 : 0],
 	);
 }
 
 export async function createPendingPayment(
 	env: Bindings,
-	pending: Omit<PendingPaymentRecord, "createdAt" | "expiresAt" | "meta"> & {
+	pending: Omit<PendingPaymentRecord, "createdAt" | "expiresAt" | "meta" | "status" | "submittedTxHash"> & {
 		meta?: Record<string, unknown> | null;
 		createdAt?: string;
 		expiresAt?: string;
@@ -374,7 +583,10 @@ export async function createPendingPayment(
 	const createdAt = pending.createdAt ?? nowIso();
 	const expiresAt = pending.expiresAt ?? new Date(Date.now() + 10 * 60_000).toISOString();
 
-	await d1Run(env, `DELETE FROM pending_payments WHERE expires_at <= ?`, [nowIso()]);
+	// Opportunistic cleanup of expired rows that never got signed. In-flight and
+	// terminal rows are NOT touched here: the reconciler owns their lifecycle
+	// (an expired 'submitted' row may still be a real broadcast tx to settle).
+	await d1Run(env, `DELETE FROM pending_payments WHERE expires_at <= ? AND status = 'prepared'`, [nowIso()]);
 	await d1Run(
 		env,
 		`INSERT INTO pending_payments (
@@ -387,9 +599,11 @@ export async function createPendingPayment(
 			currency,
 			user_op_json,
 			meta,
+			status,
+			submitted_tx_hash,
 			created_at,
 			expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?)
 		ON CONFLICT(user_op_hash) DO UPDATE SET
 			uid = excluded.uid,
 			link_id = excluded.link_id,
@@ -399,6 +613,8 @@ export async function createPendingPayment(
 			currency = excluded.currency,
 			user_op_json = excluded.user_op_json,
 			meta = excluded.meta,
+			status = 'prepared',
+			submitted_tx_hash = NULL,
 			created_at = excluded.created_at,
 			expires_at = excluded.expires_at`,
 		[
@@ -417,30 +633,323 @@ export async function createPendingPayment(
 	);
 }
 
+/** The signable row for /pay/submit: only fresh 'prepared' rows qualify. */
 export async function getPendingPayment(env: Bindings, userOpHash: string): Promise<PendingPaymentRecord | null> {
 	const row = await d1First<PendingPaymentRow>(
 		env,
-		`SELECT user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, created_at, expires_at
-		 FROM pending_payments
-		 WHERE user_op_hash = ?
-		 LIMIT 1`,
+		`SELECT ${PENDING_COLS} FROM pending_payments WHERE user_op_hash = ? LIMIT 1`,
 		[userOpHash],
 	);
 	if (!row) return null;
 	if (new Date(row.expires_at).getTime() <= Date.now()) {
-		await deletePendingPayment(env, userOpHash);
+		// Only garbage-collect never-signed rows; the reconciler owns the rest.
+		if (row.status === "prepared") await deletePendingPayment(env, userOpHash);
 		return null;
 	}
 	return mapPendingRow(row);
+}
+
+/** Raw fetch, any state — for GET /pay/status and the reconciler. */
+export async function getPendingPaymentAnyState(
+	env: Bindings,
+	userOpHash: string,
+): Promise<PendingPaymentRecord | null> {
+	const row = await d1First<PendingPaymentRow>(
+		env,
+		`SELECT ${PENDING_COLS} FROM pending_payments WHERE user_op_hash = ? LIMIT 1`,
+		[userOpHash],
+	);
+	return row ? mapPendingRow(row) : null;
+}
+
+/**
+ * Atomically claim a prepared payment for submission. Exactly one of N
+ * concurrent submits of the same userOpHash wins; the rest see false and
+ * return 409 instead of double-broadcasting (the EntryPoint nonce would kill
+ * the duplicate anyway, but this stops it before burning relayer gas).
+ */
+export async function claimPendingForSubmit(env: Bindings, userOpHash: string): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE pending_payments SET status = 'submitting' WHERE user_op_hash = ? AND status = 'prepared'`,
+		[userOpHash],
+	);
+	return didWrite(result);
+}
+
+/** Release a claim when submit fails BEFORE broadcasting (so the user can retry). */
+export async function releasePendingClaim(env: Bindings, userOpHash: string): Promise<void> {
+	await d1Run(
+		env,
+		`UPDATE pending_payments SET status = 'prepared' WHERE user_op_hash = ? AND status = 'submitting'`,
+		[userOpHash],
+	);
+}
+
+/** Advance the payment state machine (optionally recording the broadcast tx). */
+export async function setPendingPaymentStatus(
+	env: Bindings,
+	userOpHash: string,
+	status: PendingPaymentStatus,
+	submittedTxHash?: string | null,
+): Promise<void> {
+	if (submittedTxHash !== undefined) {
+		await d1Run(
+			env,
+			`UPDATE pending_payments SET status = ?, submitted_tx_hash = ? WHERE user_op_hash = ?`,
+			[status, submittedTxHash, userOpHash],
+		);
+	} else {
+		await d1Run(env, `UPDATE pending_payments SET status = ? WHERE user_op_hash = ?`, [status, userOpHash]);
+	}
+}
+
+/** In-flight rows the reconciler must resolve (oldest first). */
+export async function listPendingPaymentsByStatus(
+	env: Bindings,
+	statuses: PendingPaymentStatus[],
+	limit = 25,
+): Promise<PendingPaymentRecord[]> {
+	if (statuses.length === 0) return [];
+	const placeholders = statuses.map(() => "?").join(", ");
+	const rows = await d1All<PendingPaymentRow>(
+		env,
+		`SELECT ${PENDING_COLS} FROM pending_payments WHERE status IN (${placeholders}) ORDER BY created_at ASC LIMIT ?`,
+		[...statuses, limit],
+	);
+	return rows.map(mapPendingRow);
+}
+
+/** Sweep terminal rows once GET /pay/status no longer needs them (~1h). */
+export async function sweepTerminalPendingPayments(env: Bindings): Promise<void> {
+	const cutoff = new Date(Date.now() - 50 * 60_000).toISOString(); // expires_at = created+10m → ~1h old
+	await d1Run(
+		env,
+		`DELETE FROM pending_payments WHERE status IN ('confirmed', 'failed') AND expires_at <= ?`,
+		[cutoff],
+	);
 }
 
 export async function deletePendingPayment(env: Bindings, userOpHash: string) {
 	await d1Run(env, `DELETE FROM pending_payments WHERE user_op_hash = ?`, [userOpHash]);
 }
 
+// ===== Durable account operations =====
+
+export async function createAccountOperation(
+	env: Bindings,
+	operation: Omit<
+		AccountOperationRecord,
+		"status" | "attemptCount" | "lastError" | "errorCode" | "updatedAt" | "confirmedAt"
+	>,
+): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`INSERT OR IGNORE INTO account_operations (
+			id, uid, kind, status, tx_hash, raw_transaction, signer_address, nonce,
+			metadata, attempt_count, last_error, error_code, created_at, updated_at,
+			confirmed_at, expires_at
+		) VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?)`,
+		[
+			operation.id,
+			operation.uid,
+			operation.kind,
+			operation.txHash,
+			operation.rawTransaction,
+			operation.signerAddress.toLowerCase(),
+			operation.nonce,
+			JSON.stringify(operation.metadata),
+			operation.createdAt,
+			operation.createdAt,
+			operation.expiresAt,
+		],
+	);
+	return didWrite(result);
+}
+
+export async function getAccountOperationById(
+	env: Bindings,
+	id: string,
+): Promise<AccountOperationRecord | null> {
+	const row = await d1First<AccountOperationRow>(
+		env,
+		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations WHERE id = ? LIMIT 1`,
+		[id],
+	);
+	return row ? mapAccountOperationRow(row) : null;
+}
+
+export async function getActiveAccountOperation(
+	env: Bindings,
+	uid: string,
+	kind: AccountOperationKind,
+): Promise<AccountOperationRecord | null> {
+	const row = await d1First<AccountOperationRow>(
+		env,
+		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations
+		 WHERE uid = ? AND kind = ? AND status IN ('prepared', 'submitted', 'needs_review')
+		 ORDER BY created_at DESC LIMIT 1`,
+		[uid, kind],
+	);
+	return row ? mapAccountOperationRow(row) : null;
+}
+
+export async function listActiveAccountOperations(
+	env: Bindings,
+	limit = 25,
+): Promise<AccountOperationRecord[]> {
+	const rows = await d1All<AccountOperationRow>(
+		env,
+		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations
+		 WHERE status IN ('prepared', 'submitted')
+		 ORDER BY updated_at ASC LIMIT ?`,
+		[limit],
+	);
+	return rows.map(mapAccountOperationRow);
+}
+
+export async function getSignerBlockingAccountOperation(
+	env: Bindings,
+	signerAddress: string,
+): Promise<AccountOperationRecord | null> {
+	const row = await d1First<AccountOperationRow>(
+		env,
+		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations
+		 WHERE signer_address = ? AND status IN ('prepared', 'needs_review')
+		 ORDER BY updated_at ASC LIMIT 1`,
+		[signerAddress.toLowerCase()],
+	);
+	return row ? mapAccountOperationRow(row) : null;
+}
+
+export async function hasAccountOperationNeedsReview(env: Bindings): Promise<boolean> {
+	const row = await d1First<{ present: number }>(
+		env,
+		`SELECT 1 AS present FROM account_operations WHERE status = 'needs_review' LIMIT 1`,
+	);
+	return row?.present === 1;
+}
+
+export async function markAccountOperationSubmitted(env: Bindings, id: string): Promise<void> {
+	await d1Run(
+		env,
+		`UPDATE account_operations SET status = 'submitted', updated_at = ?
+		 WHERE id = ? AND status = 'prepared'`,
+		[nowIso(), id],
+	);
+}
+
+export async function recordAccountOperationAttempt(
+	env: Bindings,
+	id: string,
+	lastError: string | null,
+): Promise<void> {
+	await d1Run(
+		env,
+		`UPDATE account_operations
+		 SET attempt_count = attempt_count + 1, last_error = ?, updated_at = ?
+		 WHERE id = ? AND status IN ('prepared', 'submitted')`,
+		[lastError, nowIso(), id],
+	);
+}
+
+export async function finishAccountOperation(
+	env: Bindings,
+	id: string,
+	status: Extract<AccountOperationStatus, "confirmed" | "failed" | "needs_review">,
+	fields: { errorCode?: string | null; lastError?: string | null } = {},
+): Promise<boolean> {
+	const now = nowIso();
+	const result = await d1Run(
+		env,
+		`UPDATE account_operations
+		 SET status = ?, error_code = ?, last_error = ?, updated_at = ?, confirmed_at = ?
+		 WHERE id = ? AND status IN ('prepared', 'submitted')`,
+		[
+			status,
+			fields.errorCode ?? null,
+			fields.lastError ?? null,
+			now,
+			status === "confirmed" ? now : null,
+			id,
+		],
+	);
+	return didWrite(result);
+}
+
+export async function sweepAccountOperations(env: Bindings): Promise<void> {
+	const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+	await d1Run(
+		env,
+		`DELETE FROM account_operations
+		 WHERE status IN ('confirmed', 'failed') AND updated_at <= ?`,
+		[cutoff],
+	);
+}
+
+// ===== In-Worker rate limiting (fixed window, D1-backed) =====
+
+/**
+ * Consume one unit of `scope`'s budget for `subject`. Returns true while the
+ * subject stays within `limit` hits per `windowSeconds`. Single atomic upsert
+ * (no read-modify-write): concurrent requests each get a distinct count.
+ * Callers protecting monetary or privileged actions pass failClosed; ordinary
+ * abuse throttles keep the availability-oriented fail-open default.
+ */
+export async function rateLimitConsume(
+	env: Bindings,
+	scope: string,
+	subject: string,
+	limit: number,
+	windowSeconds: number,
+	options: { failClosed?: boolean } = {},
+): Promise<boolean> {
+	try {
+		const windowStart = String(Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds);
+		const row = await d1First<{ count: number }>(
+			env,
+			`INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?)
+			 ON CONFLICT(key) DO UPDATE SET
+				count = CASE WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1 ELSE 1 END,
+				window_start = excluded.window_start
+			 RETURNING count`,
+			[`${scope}:${subject}`, windowStart],
+		);
+		return (row?.count ?? 1) <= limit;
+	} catch (error) {
+		logError("rate_limit_unavailable", error, {
+			scope,
+			failClosed: options.failClosed === true,
+		});
+		return !options.failClosed;
+	}
+}
+
+/** Compensate a claimed monetary budget when the corresponding transfer fails. */
+export async function refundRateLimitConsume(
+	env: Bindings,
+	scope: string,
+	subject: string,
+	windowSeconds: number,
+): Promise<void> {
+	const windowStart = String(Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds);
+	await d1Run(
+		env,
+		`UPDATE rate_limits SET count = MAX(count - 1, 0)
+		 WHERE key = ? AND window_start = ?`,
+		[`${scope}:${subject}`, windowStart],
+	);
+}
+
+/** Drop counters whose window is long gone (cron hygiene). */
+export async function sweepRateLimits(env: Bindings): Promise<void> {
+	const cutoff = String(Math.floor(Date.now() / 1000) - 24 * 3600);
+	await d1Run(env, `DELETE FROM rate_limits WHERE window_start < ?`, [cutoff]);
+}
+
 // ===== Ledger (unified movements) =====
 
-export type LedgerKind = "payment" | "link" | "swap" | "fund" | "external";
+export type LedgerKind = "payment" | "link" | "swap" | "fund" | "external" | "earn";
 
 export type LedgerEntry = {
 	uid: string;
@@ -451,6 +960,7 @@ export type LedgerEntry = {
 	logIndex?: number | null;
 	token: string;
 	amount: string;
+	amountSource?: "executed" | "estimated";
 	counterparty?: string | null;
 	counterpartyUid?: string | null;
 	reference?: string | null;
@@ -466,6 +976,7 @@ type LedgerRow = {
 	log_index: number | null;
 	token: string;
 	amount: string;
+	amount_source: "executed" | "estimated";
 	counterparty: string | null;
 	counterparty_uid: string | null;
 	reference: string | null;
@@ -473,16 +984,24 @@ type LedgerRow = {
 	created_at: string;
 };
 
-/** Idempotent append (the dedup unique index absorbs re-submissions/re-scans). */
-export async function writeLedgerEntries(env: Bindings, entries: LedgerEntry[]) {
-	for (const entry of entries) {
-		await d1Run(
-			env,
-			`INSERT OR IGNORE INTO ledger (
-				id, uid, direction, kind, tx_hash, log_index, token, amount,
-				counterparty, counterparty_uid, reference, link_id, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
+/**
+ * Idempotent append (the dedup unique index absorbs re-submissions/re-scans).
+ * Runs as ONE atomic D1 batch so double-entry pairs (payer out / recipient in)
+ * can never be half-written. Returns one boolean per entry: true if the row was
+ * actually inserted, false if the dedup index absorbed it (lets callers notify
+ * only on genuinely new movements).
+ */
+export async function writeLedgerEntries(env: Bindings, entries: LedgerEntry[]): Promise<boolean[]> {
+	if (entries.length === 0) return [];
+	const stmt = env.PARMELIA_DB.prepare(
+		`INSERT OR IGNORE INTO ledger (
+			id, uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
+			counterparty, counterparty_uid, reference, link_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	);
+	const results = await env.PARMELIA_DB.batch(
+		entries.map((entry) =>
+			stmt.bind(
 				crypto.randomUUID(),
 				entry.uid,
 				entry.direction,
@@ -491,24 +1010,29 @@ export async function writeLedgerEntries(env: Bindings, entries: LedgerEntry[]) 
 				entry.logIndex ?? null,
 				entry.token,
 				entry.amount,
+				entry.amountSource ?? "executed",
 				entry.counterparty?.toLowerCase() ?? null,
 				entry.counterpartyUid ?? null,
 				entry.reference ?? null,
 				entry.linkId ?? null,
 				entry.createdAt,
-			],
-		);
-	}
+			),
+		),
+	);
+	return results.map((r) => ((r.meta?.changes ?? 0) > 0));
 }
 
 export async function listLedgerByUid(env: Bindings, uid: string, limit = 200): Promise<LedgerEntry[]> {
+	// created_at is always an ISO-8601 string (writers pass nowIso()/block time),
+	// so plain ORDER BY sorts chronologically AND uses idx_ledger_uid_created —
+	// wrapping it in datetime() would force a full scan of the user's rows.
 	const rows = await d1All<LedgerRow>(
 		env,
-		`SELECT uid, direction, kind, tx_hash, log_index, token, amount,
+		`SELECT uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
 			counterparty, counterparty_uid, reference, link_id, created_at
 		 FROM ledger
 		 WHERE uid = ?
-		 ORDER BY datetime(created_at) DESC
+		 ORDER BY created_at DESC
 		 LIMIT ?`,
 		[uid, limit],
 	);
@@ -520,6 +1044,7 @@ export async function listLedgerByUid(env: Bindings, uid: string, limit = 200): 
 		logIndex: row.log_index,
 		token: row.token,
 		amount: row.amount,
+		amountSource: row.amount_source,
 		counterparty: row.counterparty,
 		counterpartyUid: row.counterparty_uid,
 		reference: row.reference,
@@ -555,6 +1080,73 @@ export async function setSyncCursor(env: Bindings, key: string, lastBlock: bigin
 		 ON CONFLICT(key) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at`,
 		[key, lastBlock.toString(), nowIso()],
 	);
+}
+
+// ===== D1 leases =====
+//
+// Owner-bound leases protect both the scheduled handler and short transaction
+// signing critical sections. A stale holder cannot renew or release a newer
+// owner's lease.
+
+const CRON_LOCK_KEY = "cron:lock";
+
+export async function acquireLease(
+	env: Bindings,
+	key: string,
+	ttlMs: number,
+): Promise<string | null> {
+	if (!key || key.length > 160) throw new Error("Invalid lease key");
+	const now = nowIso();
+	const expiry = new Date(Date.now() + ttlMs).toISOString();
+	const owner = crypto.randomUUID();
+	// Take over an expired lease...
+	const updated = await d1Run(
+		env,
+		`UPDATE cron_leases SET owner = ?, expires_at = ?, updated_at = ?
+		 WHERE key = ? AND expires_at <= ?`,
+		[owner, expiry, now, key, now],
+	);
+	if (didWrite(updated)) return owner;
+	// ...or create the lease row the very first time.
+	const inserted = await d1Run(
+		env,
+		`INSERT OR IGNORE INTO cron_leases (key, owner, expires_at, updated_at) VALUES (?, ?, ?, ?)`,
+		[key, owner, expiry, now],
+	);
+	return didWrite(inserted) ? owner : null;
+}
+
+export async function renewLease(
+	env: Bindings,
+	key: string,
+	owner: string,
+	ttlMs: number,
+): Promise<boolean> {
+	const now = nowIso();
+	const expiry = new Date(Date.now() + ttlMs).toISOString();
+	const renewed = await d1Run(
+		env,
+		`UPDATE cron_leases SET expires_at = ?, updated_at = ? WHERE key = ? AND owner = ?`,
+		[expiry, now, key, owner],
+	);
+	return didWrite(renewed);
+}
+
+export async function releaseLease(env: Bindings, key: string, owner: string): Promise<void> {
+	await d1Run(env, `DELETE FROM cron_leases WHERE key = ? AND owner = ?`, [key, owner]);
+}
+
+/** Try to acquire the global cron lease for ttlMs. */
+export function acquireCronLock(env: Bindings, ttlMs: number): Promise<string | null> {
+	return acquireLease(env, CRON_LOCK_KEY, ttlMs);
+}
+
+export function renewCronLock(env: Bindings, owner: string, ttlMs: number): Promise<boolean> {
+	return renewLease(env, CRON_LOCK_KEY, owner, ttlMs);
+}
+
+export function releaseCronLock(env: Bindings, owner: string): Promise<void> {
+	return releaseLease(env, CRON_LOCK_KEY, owner);
 }
 
 function mapPasskeyRow(row: PasskeyRow): PasskeyRecord {
@@ -900,6 +1492,15 @@ export type EventRecord = {
 	mode: ApiMode;
 	createdAt: string;
 };
+
+export type EventOutboxPlan = {
+	event: EventRecord;
+	deliveries: Array<{
+		id: string;
+		endpointId: string;
+		createdAt: string;
+	}>;
+};
 export type WebhookDeliveryDue = {
 	id: string;
 	eventId: string;
@@ -1050,6 +1651,59 @@ export async function createPaymentIntent(env: Bindings, rec: PaymentIntentRecor
 	);
 }
 
+export async function createPaymentIntentWithOutbox(
+	env: Bindings,
+	rec: PaymentIntentRecord,
+	outbox: EventOutboxPlan,
+): Promise<void> {
+	await env.PARMELIA_DB.batch([
+		env.PARMELIA_DB.prepare(
+			`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
+				checkout_url, tx_hash, mode, idempotency_key, expires_at, created_at, updated_at, onchain_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			rec.id, rec.merchantId, rec.linkId, rec.amount, rec.currency, rec.status,
+			rec.metadata ? JSON.stringify(rec.metadata) : null, rec.reference, rec.checkoutUrl, rec.txHash,
+			rec.mode, rec.idempotencyKey, rec.expiresAt, rec.createdAt, rec.updatedAt, rec.onchainId,
+		),
+		...eventOutboxStatements(env, outbox),
+	]);
+}
+
+/**
+ * Create the checkout link, intent and payment.created outbox in one D1
+ * transaction. A concurrent idempotency-key loser rolls back its link too.
+ */
+export async function createPaymentIntentTransaction(
+	env: Bindings,
+	link: PaymentLinkRecord,
+	rec: PaymentIntentRecord,
+	outbox: EventOutboxPlan,
+): Promise<void> {
+	const statements = [
+		env.PARMELIA_DB.prepare(
+			`INSERT INTO payment_links (
+				id, owner_uid, wallet_address, amount, currency, reference, status,
+				tx_hash, paid_at, paid_by, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			link.id, link.ownerUid, link.wallet, link.amount, link.currency, link.reference,
+			link.status, link.txHash, link.paidAt, link.paidBy, link.createdAt,
+		),
+		env.PARMELIA_DB.prepare(
+			`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
+				checkout_url, tx_hash, mode, idempotency_key, expires_at, created_at, updated_at, onchain_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			rec.id, rec.merchantId, rec.linkId, rec.amount, rec.currency, rec.status,
+			rec.metadata ? JSON.stringify(rec.metadata) : null, rec.reference, rec.checkoutUrl, rec.txHash,
+			rec.mode, rec.idempotencyKey, rec.expiresAt, rec.createdAt, rec.updatedAt, rec.onchainId,
+		),
+		...eventOutboxStatements(env, outbox),
+	];
+	await env.PARMELIA_DB.batch(statements);
+}
+
 const INTENT_COLS =
 	"id, merchant_id, link_id, amount, currency, status, metadata, reference, checkout_url, tx_hash, mode, idempotency_key, onchain_id, expires_at, created_at, updated_at";
 
@@ -1079,29 +1733,157 @@ export async function getPaymentIntentByIdempotency(env: Bindings, merchantId: s
 	return row ? mapIntent(row) : null;
 }
 
-export async function listPaymentIntents(env: Bindings, merchantId: string, limit = 50): Promise<PaymentIntentRecord[]> {
+/**
+ * Newest-first page of a merchant's intents. `startingAfterId` is a cursor (the
+ * last id of the previous page); the page starts strictly after that intent.
+ * created_at is ISO text, so plain ORDER BY is chronological; `id DESC` breaks
+ * same-timestamp ties deterministically.
+ */
+export async function listPaymentIntents(
+	env: Bindings,
+	merchantId: string,
+	limit = 50,
+	startingAfterId?: string | null,
+	filters?: { status?: string | null; mode?: ApiMode | null },
+): Promise<PaymentIntentRecord[]> {
+	let cursorCreatedAt: string | null = null;
+	let cursorId: string | null = null;
+	if (startingAfterId) {
+		const cursorRow = await d1First<{ created_at: string; id: string }>(
+			env,
+			`SELECT created_at, id FROM payment_intents WHERE id = ? AND merchant_id = ? LIMIT 1`,
+			[startingAfterId, merchantId],
+		);
+		if (cursorRow) {
+			cursorCreatedAt = cursorRow.created_at;
+			cursorId = cursorRow.id;
+		}
+	}
+	const conds: string[] = ["merchant_id = ?"];
+	const params: unknown[] = [merchantId];
+	if (filters?.status) {
+		conds.push("status = ?");
+		params.push(filters.status);
+	}
+	if (filters?.mode) {
+		conds.push("mode = ?");
+		params.push(filters.mode);
+	}
+	if (cursorCreatedAt) {
+		conds.push("(created_at < ? OR (created_at = ? AND id < ?))");
+		params.push(cursorCreatedAt, cursorCreatedAt, cursorId);
+	}
 	const rows = await d1All<PaymentIntentRow>(
 		env,
-		`SELECT ${INTENT_COLS} FROM payment_intents WHERE merchant_id = ? ORDER BY datetime(created_at) DESC LIMIT ?`,
-		[merchantId, limit],
+		`SELECT ${INTENT_COLS} FROM payment_intents WHERE ${conds.join(" AND ")}
+		 ORDER BY created_at DESC, id DESC LIMIT ?`,
+		[...params, limit],
 	);
 	return rows.map(mapIntent);
 }
 
-export async function markPaymentIntentPaid(env: Bindings, id: string, txHash: string, paidAt: string) {
-	await d1Run(
+/**
+ * Whether an intent can still be paid: status must be awaiting_payment AND its
+ * expiry (if any) must be in the future. Every pay/authorize path must check
+ * this — a canceled or expired intent keeps a 'pending' payment_links row, so
+ * checking only the link would let payers settle dead intents.
+ */
+export function isIntentPayable(intent: Pick<PaymentIntentRecord, "status" | "expiresAt">): boolean {
+	if (intent.status !== "awaiting_payment") return false;
+	if (intent.expiresAt && new Date(intent.expiresAt).getTime() <= Date.now()) return false;
+	return true;
+}
+
+export async function markPaymentIntentPaid(env: Bindings, id: string, txHash: string, paidAt: string): Promise<boolean> {
+	const result = await d1Run(
 		env,
 		`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ? WHERE id = ? AND status = 'awaiting_payment'`,
 		[txHash, paidAt, id],
 	);
+	return didWrite(result);
 }
 
-export async function updatePaymentIntentStatus(env: Bindings, id: string, merchantId: string, status: PaymentIntentStatus) {
-	await d1Run(
+/** Atomically settle a sandbox/indexed intent and persist its paid outbox. */
+export async function markPaymentIntentPaidWithOutbox(
+	env: Bindings,
+	id: string,
+	txHash: string,
+	paidAt: string,
+	outbox: EventOutboxPlan,
+): Promise<boolean> {
+	const results = await env.PARMELIA_DB.batch([
+		env.PARMELIA_DB.prepare(
+			`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ?
+			 WHERE id = ? AND status = 'awaiting_payment'`,
+		).bind(txHash, paidAt, id),
+		...eventOutboxStatements(env, outbox, { intentId: id, txHash }),
+	]);
+	return didWrite(results[0]);
+}
+
+/**
+ * Settle the link, backing intent and payment.paid outbox as one transaction.
+ * The link claim prevents another UserOperation from paying the same checkout.
+ */
+export async function settlePaymentLinkWithOutbox(
+	env: Bindings,
+	params: {
+		id: string;
+		amount: string;
+		txHash: string;
+		paidAt: string;
+		paidBy: string;
+		claimOwner: string;
+		intentId?: string | null;
+		outbox?: EventOutboxPlan | null;
+	},
+): Promise<boolean> {
+	const statements = [
+		env.PARMELIA_DB.prepare(
+			`UPDATE payment_links
+			 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?,
+				payment_claim = NULL, payment_claim_expires_at = NULL, payment_claim_tx_hash = NULL
+			 WHERE id = ? AND status = 'pending'
+				AND (payment_claim IS NULL OR payment_claim = ?)`,
+		).bind(params.amount, params.txHash, params.paidAt, params.paidBy, params.id, params.claimOwner),
+	];
+
+	if (params.intentId) {
+		statements.push(
+			env.PARMELIA_DB.prepare(
+				`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ?
+				 WHERE id = ? AND status = 'awaiting_payment'
+					AND EXISTS (
+						SELECT 1 FROM payment_links
+						WHERE id = ? AND status = 'paid' AND tx_hash = ?
+					)`,
+			).bind(params.txHash, params.paidAt, params.intentId, params.id, params.txHash),
+		);
+		if (params.outbox) {
+			statements.push(...eventOutboxStatements(env, params.outbox, {
+				intentId: params.intentId,
+				txHash: params.txHash,
+			}));
+		}
+	}
+
+	const results = await env.PARMELIA_DB.batch(statements);
+	return didWrite(results[0]);
+}
+
+export async function updatePaymentIntentStatus(env: Bindings, id: string, merchantId: string, status: PaymentIntentStatus): Promise<boolean> {
+	const result = await d1Run(
 		env,
-		`UPDATE payment_intents SET status = ?, updated_at = ? WHERE id = ? AND merchant_id = ?`,
+		`UPDATE payment_intents SET status = ?, updated_at = ?
+		 WHERE id = ? AND merchant_id = ? AND status = 'awaiting_payment'
+			AND NOT EXISTS (
+				SELECT 1 FROM payment_links
+				WHERE payment_links.id = payment_intents.link_id
+					AND payment_links.payment_claim IS NOT NULL
+			)`,
 		[status, nowIso(), id, merchantId],
 	);
+	return didWrite(result);
 }
 
 // --- webhook endpoints ---
@@ -1159,7 +1941,79 @@ export async function deleteWebhookEndpoint(env: Bindings, merchantId: string, i
 	await d1Run(env, `DELETE FROM webhook_endpoints WHERE id = ? AND merchant_id = ?`, [id, merchantId]);
 }
 
+export async function listWebhookSecretsNeedingEncryption(
+	env: Bindings,
+	activePrefix: string,
+	limit = 25,
+): Promise<Array<{ id: string; secret: string }>> {
+	return d1All<{ id: string; secret: string }>(
+		env,
+		`SELECT id, secret FROM webhook_endpoints WHERE substr(secret, 1, length(?)) <> ? LIMIT ?`,
+		[activePrefix, activePrefix, limit],
+	);
+}
+
+export async function replaceWebhookSecret(
+	env: Bindings,
+	id: string,
+	oldSecret: string,
+	newSecret: string,
+): Promise<boolean> {
+	const result = await d1Run(
+		env,
+		`UPDATE webhook_endpoints SET secret = ? WHERE id = ? AND secret = ?`,
+		[newSecret, id, oldSecret],
+	);
+	return didWrite(result);
+}
+
 // --- events + webhook deliveries (outbox) ---
+
+function eventOutboxStatements(
+	env: Bindings,
+	plan: EventOutboxPlan,
+	guard?: { intentId: string; txHash: string },
+) {
+	const event = plan.event;
+	const eventStatement = guard
+		? env.PARMELIA_DB.prepare(
+			`INSERT OR IGNORE INTO events (id, merchant_id, type, object_id, payload, mode, created_at)
+			 SELECT ?, ?, ?, ?, ?, ?, ?
+			 WHERE EXISTS (
+				SELECT 1 FROM payment_intents WHERE id = ? AND status = 'paid' AND tx_hash = ?
+			 )`,
+		).bind(
+			event.id, event.merchantId, event.type, event.objectId, JSON.stringify(event.payload),
+			event.mode, event.createdAt, guard.intentId, guard.txHash,
+		)
+		: env.PARMELIA_DB.prepare(
+			`INSERT OR IGNORE INTO events (id, merchant_id, type, object_id, payload, mode, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			event.id, event.merchantId, event.type, event.objectId, JSON.stringify(event.payload),
+			event.mode, event.createdAt,
+		);
+
+	return [
+		eventStatement,
+		...plan.deliveries.map((delivery) =>
+			env.PARMELIA_DB.prepare(
+				`INSERT OR IGNORE INTO webhook_deliveries
+					(id, event_id, endpoint_id, attempt, status, next_retry_at, created_at)
+				 SELECT ?, ?, ?, 0, 'pending', ?, ?
+				 WHERE EXISTS (SELECT 1 FROM events WHERE id = ?)`,
+			).bind(
+				delivery.id, event.id, delivery.endpointId, delivery.createdAt,
+				delivery.createdAt, event.id,
+			),
+		),
+	];
+}
+
+/** Persist an immutable event and all endpoint deliveries atomically. */
+export async function enqueueEventOutbox(env: Bindings, plan: EventOutboxPlan): Promise<void> {
+	await env.PARMELIA_DB.batch(eventOutboxStatements(env, plan));
+}
 
 export async function createEvent(env: Bindings, rec: EventRecord) {
 	await d1Run(
@@ -1177,13 +2031,41 @@ function mapEvent(row: EventRow): EventRecord {
 	};
 }
 
-export async function listEvents(env: Bindings, merchantId: string, limit = 50): Promise<EventRecord[]> {
-	const rows = await d1All<EventRow>(
-		env,
-		`SELECT id, merchant_id, type, object_id, payload, mode, created_at
-		 FROM events WHERE merchant_id = ? ORDER BY datetime(created_at) DESC LIMIT ?`,
-		[merchantId, limit],
-	);
+export async function listEvents(
+	env: Bindings,
+	merchantId: string,
+	limit = 50,
+	startingAfterId?: string | null,
+): Promise<EventRecord[]> {
+	// Cursor pagination on (created_at, id), same scheme as payment intents.
+	let cursorCreatedAt: string | null = null;
+	let cursorId: string | null = null;
+	if (startingAfterId) {
+		const cursorRow = await d1First<{ created_at: string; id: string }>(
+			env,
+			`SELECT created_at, id FROM events WHERE id = ? AND merchant_id = ? LIMIT 1`,
+			[startingAfterId, merchantId],
+		);
+		if (cursorRow) {
+			cursorCreatedAt = cursorRow.created_at;
+			cursorId = cursorRow.id;
+		}
+	}
+	const rows = cursorCreatedAt
+		? await d1All<EventRow>(
+				env,
+				`SELECT id, merchant_id, type, object_id, payload, mode, created_at
+				 FROM events
+				 WHERE merchant_id = ? AND (datetime(created_at) < datetime(?) OR (created_at = ? AND id < ?))
+				 ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`,
+				[merchantId, cursorCreatedAt, cursorCreatedAt, cursorId, limit],
+			)
+		: await d1All<EventRow>(
+				env,
+				`SELECT id, merchant_id, type, object_id, payload, mode, created_at
+				 FROM events WHERE merchant_id = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`,
+				[merchantId, limit],
+			);
 	return rows.map(mapEvent);
 }
 
@@ -1222,13 +2104,31 @@ export async function listDueWebhookDeliveries(env: Bindings, limit = 25): Promi
 		 JOIN events e ON e.id = d.event_id
 		 JOIN webhook_endpoints w ON w.id = d.endpoint_id
 		 WHERE d.status = 'pending' AND (d.next_retry_at IS NULL OR d.next_retry_at <= ?)
-		 ORDER BY datetime(d.created_at) ASC LIMIT ?`,
+		 ORDER BY d.created_at ASC LIMIT ?`,
 		[now, limit],
 	);
 	return rows.map((r) => ({
 		id: r.id, eventId: r.event_id, endpointId: r.endpoint_id, attempt: r.attempt,
 		eventType: r.event_type, eventPayload: r.event_payload, eventCreatedAt: r.event_created_at, url: r.url, secret: r.secret,
 	}));
+}
+
+/**
+ * Claim a due delivery for `leaseMs` by pushing next_retry_at into the future —
+ * atomically, so two overlapping flushes (cron + post-request waitUntil) can't
+ * POST the same delivery twice. The winner delivers and then records the final
+ * state; if it dies mid-flight, the lease expires and the delivery is retried.
+ */
+export async function claimWebhookDelivery(env: Bindings, id: string, leaseMs: number): Promise<boolean> {
+	const now = nowIso();
+	const lease = new Date(Date.now() + leaseMs).toISOString();
+	const result = await d1Run(
+		env,
+		`UPDATE webhook_deliveries SET next_retry_at = ?
+		 WHERE id = ? AND status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)`,
+		[lease, id, now],
+	);
+	return didWrite(result);
 }
 
 export async function updateWebhookDelivery(
@@ -1240,6 +2140,389 @@ export async function updateWebhookDelivery(
 		env,
 		`UPDATE webhook_deliveries SET status = ?, attempt = ?, response_code = ?, delivered_at = ?, next_retry_at = ? WHERE id = ?`,
 		[fields.status, fields.attempt, fields.responseCode, fields.deliveredAt, fields.nextRetryAt, id],
+	);
+}
+
+/** Recent webhook delivery attempts for a merchant (joined with event + endpoint). */
+export type WebhookDeliveryView = {
+	id: string;
+	eventId: string;
+	endpointId: string;
+	attempt: number;
+	status: string;
+	responseCode: number | null;
+	eventType: string;
+	url: string;
+	nextRetryAt: string | null;
+	deliveredAt: string | null;
+	createdAt: string;
+};
+
+export async function listWebhookDeliveriesByMerchant(
+	env: Bindings,
+	merchantId: string,
+	limit = 50,
+): Promise<WebhookDeliveryView[]> {
+	const rows = await d1All<{
+		id: string; event_id: string; endpoint_id: string; attempt: number; status: string;
+		response_code: number | null; next_retry_at: string | null; delivered_at: string | null;
+		created_at: string; event_type: string; url: string;
+	}>(
+		env,
+		`SELECT d.id, d.event_id, d.endpoint_id, d.attempt, d.status, d.response_code,
+			d.next_retry_at, d.delivered_at, d.created_at, e.type AS event_type, w.url AS url
+		 FROM webhook_deliveries d
+		 JOIN events e ON e.id = d.event_id
+		 JOIN webhook_endpoints w ON w.id = d.endpoint_id
+		 WHERE w.merchant_id = ?
+		 ORDER BY d.created_at DESC LIMIT ?`,
+		[merchantId, limit],
+	);
+	return rows.map((r) => ({
+		id: r.id, eventId: r.event_id, endpointId: r.endpoint_id, attempt: r.attempt, status: r.status,
+		responseCode: r.response_code, eventType: r.event_type, url: r.url, nextRetryAt: r.next_retry_at,
+		deliveredAt: r.delivered_at, createdAt: r.created_at,
+	}));
+}
+
+/** Re-queue a delivery for an immediate retry. Scoped to the merchant's endpoints. */
+export async function requeueWebhookDelivery(env: Bindings, merchantId: string, id: string) {
+	await d1Run(
+		env,
+		`UPDATE webhook_deliveries SET status = 'pending', attempt = 0, next_retry_at = NULL
+		 WHERE id = ? AND endpoint_id IN (SELECT id FROM webhook_endpoints WHERE merchant_id = ?)`,
+		[id, merchantId],
+	);
+}
+
+// ===== Cross-chain operations (CCTP v2) =====
+
+export type CrosschainDirection = "inbound" | "outbound";
+export type CrosschainMode = "standard" | "fast";
+export type CrosschainStatus =
+	| "quoted"
+	| "pending_signature"
+	| "submitted"
+	| "waiting_attestation"
+	| "minting"
+	| "completed"
+	| "failed"
+	| "expired"
+	| "recoverable"
+	| "needs_support";
+
+export type CrosschainOpRecord = {
+	opId: string;
+	uid: string;
+	direction: CrosschainDirection;
+	provider: string;
+	cctpMode: CrosschainMode;
+	sourceChainId: number;
+	destinationChainId: number;
+	sourceDomain: number;
+	destinationDomain: number;
+	destinationCaller: string | null;
+	sourceTxHash: string | null;
+	destinationTxHash: string | null;
+	messageNonce: string | null;
+	messageBytes: string | null;
+	attestation: string | null;
+	token: string;
+	amountIn: string;
+	parmeliaFee: string;
+	maxFee: string | null;
+	minFinalityThreshold: number | null;
+	cctpFeeEstimated: string | null;
+	amountOutExpected: string | null;
+	recipient: string;
+	status: CrosschainStatus;
+	statusDetail: string | null;
+	/** Mint attempts so far (relayer); poison ops park as needs_support at the cap. */
+	attemptCount: number;
+	lastError: string | null;
+	createdAt: string;
+	updatedAt: string;
+	completedAt: string | null;
+};
+
+type CrosschainOpRow = {
+	op_id: string;
+	uid: string;
+	direction: CrosschainDirection;
+	provider: string;
+	cctp_mode: CrosschainMode;
+	source_chain_id: number;
+	destination_chain_id: number;
+	source_domain: number;
+	destination_domain: number;
+	destination_caller: string | null;
+	source_tx_hash: string | null;
+	destination_tx_hash: string | null;
+	message_nonce: string | null;
+	message_bytes: string | null;
+	attestation: string | null;
+	token: string;
+	amount_in: string;
+	parmelia_fee: string;
+	max_fee: string | null;
+	min_finality_threshold: number | null;
+	cctp_fee_estimated: string | null;
+	amount_out_expected: string | null;
+	recipient: string;
+	status: CrosschainStatus;
+	status_detail: string | null;
+	attempt_count: number | null;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+	completed_at: string | null;
+};
+
+// attempt_count/last_error land with migration 0006 — apply it before deploying.
+const CROSSCHAIN_COLS =
+	"op_id, uid, direction, provider, cctp_mode, source_chain_id, destination_chain_id, source_domain, destination_domain, destination_caller, source_tx_hash, destination_tx_hash, message_nonce, message_bytes, attestation, token, amount_in, parmelia_fee, max_fee, min_finality_threshold, cctp_fee_estimated, amount_out_expected, recipient, status, status_detail, attempt_count, last_error, created_at, updated_at, completed_at";
+
+function mapCrosschainOp(row: CrosschainOpRow): CrosschainOpRecord {
+	return {
+		opId: row.op_id,
+		uid: row.uid,
+		direction: row.direction,
+		provider: row.provider,
+		cctpMode: row.cctp_mode,
+		sourceChainId: row.source_chain_id,
+		destinationChainId: row.destination_chain_id,
+		sourceDomain: row.source_domain,
+		destinationDomain: row.destination_domain,
+		destinationCaller: row.destination_caller,
+		sourceTxHash: row.source_tx_hash,
+		destinationTxHash: row.destination_tx_hash,
+		messageNonce: row.message_nonce,
+		messageBytes: row.message_bytes,
+		attestation: row.attestation,
+		token: row.token,
+		amountIn: row.amount_in,
+		parmeliaFee: row.parmelia_fee,
+		maxFee: row.max_fee,
+		minFinalityThreshold: row.min_finality_threshold,
+		cctpFeeEstimated: row.cctp_fee_estimated,
+		amountOutExpected: row.amount_out_expected,
+		recipient: row.recipient,
+		status: row.status,
+		statusDetail: row.status_detail,
+		attemptCount: row.attempt_count ?? 0,
+		lastError: row.last_error,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+		completedAt: row.completed_at,
+	};
+}
+
+export async function createCrosschainOp(
+	env: Bindings,
+	op: Omit<CrosschainOpRecord, "attemptCount" | "lastError"> &
+		Partial<Pick<CrosschainOpRecord, "attemptCount" | "lastError">>,
+) {
+	await d1Run(
+		env,
+		`INSERT INTO crosschain_operations
+			(op_id, uid, direction, provider, cctp_mode, source_chain_id, destination_chain_id,
+			 source_domain, destination_domain, destination_caller, source_tx_hash, destination_tx_hash,
+			 message_nonce, message_bytes, attestation, token, amount_in, parmelia_fee, max_fee,
+			 min_finality_threshold, cctp_fee_estimated, amount_out_expected, recipient, status,
+			 status_detail, attempt_count, last_error, created_at, updated_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		[
+			op.opId, op.uid, op.direction, op.provider, op.cctpMode, op.sourceChainId, op.destinationChainId,
+			op.sourceDomain, op.destinationDomain, op.destinationCaller, op.sourceTxHash, op.destinationTxHash,
+			op.messageNonce, op.messageBytes, op.attestation, op.token, op.amountIn, op.parmeliaFee, op.maxFee,
+			op.minFinalityThreshold, op.cctpFeeEstimated, op.amountOutExpected, op.recipient, op.status,
+			op.statusDetail, op.attemptCount ?? 0, op.lastError ?? null, op.createdAt, op.updatedAt, op.completedAt,
+		],
+	);
+}
+
+/** Lookup by burn tx hash — dedupe guard for inbound/register (one op per burn). */
+export async function getCrosschainOpBySourceTx(
+	env: Bindings,
+	sourceTxHash: string,
+): Promise<CrosschainOpRecord | null> {
+	const row = await d1First<CrosschainOpRow>(
+		env,
+		`SELECT ${CROSSCHAIN_COLS} FROM crosschain_operations WHERE source_tx_hash = ? LIMIT 1`,
+		[sourceTxHash],
+	);
+	return row ? mapCrosschainOp(row) : null;
+}
+
+export async function getCrosschainOpById(env: Bindings, opId: string): Promise<CrosschainOpRecord | null> {
+	const row = await d1First<CrosschainOpRow>(
+		env,
+		`SELECT ${CROSSCHAIN_COLS} FROM crosschain_operations WHERE op_id = ?`,
+		[opId],
+	);
+	return row ? mapCrosschainOp(row) : null;
+}
+
+
+/**
+ * In-flight ops the relayer must advance (burned but not yet minted). Ordered by
+ * updated_at ASC: every touch (even a failed attempt) sends the op to the back
+ * of the queue, so a page of stuck ops can never starve newer ones the way
+ * created_at ASC + LIMIT did.
+ */
+export async function listCrosschainOpsByStatus(
+	env: Bindings,
+	statuses: CrosschainStatus[],
+	limit = 50,
+): Promise<CrosschainOpRecord[]> {
+	if (statuses.length === 0) return [];
+	const placeholders = statuses.map(() => "?").join(", ");
+	const rows = await d1All<CrosschainOpRow>(
+		env,
+		`SELECT ${CROSSCHAIN_COLS} FROM crosschain_operations WHERE status IN (${placeholders}) ORDER BY updated_at ASC LIMIT ?`,
+		[...statuses, limit],
+	);
+	return rows.map(mapCrosschainOp);
+}
+
+// Columns the state machine may advance (camelCase -> column). Whitelisted to keep
+// the dynamic UPDATE injection-safe.
+const CROSSCHAIN_UPDATABLE: Record<string, string> = {
+	status: "status",
+	statusDetail: "status_detail",
+	sourceTxHash: "source_tx_hash",
+	destinationTxHash: "destination_tx_hash",
+	messageNonce: "message_nonce",
+	messageBytes: "message_bytes",
+	attestation: "attestation",
+	attemptCount: "attempt_count",
+	lastError: "last_error",
+	completedAt: "completed_at",
+};
+
+type CrosschainPatch = Partial<
+	Pick<
+		CrosschainOpRecord,
+		| "status"
+		| "statusDetail"
+		| "sourceTxHash"
+		| "destinationTxHash"
+		| "messageNonce"
+		| "messageBytes"
+		| "attestation"
+		| "attemptCount"
+		| "lastError"
+		| "completedAt"
+	>
+>;
+
+/**
+ * Partial update of an op's mutable fields; always bumps updated_at. Returns
+ * whether a row was written. Two guards make the state machine safe under
+ * overlapping crons:
+ *   - 'completed' is terminal: no patch can ever leave it (a late/duplicate
+ *     relayer pass can't demote a finished op back to 'recoverable').
+ *   - opts.ifStatusIn restricts the transition to specific current states
+ *     (compare-and-set), e.g. register only advances 'pending_signature'.
+ */
+export async function updateCrosschainOp(
+	env: Bindings,
+	opId: string,
+	patch: CrosschainPatch,
+	opts?: { ifStatusIn?: CrosschainStatus[] },
+): Promise<boolean> {
+	const sets: string[] = [];
+	const vals: unknown[] = [];
+	for (const [key, col] of Object.entries(CROSSCHAIN_UPDATABLE)) {
+		if (key in patch) {
+			sets.push(`${col} = ?`);
+			vals.push((patch as Record<string, unknown>)[key] ?? null);
+		}
+	}
+	if (sets.length === 0) return false;
+	sets.push("updated_at = ?");
+	vals.push(nowIso());
+	vals.push(opId);
+
+	const conditions: string[] = ["op_id = ?"];
+	if (patch.status !== undefined && patch.status !== "completed") {
+		conditions.push("status != 'completed'");
+	}
+	if (opts?.ifStatusIn && opts.ifStatusIn.length > 0) {
+		conditions.push(`status IN (${opts.ifStatusIn.map(() => "?").join(", ")})`);
+		vals.push(...opts.ifStatusIn);
+	}
+	const result = await d1Run(
+		env,
+		`UPDATE crosschain_operations SET ${sets.join(", ")} WHERE ${conditions.join(" AND ")}`,
+		vals,
+	);
+	return didWrite(result);
+}
+
+/** Preserve every destination transaction hash; later retries never overwrite history. */
+export async function recordCrosschainMintAttempt(
+	env: Bindings,
+	opId: string,
+	txHash: string,
+	status: "broadcast" | "pending" | "success" | "reverted" | "unknown",
+): Promise<void> {
+	const now = nowIso();
+	await d1Run(
+		env,
+		`INSERT INTO crosschain_mint_attempts (id, op_id, tx_hash, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tx_hash) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`,
+		[`cma_${crypto.randomUUID().replace(/-/g, "")}`, opId, txHash.toLowerCase(), status, now, now],
+	);
+}
+
+/** Atomically retain a newly broadcast hash and point the operation at it. */
+export async function recordCrosschainMintBroadcast(
+	env: Bindings,
+	opId: string,
+	txHash: string,
+): Promise<void> {
+	const now = nowIso();
+	await env.PARMELIA_DB.batch([
+		env.PARMELIA_DB.prepare(
+			`INSERT INTO crosschain_mint_attempts (id, op_id, tx_hash, status, created_at, updated_at)
+			 VALUES (?, ?, ?, 'broadcast', ?, ?)
+			 ON CONFLICT(tx_hash) DO UPDATE SET status = 'broadcast', updated_at = excluded.updated_at`,
+		).bind(`cma_${crypto.randomUUID().replace(/-/g, "")}`, opId, txHash.toLowerCase(), now, now),
+		env.PARMELIA_DB.prepare(
+			`UPDATE crosschain_operations
+			 SET destination_tx_hash = ?, updated_at = ?
+			 WHERE op_id = ? AND status != 'completed'`,
+		).bind(txHash, now, opId),
+	]);
+}
+
+/**
+ * Operability sweep (called from the relayer cron):
+ *   - ops never signed/registered ('quoted' / 'pending_signature') expire after
+ *     24h — they hold no funds, they're just abandoned checkouts;
+ *   - in-flight ops stuck > 7 days park as 'needs_support' (manual runbook) so
+ *     the relayer queue can't fill up with poison rows. The burn stays
+ *     completable forever (receiveMessage is permissionless).
+ */
+export async function expireStaleCrosschainOps(env: Bindings): Promise<void> {
+	const dayAgo = new Date(Date.now() - 24 * 3600_000).toISOString();
+	const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+	const now = nowIso();
+	await d1Run(
+		env,
+		`UPDATE crosschain_operations
+		 SET status = 'expired', status_detail = 'never signed/registered within 24h', updated_at = ?
+		 WHERE status IN ('quoted', 'pending_signature') AND created_at <= ?`,
+		[now, dayAgo],
+	);
+	await d1Run(
+		env,
+		`UPDATE crosschain_operations
+		 SET status = 'needs_support', status_detail = 'in-flight for over 7 days; manual completion required', updated_at = ?
+		 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable') AND created_at <= ?`,
+		[now, weekAgo],
 	);
 }
 

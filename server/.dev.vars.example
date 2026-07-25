@@ -1,6 +1,64 @@
+# Local dev secrets (copy to server/.dev.vars — gitignored). Production uses
+# `wrangler secret put` for each of these; see server/README.md.
+
+# RPC del chain activo; acepta varias URLs separadas por coma (failover).
 RPC_URL=
+
+# EOA operativa del relayer (handleOps/CCTP). No reutilizar en mainnet.
 PRIVATE_KEY=
+
+# EOA que conserva y transfiere exclusivamente el presupuesto del faucet.
+# En MAINNET es obligatoria y distinta si FAUCET_ENABLED=true.
+FAUCET_PRIVATE_KEY=
+
+# Guardian de recovery. Obligatoria y distinta de PRIVATE_KEY en MAINNET.
+RECOVERY_GUARDIAN_PRIVATE_KEY=
+
+# Firma de sponsorships del paymaster. En MAINNET es obligatoria (sin fallback).
 PAYMASTER_SIGNER_PRIVATE_KEY=
+
+# Firma de autorizaciones del PaymentRouter (Flow B). En MAINNET es obligatoria.
+PAYMENT_ROUTER_SIGNER_PRIVATE_KEY=
+
+# Clave AES-GCM de 32 bytes (base64 o 64 hex) para secretos de webhook en D1.
+# Obligatoria en MAINNET. Ejemplo de generación: openssl rand -base64 32
+WEBHOOK_SECRET_ENCRYPTION_KEY=
+# ID no secreto de la clave activa. Cambiarlo en cada rotación.
+WEBHOOK_SECRET_ENCRYPTION_KEY_ID=2026_07
+# Durante una rotación: JSON {"id_anterior":"clave_anterior"}. Vaciar después
+# de que el cron haya recifrado todas las filas con el ID activo.
+WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS=
+
 CHAIN_KEY=arbitrum-sepolia
+
+# Anti-abuso Turnstile. Testnet: opcional (sin definir = se omite).
+# MAINNET: obligatorio — sin el, /account/create y /account/fund fallan cerrado.
 TURNSTILE_SECRET_KEY=
+
+# Faucet: testnet activo salvo "false" (presupuesto por defecto 500 USDC/dia).
+# Mainnet exige FAUCET_ENABLED=true y un presupuesto positivo explicito.
+FAUCET_ENABLED=true
+FAUCET_DAILY_BUDGET_USDC=500
+
+# JSON del service account de FCM en 1 linea (opcional; sin definir = sin push).
 FCM_SERVICE_ACCOUNT=
+
+# URL publica del cliente usada para links de checkout.
+APP_URL=https://app.parmelia.me
+
+# Fees permanecen desactivadas salvo que PARMELIA_FEES_ENABLED sea "true".
+PARMELIA_FEES_ENABLED=false
+PARMELIA_SWAP_FEE_BPS=0
+PARMELIA_MAX_FEE_BPS=100
+PARMELIA_TREASURY_ADDRESS=
+PARMELIA_CROSSCHAIN_FEE_BPS=0
+PARMELIA_PAYMENT_FEE_BPS=0
+
+# Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).
+CCTP_RPC_URLS=
+
+# Kill switches y controles operativos.
+CROSSCHAIN_PAUSED=false
+CROSSCHAIN_DISABLED_CHAINS=
+CROSSCHAIN_MIN_RELAYER_GAS_WEI=500000000000000
+EARN_PAUSED=false

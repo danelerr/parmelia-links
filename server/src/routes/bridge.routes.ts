@@ -12,7 +12,7 @@ import {
 	BridgeError,
 	quoteBridge,
 } from "../services/bridge";
-import { getRequestId, logError } from "../services/logger";
+import { logError } from "../services/logger";
 
 const bridgeRoutes = new Hono<AppContext>();
 
@@ -28,7 +28,7 @@ bridgeRoutes.get("/config", requireAuth, async (c) => {
 });
 
 bridgeRoutes.post("/quote", requireAuth, async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	try {
 		const user = c.get("user")!;
 		const body = (await c.req.json()) as Record<string, unknown>;
@@ -64,7 +64,7 @@ bridgeRoutes.post("/quote", requireAuth, async (c) => {
 		return c.json({ ...quote, requestId });
 	} catch (error) {
 		if (error instanceof BridgeError) {
-			return c.json({ error: error.message, requestId }, 400);
+			return c.json({ error: error.message, error_code: ERR.BRIDGE_INVALID_REQUEST, requestId }, 400);
 		}
 		logError("bridge_quote_failed", error, { requestId });
 		return c.json({ error: "No pudimos cotizar el puente. Intenta de nuevo.", error_code: ERR.BRIDGE_QUOTE_FAILED, requestId }, 500);

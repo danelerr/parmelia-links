@@ -33,7 +33,15 @@ const TREASURY = "0x2222222222222222222222222222222222222222" as const;
 const DEADLINE = 1_900_000_000n;
 
 function env(overrides: Partial<Bindings> = {}): Bindings {
-	return { RPC_URL: "", PRIVATE_KEY: "", FIREBASE_PROJECT_ID: "", PARMELIA_DB: {} as any, ...overrides };
+	return {
+		RPC_URL: "",
+		PRIVATE_KEY: "",
+		FIREBASE_PROJECT_ID: "",
+		ALLOWED_ORIGINS: "",
+		CHAIN_KEY: "arbitrum-sepolia",
+		PARMELIA_DB: null as unknown as D1Database,
+		...overrides,
+	};
 }
 
 function decodeExecute(calldata: `0x${string}`) {

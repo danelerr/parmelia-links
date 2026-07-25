@@ -21,25 +21,25 @@ import {
 	ERR,
 } from "../../../shared";
 import {
+	claimPendingForSubmit,
+	claimPaymentLinkForSubmit,
 	createPendingPayment,
-	deletePendingPayment,
 	getPasskey,
 	getPaymentLinkById,
 	getPendingPayment,
+	getPendingPaymentAnyState,
 	getUserByUid,
-	getUserByWallet,
-	markPaymentLinkPaid,
-	markPaymentIntentPaid,
-	getMerchantById,
+	isIntentPayable,
 	getPaymentIntentByLinkId,
+	markPaymentLinkClaimBroadcast,
+	releasePaymentLinkClaim,
+	releasePendingClaim,
 	savePasskey,
 	saveUser,
-	updateSwapQuoteStatus,
-	writeLedgerEntries,
-	type LedgerEntry,
+	setPendingPaymentStatus,
+	updateCrosschainOp,
 } from "../services/storage";
-import { notifyUser } from "../services/push";
-import { deliverPendingWebhooks, emitEvent } from "../services/webhooks";
+import { NON_PAYMENT_CURRENCIES } from "../services/settlement";
 import {
 	PAYMASTER_POST_OP_GAS_LIMIT,
 	PAYMASTER_VERIFICATION_GAS_LIMIT,
@@ -49,6 +49,7 @@ import {
 	DEFAULT_PRE_VERIFICATION_GAS,
 	DEFAULT_VERIFICATION_GAS_LIMIT,
 	buildSponsoredUserOp,
+	matchOnchainSigner,
 	normalizeLowS,
 	serializeBigInts,
 } from "../services/userOp";
@@ -58,14 +59,11 @@ import {
 	normalizePositiveAmount,
 	normalizeWalletAddress,
 } from "../services/validation";
-import { getClients, waitForTx } from "../services/clients";
-import { extractErrorMessage, getRequestId, logError, logInfo, logWarn } from "../services/logger";
+import { getClients } from "../services/clients";
+import { extractErrorMessage, logError, logInfo, logWarn } from "../services/logger";
+import { SignerLeaseBusyError, withSignerLease } from "../services/signerLease";
 
 const payRoutes = new Hono<AppContext>();
-
-// Pending ops that are account/DeFi actions rather than payments: they reuse
-// the same sign+submit pipeline but must not be recorded as transfers.
-const NON_PAYMENT_CURRENCIES = new Set(["PASSKEY_ADD", "SWAP"]);
 
 // Gas budget for the relayer's handleOps transaction (mirrors the UserOp gas budget
 // produced by buildSponsoredUserOp, plus the paymaster limits and tx overhead).
@@ -123,7 +121,7 @@ function wrapMultiSignerSignature(signer: Hex, webAuthnSignature: Hex): Hex {
 }
 
 payRoutes.post("/prepare", requireAuth, async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	try {
 		const user = c.get("user")!;
 		const body = (await c.req.json()) as Record<string, unknown>;
@@ -162,6 +160,14 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			if (link.status === "paid") {
 				logWarn("payment_prepare_link_already_paid", { requestId, uid: user.sub, linkId });
 				return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
+			}
+
+			// A link backing an API payment intent inherits the intent's lifecycle:
+			// canceled or expired intents keep a 'pending' link row, so check here.
+			const backingIntent = await getPaymentIntentByLinkId(c.env, linkId);
+			if (backingIntent && !isIntentPayable(backingIntent)) {
+				logWarn("payment_prepare_intent_not_payable", { requestId, uid: user.sub, linkId, intentStatus: backingIntent.status });
+				return c.json({ error: "Este cobro ya no está disponible", error_code: ERR.INTENT_NOT_PAYABLE, requestId }, 409);
 			}
 
 			recipientAddress = normalizeWalletAddress(link.wallet);
@@ -292,13 +298,18 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 	} catch (error) {
 		const user = c.get("user");
 		logError("payment_prepare_failed", error, { requestId, uid: user?.sub ?? null });
-		return c.json({ error: extractErrorMessage(error) || "Error al preparar el pago.", requestId }, 500);
+		return c.json({ error: extractErrorMessage(error) || "Error al preparar el pago.", error_code: ERR.SERVER_ERROR, requestId }, 500);
 	}
 });
 
 payRoutes.post("/submit", requireAuth, async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	let userOpHashForLog: string | null = null;
+	// Lifecycle trackers for the catch block: a claimed-but-never-broadcast
+	// payment is released for retry; a broadcast one is left to the reconciler.
+	let claimed = false;
+	let claimedLinkId: string | null = null;
+	let broadcastTxHash: string | null = null;
 	try {
 		const user = c.get("user")!;
 		const { userOpHash, authenticatorData, clientDataJSON, r, s, credentialId, qx, qy } = await c.req.json();
@@ -312,17 +323,34 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		});
 		if (!userOpHash || !authenticatorData || !clientDataJSON || !r || !s) {
 			logWarn("payment_submit_missing_signature_data", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
-			return c.json({ error: "Missing signature data", requestId }, 400);
+			return c.json({ error: "Missing signature data", error_code: ERR.MISSING_SIGNATURE_DATA, requestId }, 400);
 		}
 
 		const pending = await getPendingPayment(c.env, userOpHash);
 		if (!pending) {
 			logWarn("payment_submit_pending_not_found", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
-			return c.json({ error: "No pending payment found", requestId }, 404);
+			return c.json({ error: "No pending payment found", error_code: ERR.PENDING_NOT_FOUND, requestId }, 404);
 		}
 		if (pending.uid !== user.sub) {
 			logWarn("payment_submit_unauthorized_pending", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
-			return c.json({ error: "Unauthorized", requestId }, 403);
+			return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT, requestId }, 403);
+		}
+
+		// Narrow the double-payment window: re-check the link (and any backing
+		// intent) at submit time, not just at prepare. The post-chain
+		// markPaymentLinkPaid guard is the last line of defense; this check stops
+		// the second payer BEFORE their funds move on-chain.
+		if (!NON_PAYMENT_CURRENCIES.has(pending.currency) && isStoredPaymentLink(pending.linkId)) {
+			const linkNow = await getPaymentLinkById(c.env, pending.linkId);
+			if (linkNow?.status === "paid") {
+				logWarn("payment_submit_link_already_paid", { requestId, uid: user.sub, linkId: pending.linkId });
+				return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
+			}
+			const intentNow = await getPaymentIntentByLinkId(c.env, pending.linkId);
+			if (intentNow && !isIntentPayable(intentNow)) {
+				logWarn("payment_submit_intent_not_payable", { requestId, uid: user.sub, linkId: pending.linkId, intentStatus: intentNow.status });
+				return c.json({ error: "Este cobro ya no está disponible", error_code: ERR.INTENT_NOT_PAYABLE, requestId }, 409);
+			}
 		}
 		logInfo("payment_submit_pending_loaded", {
 			requestId,
@@ -335,7 +363,8 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			linkId: pending.linkId,
 		});
 
-		const { contracts } = getNetworkConfig(c.env.CHAIN_KEY);
+		const network = getNetworkConfig(c.env.CHAIN_KEY);
+		const { contracts } = network;
 		const { publicClient, walletClient, serverAccount } = getClients(c.env);
 
 		const typeIndex = (clientDataJSON as string).indexOf('"type"');
@@ -369,10 +398,36 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		}
 
 		if (signerQx && signerQy) {
-			const signerBytes = encodePacked(
+			// Resolve the signer bytes REGISTERED on the account (they embed the
+			// verifier address of their generation); rebuilding from the current
+			// network verifier would break accounts created before a verifier
+			// redeploy. Reconstruction stays only as a fallback for RPC blips.
+			let signerBytes = encodePacked(
 				["address", "bytes32", "bytes32"],
 				[contracts.verifier, signerQx, signerQy],
 			);
+			try {
+				const onchainSigners = (await publicClient.readContract({
+					address: pending.senderAddress as `0x${string}`,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getSigners",
+					args: [0, 32],
+				})) as Hex[];
+				const registered = matchOnchainSigner(onchainSigners, signerQx, signerQy);
+				if (registered) {
+					if (registered.toLowerCase() !== signerBytes.toLowerCase()) {
+						signerSource = `${signerSource}+onchain_verifier`;
+					}
+					signerBytes = registered;
+				}
+			} catch (error) {
+				logWarn("payment_submit_signer_lookup_failed", {
+					requestId,
+					uid: user.sub,
+					userOpHash: userOpHashForLog,
+					error: extractErrorMessage(error),
+				});
+			}
 			signature = wrapMultiSignerSignature(signerBytes, webAuthnSignature);
 		} else {
 			try {
@@ -391,6 +446,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 					});
 					return c.json({
 						error: "Missing qx/qy for a multi-passkey wallet. Sign again from a device that knows this passkey.",
+						error_code: ERR.MISSING_PASSKEY_DATA,
 						requestId,
 					}, 400);
 				}
@@ -405,7 +461,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 				const signerBytes = signers[0];
 				if (!signerBytes) {
 					logWarn("payment_submit_no_onchain_signer", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
-					return c.json({ error: "No signer found for this wallet.", requestId }, 400);
+					return c.json({ error: "No signer found for this wallet.", error_code: ERR.MISSING_PASSKEY_DATA, requestId }, 400);
 				}
 
 				signature = wrapMultiSignerSignature(signerBytes, webAuthnSignature);
@@ -414,6 +470,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 				logError("payment_submit_signer_inference_failed", error, { requestId, uid: user.sub, userOpHash: userOpHashForLog });
 				return c.json({
 					error: "Missing qx/qy and we could not infer the signer on-chain. Sign again from the same device where this passkey was created.",
+					error_code: ERR.MISSING_PASSKEY_DATA,
 					requestId,
 				}, 400);
 			}
@@ -437,6 +494,41 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			paymasterAndData: raw.paymasterAndData as Hex,
 			signature,
 		};
+
+		// Atomic claim: exactly one submit of this userOpHash proceeds past here.
+		// A duplicate (double-tap, retried request) gets a clean 409 instead of
+		// re-broadcasting and burning relayer gas on a guaranteed nonce revert.
+		if (!(await claimPendingForSubmit(c.env, userOpHash))) {
+			const current = await getPendingPaymentAnyState(c.env, userOpHash);
+			logWarn("payment_submit_duplicate", { requestId, uid: user.sub, userOpHash: userOpHashForLog, status: current?.status });
+			return c.json(
+				{
+					error: "Este pago ya está en proceso.",
+					error_code: ERR.PAYMENT_IN_PROGRESS,
+					status: current?.status ?? "unknown",
+					txHash: current?.submittedTxHash ?? undefined,
+					requestId,
+				},
+				409,
+			);
+		}
+		claimed = true;
+
+		if (!NON_PAYMENT_CURRENCIES.has(pending.currency) && isStoredPaymentLink(pending.linkId)) {
+			const claimExpiresAt = new Date(
+				Math.max(new Date(pending.expiresAt).getTime(), Date.now() + 15 * 60_000),
+			).toISOString();
+			if (!(await claimPaymentLinkForSubmit(c.env, pending.linkId, userOpHash, claimExpiresAt))) {
+				await releasePendingClaim(c.env, userOpHash);
+				claimed = false;
+				return c.json({
+					error: "Este link ya tiene un pago en proceso.",
+					error_code: ERR.PAYMENT_IN_PROGRESS,
+					requestId,
+				}, 409);
+			}
+			claimedLinkId = pending.linkId;
+		}
 
 		const handleOpsGas = handleOpsGasFor(raw);
 		logInfo("payment_submit_handleops_sending", {
@@ -471,179 +563,65 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			});
 			throw error;
 		}
-		const txHash = await walletClient.writeContract({
-			address: contracts.entryPoint,
-			abi: entryPointAbi,
-			functionName: "handleOps",
-			args: [[userOp], serverAccount.address],
-			gas: handleOpsGas,
-		});
+		const txHash = await withSignerLease(
+			c.env,
+			{ chainId: network.chainId, signerAddress: serverAccount.address },
+			() => walletClient.writeContract({
+				address: contracts.entryPoint,
+				abi: entryPointAbi,
+				functionName: "handleOps",
+				args: [[userOp], serverAccount.address],
+				gas: handleOpsGas,
+			}),
+		);
 
 		logInfo("payment_submit_handleops_sent", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
-		const receipt = await waitForTx(publicClient, txHash);
-		logInfo("payment_submit_receipt", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash, receiptStatus: receipt.status });
-		if (receipt.status === "reverted") {
-			logError("payment_submit_receipt_reverted", new Error("handleOps transaction reverted"), {
-				requestId,
-				uid: user.sub,
-				userOpHash: userOpHashForLog,
-				txHash,
-			});
-			return c.json({ error: "Transaction reverted", error_code: ERR.TX_REVERTED, requestId, txHash }, 500);
+		broadcastTxHash = txHash;
+		// Persist the authoritative payment hand-off first. If a later auxiliary
+		// write fails, the reconciler has the exact transaction fast path.
+		await setPendingPaymentStatus(c.env, userOpHash, "submitted", txHash);
+		if (claimedLinkId) {
+			await markPaymentLinkClaimBroadcast(c.env, claimedLinkId, userOpHash, txHash);
 		}
 
+		// Cross-chain: attach the burn tx to its op (created at /crosschain/prepare,
+		// status 'quoted') for the same crash-safety reason (CROSSCHAIN_DESIGN
+		// §"register before signing").
+		const crosschainOpId =
+			pending.currency === "CROSSCHAIN" && typeof pending.meta?.opId === "string" ? pending.meta.opId : null;
+		if (crosschainOpId) {
+			await updateCrosschainOp(
+				c.env,
+				crosschainOpId,
+				{ status: "submitted", sourceTxHash: txHash },
+				{ ifStatusIn: ["quoted", "submitted"] },
+			);
+		}
+
+		// Persist the credential hint while this request still has the assertion
+		// context. This is independent of the transaction outcome; the signature
+		// and on-chain signer match were validated before broadcast.
 		if (credentialId) {
-			await saveUser(c.env, { uid: user.sub, credentialId });
-			// Persist the public key so any device (even one without the local cache)
-			// can resolve this signer next time.
-			if (signerQx && signerQy) {
-				await savePasskey(c.env, { credentialId, uid: user.sub, qx: signerQx, qy: signerQy });
-			}
-		}
-
-		const createdAt = new Date().toISOString();
-		const isAccountAction = NON_PAYMENT_CURRENCIES.has(pending.currency);
-		const linkId = pending.linkId;
-		let linkReference: string | null = null;
-
-		if (!isAccountAction && isStoredPaymentLink(linkId)) {
-			const link = await getPaymentLinkById(c.env, linkId);
-			if (link) {
-				linkReference = link.reference || null;
-				await markPaymentLinkPaid(c.env, {
-					id: linkId,
-					amount: pending.amount || link.amount,
-					txHash,
-					paidAt: createdAt,
-					paidBy: pending.senderAddress || "",
-				});
-
-				// If this link backs an API payment intent, settle it and fire the
-				// payment.paid webhook (flushed after the response via waitUntil).
-				const intent = await getPaymentIntentByLinkId(c.env, linkId);
-				if (intent && intent.status === "awaiting_payment") {
-					await markPaymentIntentPaid(c.env, intent.id, txHash, createdAt);
-					const merchant = await getMerchantById(c.env, intent.merchantId);
-					if (merchant) {
-						const flush = (async () => {
-							await emitEvent(c.env, {
-								merchantId: intent.merchantId,
-								mode: intent.mode,
-								type: "payment.paid",
-								objectId: intent.id,
-								data: {
-									id: intent.id,
-									object: "payment_intent",
-									status: "paid",
-									amount: intent.amount,
-									currency: intent.currency,
-									reference: intent.reference,
-									metadata: intent.metadata ?? {},
-									tx_hash: txHash,
-									mode: intent.mode,
-								},
-							});
-							await deliverPendingWebhooks(c.env);
-						})();
-						try {
-							c.executionCtx.waitUntil(flush);
-						} catch {
-							void flush;
-						}
-					}
+			try {
+				await saveUser(c.env, { uid: user.sub, credentialId });
+				if (signerQx && signerQy) {
+					await savePasskey(c.env, { credentialId, uid: user.sub, qx: signerQx, qy: signerQy });
 				}
+			} catch (error) {
+				logError("payment_submit_passkey_persist_failed", error, {
+					requestId,
+					uid: user.sub,
+					userOpHash: userOpHashForLog,
+				});
 			}
 		}
 
-		// Ledger writes - the app is the source of truth for everything it relays:
-		// the payer always gets an "out" row, and if the recipient is a Parmelia
-		// user they get their "in" row immediately (no chain scanning needed).
-		if (pending.currency === "SWAP") {
-			const meta = pending.meta ?? {};
-			const swapEntries: LedgerEntry[] = [];
-			if (typeof meta.tokenIn === "string" && typeof meta.amountIn === "string") {
-				swapEntries.push({
-					uid: user.sub,
-					direction: "out" as const,
-					kind: "swap" as const,
-					txHash,
-					token: meta.tokenIn,
-					amount: meta.amountIn,
-					counterparty: pending.senderAddress,
-					reference: typeof meta.tokenOut === "string" ? `Cambio a ${meta.tokenOut}` : null,
-					createdAt,
-				});
-			}
-			if (typeof meta.tokenOut === "string" && typeof meta.amountOutEstimated === "string") {
-				swapEntries.push({
-					uid: user.sub,
-					direction: "in" as const,
-					kind: "swap" as const,
-					txHash,
-					token: meta.tokenOut,
-					// Estimate at quote time; TODO: refine from receipt logs later.
-					amount: meta.amountOutEstimated,
-					counterparty: pending.senderAddress,
-					reference: typeof meta.tokenIn === "string" ? `Cambio desde ${meta.tokenIn}` : null,
-					createdAt,
-				});
-			}
-			if (swapEntries.length > 0) await writeLedgerEntries(c.env, swapEntries);
-			if (typeof meta.quoteId === "string") {
-				await updateSwapQuoteStatus(c.env, meta.quoteId, "executed");
-			}
-		} else if (!isAccountAction) {
-			const recipient = await getUserByWallet(c.env, pending.wallet || "");
-			const entries: LedgerEntry[] = [
-				{
-					uid: user.sub,
-					direction: "out",
-					kind: "payment",
-					txHash,
-					token: pending.currency || "USDC",
-					amount: pending.amount || "0",
-					counterparty: pending.wallet || null,
-					counterpartyUid: recipient?.uid ?? null,
-					reference: linkReference,
-					linkId: isStoredPaymentLink(linkId) ? linkId : null,
-					createdAt,
-				},
-			];
-			if (recipient && recipient.uid !== user.sub) {
-				entries.push({
-					uid: recipient.uid,
-					direction: "in",
-					kind: isStoredPaymentLink(linkId) ? "link" : "payment",
-					txHash,
-					token: pending.currency || "USDC",
-					amount: pending.amount || "0",
-					counterparty: pending.senderAddress || null,
-					counterpartyUid: user.sub,
-					reference: linkReference,
-					linkId: isStoredPaymentLink(linkId) ? linkId : null,
-					createdAt,
-				});
-			}
-			await writeLedgerEntries(c.env, entries);
-
-			// Best-effort "te pagaron" push to the recipient (never blocks the response).
-			if (recipient && recipient.uid !== user.sub) {
-				const note = {
-					title: "Te pagaron",
-					body: `Recibiste ${pending.amount} ${pending.currency}`,
-					link: "/",
-				};
-				try {
-					c.executionCtx.waitUntil(notifyUser(c.env, recipient.uid, note));
-				} catch {
-					void notifyUser(c.env, recipient.uid, note);
-				}
-			}
-		}
-
-		await deletePendingPayment(c.env, userOpHash);
-		logInfo("payment_submit_success", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
-		return c.json({ status: "success", txHash });
+		// Do not hold a Worker request open for a receipt. The persisted
+		// `submitted` row is the durable hand-off to runPaymentReconciler, which
+		// verifies both the transaction receipt and UserOperationEvent(success),
+		// then performs idempotent accounting and outbox settlement.
+		logInfo("payment_submit_accepted", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
+		return c.json({ status: "pending", txHash, userOpHash, requestId }, 202);
 	} catch (error) {
 		const msg = extractErrorMessage(error);
 		const user = c.get("user");
@@ -652,23 +630,69 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			uid: user?.sub ?? null,
 			userOpHash: userOpHashForLog,
 		});
+
+		// The tx is already out but a post-broadcast persistence step failed. This
+		// is NOT a payment failure. The row remains 'submitted', or 'submitting' if
+		// the first write failed; the reconciler handles both states and can find
+		// the operation by userOpHash. GET /pay/status/:hash resolves it.
+		if (broadcastTxHash) {
+			return c.json(
+				{ status: "pending", txHash: broadcastTxHash, userOpHash: userOpHashForLog, requestId },
+				202,
+			);
+		}
+		// Claimed but never broadcast: give the claim back so the user can retry.
+		if (claimed && userOpHashForLog) {
+			await releasePendingClaim(c.env, userOpHashForLog).catch(() => null);
+			if (claimedLinkId) {
+				await releasePaymentLinkClaim(c.env, claimedLinkId, userOpHashForLog).catch(() => null);
+			}
+		}
+
 		if (msg.includes("AA24")) return c.json({ error: "Error de firma: esta passkey no coincide con tu wallet.", error_code: ERR.PASSKEY_MISMATCH, requestId }, 500);
+		if (error instanceof SignerLeaseBusyError) {
+			return c.json({ error: "El relayer está ocupado. Intenta nuevamente.", error_code: ERR.SERVICE_UNAVAILABLE, requestId }, 503);
+		}
 		if (msg.includes("AA21")) return c.json({ error: "Tu wallet no tiene fondos suficientes para cubrir el gas.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
 		if (msg.includes("AA95")) return c.json({ error: "La transaccion de handleOps no tenia gas suficiente. Revisa el gas limit del relayer.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
 		if (msg.includes("InvalidPaymasterSignature") || msg.includes("AA33") || msg.includes("AA34")) {
 			return c.json({
 				error: "El paymaster rechazo la operacion. Revisa sponsorSigner on-chain, PAYMASTER_SIGNER_PRIVATE_KEY y el deposito del paymaster.",
+				error_code: ERR.PAYMASTER_REJECTED,
 				requestId,
 			}, 500);
 		}
 		if (msg.includes("AA31") || msg.toLowerCase().includes("deposit too low")) {
-			return c.json({ error: "El paymaster no tiene deposito suficiente para patrocinar el gas en EntryPoint.", requestId }, 500);
+			return c.json({ error: "El paymaster no tiene deposito suficiente para patrocinar el gas en EntryPoint.", error_code: ERR.PAYMASTER_DEPOSIT_LOW, requestId }, 500);
 		}
 		if (msg.includes("FailedOp")) {
-			return c.json({ error: msg, requestId }, 500);
+			return c.json({ error: "La operación fue rechazada por EntryPoint.", error_code: ERR.PAYMENT_FAILED, requestId }, 500);
 		}
-		return c.json({ error: msg || "Error al procesar el pago. Intenta de nuevo.", error_code: ERR.PAYMENT_FAILED, requestId }, 500);
+		return c.json({ error: "Error al procesar el pago. Intenta de nuevo.", error_code: ERR.PAYMENT_FAILED, requestId }, 500);
 	}
+});
+
+// GET /pay/status/:userOpHash — the payment's lifecycle state, for polling after
+// a 202 (broadcast but unconfirmed) or to make the whole flow async later.
+// prepared/submitting → keep waiting; submitted → broadcast (txHash present);
+// confirmed/failed → terminal; unknown → expired or never prepared.
+payRoutes.get("/status/:userOpHash", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const userOpHash = c.req.param("userOpHash") ?? "";
+	if (!/^0x[0-9a-fA-F]{64}$/.test(userOpHash)) {
+		return c.json({ error: "Hash inválido.", error_code: ERR.INVALID_TX_HASH }, 400);
+	}
+	const row = await getPendingPaymentAnyState(c.env, userOpHash);
+	if (!row) return c.json({ status: "unknown" });
+	if (row.uid !== user.sub) {
+		return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT }, 403);
+	}
+	return c.json({
+		status: row.status,
+		txHash: row.submittedTxHash,
+		currency: row.currency,
+		amount: row.amount,
+	});
 });
 
 export default payRoutes;

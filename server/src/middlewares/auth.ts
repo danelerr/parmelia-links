@@ -1,41 +1,15 @@
 import { Context, Next } from "hono";
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
-import type { SupportedChainKey } from "../../../shared/networks";
+import { ERR } from "../../../shared/errors";
+import type { Bindings } from "../env";
+import { discardResponseBody, readJsonBounded } from "../services/http";
+import { logWarn } from "../services/logger";
 
-// D1Database is provided globally by worker-configuration.d.ts (Cloudflare runtime types).
-export type Bindings = {
-	RPC_URL: string;
-	PRIVATE_KEY: string;
-	PAYMASTER_SIGNER_PRIVATE_KEY?: string;
-	FIREBASE_PROJECT_ID: string;
-	PARMELIA_DB: D1Database;
-	CHAIN_KEY?: SupportedChainKey;
-	/** Comma-separated allowlist of CORS origins. Unset => allow any origin. */
-	ALLOWED_ORIGINS?: string;
-	/** Service fees (Módulo 3). Fees are OFF unless this is exactly "true". */
-	PARMELIA_FEES_ENABLED?: string;
-	/** Swap service fee in bps (e.g. "30" = 0.30%). Capped by MAX + hard cap. */
-	PARMELIA_SWAP_FEE_BPS?: string;
-	/** Env-level fee ceiling in bps; code hard-caps at 100 (1%) regardless. */
-	PARMELIA_MAX_FEE_BPS?: string;
-	/** Fee recipient for the active chain. Required for fees to activate. */
-	PARMELIA_TREASURY_ADDRESS?: string;
-	/** Cross-chain withdrawal spread in bps (capped at 100 in code). */
-	PARMELIA_CROSSCHAIN_FEE_BPS?: string;
-	/** Cloudflare Turnstile secret. Unset => anti-abuse check is skipped (dev). */
-	TURNSTILE_SECRET_KEY?: string;
-	/** Firebase service account JSON (one line). Unset => push notifications off. */
-	FCM_SERVICE_ACCOUNT?: string;
-	/** Public app URL for building checkout links (default https://app.parmelia.me). */
-	APP_URL?: string;
-	/** Signs PaymentRouter invoice authorizations (Flow B). Falls back to the paymaster signer. */
-	PAYMENT_ROUTER_SIGNER_PRIVATE_KEY?: string;
-	/** Platform fee in bps for payments via the router (capped at 100 in code). */
-	PARMELIA_PAYMENT_FEE_BPS?: string;
-};
+export type { Bindings } from "../env";
 
 export type Variables = {
 	user: { sub: string; email?: string; name?: string; picture?: string } | null;
+	requestId: string;
 	/** Set by the API-key middleware on /v1 routes. */
 	merchantId?: string;
 	apiMode?: "test" | "live";
@@ -47,13 +21,18 @@ export type AppContext = { Bindings: Bindings; Variables: Variables };
 let cachedJWKS: ReturnType<typeof createLocalJWKSet> | null = null;
 let jwksCachedAt = 0;
 const JWKS_URL = "https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@system.gserviceaccount.com";
+const JWKS_TIMEOUT_MS = 5_000;
+const JWKS_MAX_BYTES = 64 * 1024;
 
 export async function getFirebaseJWKS() {
 	const now = Date.now();
 	if (cachedJWKS && now - jwksCachedAt < 3600_000) return cachedJWKS;
-	const res = await fetch(JWKS_URL);
-	if (!res.ok) throw new Error(`Failed to fetch JWKS: ${res.status}`);
-	const jwks = (await res.json()) as JSONWebKeySet;
+	const res = await fetch(JWKS_URL, { signal: AbortSignal.timeout(JWKS_TIMEOUT_MS) });
+	if (!res.ok) {
+		await discardResponseBody(res);
+		throw new Error(`Failed to fetch JWKS: ${res.status}`);
+	}
+	const jwks = await readJsonBounded<JSONWebKeySet>(res, JWKS_MAX_BYTES);
 	cachedJWKS = createLocalJWKSet(jwks);
 	jwksCachedAt = now;
 	return cachedJWKS;
@@ -75,8 +54,12 @@ export const authMiddleware = async (c: Context<AppContext>, next: Next) => {
 		try {
 			const user = await verifyFirebaseToken(token, c.env.FIREBASE_PROJECT_ID);
 			c.set("user", user);
-		} catch (err: any) {
-			console.error("Auth failed:", err?.message || String(err));
+		} catch (error) {
+			logWarn("auth_token_rejected", {
+				requestId: c.get("requestId"),
+				path: new URL(c.req.url).pathname,
+				reason: error instanceof Error ? error.name : "unknown",
+			});
 			c.set("user", null);
 		}
 	} else {
@@ -88,7 +71,16 @@ export const authMiddleware = async (c: Context<AppContext>, next: Next) => {
 export const requireAuth = async (c: Context<AppContext>, next: Next) => {
 	const user = c.get("user");
 	if (!user) {
-		return c.json({ error: "Unauthorized: missing, invalid, or expired Firebase token" }, 401);
+		// Stable code so the client maps a localized "session expired" message
+		// instead of parsing this English text (same contract as every route).
+		return c.json(
+			{
+				error: "Unauthorized: missing, invalid, or expired Firebase token",
+				error_code: ERR.UNAUTHENTICATED,
+				requestId: c.get("requestId"),
+			},
+			401,
+		);
 	}
 	await next();
 };

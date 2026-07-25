@@ -47,7 +47,7 @@ import {
 	encodeExecuteBatch,
 	serializeBigInts,
 } from "../services/userOp";
-import { getRequestId, logError, logInfo, logWarn } from "../services/logger";
+import { logError, logInfo, logWarn } from "../services/logger";
 import { encodeFunctionData } from "viem";
 
 const swapRoutes = new Hono<AppContext>();
@@ -74,7 +74,7 @@ swapRoutes.get("/tokens", requireAuth, async (c) => {
 });
 
 swapRoutes.post("/quote", requireAuth, async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	try {
 		const user = c.get("user")!;
 		const body = (await c.req.json()) as Record<string, unknown>;
@@ -213,7 +213,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 });
 
 swapRoutes.post("/prepare", requireAuth, async (c) => {
-	const requestId = getRequestId((name) => c.req.header(name));
+	const requestId = c.get("requestId");
 	try {
 		const user = c.get("user")!;
 		const body = (await c.req.json()) as Record<string, unknown>;
@@ -267,6 +267,14 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		if (!fresh) {
 			await updateSwapQuoteStatus(c.env, quoteId, "expired");
 			return c.json({ error: "La ruta ya no está disponible. Cotiza de nuevo.", error_code: ERR.NO_ROUTE, requestId }, 409);
+		}
+		const sameRoute =
+			fresh.route.protocol === route.protocol &&
+			fresh.route.fee === route.fee &&
+			fresh.route.tickSpacing === route.tickSpacing;
+		if (!sameRoute || Number(feeBps) !== quote.feeBps) {
+			await updateSwapQuoteStatus(c.env, quoteId, "expired");
+			return c.json({ error: "La ruta o comisión cambió. Cotiza de nuevo.", error_code: ERR.PRICE_MOVED, requestId }, 409);
 		}
 		const freshNet = applyFee(fresh.amountOut, feeBps).netAmount;
 		if (freshNet < minimumAmountOut) {

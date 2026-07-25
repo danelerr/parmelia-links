@@ -3,7 +3,7 @@ import { formatEther, formatUnits } from "viem";
 import { erc20Abi, getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import { getPublicClient } from "../services/clients";
-import { getUserByUid, getUserByUsername, saveUser, addPushToken } from "../services/storage";
+import { getUserByUid, getUserByUsername, saveUser, addPushToken, updateProfileFields } from "../services/storage";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -22,7 +22,35 @@ userRoutes.get("/profile", requireAuth, async (c) => {
 		uid: profile.uid,
 		walletAddress: profile.walletAddress,
 		username: profile.username,
+		displayName: profile.displayName,
+		socialUrl: profile.socialUrl,
 	});
+});
+
+// Public profile fields (shown on the pay page and the public username lookup).
+// social_url is an allowlist, not a free URL: anything shown to strangers at
+// pay time is phishing surface.
+const SOCIAL_URL_RE =
+	/^https:\/\/(www\.)?(instagram\.com|x\.com|twitter\.com|t\.me|tiktok\.com|facebook\.com)\/[A-Za-z0-9_.\-@/]{1,80}$/;
+
+userRoutes.put("/profile", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+	const rawName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+	const rawSocial = typeof body.socialUrl === "string" ? body.socialUrl.trim() : "";
+
+	if (rawName.length > 40 || /[<>\r\n]/.test(rawName)) {
+		return c.json({ error: "El nombre puede tener hasta 40 caracteres.", error_code: ERR.INVALID_PROFILE }, 400);
+	}
+	if (rawSocial && !SOCIAL_URL_RE.test(rawSocial)) {
+		return c.json({ error: "El enlace debe ser de Instagram, X, Telegram, TikTok o Facebook (https://…).", error_code: ERR.INVALID_PROFILE }, 400);
+	}
+
+	await updateProfileFields(c.env, user.sub, {
+		displayName: rawName || null,
+		socialUrl: rawSocial || null,
+	});
+	return c.json({ success: true, displayName: rawName || null, socialUrl: rawSocial || null });
 });
 
 // Set username
@@ -109,12 +137,30 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 		tokens[t.symbol] = formatUnits(extraRaw[i], t.decimals);
 	});
 
+	// Savings pocket (Earn): the aToken balance, kept separate from the
+	// available balance on purpose (opt-in product; never mixed with payments).
+	let savings: string | null = null;
+	if (network.aave) {
+		try {
+			const savingsRaw = (await publicClient.readContract({
+				address: network.aave.aUsdc,
+				abi: erc20Abi,
+				functionName: "balanceOf",
+				args: [account],
+			})) as bigint;
+			savings = formatUnits(savingsRaw, usdcDecimals);
+		} catch {
+			savings = null; // RPC blip: omit rather than show a wrong 0
+		}
+	}
+
 	return c.json({
 		eth: formatEther(ethBalanceWei),
 		usdc: formatUnits(usdcBalanceRaw, usdcDecimals),
 		ethRaw: ethBalanceWei.toString(),
 		usdcRaw: usdcBalanceRaw.toString(),
 		tokens,
+		savings,
 	});
 });
 
@@ -138,6 +184,8 @@ userRoutes.get("/:username", async (c) => {
 	return c.json({
 		username: profile.username,
 		walletAddress: profile.walletAddress,
+		displayName: profile.displayName,
+		socialUrl: profile.socialUrl,
 	});
 });
 

@@ -7,9 +7,10 @@ import {
 	parseAbiParameters,
 	toHex,
 } from "viem";
-import { entryPointAbi, getNetworkConfig } from "../../../shared";
+import { assertContractsDeployed, entryPointAbi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
+import { getPaymasterSignerKey } from "./keys";
 import { buildSignedPaymasterAndData } from "./paymaster";
 
 export type AccountCall = {
@@ -61,6 +62,23 @@ export function normalizeLowS(s: string): Hex {
 	return ("0x" + value.toString(16).padStart(64, "0")) as Hex;
 }
 
+/**
+ * Find the account's REGISTERED signer bytes for a P256 public key. ERC-7913
+ * signers are `verifier(20) || qx(32) || qy(32)`: the verifier ADDRESS the key
+ * was registered with is embedded on-chain, so rebuilding the bytes from the
+ * network's CURRENT verifier breaks every account created before a verifier
+ * redeploy (jul-2026 incident). Matching by the qx||qy suffix recovers the
+ * exact bytes regardless of which verifier generation registered them.
+ */
+export function matchOnchainSigner(signers: readonly Hex[], qx: Hex, qy: Hex): Hex | null {
+	const suffix = (qx.slice(2) + qy.slice(2)).toLowerCase();
+	if (suffix.length !== 128) return null;
+	for (const signer of signers) {
+		if (typeof signer === "string" && signer.toLowerCase().endsWith(suffix)) return signer;
+	}
+	return null;
+}
+
 /** Replace bigints with hex strings so a UserOp can be persisted as JSON. */
 export function serializeBigInts(obj: unknown): unknown {
 	if (typeof obj === "bigint") return "0x" + obj.toString(16);
@@ -106,7 +124,10 @@ export async function buildSponsoredUserOp(
 	env: Bindings,
 	params: BuildSponsoredUserOpParams,
 ): Promise<{ userOp: PackedUserOp; userOpHash: Hex; chainId: number }> {
-	const { contracts } = getNetworkConfig(env.CHAIN_KEY);
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	// Fail closed on half-configured networks (TODO_DEPLOY placeholders).
+	assertContractsDeployed(network, ["entryPoint", "paymaster"]);
+	const { contracts } = network;
 	const publicClient = getPublicClient(env);
 
 	const verificationGasLimit =
@@ -149,8 +170,8 @@ export async function buildSponsoredUserOp(
 	};
 
 	const chainId = await publicClient.getChainId();
-	const signerPrivateKey = (env.PAYMASTER_SIGNER_PRIVATE_KEY ||
-		env.PRIVATE_KEY) as `0x${string}`;
+	// Dedicated sponsorship key; falls back to PRIVATE_KEY on testnets only.
+	const signerPrivateKey = getPaymasterSignerKey(env);
 	userOp.paymasterAndData = await buildSignedPaymasterAndData({
 		chainId,
 		paymasterAddress: contracts.paymaster,

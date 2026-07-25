@@ -3,7 +3,6 @@
 // and pick the route with the best raw output (tie-break: v4 - native ETH is a
 // first-class currency there, which avoids WRAP/UNWRAP gas on ETH pairs).
 
-import { formatUnits } from "viem";
 import type { NetworkConfig, TokenConfig } from "../../../shared/networks";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
@@ -169,8 +168,4 @@ export async function quoteBestRoute(
 export function describeRoute(route: SwapRoute): string {
 	const feePct = (route.fee / 10_000).toFixed(route.fee % 100 === 0 ? 2 : 3);
 	return `Uniswap ${route.protocol} · pool ${feePct}%`;
-}
-
-export function formatTokenAmount(amount: bigint, token: TokenConfig): string {
-	return formatUnits(amount, token.decimals);
 }

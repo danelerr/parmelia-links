@@ -12,6 +12,7 @@ import { importPKCS8, SignJWT } from "jose";
 import type { Bindings } from "../middlewares/auth";
 import { listPushTokens, deletePushToken } from "./storage";
 import { logError } from "./logger";
+import { discardResponseBody, readJsonBounded } from "./http";
 
 type ServiceAccount = {
 	project_id: string;
@@ -21,6 +22,9 @@ type ServiceAccount = {
 };
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const FCM_TIMEOUT_MS = 5_000;
+const TOKEN_RESPONSE_MAX_BYTES = 16 * 1024;
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
@@ -28,7 +32,7 @@ function parseServiceAccount(env: Bindings): ServiceAccount | null {
 	if (!env.FCM_SERVICE_ACCOUNT) return null;
 	try {
 		const sa = JSON.parse(env.FCM_SERVICE_ACCOUNT) as ServiceAccount;
-		if (!sa.client_email || !sa.private_key || !sa.project_id) return null;
+		if (!sa.client_email || !sa.private_key || !sa.project_id || sa.token_uri !== GOOGLE_TOKEN_URL) return null;
 		return sa;
 	} catch {
 		return null;
@@ -56,9 +60,16 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
 			grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
 			assertion,
 		}),
+		signal: AbortSignal.timeout(FCM_TIMEOUT_MS),
 	});
-	if (!res.ok) throw new Error(`token exchange failed: ${res.status}`);
-	const data = (await res.json()) as { access_token: string; expires_in: number };
+	if (!res.ok) {
+		await discardResponseBody(res);
+		throw new Error(`token exchange failed: ${res.status}`);
+	}
+	const data = await readJsonBounded<{ access_token: string; expires_in: number }>(
+		res,
+		TOKEN_RESPONSE_MAX_BYTES,
+	);
 	cachedToken = { value: data.access_token, expiresAt: now + data.expires_in };
 	return data.access_token;
 }
@@ -100,12 +111,16 @@ async function sendToToken(
 						},
 					},
 				}),
+				signal: AbortSignal.timeout(FCM_TIMEOUT_MS),
 			},
 		);
-		if (res.ok) return "ok";
+		const ok = res.ok;
+		const status = res.status;
+		await discardResponseBody(res);
+		if (ok) return "ok";
 		// 404 / UNREGISTERED → the token is dead; the caller prunes it.
-		if (res.status === 404) return "dead";
-		logError("push_send_failed", new Error(`FCM ${res.status}`), {});
+		if (status === 404) return "dead";
+		logError("push_send_failed", new Error(`FCM ${status}`), {});
 		return "error";
 	} catch (error) {
 		logError("push_send_error", error, {});
