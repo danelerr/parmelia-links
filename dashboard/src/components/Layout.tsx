@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { logOut, type User } from "../lib/firebase";
+import { DOCS_URL } from "../lib/docs";
 import Logo from "./Logo";
 
 const NAV: { to: string; label: string }[] = [
@@ -9,6 +10,7 @@ const NAV: { to: string; label: string }[] = [
 	{ to: "/webhooks", label: "Webhooks" },
 	{ to: "/payments", label: "Pagos" },
 	{ to: "/events", label: "Eventos" },
+	{ to: "/sandbox", label: "Sandbox" },
 ];
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -16,6 +18,24 @@ function navClass({ isActive }: { isActive: boolean }) {
 		"px-3.5 h-10 rounded-[12px] flex items-center text-[14px] font-medium transition-colors shrink-0",
 		isActive ? "bg-sky/15 text-glow-sky" : "text-text-muted hover:text-text hover:bg-surface-2",
 	].join(" ");
+}
+
+/** External link to the canonical API reference (opens the landing docs). */
+function DocsLink() {
+	return (
+		<a
+			href={DOCS_URL}
+			target="_blank"
+			rel="noopener noreferrer"
+			className="px-3.5 h-10 rounded-[12px] flex items-center gap-1.5 text-[14px] font-medium text-text-muted hover:text-text hover:bg-surface-2 transition-colors shrink-0"
+		>
+			Documentación
+			<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+				<path d="M7 17 17 7" />
+				<path d="M7 7h10v10" />
+			</svg>
+		</a>
+	);
 }
 
 export default function Layout({ user, children }: { user: User; children: ReactNode }) {
@@ -36,6 +56,7 @@ export default function Layout({ user, children }: { user: User; children: React
 							{n.label}
 						</NavLink>
 					))}
+					<DocsLink />
 				</nav>
 				<div className="mt-auto pt-4 border-t border-border">
 					<p className="text-[12px] text-text-faint px-2 mb-2 truncate">{user.email}</p>
@@ -55,6 +76,7 @@ export default function Layout({ user, children }: { user: User; children: React
 								{n.label}
 							</NavLink>
 						))}
+						<DocsLink />
 					</nav>
 					<button onClick={() => logOut()} className="btn-text shrink-0 ml-auto">
 						Salir

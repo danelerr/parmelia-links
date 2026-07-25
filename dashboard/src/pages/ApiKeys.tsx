@@ -2,7 +2,11 @@ import { useState } from "react";
 import useSWR from "swr";
 import { sileo } from "sileo";
 import { apiFetch } from "../lib/api";
+import { docsUrl } from "../lib/docs";
 import type { User } from "../lib/firebase";
+import ErrorState from "../components/ErrorState";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { formatDate } from "../lib/format";
 
 type ApiKey = {
 	id: string;
@@ -14,23 +18,20 @@ type ApiKey = {
 	created_at: string;
 };
 
-function fmtDate(iso: string | null) {
-	if (!iso) return "—";
-	const d = new Date(iso);
-	return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("es", { day: "numeric", month: "short", year: "numeric" });
-}
-
 export default function ApiKeys({ user }: { user: User }) {
 	const fetcher = (p: string) => apiFetch<{ data: ApiKey[] }>(p, { user });
-	const { data, isLoading, mutate } = useSWR("/merchant/keys", fetcher);
+	const { data, error, isLoading, mutate } = useSWR("/merchant/keys", fetcher);
 	const keys = data?.data ?? [];
 
 	const [mode, setMode] = useState<"test" | "live">("test");
 	const [name, setName] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [fresh, setFresh] = useState<string | null>(null);
+	// Pending confirmations (in-design dialogs instead of native confirm()).
+	const [confirmLive, setConfirmLive] = useState(false);
+	const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
 
-	async function create() {
+	async function doCreate() {
 		setCreating(true);
 		try {
 			const res = await apiFetch<{ key: string }>("/merchant/keys", {
@@ -48,8 +49,16 @@ export default function ApiKeys({ user }: { user: User }) {
 		}
 	}
 
-	async function revoke(id: string) {
-		if (!confirm("¿Revocar esta clave? Las integraciones que la usen dejarán de funcionar.")) return;
+	// Live keys move real money: one deliberate extra step before creating.
+	function create() {
+		if (mode === "live") {
+			setConfirmLive(true);
+			return;
+		}
+		void doCreate();
+	}
+
+	async function doRevoke(id: string) {
 		try {
 			await apiFetch(`/merchant/keys/${id}`, { user, method: "DELETE" });
 			mutate();
@@ -58,9 +67,13 @@ export default function ApiKeys({ user }: { user: User }) {
 		}
 	}
 
-	function copy(value: string) {
-		navigator.clipboard.writeText(value);
-		sileo.success({ title: "Copiado" });
+	async function copy(value: string) {
+		try {
+			await navigator.clipboard.writeText(value);
+			sileo.success({ title: "Copiado" });
+		} catch {
+			sileo.error({ title: "No se pudo copiar", description: "Copia el valor manualmente." });
+		}
 	}
 
 	return (
@@ -68,27 +81,45 @@ export default function ApiKeys({ user }: { user: User }) {
 			<header className="mb-7">
 				<h1 className="text-[26px] mb-1">API keys</h1>
 				<p className="text-[14px] text-text-muted">
-					Úsalas como <span className="mono">Authorization: Bearer sk_…</span> para crear cobros desde tu servidor.
+					Úsalas como <span className="mono">Authorization: Bearer sk_…</span> para crear cobros desde tu servidor.{" "}
+					<a href={docsUrl("authentication")} target="_blank" rel="noopener noreferrer" className="text-glow-sky">
+						Ver autenticación en la doc
+					</a>
 				</p>
 			</header>
 
 			{/* Create */}
-			<div className="card p-5 mb-5 flex flex-col sm:flex-row gap-3 sm:items-end">
+			<form
+				className="card p-5 mb-5 flex flex-col sm:flex-row gap-3 sm:items-end"
+				onSubmit={(event) => {
+					event.preventDefault();
+					create();
+				}}
+			>
 				<label className="flex-1">
 					<span className="block text-[12px] text-text-faint mb-1.5">Nombre (opcional)</span>
-					<input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Mi tienda — producción" maxLength={60} />
+					<input
+						className="field"
+						name="key_name"
+						value={name}
+						onChange={(e) => setName(e.target.value)}
+						placeholder="Ej. Mi tienda — producción"
+						maxLength={60}
+						autoComplete="off"
+						spellCheck={false}
+					/>
 				</label>
 				<label className="sm:w-40">
 					<span className="block text-[12px] text-text-faint mb-1.5">Modo</span>
-					<select className="field" value={mode} onChange={(e) => setMode(e.target.value as "test" | "live")}>
+					<select name="mode" className="field" value={mode} onChange={(e) => setMode(e.target.value as "test" | "live")}>
 						<option value="test">test (sandbox)</option>
 						<option value="live">live (producción)</option>
 					</select>
 				</label>
-				<button onClick={create} disabled={creating} className="btn btn-primary">
+				<button type="submit" disabled={creating} className="btn btn-primary">
 					{creating ? "Creando…" : "Crear clave"}
 				</button>
-			</div>
+			</form>
 
 			{/* Fresh key — shown once */}
 			{fresh && (
@@ -107,6 +138,8 @@ export default function ApiKeys({ user }: { user: User }) {
 			{/* List */}
 			{isLoading && !data ? (
 				<p className="text-[14px] text-text-muted">Cargando…</p>
+			) : error && !data ? (
+				<ErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => mutate()} />
 			) : keys.length === 0 ? (
 				<p className="text-[14px] text-text-muted">Aún no tienes claves. Crea una para empezar a integrar.</p>
 			) : (
@@ -120,15 +153,54 @@ export default function ApiKeys({ user }: { user: User }) {
 									{k.revoked && <span className="badge badge-warn">revocada</span>}
 								</div>
 								<p className="text-[12px] text-text-faint mt-0.5 truncate">
-									{k.name || "Sin nombre"} · creada {fmtDate(k.created_at)} · uso {fmtDate(k.last_used_at)}
+									{k.name || "Sin nombre"} · creada {formatDate(k.created_at)} · uso {formatDate(k.last_used_at)}
 								</p>
 							</div>
 							{!k.revoked && (
-								<button onClick={() => revoke(k.id)} className="btn btn-danger btn-sm shrink-0">Revocar</button>
+								<button onClick={() => setRevokeTarget(k)} className="btn btn-danger btn-sm shrink-0">Revocar</button>
 							)}
 						</div>
 					))}
 				</div>
+			)}
+
+			{confirmLive && (
+				<ConfirmDialog
+					title="Crear clave live"
+					body={
+						<>
+							Las claves <span className="mono">sk_live_</span> crean cobros con dinero real en Arbitrum One,
+							liquidados directo a tu cuenta. Guárdala solo en tu servidor y revócala de inmediato si se filtra.
+						</>
+					}
+					confirmLabel="Crear clave live"
+					onConfirm={() => {
+						setConfirmLive(false);
+						void doCreate();
+					}}
+					onCancel={() => setConfirmLive(false)}
+				/>
+			)}
+
+			{revokeTarget && (
+				<ConfirmDialog
+					title="Revocar clave"
+					body={
+						<>
+							Vas a revocar <span className="mono">{revokeTarget.prefix}…</span>
+							{revokeTarget.name ? <> ({revokeTarget.name})</> : null}. Las integraciones que la usen dejarán de
+							funcionar al instante. Esta acción no se puede deshacer.
+						</>
+					}
+					confirmLabel="Revocar"
+					danger
+					onConfirm={() => {
+						const id = revokeTarget.id;
+						setRevokeTarget(null);
+						void doRevoke(id);
+					}}
+					onCancel={() => setRevokeTarget(null)}
+				/>
 			)}
 		</div>
 	);

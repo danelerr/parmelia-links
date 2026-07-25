@@ -11,6 +11,8 @@ const ApiKeys = lazy(() => import("./pages/ApiKeys"));
 const Webhooks = lazy(() => import("./pages/Webhooks"));
 const Payments = lazy(() => import("./pages/Payments"));
 const Events = lazy(() => import("./pages/Events"));
+const Sandbox = lazy(() => import("./pages/Sandbox"));
+const PaymentDetail = lazy(() => import("./pages/PaymentDetail"));
 
 function Splash() {
 	return (
@@ -47,7 +49,9 @@ export default function App() {
 							<Route path="/keys" element={<ApiKeys user={user} />} />
 							<Route path="/webhooks" element={<Webhooks user={user} />} />
 							<Route path="/payments" element={<Payments user={user} />} />
+							<Route path="/payments/:id" element={<PaymentDetail user={user} />} />
 							<Route path="/events" element={<Events user={user} />} />
+							<Route path="/sandbox" element={<Sandbox user={user} />} />
 							<Route path="*" element={<Navigate to="/" replace />} />
 						</Routes>
 					</Layout>

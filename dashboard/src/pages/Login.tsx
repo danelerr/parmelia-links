@@ -88,7 +88,7 @@ export default function Login() {
 					Administra tus cobros: API keys, webhooks, pagos y eventos.
 				</p>
 
-				{mode === "completing" && <p className="text-[14px] text-text-muted">Iniciando sesión…</p>}
+				{mode === "completing" && <p role="status" className="text-[14px] text-text-muted">Iniciando sesión…</p>}
 
 				{mode === "sent" && (
 					<div className="card p-6">
@@ -102,14 +102,20 @@ export default function Login() {
 				)}
 
 				{mode === "need-email" && (
-					<div className="flex flex-col gap-3">
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							void handleComplete();
+						}}
+						className="flex flex-col gap-3"
+					>
 						<p className="text-[13px] text-text-muted">Confirma el correo al que enviamos el enlace.</p>
-						<input className="field text-center" type="email" inputMode="email" autoFocus value={email}
+						<input aria-label="Correo electrónico" className="field text-center" type="email" name="email" inputMode="email" autoComplete="email" value={email}
 							onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" />
-						<button onClick={handleComplete} disabled={busy} className="btn btn-primary btn-block">
+						<button type="submit" disabled={busy} className="btn btn-primary btn-block">
 							{busy ? "Entrando…" : "Entrar"}
 						</button>
-					</div>
+					</form>
 				)}
 
 				{mode === "buttons" && (
@@ -125,15 +131,20 @@ export default function Login() {
 				)}
 
 				{mode === "email" && (
-					<div className="flex flex-col gap-3">
-						<input className="field text-center" type="email" inputMode="email" autoFocus value={email}
-							onChange={(e) => setEmail(e.target.value)}
-							onKeyDown={(e) => e.key === "Enter" && handleSend()} placeholder="tu@correo.com" />
-						<button onClick={handleSend} disabled={busy} className="btn btn-primary btn-block">
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							void handleSend();
+						}}
+						className="flex flex-col gap-3"
+					>
+						<input aria-label="Correo electrónico" className="field text-center" type="email" name="email" inputMode="email" autoComplete="email" value={email}
+							onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" />
+						<button type="submit" disabled={busy} className="btn btn-primary btn-block">
 							{busy ? "Enviando…" : "Enviarme un enlace"}
 						</button>
-						<button onClick={() => setMode("buttons")} className="btn-text">Volver</button>
-					</div>
+						<button type="button" onClick={() => setMode("buttons")} className="btn-text">Volver</button>
+					</form>
 				)}
 			</div>
 		</div>
