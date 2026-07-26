@@ -4,15 +4,20 @@
 # Compatibilidad/base: RPC del chain activo; acepta URLs separadas por coma.
 RPC_URL=
 
-# Roles opcionales. Si faltan heredan RPC_URL (INDEXER nunca hereda READ).
-# READ/WRITE: lecturas puntuales y broadcast. Puede incluir Alchemy Free.
-# INDEXER: eth_getLogs por rangos; con Alchemy Free NO usar Alchemy aquí.
-# Para Sepolia hoy: mantener el RPC público de Arbitrum en RPC_INDEXER_URLS.
+# Roles opcionales. Si faltan heredan RPC_URL.
+# READ/WRITE: lecturas puntuales y broadcast.
+# INDEXER: endpoints para eth_getLogs, ordenados igual que sus capacidades.
 RPC_READ_URLS=
 RPC_WRITE_URLS=
 RPC_INDEXER_URLS=
 RPC_ARCHIVE_URLS=
 RPC_TIMEOUT_MS=10000
+# Configuración NO secreta por slot. Permite mezclar proveedores/planes sin
+# codificarlos en el código. Si se omite, cada endpoint indexer hereda el rango
+# legacy de RPC_INDEXER_MAX_BLOCK_RANGE.
+# Ejemplo con dos endpoints de capacidades distintas:
+# {"indexer":[{"id":"managed","priority":0,"maxConcurrency":4,"maxLogRange":10},{"id":"public","priority":1,"maxConcurrency":2,"maxLogRange":2000}]}
+RPC_PROVIDER_CAPABILITIES=
 
 # ERC-4337 submission. `self` conserva el handleOps propio; `bundler` elimina
 # el nonce único del relayer. El proveedor DEBE anunciar soporte para el
@@ -27,29 +32,36 @@ BUNDLER_DUMMY_SIGNATURE=0x
 # handleOps propio. Mantener false normalmente para no ocultar degradaciones.
 BUNDLER_SELF_FALLBACK=false
 
-# El rango es una capacidad de TODOS los endpoints del rol INDEXER, no de la
-# blockchain. No mezclar endpoints con límites distintos en el mismo fallback:
-# el request se reintenta sin cambiar de tamaño.
-# RPC público Arbitrum: 2000 inicial/máximo. Alchemy Free: configurar 10 si se
-# usa deliberadamente, aunque no se recomienda para el reconciliador.
+# Compatibilidad si RPC_PROVIDER_CAPABILITIES no está configurado. Con el
+# documento de capacidades, cada endpoint declara su propio máximo y el scanner
+# elige/falla hacia otro proveedor de forma adaptativa.
 RPC_INDEXER_MIN_BLOCK_RANGE=10
 RPC_INDEXER_MAX_BLOCK_RANGE=2000
 INDEXER_WALLET_SHARD_SIZE=250
-BALANCE_MAX_STALENESS_SECONDS=60
+INDEXER_REGISTRY_BATCH_SIZE=25
+INDEXER_MAX_RPC_CALLS_PER_JOB=16
+INDEXER_MAX_BLOCKS_PER_JOB=20000
+INDEXER_MAX_EVENT_BLOCKS_PER_JOB=8
+BALANCE_MAX_STALENESS_SECONDS=300
 # Sólo activos rpc_only (ETH/aUSDC) se auditan por tiempo. Este trabajo es
 # global y acotado; abrir Home nunca crea un refresh por snapshot viejo.
-BALANCE_RPC_ONLY_REFRESH_SECONDS=900
-BALANCE_MAINTENANCE_BATCH_SIZE=25
 # Política Parmelia: una inclusión de batch sólo asciende a l1_confirmed al
 # alcanzar este umbral. No equivale a assertion/finality del Rollup.
 ARBITRUM_L1_CONFIRMATIONS_REQUIRED=12
 
-# Alchemy Free se usa como push (Address Activity webhook), no para backfill.
+# Address Activity se usa como señal push; el pool RPC conserva la verdad.
 # Rotar cualquier key que haya aparecido en una captura antes de habilitarlo.
 ALCHEMY_WEBHOOK_ENABLED=false
+ALCHEMY_CUSTOM_WEBHOOK_ENABLED=false
+ALCHEMY_CUSTOM_WEBHOOK_ID=
+ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY=
 ALCHEMY_WEBHOOK_ID=
 ALCHEMY_WEBHOOK_NETWORK=ARB_SEPOLIA
 ALCHEMY_WEBHOOK_SIGNING_KEY=
+# Escala horizontal opcional. Este secreto JSON reemplaza las tres variables
+# anteriores y permite varios webhooks, cada uno con hasta 200 shards estables:
+# [{"id":"wh_1","network":"ARB_SEPOLIA","signingKey":"..."},{"id":"wh_2","network":"ARB_SEPOLIA","signingKey":"..."}]
+ALCHEMY_ADDRESS_WEBHOOKS_JSON=
 # Token de administración de Notify (X-Alchemy-Token), distinto del API key RPC.
 ALCHEMY_NOTIFY_AUTH_TOKEN=
 
@@ -75,7 +87,7 @@ WEBHOOK_SECRET_ENCRYPTION_KEY=
 # ID no secreto de la clave activa. Cambiarlo en cada rotación.
 WEBHOOK_SECRET_ENCRYPTION_KEY_ID=2026_07
 # Durante una rotación: JSON {"id_anterior":"clave_anterior"}. Vaciar después
-# de que el cron haya recifrado todas las filas con el ID activo.
+# de que el job de rotación haya recifrado todas las filas con el ID activo.
 WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS=
 
 CHAIN_KEY=arbitrum-sepolia

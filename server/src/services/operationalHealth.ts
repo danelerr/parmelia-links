@@ -1,15 +1,22 @@
 import { getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 
-const STREAM_WARNING_AGE_MS = 5 * 60_000;
-
 type CountRow = {
 	payment_reconcile_dead: number;
 	payment_reconcile_active: number;
 	user_event_dead: number;
 	user_event_active: number;
+	balance_refresh_active: number;
 	balance_refresh_failed: number;
 	balance_projection_drift: number;
+	account_operation_active: number;
+	crosschain_active: number;
+	webhook_delivery_active: number;
+	router_intent_active: number;
+	indexer_registry_active: number;
+	indexer_registry_failed: number;
+	provider_subscription_active: number;
+	provider_subscription_failed: number;
 };
 
 type StreamRow = {
@@ -24,8 +31,17 @@ export type OperationalHealthSummary = {
 		paymentReconcileDead: number;
 		userEventActive: number;
 		userEventDead: number;
+		balanceRefreshActive: number;
 		balanceRefreshFailed: number;
 		balanceProjectionDrift: number;
+		accountOperationActive: number;
+		crosschainActive: number;
+		webhookDeliveryActive: number;
+		routerIntentActive: number;
+		indexerRegistryActive: number;
+		indexerRegistryFailed: number;
+		providerSubscriptionActive: number;
+		providerSubscriptionFailed: number;
 	};
 	streams: Array<{
 		name: string;
@@ -41,14 +57,7 @@ export async function getOperationalHealth(
 	warnings: string[];
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const expectedStreams = [
-		`erc20_transfers:${network.chainId}`,
-		`userops:${network.chainId}`,
-		`router:${network.chainId}`,
-		`recovery:${network.chainId}`,
-	];
-	const placeholders = expectedStreams.map(() => "?").join(", ");
-	const [counts, streams, walletCount] = await Promise.all([
+	const [counts, streams] = await Promise.all([
 		env.PARMELIA_DB.prepare(
 			`SELECT
 				(SELECT COUNT(*) FROM payment_reconcile_requests
@@ -62,22 +71,59 @@ export async function getOperationalHealth(
 				 WHERE status IN ('pending', 'processing', 'failed'))
 				 AS user_event_active,
 				(SELECT COUNT(*) FROM balance_refresh_requests
+				 WHERE status IN ('pending', 'processing', 'failed'))
+				 AS balance_refresh_active,
+				(SELECT COUNT(*) FROM balance_refresh_requests
 				 WHERE status = 'failed') AS balance_refresh_failed,
 				(SELECT COUNT(*) FROM balance_reconciliation_audits
-				 WHERE outcome = 'drift') AS balance_projection_drift`,
-		).first<CountRow>(),
+				 WHERE outcome = 'drift') AS balance_projection_drift,
+				(SELECT COUNT(*) FROM account_operations
+				 WHERE status IN ('prepared', 'submitted'))
+				 AS account_operation_active,
+				(SELECT COUNT(*) FROM crosschain_operations
+				 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable'))
+				 AS crosschain_active,
+				(SELECT COUNT(*) FROM webhook_deliveries
+				 WHERE status IN ('pending', 'processing'))
+				 AS webhook_delivery_active,
+				(SELECT COUNT(*) FROM payment_intents
+				 WHERE status = 'awaiting_payment' AND expires_at > ?)
+				 AS router_intent_active,
+				(SELECT COUNT(*) FROM indexer_wallet_registry_outbox
+				 WHERE status IN ('pending', 'failed'))
+				 AS indexer_registry_active,
+				(SELECT COUNT(*) FROM indexer_wallet_registry_outbox
+				 WHERE status = 'failed')
+				 AS indexer_registry_failed,
+				(SELECT COUNT(*) FROM provider_subscription_state
+				 WHERE status IN ('pending', 'failed'))
+				 AS provider_subscription_active,
+				(SELECT COUNT(*) FROM provider_subscription_state
+				 WHERE status = 'failed')
+				 AS provider_subscription_failed`,
+		)
+			.bind(new Date().toISOString())
+			.first<CountRow>(),
 		env.PARMELIA_DB.prepare(
 			`SELECT stream, block_number, updated_at
 			 FROM chain_stream_checkpoints
-			 WHERE chain_id = ? AND stream IN (${placeholders})`,
+			 WHERE chain_id = ?
+			   AND (
+				stream = ?
+				OR stream LIKE ?
+				OR stream LIKE ?
+				OR stream LIKE ?
+			   )
+			 ORDER BY stream`,
 		)
-			.bind(network.chainId, ...expectedStreams)
+			.bind(
+				network.chainId,
+				`router:${network.chainId}`,
+				`erc20_transfers:${network.chainId}:%`,
+				`userops:${network.chainId}:%`,
+				`recovery:${network.chainId}:%`,
+			)
 			.all<StreamRow>(),
-		env.PARMELIA_DB.prepare(
-			`SELECT COUNT(*) AS count
-			 FROM users
-			 WHERE wallet_address IS NOT NULL`,
-		).first<{ count: number }>(),
 	]);
 	if (!counts) throw new Error("Operational health count query returned no row");
 
@@ -103,24 +149,15 @@ export async function getOperationalHealth(
 	if (counts.balance_projection_drift > 0) {
 		warnings.push("balance_projection_drift");
 	}
-	// A brand-new deployment has no checkpoint until its first successful cron
-	// pass. Do not report every stream as missing during that bootstrap window.
-	// Once at least one canonical stream has started, missing/stale siblings are
-	// actionable and should degrade readiness.
-	if ((walletCount?.count ?? 0) > 0 && streamViews.length > 0) {
-		const byName = new Map(streamViews.map((stream) => [stream.name, stream]));
-		for (const expected of expectedStreams) {
-			const stream = byName.get(expected);
-			if (!stream) {
-				warnings.push(`canonical_stream_missing:${expected.split(":")[0]}`);
-			} else if (
-				stream.ageSeconds === null ||
-				stream.ageSeconds * 1_000 > STREAM_WARNING_AGE_MS
-			) {
-				warnings.push(`canonical_stream_stale:${expected.split(":")[0]}`);
-			}
-		}
+	if (counts.indexer_registry_failed > 0) {
+		warnings.push("indexer_wallet_registry_failed");
 	}
+	if (counts.provider_subscription_failed > 0) {
+		warnings.push("provider_subscription_failed");
+	}
+	// Stream age is informational in an event-driven indexer. With no relevant
+	// chain event a checkpoint is expected to stay unchanged indefinitely; age
+	// alone no longer means the Worker is unhealthy.
 
 	return {
 		summary: {
@@ -129,8 +166,19 @@ export async function getOperationalHealth(
 				paymentReconcileDead: counts.payment_reconcile_dead,
 				userEventActive: counts.user_event_active,
 				userEventDead: counts.user_event_dead,
+				balanceRefreshActive: counts.balance_refresh_active,
 				balanceRefreshFailed: counts.balance_refresh_failed,
 				balanceProjectionDrift: counts.balance_projection_drift,
+				accountOperationActive: counts.account_operation_active,
+				crosschainActive: counts.crosschain_active,
+				webhookDeliveryActive: counts.webhook_delivery_active,
+				routerIntentActive: counts.router_intent_active,
+				indexerRegistryActive: counts.indexer_registry_active,
+				indexerRegistryFailed: counts.indexer_registry_failed,
+				providerSubscriptionActive:
+					counts.provider_subscription_active,
+				providerSubscriptionFailed:
+					counts.provider_subscription_failed,
 			},
 			streams: streamViews,
 		},

@@ -26,7 +26,7 @@ import {
 	revokeApiKey,
 	type PaymentIntentRecord,
 } from "../services/storage";
-import { deliverPendingWebhooks, prepareEventOutbox } from "../services/webhooks";
+import { prepareEventOutbox } from "../services/webhooks";
 import { buildRouterAuthorization, intentToInvoiceId, isRouterConfigured } from "../services/paymentRouter";
 import { encryptWebhookSecret } from "../services/webhookSecrets";
 
@@ -264,7 +264,6 @@ merchantRoutes.post("/webhook_deliveries/:id/resend", async (c) => {
 	const user = c.get("user")!;
 	const merchant = await getOrCreateMerchant(c.env, user.sub, user.name ?? null);
 	await requeueWebhookDelivery(c.env, merchant.id, c.req.param("id"));
-	c.executionCtx.waitUntil(deliverPendingWebhooks(c.env));
 	return c.json({ success: true });
 });
 
@@ -326,7 +325,6 @@ merchantRoutes.post("/sandbox/charge", async (c) => {
 		data: serializeIntent(intent),
 	});
 	await createPaymentIntentWithOutbox(c.env, intent, createdOutbox);
-	c.executionCtx.waitUntil(deliverPendingWebhooks(c.env));
 	return c.json(serializeIntent(intent), 201);
 });
 
@@ -352,7 +350,6 @@ merchantRoutes.post("/sandbox/simulate/:id", async (c) => {
 		return apiError(c, ERR.INTENT_NOT_PAYABLE, "Payment is already being processed.");
 	}
 	const updated = (await getPaymentIntentById(c.env, id, merchant.id))!;
-	c.executionCtx.waitUntil(deliverPendingWebhooks(c.env));
 	return c.json(serializeIntent(updated));
 });
 

@@ -30,7 +30,7 @@ import {
 	updatePaymentIntentStatus,
 	type PaymentIntentRecord,
 } from "../services/storage";
-import { deliverPendingWebhooks, prepareEventOutbox } from "../services/webhooks";
+import { prepareEventOutbox } from "../services/webhooks";
 import { buildRouterAuthorization, intentToInvoiceId, RouterError } from "../services/paymentRouter";
 import { apiError } from "../services/apiError";
 import { logError } from "../services/logger";
@@ -259,7 +259,6 @@ v1.post("/payment_intents/:id/simulate_payment", async (c) => {
 		return apiError(c, ERR.INTENT_NOT_PAYABLE, "Payment is already being processed.");
 	}
 	const updated = (await getPaymentIntentById(c.env, id, merchantId))!;
-	c.executionCtx.waitUntil(deliverPendingWebhooks(c.env));
 	return c.json(serializeIntent(updated));
 });
 

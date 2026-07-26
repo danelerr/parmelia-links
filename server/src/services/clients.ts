@@ -13,15 +13,22 @@ import { getFaucetKey, getRecoveryGuardianKey } from "./keys";
 import {
 	controlledHttpTransport,
 	laneForRole,
-	type RpcRoleName,
 } from "./rpcControlPlane";
+import {
+	getRpcEndpointCapabilities,
+	type RpcEndpointCapability,
+	type RpcRoleName,
+} from "./rpcProviders";
+import {
+	isRangeCapacityError,
+	isTransientRpcError,
+} from "./adaptiveLogs";
 
 export type RpcRole = RpcRoleName;
 
 const DEFAULT_RPC_TIMEOUT_MS = 10_000;
 const MIN_RPC_TIMEOUT_MS = 1_000;
 const MAX_RPC_TIMEOUT_MS = 30_000;
-const ALCHEMY_FREE_MAX_LOG_BLOCKS = 10;
 
 function boundedInteger(
 	raw: string | undefined,
@@ -62,45 +69,6 @@ export function getRpcUrls(env: Bindings, role: RpcRole): string[] {
 		.filter(Boolean);
 }
 
-function isAlchemyRpcUrl(value: string): boolean {
-	try {
-		const hostname = new URL(value).hostname.toLowerCase();
-		return (
-			hostname === "alchemy.com" ||
-			hostname.endsWith(".alchemy.com") ||
-			hostname === "alchemyapi.io" ||
-			hostname.endsWith(".alchemyapi.io")
-		);
-	} catch {
-		return false;
-	}
-}
-
-export class RpcLogRangeConfigurationError extends Error {
-	constructor() {
-		super(
-			"Indexer provider does not support the configured eth_getLogs block range",
-		);
-		this.name = "RpcLogRangeConfigurationError";
-	}
-}
-
-/**
- * Hard runtime boundary, independent of readiness policy. Testnet tolerates
- * unrelated incomplete configuration, but it must still never emit an invalid
- * 2,000-block request to an Alchemy Free endpoint.
- */
-export function assertIndexerProviderRange(env: Bindings): void {
-	const maximum = Number(env.RPC_INDEXER_MAX_BLOCK_RANGE ?? "2000");
-	if (
-		Number.isSafeInteger(maximum) &&
-		maximum > ALCHEMY_FREE_MAX_LOG_BLOCKS &&
-		getRpcUrls(env, "indexer").some(isAlchemyRpcUrl)
-	) {
-		throw new RpcLogRangeConfigurationError();
-	}
-}
-
 /**
  * Build a deterministic failover transport. Ranking is deliberately disabled:
  * endpoint order expresses operator intent and does not oscillate between a
@@ -114,6 +82,7 @@ export function buildRpcTransport(
 		role?: RpcRole;
 		/** Preserve the endpoint's configured position when building one URL. */
 		slotOffset?: number;
+		endpointCapabilities?: readonly RpcEndpointCapability[];
 	} = {},
 ): Transport {
 	const urls = rpcUrl
@@ -123,6 +92,7 @@ export function buildRpcTransport(
 	const timeout = options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
 	const transports = urls.map((url, slot) => {
 		const configuredSlot = (options.slotOffset ?? 0) + slot;
+		const capability = options.endpointCapabilities?.[slot];
 		return (
 			options.env && options.role
 				? controlledHttpTransport(options.env, url, {
@@ -130,6 +100,8 @@ export function buildRpcTransport(
 						slot: configuredSlot,
 						lane: laneForRole(options.role),
 						timeoutMs: timeout,
+						providerAlias: capability?.id,
+						maxConcurrency: capability?.maxConcurrency,
 					})
 				: http(url, {
 						timeout,
@@ -157,12 +129,18 @@ function getRpcTimeout(env: Bindings): number {
 /** Read-only client for a declared workload role. */
 export function getPublicClientForRole(env: Bindings, role: RpcRole) {
 	const urls = getRpcUrls(env, role);
+	const endpointCapabilities = getRpcEndpointCapabilities(
+		env,
+		role,
+		urls.length,
+	);
 	return createPublicClient({
 		chain: getActiveChain(env.CHAIN_KEY),
 		transport: buildRpcTransport(urls.join(","), {
 			timeoutMs: getRpcTimeout(env),
 			env,
 			role,
+			endpointCapabilities,
 		}),
 		batch: {
 			multicall: {
@@ -178,10 +156,107 @@ export function getPublicClient(env: Bindings) {
 	return getPublicClientForRole(env, "read");
 }
 
-/** Wide eth_getLogs ranges. Keep Alchemy Free out of this role. */
+/** Point reads for indexer evidence, with deterministic endpoint failover. */
 export function getIndexerClient(env: Bindings) {
-	assertIndexerProviderRange(env);
 	return getPublicClientForRole(env, "indexer");
+}
+
+export class RpcIndexerRangeFallbackError extends Error {
+	constructor(cause?: unknown) {
+		super("No healthy indexer provider can serve the requested block range", {
+			cause,
+		});
+		this.name = "RpcIndexerRangeFallbackError";
+	}
+}
+
+/**
+ * Provider-aware log pool. Every endpoint declares its own plan/capacity
+ * limits, so a 2,000-block public endpoint and a 10-block managed endpoint can
+ * coexist without duplicating requests or forcing the whole role down to ten.
+ */
+export function getIndexerProviderPool(env: Bindings) {
+	const urls = getRpcUrls(env, "indexer");
+	const capabilities = getRpcEndpointCapabilities(
+		env,
+		"indexer",
+		urls.length,
+	);
+	const providers = urls
+		.map((url, slot) => {
+			const capability = capabilities[slot];
+			const client = createPublicClient({
+				chain: getActiveChain(env.CHAIN_KEY),
+				transport: buildRpcTransport(url, {
+					timeoutMs: getRpcTimeout(env),
+					env,
+					role: "indexer",
+					slotOffset: slot,
+					endpointCapabilities: [capability],
+				}),
+			});
+			return { capability, client };
+		})
+		.sort(
+			(left, right) =>
+				left.capability.priority - right.capability.priority ||
+				left.capability.id.localeCompare(right.capability.id),
+		);
+	const configuredRanges = providers
+		.map((provider) => provider.capability.maxLogRange)
+		.filter((value): value is number => value !== null);
+
+	return {
+		pointClient: getIndexerClient(env),
+		maxLogRange:
+			configuredRanges.length > 0
+				? BigInt(Math.max(...configuredRanges))
+				: 1n,
+		minLogRange:
+			configuredRanges.length > 0
+				? BigInt(Math.min(...configuredRanges))
+				: 1n,
+		async requestLogs<Log>(
+			fromBlock: bigint,
+			toBlock: bigint,
+			request: (
+				client: (typeof providers)[number]["client"],
+			) => Promise<readonly Log[]>,
+		): Promise<readonly Log[]> {
+			const span = toBlock - fromBlock + 1n;
+			const eligible = providers.filter(
+				(provider) =>
+					provider.capability.maxLogRange !== null &&
+					BigInt(provider.capability.maxLogRange) >= span,
+			);
+			if (eligible.length === 0) {
+				throw new RpcIndexerRangeFallbackError();
+			}
+			let lastError: unknown;
+			for (const provider of eligible) {
+				try {
+					return await request(provider.client);
+				} catch (error) {
+					lastError = error;
+					if (
+						!isTransientRpcError(error) &&
+						!isRangeCapacityError(error)
+					) {
+						throw error;
+					}
+				}
+			}
+			const smallerProviderExists = providers.some(
+				(provider) =>
+					provider.capability.maxLogRange !== null &&
+					BigInt(provider.capability.maxLogRange) < span,
+			);
+			if (smallerProviderExists || isRangeCapacityError(lastError)) {
+				throw new RpcIndexerRangeFallbackError(lastError);
+			}
+			throw lastError;
+		},
+	};
 }
 
 /** Historical/backfill traffic isolated from critical point reads. */

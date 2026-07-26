@@ -91,9 +91,8 @@ function waitWithJitter(attempt: number): Promise<void> {
 /**
  * Provider-aware ranged scanner.
  *
- * The configured maximum is a hard ceiling. For Alchemy Free it can be 10; for
- * the public Arbitrum reconciliation endpoint it is 2,000. This avoids first
- * issuing an invalid 2,000-block request to a known 10-block endpoint.
+ * The configured maximum is a provider capability, not a subscription-plan
+ * assumption. The caller can shrink until another endpoint becomes eligible.
  */
 export async function scanLogsAdaptive<Log>(
 	options: AdaptiveLogScanOptions<Log>,

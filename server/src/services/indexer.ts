@@ -24,7 +24,7 @@ import { getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
 	getFaucetAccount,
-	getIndexerClient,
+	getIndexerProviderPool,
 	getRpcUrls,
 	getServerAccount,
 } from "./clients";
@@ -33,13 +33,13 @@ import {
 	getPaymentIntentByOnchainId,
 	getSyncCursor,
 	getUserByUid,
-	listUserWallets,
+	listUsersByWalletAddresses,
 	markPaymentIntentPaidWithOutbox,
 	setSyncCursor,
 	writeLedgerEntries,
 	type LedgerEntry,
 } from "./storage";
-import { deliverPendingWebhooks, prepareEventOutbox } from "./webhooks";
+import { prepareEventOutbox } from "./webhooks";
 import { logError, logInfo } from "./logger";
 import {
 	getIndexerScanHead,
@@ -60,8 +60,14 @@ import {
 } from "./balanceProjector";
 import { requestBalanceRefresh } from "./balanceReadModel";
 import { verifyAndRecoverStream } from "./reorg";
-import { syncStableWalletShards } from "./indexerShards";
+import { listWalletsForIndexerShard } from "./indexerShards";
 import { getArbitrumBlockEvidence } from "./arbitrumFinality";
+import {
+	recoveryAssignmentStream,
+	transferAssignmentStream,
+	type TransferIndexerPartition,
+	userOperationAssignmentStream,
+} from "./indexerPartitions";
 
 const TRANSFER_EVENT = parseAbiItem(
 	"event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -85,18 +91,31 @@ const BACKFILL_BLOCKS = 5000n;
  * Hard cap of blocks scanned per Queue delivery. Without it, a cursor that
  * falls behind makes every delivery retry an ever-growing range until the Worker's
  * subrequest/CPU budget kills the run BEFORE the cursor advances — a
- * permanent stall (jul-2026: 11 days behind = ~1,900 getLogs in one cron,
+ * permanent stall (jul-2026: 11 days behind = ~1,900 getLogs in one delivery,
  * every invocation died, deposits stopped being credited). With the cap, each delivery
  * processes a bounded window and commits the cursor, so any backlog drains at
  * up to 20k blocks.
  */
-const MAX_BLOCKS_PER_RUN = 20_000n;
+const DEFAULT_MAX_BLOCKS_PER_RUN = 20_000n;
 /**
- * Leave most of the Free-plan 50 external subrequests available for block
+ * Leave the rest of the Worker's external-request budget available for block
  * evidence, retries, and event processing. Queue isolation prevents unrelated
  * jobs from sharing this budget; this guard bounds the eth_getLogs portion.
  */
-const MAX_LOG_SCAN_REQUESTS_PER_JOB = 16;
+const DEFAULT_MAX_LOG_SCAN_REQUESTS_PER_JOB = 16;
+/**
+ * A relevant block needs its header plus up to two Arbitrum finality reads.
+ * Cap event-bearing blocks separately from the log-range budget so a busy
+ * window cannot turn one Queue delivery into an unbounded evidence fanout.
+ */
+const DEFAULT_MAX_EVENT_BLOCKS_PER_JOB = 8;
+
+export type ChainIndexRunResult = {
+	cursor: bigint;
+	targetBlock: bigint;
+	scanHead: bigint;
+	caughtUp: boolean;
+};
 
 type TransferLog = {
 	address: Address;
@@ -180,23 +199,49 @@ function boundedConfigInteger(
 	return Math.min(max, Math.max(min, value));
 }
 
-function logRangeConfig(env: Bindings): { min: bigint; max: bigint } {
+function logRangeConfig(
+	env: Bindings,
+	providerMaximum: bigint,
+): { min: bigint; max: bigint } {
 	const min = BigInt(
-		boundedConfigInteger(env.RPC_INDEXER_MIN_BLOCK_RANGE, 10, 1, 2_000),
-	);
-	const max = BigInt(
 		boundedConfigInteger(
-			env.RPC_INDEXER_MAX_BLOCK_RANGE,
-			2_000,
+			env.RPC_INDEXER_MIN_BLOCK_RANGE,
+			10,
 			1,
-			2_000,
+			10_000_000,
 		),
 	);
+	const max = providerMaximum > 0n ? providerMaximum : 1n;
 	return { min: min > max ? max : min, max };
 }
 
-function walletShardSize(env: Bindings): number {
-	return boundedConfigInteger(env.INDEXER_WALLET_SHARD_SIZE, 250, 1, 500);
+function maxLogCallsPerJob(env: Bindings): number {
+	return boundedConfigInteger(
+		env.INDEXER_MAX_RPC_CALLS_PER_JOB,
+		DEFAULT_MAX_LOG_SCAN_REQUESTS_PER_JOB,
+		1,
+		1_000,
+	);
+}
+
+function maxBlocksPerJob(env: Bindings): bigint {
+	return BigInt(
+		boundedConfigInteger(
+			env.INDEXER_MAX_BLOCKS_PER_JOB,
+			Number(DEFAULT_MAX_BLOCKS_PER_RUN),
+			1,
+			10_000_000,
+		),
+	);
+}
+
+function maxEventBlocksPerJob(env: Bindings): number {
+	return boundedConfigInteger(
+		env.INDEXER_MAX_EVENT_BLOCKS_PER_JOB,
+		DEFAULT_MAX_EVENT_BLOCKS_PER_JOB,
+		1,
+		100,
+	);
 }
 
 function journalConsistency(
@@ -222,50 +267,84 @@ export function boundedScanWindowEnd(
 	latest: bigint,
 	maxBlockSpan: bigint,
 	filterCount: number,
+	maxCalls = DEFAULT_MAX_LOG_SCAN_REQUESTS_PER_JOB,
+	maxBlocks = DEFAULT_MAX_BLOCKS_PER_RUN,
 ): bigint {
 	if (!Number.isSafeInteger(filterCount) || filterCount < 1) {
 		throw new Error("Indexer filter count must be a positive safe integer");
 	}
-	if (filterCount > MAX_LOG_SCAN_REQUESTS_PER_JOB) {
+	if (filterCount > maxCalls) {
 		throw new Error(
 			`Indexer requires ${filterCount} filters; split the stream across Queue jobs`,
 		);
 	}
 	const rangesPerFilter = Math.max(
 		1,
-		Math.floor(MAX_LOG_SCAN_REQUESTS_PER_JOB / filterCount),
+		Math.floor(maxCalls / filterCount),
 	);
 	const budgetedBlocks = maxBlockSpan * BigInt(rangesPerFilter);
 	const windowBlocks =
-		budgetedBlocks < MAX_BLOCKS_PER_RUN
+		budgetedBlocks < maxBlocks
 			? budgetedBlocks
-			: MAX_BLOCKS_PER_RUN;
+			: maxBlocks;
 	const capped = fromBlock + windowBlocks - 1n;
 	return capped > latest ? latest : capped;
 }
 
-export async function runIndexer(env: Bindings): Promise<void> {
+export function boundedEvidenceWindowEnd(
+	requestedEnd: bigint,
+	logs: readonly { blockNumber: bigint | null }[],
+	maximumEventBlocks = DEFAULT_MAX_EVENT_BLOCKS_PER_JOB,
+): bigint {
+	if (
+		!Number.isSafeInteger(maximumEventBlocks) ||
+		maximumEventBlocks < 1
+	) {
+		throw new Error(
+			"Indexer event-block budget must be a positive safe integer",
+		);
+	}
+	const blocks = [...new Set(
+		logs
+			.map((log) => log.blockNumber)
+			.filter((value): value is bigint => value !== null),
+	)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+	return blocks.length > maximumEventBlocks
+		? blocks[maximumEventBlocks - 1]
+		: requestedEnd;
+}
+
+export async function runIndexer(
+	env: Bindings,
+	partition: TransferIndexerPartition,
+	targetBlock?: bigint,
+): Promise<ChainIndexRunResult | null> {
 	try {
 		const network = getNetworkConfig(env.CHAIN_KEY);
-		const erc20Tokens = network.tokens.filter((t) => t.address);
-		if (erc20Tokens.length === 0 || getRpcUrls(env, "indexer").length === 0) return;
-
-		const wallets = await listUserWallets(env);
-		if (wallets.length === 0) return;
-		const byWallet = new Map(wallets.map((w) => [w.walletAddress.toLowerCase(), w.uid]));
+		const token = network.tokens.find(
+			(candidate) =>
+				candidate.address?.toLowerCase() === partition.token.toLowerCase(),
+		);
+		if (!token?.address) {
+			throw new Error("Transfer indexer partition references an unsupported token");
+		}
+		if (getRpcUrls(env, "indexer").length === 0) return null;
+		const assignmentStream = transferAssignmentStream(network.chainId);
+		const wallets = await listWalletsForIndexerShard(env, {
+			chainId: network.chainId,
+			stream: assignmentStream,
+			shardId: partition.shardId,
+		});
+		if (wallets.length === 0) return null;
 		const internalSenders = internalTransferSenderAddresses(env);
 
-		const publicClient = getIndexerClient(env);
+		const providerPool = getIndexerProviderPool(env);
+		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
-		const cursorKey = `transfers:${network.chainId}`;
-		const journalStream = `erc20_transfers:${network.chainId}`;
-		const shardState = await syncStableWalletShards(env, {
-			chainId: network.chainId,
-			stream: journalStream,
-			wallets,
-			maxWallets: walletShardSize(env),
-		});
-		const walletShards = shardState.shards.map((shard) => shard.wallets);
+		const partitionKey =
+			`${token.address.toLowerCase()}:${partition.direction}:shard:${partition.shardId}`;
+		const cursorKey = `transfers:${network.chainId}:${partitionKey}`;
+		const journalStream = `erc20_transfers:${network.chainId}:${partitionKey}`;
 		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: journalStream,
@@ -274,67 +353,96 @@ export async function runIndexer(env: Bindings): Promise<void> {
 			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
 		}
 		const cursor = await getSyncCursor(env, cursorKey);
-		const normalFromBlock =
-			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		const assignmentBackfill =
-			scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
 		const fromBlock =
-			shardState.assignmentsChanged && assignmentBackfill < normalFromBlock
-				? assignmentBackfill
-				: normalFromBlock;
-		if (fromBlock > scanHead) return;
-		const range = logRangeConfig(env);
+			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
+		const desiredTarget =
+			targetBlock !== undefined && targetBlock > scanHead
+				? targetBlock
+				: scanHead;
+		if (fromBlock > scanHead) {
+			return {
+				cursor: cursor ?? scanHead,
+				targetBlock: desiredTarget,
+				scanHead,
+				caughtUp: (cursor ?? scanHead) >= desiredTarget,
+			};
+		}
+		const range = logRangeConfig(env, providerPool.maxLogRange);
+		const maxCalls = maxLogCallsPerJob(env);
 		const scanEnd = boundedScanWindowEnd(
 			fromBlock,
 			scanHead,
 			range.max,
-			erc20Tokens.length * walletShards.length * 2,
+			1,
+			maxCalls,
+			maxBlocksPerJob(env),
 		);
 
 		const logByIdentity = new Map<string, TransferLog>();
 		let rpcCalls = 0;
 		let rpcRetries = 0;
-		for (const token of erc20Tokens) {
-			for (const shard of walletShards) {
-				const addresses = shard.map((wallet) => wallet.walletAddress as Address);
-				for (const direction of ["from", "to"] as const) {
-					const remainingCalls =
-						MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
-					if (remainingCalls < 1) {
-						throw new Error("Indexer log-call budget was exhausted");
-					}
-					const stats = await scanLogsAdaptive<TransferLog>({
-						fromBlock,
-						toBlock: scanEnd,
-						minBlockSpan: range.min,
-						maxBlockSpan: range.max,
-						maxCalls: remainingCalls,
-						fetchRange: async (rangeFrom, rangeTo) =>
-							(await publicClient.getLogs({
-								address: token.address!,
-								event: TRANSFER_EVENT,
-								args:
-									direction === "from"
-										? { from: addresses }
-										: { to: addresses },
-								fromBlock: rangeFrom,
-								toBlock: rangeTo,
-							})) as TransferLog[],
-						onRange: (logs) => {
-							for (const log of logs) {
-								const key = transferLogKey(log);
-								if (key) logByIdentity.set(key, log);
-							}
-						},
-					});
-					rpcCalls += stats.calls;
-					rpcRetries += stats.retries;
+		const addresses = wallets.map(
+			(wallet) => wallet.walletAddress as Address,
+		);
+		const stats = await scanLogsAdaptive<TransferLog>({
+			fromBlock,
+			toBlock: scanEnd,
+			minBlockSpan: range.min,
+			maxBlockSpan: range.max,
+			maxCalls,
+			fetchRange: (rangeFrom, rangeTo) =>
+				providerPool.requestLogs<TransferLog>(
+					rangeFrom,
+					rangeTo,
+					async (logClient) =>
+						(await logClient.getLogs({
+							address: token.address!,
+							event: TRANSFER_EVENT,
+							args:
+								partition.direction === "from"
+									? { from: addresses }
+									: { to: addresses },
+							fromBlock: rangeFrom,
+							toBlock: rangeTo,
+						})) as TransferLog[],
+				),
+			onRange: (logs) => {
+				for (const log of logs) {
+					const key = transferLogKey(log);
+					if (key) logByIdentity.set(key, log);
 				}
-			}
-		}
+			},
+		});
+		rpcCalls += stats.calls;
+		rpcRetries += stats.retries;
+		const fetchedLogs = [...logByIdentity.values()];
+		const committedScanEnd = boundedEvidenceWindowEnd(
+			scanEnd,
+			fetchedLogs,
+			maxEventBlocksPerJob(env),
+		);
+		const committedLogs = fetchedLogs.filter(
+			(log) =>
+				log.blockNumber !== null &&
+				log.blockNumber <= committedScanEnd,
+		);
+
+		const relatedUsers = await listUsersByWalletAddresses(
+			env,
+			committedLogs.flatMap((log) => [
+				log.args.from ?? "",
+				log.args.to ?? "",
+			]),
+		);
+		const byWallet = new Map(
+			relatedUsers.map((user) => [
+				user.walletAddress.toLowerCase(),
+				user.uid,
+			]),
+		);
 
 		const logsByBlock = new Map<string, TransferLog[]>();
-		for (const log of logByIdentity.values()) {
+		for (const log of committedLogs) {
 			if (
 				log.removed ||
 				log.blockNumber === null ||
@@ -387,12 +495,8 @@ export async function runIndexer(env: Bindings): Promise<void> {
 				const from = (log.args.from ?? "").toLowerCase();
 				const to = (log.args.to ?? "").toLowerCase();
 				const value = log.args.value ?? 0n;
-				const token = erc20Tokens.find(
-					(candidate) =>
-						candidate.address?.toLowerCase() === log.address.toLowerCase(),
-				);
 				if (
-					!token ||
+					log.address.toLowerCase() !== token.address.toLowerCase() ||
 					!log.transactionHash ||
 					log.logIndex === null ||
 					value < 0n
@@ -547,14 +651,14 @@ export async function runIndexer(env: Bindings): Promise<void> {
 		// It turns the next Queue delivery into a real hash continuity check instead of
 		// trusting a numeric cursor.
 		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: scanEnd,
+			blockNumber: committedScanEnd,
 			includeTransactions: false,
 		});
 		if (!scanEndBlock.hash) {
 			throw new Error("RPC returned scan checkpoint block without hash");
 		}
 		const scanEndEvidence = await getArbitrumBlockEvidence(env, publicClient, {
-			blockNumber: scanEnd,
+			blockNumber: committedScanEnd,
 			blockHash: scanEndBlock.hash,
 		});
 		rpcCalls += scanEndEvidence.rpcCalls;
@@ -562,7 +666,7 @@ export async function runIndexer(env: Bindings): Promise<void> {
 			stream: journalStream,
 			block: {
 				chainId: network.chainId,
-				blockNumber: scanEnd,
+				blockNumber: committedScanEnd,
 				blockHash: scanEndBlock.hash,
 				parentHash: scanEndBlock.parentHash,
 				timestamp: scanEndBlock.timestamp,
@@ -577,23 +681,31 @@ export async function runIndexer(env: Bindings): Promise<void> {
 			},
 			events: [],
 		});
-		await setSyncCursor(env, cursorKey, scanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd);
 
 		logInfo("indexer_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - scanEnd).toString(),
+			toBlock: committedScanEnd.toString(),
+			requestedToBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - committedScanEnd).toString(),
 			unconfirmedBlocks: (latest - scanHead).toString(),
 			finalitySource,
 			wallets: wallets.length,
-			shards: walletShards.length,
-			shardAssignmentsChanged: shardState.assignmentsChanged,
+			shardId: partition.shardId,
+			token: token.symbol,
+			direction: partition.direction,
 			rpcCalls,
 			rpcRetries,
 			configuredMaxBlockRange: range.max.toString(),
 			ingested,
 		});
+		return {
+			cursor: committedScanEnd,
+			targetBlock: desiredTarget,
+			scanHead,
+			caughtUp: committedScanEnd >= desiredTarget,
+		};
 	} catch (error) {
 		// Queue retries the same range because the cursor advances only after a
 		// fully journaled window. Writes remain idempotent across redelivery.
@@ -617,7 +729,10 @@ export function internalTransferSenderAddresses(env: Bindings): Set<string> {
  * and amount against the intent, mark it paid, and fire payment.paid. Queue-driven
  * and idempotent (markPaymentIntentPaid only acts on `awaiting_payment`).
  */
-export async function runRouterWatcher(env: Bindings): Promise<void> {
+export async function runRouterWatcher(
+	env: Bindings,
+	targetBlock?: bigint,
+): Promise<ChainIndexRunResult | null> {
 	try {
 		const network = getNetworkConfig(env.CHAIN_KEY);
 		const router = network.contracts.paymentRouter as Address;
@@ -625,9 +740,10 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 			!router ||
 			router === "0x0000000000000000000000000000000000000000" ||
 			getRpcUrls(env, "indexer").length === 0
-		) return;
+		) return null;
 
-		const publicClient = getIndexerClient(env);
+		const providerPool = getIndexerProviderPool(env);
+		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `router:${network.chainId}`;
 		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
@@ -640,13 +756,27 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
 			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		if (fromBlock > scanHead) return;
-		const range = logRangeConfig(env);
+		const desiredTarget =
+			targetBlock !== undefined && targetBlock > scanHead
+				? targetBlock
+				: scanHead;
+		if (fromBlock > scanHead) {
+			return {
+				cursor: cursor ?? scanHead,
+				targetBlock: desiredTarget,
+				scanHead,
+				caughtUp: (cursor ?? scanHead) >= desiredTarget,
+			};
+		}
+		const range = logRangeConfig(env, providerPool.maxLogRange);
+		const maxCalls = maxLogCallsPerJob(env);
 		const scanEnd = boundedScanWindowEnd(
 			fromBlock,
 			scanHead,
 			range.max,
 			1,
+			maxCalls,
+			maxBlocksPerJob(env),
 		);
 
 		let confirmed = 0;
@@ -657,25 +787,36 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 			toBlock: scanEnd,
 			minBlockSpan: range.min,
 			maxBlockSpan: range.max,
-			maxCalls: MAX_LOG_SCAN_REQUESTS_PER_JOB,
-			fetchRange: async (rangeFrom, rangeTo) =>
-				(await publicClient.getLogs({
-					address: router,
-					event: INVOICE_PAID_EVENT,
-					fromBlock: rangeFrom,
-					toBlock: rangeTo,
-				})) as InvoicePaidLog[],
+			maxCalls,
+			fetchRange: (rangeFrom, rangeTo) =>
+				providerPool.requestLogs<InvoicePaidLog>(
+					rangeFrom,
+					rangeTo,
+					async (logClient) =>
+						(await logClient.getLogs({
+							address: router,
+							event: INVOICE_PAID_EVENT,
+							fromBlock: rangeFrom,
+							toBlock: rangeTo,
+						})) as InvoicePaidLog[],
+				),
 			onRange: (logs) => {
 				routerLogs.push(...logs);
 			},
 		});
+		const committedScanEnd = boundedEvidenceWindowEnd(
+			scanEnd,
+			routerLogs,
+			maxEventBlocksPerJob(env),
+		);
 
 		const validRouterLogs = routerLogs.filter(
 			(log) =>
 				Boolean(log.transactionHash) &&
 				log.logIndex !== null &&
 				log.blockNumber !== null &&
-				Boolean(log.blockHash),
+				Boolean(log.blockHash) &&
+				log.blockNumber! <= committedScanEnd,
 		);
 		const routerByBlock = new Map<string, InvoicePaidLog[]>();
 		for (const log of validRouterLogs) {
@@ -826,9 +967,8 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 				) confirmed++;
 		}
 
-		if (confirmed > 0) await deliverPendingWebhooks(env);
 		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: scanEnd,
+			blockNumber: committedScanEnd,
 			includeTransactions: false,
 		});
 		evidenceRpcCalls++;
@@ -838,14 +978,17 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 		const checkpointEvidence = await getArbitrumBlockEvidence(
 			env,
 			publicClient,
-			{ blockNumber: scanEnd, blockHash: scanEndBlock.hash },
+			{
+				blockNumber: committedScanEnd,
+				blockHash: scanEndBlock.hash,
+			},
 		);
 		evidenceRpcCalls += checkpointEvidence.rpcCalls;
 		await journalBlockEvents(env, {
 			stream: cursorKey,
 			block: {
 				chainId: network.chainId,
-				blockNumber: scanEnd,
+				blockNumber: committedScanEnd,
 				blockHash: scanEndBlock.hash,
 				parentHash: scanEndBlock.parentHash,
 				timestamp: scanEndBlock.timestamp,
@@ -860,12 +1003,13 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 			},
 			events: [],
 		});
-		await setSyncCursor(env, cursorKey, scanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd);
 		logInfo("router_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - scanEnd).toString(),
+			toBlock: committedScanEnd.toString(),
+			requestedToBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - committedScanEnd).toString(),
 			unconfirmedBlocks: (latest - scanHead).toString(),
 			finalitySource,
 			confirmed,
@@ -873,6 +1017,12 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 			rpcRetries: scanStats.retries,
 			configuredMaxBlockRange: range.max.toString(),
 		});
+		return {
+			cursor: committedScanEnd,
+			targetBlock: desiredTarget,
+			scanHead,
+			caughtUp: committedScanEnd >= desiredTarget,
+		};
 	} catch (error) {
 		logError("router_watch_failed", error, {});
 		throw error;
@@ -886,18 +1036,27 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
  * recovery, but the owner is alerted and can veto it. Queue-driven and retryable.
  * Filters logs to our own wallet addresses, so it only sees our accounts.
  */
-export async function runRecoveryWatcher(env: Bindings): Promise<void> {
+export async function runRecoveryWatcher(
+	env: Bindings,
+	shardId: number,
+	targetBlock?: bigint,
+): Promise<ChainIndexRunResult | null> {
 	try {
 		const network = getNetworkConfig(env.CHAIN_KEY);
-		if (getRpcUrls(env, "indexer").length === 0) return;
-
-		const wallets = await listUserWallets(env);
-		if (wallets.length === 0) return;
+		if (getRpcUrls(env, "indexer").length === 0) return null;
+		const assignmentStream = recoveryAssignmentStream(network.chainId);
+		const wallets = await listWalletsForIndexerShard(env, {
+			chainId: network.chainId,
+			stream: assignmentStream,
+			shardId,
+		});
+		if (wallets.length === 0) return null;
 		const byWallet = new Map(wallets.map((w) => [w.walletAddress.toLowerCase(), w.uid]));
 
-		const publicClient = getIndexerClient(env);
+		const providerPool = getIndexerProviderPool(env);
+		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
-		const cursorKey = `recovery:${network.chainId}`;
+		const cursorKey = `recovery:${network.chainId}:shard:${shardId}`;
 		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: cursorKey,
@@ -905,77 +1064,82 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 		if (reorgCheck.status === "recovered") {
 			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
 		}
-		const shardState = await syncStableWalletShards(env, {
-			chainId: network.chainId,
-			stream: cursorKey,
-			wallets,
-			maxWallets: walletShardSize(env),
-		});
-		const walletShards = shardState.shards.map((shard) => shard.wallets);
 		const cursor = await getSyncCursor(env, cursorKey);
-		const normalFromBlock =
-			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		const assignmentBackfill =
-			scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
 		const fromBlock =
-			shardState.assignmentsChanged && assignmentBackfill < normalFromBlock
-				? assignmentBackfill
-				: normalFromBlock;
-		if (fromBlock > scanHead) return;
-		const range = logRangeConfig(env);
+			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
+		const desiredTarget =
+			targetBlock !== undefined && targetBlock > scanHead
+				? targetBlock
+				: scanHead;
+		if (fromBlock > scanHead) {
+			return {
+				cursor: cursor ?? scanHead,
+				targetBlock: desiredTarget,
+				scanHead,
+				caughtUp: (cursor ?? scanHead) >= desiredTarget,
+			};
+		}
+		const range = logRangeConfig(env, providerPool.maxLogRange);
+		const maxCalls = maxLogCallsPerJob(env);
 		const scanEnd = boundedScanWindowEnd(
 			fromBlock,
 			scanHead,
 			range.max,
-			walletShards.length,
+			1,
+			maxCalls,
+			maxBlocksPerJob(env),
 		);
 
 		let alerted = 0;
 		let rpcCalls = 0;
 		let rpcRetries = 0;
 		const recoveryByOccurrence = new Map<string, RecoveryProposedLog>();
-		for (const shard of walletShards) {
-			const remainingCalls =
-				MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
-			if (remainingCalls < 1) {
-				throw new Error("Recovery watcher log-call budget was exhausted");
-			}
-			const walletAddresses = shard.map(
-				(wallet) => wallet.walletAddress as Address,
-			);
-			const recoveryLogs: RecoveryProposedLog[] = [];
-			const stats = await scanLogsAdaptive({
-				fromBlock,
-				toBlock: scanEnd,
-				minBlockSpan: range.min,
-				maxBlockSpan: range.max,
-				maxCalls: remainingCalls,
-				fetchRange: async (rangeFrom, rangeTo) =>
-					(await publicClient.getLogs({
-						address: walletAddresses,
-						event: RECOVERY_PROPOSED_EVENT,
-						fromBlock: rangeFrom,
-						toBlock: rangeTo,
-					})) as RecoveryProposedLog[],
-				onRange: (logs) => {
-					recoveryLogs.push(...logs);
-				},
-			});
-			rpcCalls += stats.calls;
-			rpcRetries += stats.retries;
+		const walletAddresses = wallets.map(
+			(wallet) => wallet.walletAddress as Address,
+		);
+		const recoveryLogs: RecoveryProposedLog[] = [];
+		const stats = await scanLogsAdaptive({
+			fromBlock,
+			toBlock: scanEnd,
+			minBlockSpan: range.min,
+			maxBlockSpan: range.max,
+			maxCalls,
+			fetchRange: (rangeFrom, rangeTo) =>
+				providerPool.requestLogs<RecoveryProposedLog>(
+					rangeFrom,
+					rangeTo,
+					async (logClient) =>
+						(await logClient.getLogs({
+							address: walletAddresses,
+							event: RECOVERY_PROPOSED_EVENT,
+							fromBlock: rangeFrom,
+							toBlock: rangeTo,
+						})) as RecoveryProposedLog[],
+				),
+			onRange: (logs) => {
+				recoveryLogs.push(...logs);
+			},
+		});
+		rpcCalls += stats.calls;
+		rpcRetries += stats.retries;
+		const committedScanEnd = boundedEvidenceWindowEnd(
+			scanEnd,
+			recoveryLogs,
+			maxEventBlocksPerJob(env),
+		);
 
-			for (const log of recoveryLogs) {
-				if (
-					!log.transactionHash ||
-					log.logIndex === null ||
-					!log.blockHash ||
-					log.blockNumber === null
-				) continue;
-				recoveryByOccurrence.set(
-					`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
-					log,
-				);
-			}
+		for (const log of recoveryLogs) {
+			if (
+				!log.transactionHash ||
+				log.logIndex === null ||
+				!log.blockHash ||
+				log.blockNumber === null ||
+				log.blockNumber > committedScanEnd
+			) continue;
+			recoveryByOccurrence.set(
+				`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
+				log,
+			);
 		}
 
 		const byBlock = new Map<string, RecoveryProposedLog[]>();
@@ -1085,7 +1249,7 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 		}
 
 		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: scanEnd,
+			blockNumber: committedScanEnd,
 			includeTransactions: false,
 		});
 		rpcCalls++;
@@ -1095,14 +1259,17 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 		const checkpointEvidence = await getArbitrumBlockEvidence(
 			env,
 			publicClient,
-			{ blockNumber: scanEnd, blockHash: scanEndBlock.hash },
+			{
+				blockNumber: committedScanEnd,
+				blockHash: scanEndBlock.hash,
+			},
 		);
 		rpcCalls += checkpointEvidence.rpcCalls;
 		await journalBlockEvents(env, {
 			stream: cursorKey,
 			block: {
 				chainId: network.chainId,
-				blockNumber: scanEnd,
+				blockNumber: committedScanEnd,
 				blockHash: scanEndBlock.hash,
 				parentHash: scanEndBlock.parentHash,
 				timestamp: scanEndBlock.timestamp,
@@ -1118,21 +1285,27 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 			events: [],
 		});
 
-		await setSyncCursor(env, cursorKey, scanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd);
 		logInfo("recovery_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - scanEnd).toString(),
+			toBlock: committedScanEnd.toString(),
+			requestedToBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - committedScanEnd).toString(),
 			unconfirmedBlocks: (latest - scanHead).toString(),
 			finalitySource,
 			alerted,
-			shards: walletShards.length,
-			shardAssignmentsChanged: shardState.assignmentsChanged,
+			shardId,
 			rpcCalls,
 			rpcRetries,
 			configuredMaxBlockRange: range.max.toString(),
 		});
+		return {
+			cursor: committedScanEnd,
+			targetBlock: desiredTarget,
+			scanHead,
+			caughtUp: committedScanEnd >= desiredTarget,
+		};
 	} catch (error) {
 		logError("recovery_watch_failed", error, {});
 		throw error;
@@ -1145,12 +1318,20 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
  * scan per wallet shard. Reconciliation then becomes a D1 lookup (or a point
  * bundler receipt call) regardless of how many users are waiting.
  */
-export async function runUserOperationWatcher(env: Bindings): Promise<void> {
+export async function runUserOperationWatcher(
+	env: Bindings,
+	shardId: number,
+	targetBlock?: bigint,
+): Promise<ChainIndexRunResult | null> {
 	try {
 		const network = getNetworkConfig(env.CHAIN_KEY);
-		if (getRpcUrls(env, "indexer").length === 0) return;
-		const wallets = await listUserWallets(env);
-		if (wallets.length === 0) return;
+		if (getRpcUrls(env, "indexer").length === 0) return null;
+		const wallets = await listWalletsForIndexerShard(env, {
+			chainId: network.chainId,
+			stream: userOperationAssignmentStream(network.chainId),
+			shardId,
+		});
+		if (wallets.length === 0) return null;
 
 		const byWallet = new Map(
 			wallets.map((wallet) => [
@@ -1158,10 +1339,11 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 				wallet.uid,
 			]),
 		);
-		const publicClient = getIndexerClient(env);
+		const providerPool = getIndexerProviderPool(env);
+		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } =
 			await getIndexerScanHead(publicClient);
-		const cursorKey = `userops:${network.chainId}`;
+		const cursorKey = `userops:${network.chainId}:shard:${shardId}`;
 		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: cursorKey,
@@ -1170,84 +1352,90 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
 		}
 
-		const shardState = await syncStableWalletShards(env, {
-			chainId: network.chainId,
-			stream: cursorKey,
-			wallets,
-			maxWallets: walletShardSize(env),
-		});
 		const cursor = await getSyncCursor(env, cursorKey);
-		const normalFromBlock =
+		const fromBlock =
 			cursor !== null
 				? cursor + 1n
 				: scanHead > BACKFILL_BLOCKS
 					? scanHead - BACKFILL_BLOCKS
 					: 0n;
-		const assignmentBackfill =
-			scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		const fromBlock =
-			shardState.assignmentsChanged &&
-			assignmentBackfill < normalFromBlock
-				? assignmentBackfill
-				: normalFromBlock;
-		if (fromBlock > scanHead) return;
-		const range = logRangeConfig(env);
+		const desiredTarget =
+			targetBlock !== undefined && targetBlock > scanHead
+				? targetBlock
+				: scanHead;
+		if (fromBlock > scanHead) {
+			return {
+				cursor: cursor ?? scanHead,
+				targetBlock: desiredTarget,
+				scanHead,
+				caughtUp: (cursor ?? scanHead) >= desiredTarget,
+			};
+		}
+		const range = logRangeConfig(env, providerPool.maxLogRange);
+		const maxCalls = maxLogCallsPerJob(env);
 		const scanEnd = boundedScanWindowEnd(
 			fromBlock,
 			scanHead,
 			range.max,
-			shardState.shards.length,
+			1,
+			maxCalls,
+			maxBlocksPerJob(env),
 		);
 
 		const occurrenceMap = new Map<string, UserOperationLog>();
 		let rpcCalls = 0;
 		let rpcRetries = 0;
-		for (const shard of shardState.shards) {
-			const remainingCalls =
-				MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
-			if (remainingCalls < 1) {
-				throw new Error(
-					"UserOperation watcher log-call budget was exhausted",
-				);
-			}
-			const senders = shard.wallets.map(
-				(wallet) => wallet.walletAddress as Address,
-			);
-			const stats = await scanLogsAdaptive<UserOperationLog>({
-				fromBlock,
-				toBlock: scanEnd,
-				minBlockSpan: range.min,
-				maxBlockSpan: range.max,
-				maxCalls: remainingCalls,
-				fetchRange: async (rangeFrom, rangeTo) =>
-					(await publicClient.getLogs({
-						address: network.contracts.entryPoint,
-						event: USER_OPERATION_EVENT,
-						args: { sender: senders },
-						fromBlock: rangeFrom,
-						toBlock: rangeTo,
-					})) as UserOperationLog[],
-				onRange: (logs) => {
-					for (const log of logs) {
-						if (
-							!log.transactionHash ||
-							log.logIndex === null ||
-							!log.blockHash
-						) continue;
-						occurrenceMap.set(
-							`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
-							log,
-						);
-					}
-				},
-			});
-			rpcCalls += stats.calls;
-			rpcRetries += stats.retries;
-		}
+		const senders = wallets.map(
+			(wallet) => wallet.walletAddress as Address,
+		);
+		const stats = await scanLogsAdaptive<UserOperationLog>({
+			fromBlock,
+			toBlock: scanEnd,
+			minBlockSpan: range.min,
+			maxBlockSpan: range.max,
+			maxCalls,
+			fetchRange: (rangeFrom, rangeTo) =>
+				providerPool.requestLogs<UserOperationLog>(
+					rangeFrom,
+					rangeTo,
+					async (logClient) =>
+						(await logClient.getLogs({
+							address: network.contracts.entryPoint,
+							event: USER_OPERATION_EVENT,
+							args: { sender: senders },
+							fromBlock: rangeFrom,
+							toBlock: rangeTo,
+						})) as UserOperationLog[],
+				),
+			onRange: (logs) => {
+				for (const log of logs) {
+					if (
+						!log.transactionHash ||
+						log.logIndex === null ||
+						!log.blockHash
+					) continue;
+					occurrenceMap.set(
+						`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
+						log,
+					);
+				}
+			},
+		});
+		rpcCalls += stats.calls;
+		rpcRetries += stats.retries;
+		const committedScanEnd = boundedEvidenceWindowEnd(
+			scanEnd,
+			[...occurrenceMap.values()],
+			maxEventBlocksPerJob(env),
+		);
 
 		const byBlock = new Map<string, UserOperationLog[]>();
 		for (const log of occurrenceMap.values()) {
-			if (log.blockNumber === null || !log.blockHash) continue;
+			if (
+				log.blockNumber === null ||
+				!log.blockHash ||
+				log.blockNumber > committedScanEnd
+			) continue;
 			const key = `${log.blockNumber}:${log.blockHash.toLowerCase()}`;
 			const values = byBlock.get(key) ?? [];
 			values.push(log);
@@ -1379,7 +1567,7 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 		}
 
 		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: scanEnd,
+			blockNumber: committedScanEnd,
 			includeTransactions: false,
 		});
 		rpcCalls++;
@@ -1391,14 +1579,17 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 		const checkpointEvidence = await getArbitrumBlockEvidence(
 			env,
 			publicClient,
-			{ blockNumber: scanEnd, blockHash: scanEndBlock.hash },
+			{
+				blockNumber: committedScanEnd,
+				blockHash: scanEndBlock.hash,
+			},
 		);
 		rpcCalls += checkpointEvidence.rpcCalls;
 		await journalBlockEvents(env, {
 			stream: cursorKey,
 			block: {
 				chainId: network.chainId,
-				blockNumber: scanEnd,
+				blockNumber: committedScanEnd,
 				blockHash: scanEndBlock.hash,
 				parentHash: scanEndBlock.parentHash,
 				timestamp: scanEndBlock.timestamp,
@@ -1413,21 +1604,27 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 			},
 			events: [],
 		});
-		await setSyncCursor(env, cursorKey, scanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd);
 		logInfo("user_operation_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
-			toBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - scanEnd).toString(),
+			toBlock: committedScanEnd.toString(),
+			requestedToBlock: scanEnd.toString(),
+			behindBlocks: (scanHead - committedScanEnd).toString(),
 			unconfirmedBlocks: (latest - scanHead).toString(),
 			finalitySource,
-			shards: shardState.shards.length,
-			shardAssignmentsChanged: shardState.assignmentsChanged,
+			shardId,
 			projected,
 			rpcCalls,
 			rpcRetries,
 			configuredMaxBlockRange: range.max.toString(),
 		});
+		return {
+			cursor: committedScanEnd,
+			targetBlock: desiredTarget,
+			scanHead,
+			caughtUp: committedScanEnd >= desiredTarget,
+		};
 	} catch (error) {
 		logError("user_operation_watch_failed", error, {});
 		throw error;

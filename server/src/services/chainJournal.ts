@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
 import type { Bindings } from "../middlewares/auth";
+import { scheduleEventJob } from "./eventScheduler";
 
 export type ChainConsistencyLevel =
 	| "sequenced"
@@ -416,7 +417,7 @@ export async function journalBlockEvents(
 		if ((results[index]?.meta?.changes ?? 0) > 0) insertedEventIds.add(eventId);
 		else duplicateEventIds.add(eventId);
 	}
-	return {
+	const result = {
 		insertedEventIds,
 		duplicateEventIds,
 		enqueuedUserEvents: userEventResultIndexes.filter(
@@ -427,6 +428,16 @@ export async function journalBlockEvents(
 		).length,
 		checkpointAdvanced: (results[checkpointIndex]?.meta?.changes ?? 0) > 0,
 	};
+	const wakeups: Promise<boolean>[] = [];
+	if (result.projectedUserOperations > 0) {
+		wakeups.push(
+			scheduleEventJob(env, "payment_reconciler", {
+				reason: "canonical_userop_projected",
+			}),
+		);
+	}
+	if (wakeups.length > 0) await Promise.all(wakeups);
+	return result;
 }
 
 export async function recordSourceDelivery(

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { __test } from "../src/services/homeReadModel";
 
 describe("Home read model refresh policy", () => {
-	it("never schedules RPC merely because an existing snapshot is stale", () => {
+	it("does not mistake an existing stale snapshot for missing bootstrap data", () => {
 		expect(__test.needsBalanceBootstrap(true, 3, 3)).toBe(false);
 		expect(__test.needsBalanceBootstrap(true, 4, 3)).toBe(false);
 	});

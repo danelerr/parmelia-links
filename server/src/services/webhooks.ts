@@ -1,8 +1,8 @@
 // Webhook delivery: signed, retried, outbox-backed (Cloudflare-native, no Queues).
 //
 // emitEvent() writes an immutable `events` row and one `webhook_deliveries` row
-// per matching enabled endpoint. deliverPendingWebhooks() (called from the cron
-// and kicked immediately after an event) signs and POSTs each due delivery,
+// per matching enabled endpoint. An event job runs deliverPendingWebhooks(),
+// which signs and POSTs each due delivery,
 // retrying with exponential backoff. Payloads are HMAC-SHA256 signed so the
 // merchant can verify authenticity and reject replays.
 
@@ -176,9 +176,9 @@ async function deliverOne(
 }
 
 /**
- * Deliver all due pending webhook deliveries (cron + immediate flush). Each row
+ * Deliver all due pending webhook deliveries. Each row
  * is CLAIMED first (atomic lease on next_retry_at), so overlapping flushes —
- * the cron plus every post-request waitUntil — never double-POST the same
+ * overlapping at-least-once deliveries never double-POST the same
  * delivery. Claimed rows are delivered in small concurrent batches so one slow
  * endpoint can't serialize the whole flush. Never throws.
  */

@@ -8,6 +8,15 @@ import {
 } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { validateWebhookKeyring } from "./webhookSecrets";
+import {
+	RPC_ROLE_NAMES,
+	validateRpcProviderCapabilities,
+	type RpcRoleName,
+} from "./rpcProviders";
+import {
+	getAlchemyAddressWebhookConfigs,
+	validateAlchemyAddressWebhookConfigs,
+} from "./alchemyWebhookConfig";
 
 export type RuntimeConfigIssue = {
 	code: string;
@@ -58,20 +67,6 @@ function parseRpcUrls(raw: string | undefined): string[] {
 	return raw?.split(",").map((url) => url.trim()).filter(Boolean) ?? [];
 }
 
-function isAlchemyRpcUrl(value: string): boolean {
-	try {
-		const hostname = new URL(value).hostname.toLowerCase();
-		return (
-			hostname === "alchemy.com" ||
-			hostname.endsWith(".alchemy.com") ||
-			hostname === "alchemyapi.io" ||
-			hostname.endsWith(".alchemyapi.io")
-		);
-	} catch {
-		return false;
-	}
-}
-
 function validOptionalInteger(
 	raw: string | undefined,
 	min: number,
@@ -108,58 +103,70 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 			issues.push(issue(`RPC_${role}_URLS_INVALID`, `RPC_${role}_URLS must contain HTTP(S) endpoints`));
 		}
 	}
+	const roleUrls: Record<RpcRoleName, string[]> = {
+		read: parseRpcUrls(env.RPC_READ_URLS?.trim() ? env.RPC_READ_URLS : env.RPC_URL),
+		write: parseRpcUrls(env.RPC_WRITE_URLS?.trim() ? env.RPC_WRITE_URLS : env.RPC_URL),
+		indexer: parseRpcUrls(env.RPC_INDEXER_URLS?.trim() ? env.RPC_INDEXER_URLS : env.RPC_URL),
+		archive: parseRpcUrls(
+			env.RPC_ARCHIVE_URLS?.trim()
+				? env.RPC_ARCHIVE_URLS
+				: env.RPC_INDEXER_URLS?.trim()
+					? env.RPC_INDEXER_URLS
+					: env.RPC_URL,
+		),
+		bundler: parseRpcUrls(env.BUNDLER_RPC_URLS),
+	};
+	for (const capabilityIssue of validateRpcProviderCapabilities(
+		env,
+		Object.fromEntries(
+			RPC_ROLE_NAMES.map((role) => [role, roleUrls[role].length]),
+		),
+	)) {
+		issues.push(issue(capabilityIssue.code, capabilityIssue.message));
+	}
 	if (!validOptionalInteger(env.RPC_TIMEOUT_MS, 1_000, 30_000)) {
 		issues.push(issue("RPC_TIMEOUT_INVALID", "RPC_TIMEOUT_MS must be between 1000 and 30000"));
 	}
-	if (!validOptionalInteger(env.RPC_INDEXER_MIN_BLOCK_RANGE, 1, 2_000)) {
-		issues.push(issue("RPC_INDEXER_MIN_RANGE_INVALID", "RPC_INDEXER_MIN_BLOCK_RANGE must be between 1 and 2000"));
+	if (!validOptionalInteger(env.RPC_INDEXER_MIN_BLOCK_RANGE, 1, 10_000_000)) {
+		issues.push(issue("RPC_INDEXER_MIN_RANGE_INVALID", "RPC_INDEXER_MIN_BLOCK_RANGE must be between 1 and 10000000"));
 	}
-	if (!validOptionalInteger(env.RPC_INDEXER_MAX_BLOCK_RANGE, 1, 2_000)) {
-		issues.push(issue("RPC_INDEXER_MAX_RANGE_INVALID", "RPC_INDEXER_MAX_BLOCK_RANGE must be between 1 and 2000"));
+	if (!validOptionalInteger(env.RPC_INDEXER_MAX_BLOCK_RANGE, 1, 10_000_000)) {
+		issues.push(issue("RPC_INDEXER_MAX_RANGE_INVALID", "RPC_INDEXER_MAX_BLOCK_RANGE must be between 1 and 10000000"));
 	}
 	const minRange = Number(env.RPC_INDEXER_MIN_BLOCK_RANGE ?? 10);
 	const maxRange = Number(env.RPC_INDEXER_MAX_BLOCK_RANGE ?? 2_000);
 	if (Number.isSafeInteger(minRange) && Number.isSafeInteger(maxRange) && minRange > maxRange) {
 		issues.push(issue("RPC_INDEXER_RANGE_ORDER_INVALID", "RPC indexer min range cannot exceed max range"));
 	}
-	// `fallback()` retries the exact same request against the next URL. Every
-	// endpoint in the indexer role therefore has to support the configured hard
-	// maximum. Alchemy Free supports only ten blocks for eth_getLogs on
-	// Arbitrum; mixing it with a 2,000-block public endpoint would otherwise
-	// fail precisely during provider degradation.
-	const effectiveIndexerUrls = parseRpcUrls(
-		env.RPC_INDEXER_URLS?.trim() ? env.RPC_INDEXER_URLS : env.RPC_URL,
-	);
-	const alchemyInIndexer = effectiveIndexerUrls.some(isAlchemyRpcUrl);
-	if (alchemyInIndexer && Number.isSafeInteger(maxRange) && maxRange > 10) {
-		issues.push(issue(
-			"RPC_INDEXER_ALCHEMY_RANGE_INVALID",
-			"Alchemy in the indexer role requires RPC_INDEXER_MAX_BLOCK_RANGE <= 10",
-		));
-	}
 	if (!validOptionalInteger(env.INDEXER_WALLET_SHARD_SIZE, 1, 500)) {
 		issues.push(issue("INDEXER_SHARD_SIZE_INVALID", "INDEXER_WALLET_SHARD_SIZE must be between 1 and 500"));
 	}
+	if (!validOptionalInteger(env.INDEXER_REGISTRY_BATCH_SIZE, 1, 250)) {
+		issues.push(issue(
+			"INDEXER_REGISTRY_BATCH_INVALID",
+			"INDEXER_REGISTRY_BATCH_SIZE must be between 1 and 250",
+		));
+	}
+	if (!validOptionalInteger(env.INDEXER_MAX_RPC_CALLS_PER_JOB, 1, 1_000)) {
+		issues.push(issue(
+			"INDEXER_RPC_BUDGET_INVALID",
+			"INDEXER_MAX_RPC_CALLS_PER_JOB must be between 1 and 1000",
+		));
+	}
+	if (!validOptionalInteger(env.INDEXER_MAX_BLOCKS_PER_JOB, 1, 10_000_000)) {
+		issues.push(issue(
+			"INDEXER_BLOCK_BUDGET_INVALID",
+			"INDEXER_MAX_BLOCKS_PER_JOB must be between 1 and 10000000",
+		));
+	}
+	if (!validOptionalInteger(env.INDEXER_MAX_EVENT_BLOCKS_PER_JOB, 1, 100)) {
+		issues.push(issue(
+			"INDEXER_EVENT_BLOCK_BUDGET_INVALID",
+			"INDEXER_MAX_EVENT_BLOCKS_PER_JOB must be between 1 and 100",
+		));
+	}
 	if (!validOptionalInteger(env.BALANCE_MAX_STALENESS_SECONDS, 15, 86_400)) {
 		issues.push(issue("BALANCE_STALENESS_INVALID", "BALANCE_MAX_STALENESS_SECONDS must be between 15 and 86400"));
-	}
-	if (
-		!validOptionalInteger(
-			env.BALANCE_RPC_ONLY_REFRESH_SECONDS,
-			60,
-			86_400,
-		)
-	) {
-		issues.push(issue(
-			"BALANCE_RPC_ONLY_REFRESH_INVALID",
-			"BALANCE_RPC_ONLY_REFRESH_SECONDS must be between 60 and 86400",
-		));
-	}
-	if (!validOptionalInteger(env.BALANCE_MAINTENANCE_BATCH_SIZE, 1, 100)) {
-		issues.push(issue(
-			"BALANCE_MAINTENANCE_BATCH_INVALID",
-			"BALANCE_MAINTENANCE_BATCH_SIZE must be between 1 and 100",
-		));
 	}
 	if (!validOptionalInteger(env.ARBITRUM_L1_CONFIRMATIONS_REQUIRED, 1, 256)) {
 		issues.push(issue(
@@ -222,14 +229,14 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 		));
 	}
 	if (env.ALCHEMY_WEBHOOK_ENABLED === "true") {
-		if (!env.ALCHEMY_WEBHOOK_SIGNING_KEY?.trim()) {
-			issues.push(issue("ALCHEMY_WEBHOOK_SIGNING_KEY_MISSING", "Alchemy webhook signing key is required when enabled"));
+		for (const webhookIssue of validateAlchemyAddressWebhookConfigs(env)) {
+			issues.push(issue(webhookIssue.code, webhookIssue.message));
 		}
-		if (!env.ALCHEMY_WEBHOOK_ID?.trim()) {
-			issues.push(issue("ALCHEMY_WEBHOOK_ID_MISSING", "Alchemy webhook id is required when enabled"));
-		}
-		if (!env.ALCHEMY_WEBHOOK_NETWORK?.trim()) {
-			issues.push(issue("ALCHEMY_WEBHOOK_NETWORK_MISSING", "Alchemy webhook network is required when enabled"));
+		if (getAlchemyAddressWebhookConfigs(env).length === 0) {
+			issues.push(issue(
+				"ALCHEMY_ADDRESS_WEBHOOK_CONFIG_MISSING",
+				"At least one Alchemy Address Activity webhook is required when enabled",
+			));
 		}
 		if (!env.ALCHEMY_NOTIFY_AUTH_TOKEN?.trim()) {
 			issues.push(issue(
@@ -240,13 +247,27 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 		if (parseRpcUrls(env.RPC_INDEXER_URLS).length === 0) {
 			issues.push(issue(
 				"RPC_INDEXER_URLS_MISSING",
-				"Alchemy push requires an explicit independent RPC_INDEXER_URLS reconciliation endpoint",
+				"Alchemy push requires an explicit RPC_INDEXER_URLS reconciliation pool",
 			));
 		}
-		if (parseRpcUrls(env.RPC_INDEXER_URLS).some(isAlchemyRpcUrl)) {
+	}
+	if (env.ALCHEMY_CUSTOM_WEBHOOK_ENABLED === "true") {
+		if (!env.ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY?.trim()) {
 			issues.push(issue(
-				"RPC_INDEXER_NOT_INDEPENDENT",
-				"Alchemy webhook events must be reconciled through a non-Alchemy RPC_INDEXER_URLS endpoint",
+				"ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY_MISSING",
+				"Alchemy Custom Webhook signing key is required when enabled",
+			));
+		}
+		if (!env.ALCHEMY_CUSTOM_WEBHOOK_ID?.trim()) {
+			issues.push(issue(
+				"ALCHEMY_CUSTOM_WEBHOOK_ID_MISSING",
+				"Alchemy Custom Webhook id is required when enabled",
+			));
+		}
+		if (parseRpcUrls(env.RPC_INDEXER_URLS).length === 0) {
+			issues.push(issue(
+				"RPC_INDEXER_URLS_MISSING",
+				"Alchemy Custom Webhook requires an explicit RPC_INDEXER_URLS reconciliation pool",
 			));
 		}
 	}
@@ -277,6 +298,13 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	}
 
 	if (!mainnet) return issues;
+
+	if (env.ALCHEMY_CUSTOM_WEBHOOK_ENABLED !== "true") {
+		issues.push(issue(
+			"ALCHEMY_CUSTOM_WEBHOOK_REQUIRED",
+			"Mainnet requires the event-driven Custom Webhook for router and recovery events",
+		));
+	}
 
 	const origins = env.ALLOWED_ORIGINS?.split(",").map((origin) => origin.trim()).filter(Boolean) ?? [];
 	if (

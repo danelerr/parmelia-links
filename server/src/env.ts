@@ -27,14 +27,17 @@ type OptionalBindingKey =
 	| "RPC_WRITE_URLS"
 	| "RPC_INDEXER_URLS"
 	| "RPC_ARCHIVE_URLS"
+	| "RPC_PROVIDER_CAPABILITIES"
 	| "BUNDLER_RPC_URLS"
 	| "RPC_TIMEOUT_MS"
 	| "RPC_INDEXER_MAX_BLOCK_RANGE"
 	| "RPC_INDEXER_MIN_BLOCK_RANGE"
 	| "INDEXER_WALLET_SHARD_SIZE"
+	| "INDEXER_REGISTRY_BATCH_SIZE"
+	| "INDEXER_MAX_RPC_CALLS_PER_JOB"
+	| "INDEXER_MAX_BLOCKS_PER_JOB"
+	| "INDEXER_MAX_EVENT_BLOCKS_PER_JOB"
 	| "BALANCE_MAX_STALENESS_SECONDS"
-	| "BALANCE_RPC_ONLY_REFRESH_SECONDS"
-	| "BALANCE_MAINTENANCE_BATCH_SIZE"
 	| "ARBITRUM_L1_CONFIRMATIONS_REQUIRED"
 	| "RELAYER_MODE"
 	| "BUNDLER_ROLLOUT_PERCENT"
@@ -44,7 +47,11 @@ type OptionalBindingKey =
 	| "ALCHEMY_WEBHOOK_ID"
 	| "ALCHEMY_WEBHOOK_NETWORK"
 	| "ALCHEMY_WEBHOOK_SIGNING_KEY"
+	| "ALCHEMY_ADDRESS_WEBHOOKS_JSON"
 	| "ALCHEMY_NOTIFY_AUTH_TOKEN"
+	| "ALCHEMY_CUSTOM_WEBHOOK_ENABLED"
+	| "ALCHEMY_CUSTOM_WEBHOOK_ID"
+	| "ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY"
 	| "WEBHOOK_SECRET_ENCRYPTION_KEY"
 	| "WEBHOOK_SECRET_ENCRYPTION_KEY_ID"
 	| "WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS";
@@ -56,11 +63,12 @@ type StringBindingKey = {
 // Wrangler preserves literal values from `vars` in generated types. Runtime
 // deployments legitimately override those values per environment, so expose
 // every string binding as `string` while retaining D1 and other binding types.
-type OptionalQueueBindings =
-	| "BALANCE_REFRESH_QUEUE"
-	| "SCHEDULED_JOBS_QUEUE";
+type OptionalInfrastructureBindings =
+	| "SCHEDULED_JOBS_QUEUE"
+	| "EVENT_JOB_SCHEDULER"
+	| "RPC_ADMISSION";
 
-export type Bindings = Omit<CloudflareBindings, StringBindingKey | OptionalQueueBindings> &
+export type Bindings = Omit<CloudflareBindings, StringBindingKey | OptionalInfrastructureBindings> &
 	Record<Exclude<StringBindingKey, OptionalBindingKey>, string> &
 	Partial<Record<OptionalBindingKey, string>> &
-	Partial<Pick<CloudflareBindings, OptionalQueueBindings>>;
+	Partial<Pick<CloudflareBindings, OptionalInfrastructureBindings>>;

@@ -39,7 +39,7 @@ import {
 	type PendingPaymentRecord,
 } from "./storage";
 import { isStoredPaymentLink } from "./validation";
-import { deliverPendingWebhooks, prepareEventOutbox } from "./webhooks";
+import { prepareEventOutbox } from "./webhooks";
 import { logError, logInfo, logWarn } from "./logger";
 import { getUserOperationTransport } from "./userOperationTransport";
 
@@ -96,8 +96,6 @@ export function getUserOpResult(
 }
 
 type SettleOpts = {
-	/** Defer non-critical follow-ups past the response (route passes waitUntil). */
-	waitUntil?: (p: Promise<unknown>) => void;
 	receiptLogs?: Log[];
 	chainEvidence?: {
 		chainId: number;
@@ -136,22 +134,6 @@ export async function settlePayment(
 	txHash: string,
 	opts: SettleOpts = {},
 ): Promise<void> {
-	const deferred: Promise<void>[] = [];
-	const defer = (p: Promise<unknown>) => {
-		const handled = p.then(() => undefined).catch((error) => {
-			logError("payment_settle_followup_failed", error, { userOpHash: pending.userOpHash });
-		});
-		if (opts.waitUntil) {
-			try {
-				opts.waitUntil(handled);
-				return;
-			} catch {
-				/* No execution context: await the work before returning. */
-			}
-		}
-		deferred.push(handled);
-	};
-
 	const createdAt =
 		opts.chainEvidence?.blockTimestamp ?? new Date().toISOString();
 	const uid = pending.uid;
@@ -369,15 +351,10 @@ export async function settlePayment(
 		if (!flipped) {
 			logWarn("payment_settle_link_already_paid", { uid, linkId, txHash });
 		}
-		if (intent) {
-			defer(deliverPendingWebhooks(env));
-		}
 	}
-
-	await Promise.all(deferred);
 }
 
-// ===== Reconciler (cron) =====
+// ===== Event-driven reconciler =====
 //
 // Resolves payments stranded mid-flight by a Worker death: rows claimed for
 // submit ('submitting') or broadcast ('submitted') whose live request never

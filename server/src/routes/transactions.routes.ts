@@ -1,6 +1,6 @@
 // Statement endpoint - reads ONLY the D1 ledger (fast, no RPC/explorer calls).
 // The ledger is fed at write time for everything the app relays, and by the
-// cron indexer for external incoming transfers.
+// event-driven indexer for external incoming transfers.
 
 import { Hono } from "hono";
 import { AppContext, requireAuth } from "../middlewares/auth";

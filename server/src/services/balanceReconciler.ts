@@ -5,21 +5,19 @@ import {
 import { erc20Abi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
-	claimBalanceRefresh,
-	completeBalanceRefresh,
-	failBalanceRefresh,
+	claimBalanceRefreshBatch,
+	finishBalanceRefreshBatch,
 	listDueBalanceRefreshes,
-	parseBalanceRefreshMessage,
-	requestBalanceRefresh,
 	type BalanceProjectionStrategy,
 	type BalanceRefreshMessage,
 	type BalanceRefreshRequest,
 	type BalanceSnapshot,
+	type ClaimedBalanceRefresh,
 	upsertBalanceSnapshots,
 } from "./balanceReadModel";
 import { getIndexerScanHead } from "./chainHead";
 import { getPublicClient } from "./clients";
-import { logError, logInfo, logWarn } from "./logger";
+import { logError, logInfo } from "./logger";
 import { getArbitrumBlockEvidence } from "./arbitrumFinality";
 import { auditBalanceProjectionDrift } from "./balanceDrift";
 
@@ -35,11 +33,6 @@ const MULTICALL3_BALANCE_ABI = [
 
 const PROJECTION_VERSION = 1;
 const CLAIM_LEASE_MS = 90_000;
-
-type ClaimedRefresh = {
-	request: BalanceRefreshMessage;
-	owner: string;
-};
 
 type CallDescriptor = {
 	requestKey: string;
@@ -58,7 +51,7 @@ function asBoundedBatchSize(raw: string | undefined): number {
 
 async function reconcileClaimed(
 	env: Bindings,
-	claimed: ClaimedRefresh[],
+	claimed: ClaimedBalanceRefresh[],
 ): Promise<Set<string>> {
 	if (claimed.length === 0) return new Set();
 	const network = getNetworkConfig(env.CHAIN_KEY);
@@ -305,111 +298,54 @@ async function reconcileClaimed(
 
 async function processClaimedBatch(
 	env: Bindings,
-	claimed: ClaimedRefresh[],
+	claimed: ClaimedBalanceRefresh[],
 ): Promise<Set<string>> {
+	let completedKeys: Set<string>;
 	try {
-		const completedKeys = await reconcileClaimed(env, claimed);
-		for (const item of claimed) {
-			if (completedKeys.has(item.request.idempotencyKey)) {
-				await completeBalanceRefresh(env, item.request, item.owner);
-			} else {
-				await failBalanceRefresh(
-					env,
-					item.request,
-					item.owner,
-					"RPC_PARTIAL_RESULT",
-				);
-			}
-		}
-		return completedKeys;
+		completedKeys = await reconcileClaimed(env, claimed);
 	} catch (error) {
-		await Promise.all(
-			claimed.map((item) =>
-				failBalanceRefresh(
-					env,
-					item.request,
-					item.owner,
-					error instanceof Error && error.message.includes("notBeforeBlock")
-						? "HEAD_NOT_READY"
-						: "RPC_RECONCILE_FAILED",
-				),
-			),
+		const errorCode =
+			error instanceof Error && error.message.includes("notBeforeBlock")
+				? "HEAD_NOT_READY"
+				: "RPC_RECONCILE_FAILED";
+		await finishBalanceRefreshBatch(
+			env,
+			claimed.map((item) => ({
+				...item,
+				status: "failed",
+				errorCode,
+			})),
 		);
 		throw error;
 	}
+	await finishBalanceRefreshBatch(
+		env,
+		claimed.map((item) =>
+			completedKeys.has(item.request.idempotencyKey)
+				? { ...item, status: "completed" as const }
+				: {
+						...item,
+						status: "failed" as const,
+						errorCode: "RPC_PARTIAL_RESULT",
+					},
+		),
+	);
+	return completedKeys;
 }
 
 async function claimMessages(
 	env: Bindings,
 	messages: BalanceRefreshMessage[],
-): Promise<ClaimedRefresh[]> {
+): Promise<ClaimedBalanceRefresh[]> {
 	const deduped = new Map(messages.map((message) => [message.idempotencyKey, message]));
-	const claimed: ClaimedRefresh[] = [];
-	for (const request of deduped.values()) {
-		const owner = await claimBalanceRefresh(env, request, CLAIM_LEASE_MS);
-		if (owner) claimed.push({ request, owner });
-	}
-	return claimed;
-}
-
-/** Cloudflare Queue consumer. Individual messages are acked/retried safely. */
-export async function consumeBalanceRefreshQueue(
-	batch: MessageBatch<unknown>,
-	env: Bindings,
-): Promise<void> {
-	const validByKey = new Map<
-		string,
-		{ message: Message<unknown>; body: BalanceRefreshMessage }
-	>();
-	for (const message of batch.messages) {
-		const parsed = parseBalanceRefreshMessage(message.body);
-		if (!parsed) {
-			logWarn("balance_refresh_message_rejected", {
-				messageId: message.id,
-				reason: "invalid_schema",
-			});
-			message.ack();
-			continue;
-		}
-		const existing = validByKey.get(parsed.idempotencyKey);
-		if (existing) {
-			// One work item satisfies every duplicate delivery in this batch.
-			message.ack();
-			continue;
-		}
-		validByKey.set(parsed.idempotencyKey, { message, body: parsed });
-	}
-
-	const claimed = await claimMessages(
+	return claimBalanceRefreshBatch(
 		env,
-		[...validByKey.values()].map((entry) => entry.body),
+		[...deduped.values()],
+		CLAIM_LEASE_MS,
 	);
-	const claimedKeys = new Set(
-		claimed.map((item) => item.request.idempotencyKey),
-	);
-	if (claimed.length === 0) {
-		for (const entry of validByKey.values()) entry.message.ack();
-		return;
-	}
-
-	try {
-		const completed = await processClaimedBatch(env, claimed);
-		for (const [key, entry] of validByKey) {
-			if (!claimedKeys.has(key) || completed.has(key)) entry.message.ack();
-			else entry.message.retry({ delaySeconds: 10 });
-		}
-	} catch (error) {
-		logError("balance_refresh_queue_batch_failed", error, {
-			messages: claimed.length,
-		});
-		for (const [key, entry] of validByKey) {
-			if (!claimedKeys.has(key)) entry.message.ack();
-			else entry.message.retry({ delaySeconds: 10 });
-		}
-	}
 }
 
-/** D1-backed repair path used by cron when Queue is absent or delivery failed. */
+/** D1-backed repair path used only when an event proves work is due. */
 export async function drainBalanceRefreshRequests(env: Bindings): Promise<void> {
 	const due = await listDueBalanceRefreshes(
 		env,
@@ -429,106 +365,10 @@ export async function drainBalanceRefreshRequests(env: Bindings): Promise<void> 
 	const claimed = await claimMessages(env, messages);
 	if (claimed.length === 0) return;
 	await processClaimedBatch(env, claimed).catch((error) => {
-		logError("balance_refresh_cron_batch_failed", error, {
+		logError("balance_refresh_batch_failed", error, {
 			requests: claimed.length,
 		});
 	});
-}
-
-/**
- * Bounded global maintenance for assets that cannot be exact from logs (native
- * ETH and, until promoted, rebasing aUSDC). This budget is independent of Home
- * traffic: 1 or 1,000 open tabs schedule exactly zero stale-snapshot RPC calls.
- */
-export async function scheduleStaleRpcOnlyBalanceMaintenance(
-	env: Bindings,
-): Promise<number> {
-	const network = getNetworkConfig(env.CHAIN_KEY);
-	const configuredRefreshSeconds = Number(
-		env.BALANCE_RPC_ONLY_REFRESH_SECONDS,
-	);
-	const refreshSeconds =
-		Number.isSafeInteger(configuredRefreshSeconds) &&
-		configuredRefreshSeconds >= 60 &&
-		configuredRefreshSeconds <= 86_400
-			? configuredRefreshSeconds
-			: 900;
-	const batchSize = asBoundedBatchSize(
-		env.BALANCE_MAINTENANCE_BATCH_SIZE,
-	);
-	const cutoff = new Date(
-		Date.now() - refreshSeconds * 1_000,
-	).toISOString();
-	const result = await env.PARMELIA_DB.prepare(
-		`SELECT u.uid, u.wallet_address AS account_address,
-		        COALESCE((
-		        	SELECT MIN(bs_oldest.observed_at)
-		        	FROM balance_snapshots bs_oldest
-		        	JOIN asset_indexing_policies aip_oldest
-		        	  ON aip_oldest.chain_id = bs_oldest.chain_id
-		        	 AND aip_oldest.asset = bs_oldest.asset
-		        	 AND aip_oldest.enabled = 1
-		        	 AND aip_oldest.strategy = 'rpc_only'
-		        	WHERE bs_oldest.uid = u.uid
-		        	  AND bs_oldest.chain_id = ?
-		        	  AND bs_oldest.canonical = 1
-		        ), '1970-01-01T00:00:00.000Z') AS oldest
-		 FROM users u
-		 WHERE u.wallet_address IS NOT NULL
-		   AND u.wallet_address <> ''
-		   AND EXISTS (
-		   	SELECT 1
-		   	FROM asset_indexing_policies aip
-		   	LEFT JOIN balance_snapshots bs
-		   	  ON bs.uid = u.uid
-		   	 AND bs.chain_id = aip.chain_id
-		   	 AND bs.asset = aip.asset
-		   	 AND bs.canonical = 1
-		   	WHERE aip.chain_id = ?
-		   	  AND aip.enabled = 1
-		   	  AND aip.strategy = 'rpc_only'
-		   	  AND (bs.uid IS NULL OR bs.observed_at <= ?)
-		   )
-		   AND NOT EXISTS (
-		   	SELECT 1
-		   	FROM balance_refresh_requests brr
-		   	WHERE brr.chain_id = ?
-		   	  AND brr.account_address = LOWER(u.wallet_address)
-		   	  AND brr.status IN ('pending', 'processing')
-		   )
-		 ORDER BY oldest ASC, u.uid ASC
-		 LIMIT ?`,
-	)
-		.bind(
-			network.chainId,
-			network.chainId,
-			cutoff,
-			network.chainId,
-			batchSize,
-		)
-		.all<{
-			uid: string;
-			account_address: Address;
-			oldest: string;
-		}>();
-	for (const row of result.results) {
-		await requestBalanceRefresh(env, {
-			uid: row.uid,
-			accountAddress: row.account_address,
-			chainId: network.chainId,
-			reason: "scheduled_rpc_only_asset_audit",
-			priority: 4,
-		});
-	}
-	if (result.results.length > 0) {
-		logInfo("balance_rpc_only_maintenance_scheduled", {
-			chainId: network.chainId,
-			wallets: result.results.length,
-			refreshSeconds,
-			includesMissingBootstrap: true,
-		});
-	}
-	return result.results.length;
 }
 
 export const __test = {

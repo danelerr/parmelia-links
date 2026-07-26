@@ -17,10 +17,7 @@ import { validateWebhookUrl } from "../src/routes/merchant.routes";
 import { routerAuthorizationDeadline, RouterError } from "../src/services/paymentRouter";
 import { validateRuntimeConfig } from "../src/services/runtimeConfig";
 import { internalTransferSenderAddresses } from "../src/services/indexer";
-import {
-	getIndexerClient,
-	RpcLogRangeConfigurationError,
-} from "../src/services/clients";
+import { getRpcEndpointCapabilities } from "../src/services/rpcProviders";
 import worker from "../src/index";
 import {
 	activeWebhookSecretPrefix,
@@ -424,33 +421,44 @@ describe("runtime configuration", () => {
 		})).map((entry) => entry.code)).toContain("CCTP_RPC_URLS_INVALID");
 	});
 
-	it("never sends a 2000-block indexer request to Alchemy Free", () => {
+	it("supports heterogeneous indexer plans through explicit capabilities", () => {
 		const alchemy = "https://arb-sepolia.g.alchemy.com/v2/redacted";
-		const invalidEnv = envFor("arbitrum-sepolia", {
-			RPC_URL: alchemy,
-			RPC_INDEXER_MAX_BLOCK_RANGE: "2000",
+		const publicRpc = "https://sepolia-rollup.arbitrum.io/rpc";
+		const mixedEnv = envFor("arbitrum-sepolia", {
+			RPC_INDEXER_URLS: `${alchemy},${publicRpc}`,
+			RPC_PROVIDER_CAPABILITIES: JSON.stringify({
+				indexer: [
+					{
+						id: "alchemy",
+						priority: 0,
+						maxConcurrency: 4,
+						maxLogRange: 10,
+					},
+					{
+						id: "arbitrum-public",
+						priority: 1,
+						maxConcurrency: 2,
+						maxLogRange: 2_000,
+					},
+				],
+			}),
 		});
-		const invalid = validateRuntimeConfig(invalidEnv);
-		expect(invalid.map((entry) => entry.code)).toContain(
-			"RPC_INDEXER_ALCHEMY_RANGE_INVALID",
+		expect(validateRuntimeConfig(mixedEnv)).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "RPC_PROVIDER_CAPABILITIES_COUNT_MISMATCH",
+				}),
+			]),
 		);
-		expect(() => getIndexerClient(invalidEnv)).toThrow(
-			RpcLogRangeConfigurationError,
+		expect(getRpcEndpointCapabilities(mixedEnv, "indexer", 2)).toMatchObject(
+			[
+				{ id: "alchemy", maxLogRange: 10 },
+				{ id: "arbitrum-public", maxLogRange: 2_000 },
+			],
 		);
-
-		const cappedEnv = envFor("arbitrum-sepolia", {
-			RPC_URL: alchemy,
-			RPC_INDEXER_MIN_BLOCK_RANGE: "10",
-			RPC_INDEXER_MAX_BLOCK_RANGE: "10",
-		});
-		const explicitlyCapped = validateRuntimeConfig(cappedEnv);
-		expect(explicitlyCapped.map((entry) => entry.code)).not.toContain(
-			"RPC_INDEXER_ALCHEMY_RANGE_INVALID",
-		);
-		expect(() => getIndexerClient(cappedEnv)).not.toThrow();
 	});
 
-	it("requires webhook reconciliation to use an independent non-Alchemy RPC", () => {
+	it("requires an explicit reconciliation role without assuming a vendor plan", () => {
 		const issues = validateRuntimeConfig(envFor("arbitrum-sepolia", {
 			ALCHEMY_WEBHOOK_ENABLED: "true",
 			ALCHEMY_WEBHOOK_ID: "wh_123",
@@ -458,10 +466,32 @@ describe("runtime configuration", () => {
 			ALCHEMY_WEBHOOK_SIGNING_KEY: "signing-key",
 			ALCHEMY_NOTIFY_AUTH_TOKEN: "notify-auth-token",
 			RPC_INDEXER_URLS: "https://arb-sepolia.g.alchemy.com/v2/redacted",
-			RPC_INDEXER_MAX_BLOCK_RANGE: "10",
 		}));
-		expect(issues.map((entry) => entry.code)).toContain(
-			"RPC_INDEXER_NOT_INDEPENDENT",
+		expect(issues.map((entry) => entry.code)).not.toContain(
+			"RPC_INDEXER_URLS_MISSING",
+		);
+	});
+
+	it("validates the Custom Webhook that replaces permanent security polling", () => {
+		const missing = validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			ALCHEMY_CUSTOM_WEBHOOK_ENABLED: "true",
+			RPC_INDEXER_URLS: "https://sepolia-rollup.arbitrum.io/rpc",
+		}));
+		expect(missing.map((entry) => entry.code)).toEqual(
+			expect.arrayContaining([
+				"ALCHEMY_CUSTOM_WEBHOOK_ID_MISSING",
+				"ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY_MISSING",
+			]),
+		);
+
+		const configured = validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			ALCHEMY_CUSTOM_WEBHOOK_ENABLED: "true",
+			ALCHEMY_CUSTOM_WEBHOOK_ID: "wh_custom",
+			ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY: "signing-key",
+			RPC_INDEXER_URLS: "https://arb-sepolia.g.alchemy.com/v2/redacted",
+		}));
+		expect(configured.map((entry) => entry.code)).not.toContain(
+			"RPC_INDEXER_URLS_MISSING",
 		);
 	});
 

@@ -2,6 +2,7 @@ import { formatUnits, type Address, type Hex } from "viem";
 import type { Bindings } from "../middlewares/auth";
 import type { ChainConsistencyLevel } from "./chainJournal";
 import { logWarn } from "./logger";
+import { scheduleEventJob } from "./eventScheduler";
 
 export type BalanceProjectionStrategy =
 	| "events"
@@ -178,66 +179,157 @@ export function balanceRefreshKey(chainId: number, accountAddress: string): stri
 	return `${chainId}:${accountAddress.toLowerCase()}`;
 }
 
-export async function requestBalanceRefresh(
-	env: Bindings,
-	input: Omit<BalanceRefreshMessage, "schemaVersion" | "idempotencyKey">,
-): Promise<BalanceRefreshMessage> {
-	const now = new Date().toISOString();
-	const message: BalanceRefreshMessage = {
+type BalanceRefreshInput = Omit<
+	BalanceRefreshMessage,
+	"schemaVersion" | "idempotencyKey"
+>;
+
+const BALANCE_REFRESH_UPSERT = `INSERT INTO balance_refresh_requests (
+		chain_id, account_address, uid, schema_version, reason, priority,
+		status, required_block, attempt_count, requested_at, updated_at,
+		lease_owner, lease_expires_at, last_error_code
+	 ) VALUES (?, ?, ?, 1, ?, ?, 'pending', ?, 0, ?, ?, NULL, NULL, NULL)
+	 ON CONFLICT(chain_id, account_address) DO UPDATE SET
+	   uid = excluded.uid,
+	   reason = excluded.reason,
+	   priority = MIN(balance_refresh_requests.priority, excluded.priority),
+	   status = 'pending',
+	   required_block = CASE
+	     WHEN excluded.required_block IS NULL THEN balance_refresh_requests.required_block
+	     WHEN balance_refresh_requests.required_block IS NULL THEN excluded.required_block
+	     ELSE MAX(balance_refresh_requests.required_block, excluded.required_block)
+	   END,
+	   requested_at = excluded.requested_at,
+	   updated_at = excluded.updated_at,
+	   lease_owner = NULL,
+	   lease_expires_at = NULL,
+	   last_error_code = NULL
+	 WHERE balance_refresh_requests.status IN ('completed', 'failed')
+	    OR (
+	      balance_refresh_requests.status = 'processing'
+	      AND balance_refresh_requests.lease_expires_at <= excluded.updated_at
+	    )
+	    OR excluded.priority < balance_refresh_requests.priority
+	    OR (
+	      excluded.required_block IS NOT NULL
+	      AND (
+	        balance_refresh_requests.required_block IS NULL
+	        OR excluded.required_block > balance_refresh_requests.required_block
+	      )
+	    )`;
+
+function buildBalanceRefreshMessage(
+	input: BalanceRefreshInput,
+): BalanceRefreshMessage {
+	return {
 		...input,
 		accountAddress: input.accountAddress.toLowerCase() as Address,
 		schemaVersion: 1,
 		idempotencyKey: balanceRefreshKey(input.chainId, input.accountAddress),
 	};
+}
 
-	await env.PARMELIA_DB.prepare(
-		`INSERT INTO balance_refresh_requests (
-			chain_id, account_address, uid, schema_version, reason, priority,
-			status, required_block, attempt_count, requested_at, updated_at,
-			lease_owner, lease_expires_at, last_error_code
-		 ) VALUES (?, ?, ?, 1, ?, ?, 'pending', ?, 0, ?, ?, NULL, NULL, NULL)
-		 ON CONFLICT(chain_id, account_address) DO UPDATE SET
-		 	uid = excluded.uid,
-		 	reason = excluded.reason,
-		 	priority = MIN(balance_refresh_requests.priority, excluded.priority),
-		 	status = CASE
-		 		WHEN balance_refresh_requests.status = 'processing'
-		 		  AND balance_refresh_requests.lease_expires_at > excluded.updated_at
-		 		THEN 'processing'
-		 		ELSE 'pending'
-		 	END,
-		 	required_block = CASE
-		 		WHEN excluded.required_block IS NULL THEN balance_refresh_requests.required_block
-		 		WHEN balance_refresh_requests.required_block IS NULL THEN excluded.required_block
-		 		ELSE MAX(balance_refresh_requests.required_block, excluded.required_block)
-		 	END,
-		 	updated_at = excluded.updated_at,
-		 	last_error_code = NULL`,
-	)
-		.bind(
-			message.chainId,
-			message.accountAddress,
-			message.uid,
-			message.reason,
-			message.priority,
-			message.notBeforeBlock ?? null,
-			now,
-			now,
-		)
-		.run();
+function prepareBalanceRefreshUpsert(
+	env: Bindings,
+	message: BalanceRefreshMessage,
+	now: string,
+) {
+	return env.PARMELIA_DB.prepare(BALANCE_REFRESH_UPSERT).bind(
+		message.chainId,
+		message.accountAddress,
+		message.uid,
+		message.reason,
+		message.priority,
+		message.notBeforeBlock ?? null,
+		now,
+		now,
+	);
+}
 
-	// Queue is the accelerator; the D1 row above is the durable fallback. A
-	// missing Queue binding or transient send failure is repaired by cron.
-	if (env.BALANCE_REFRESH_QUEUE) {
-		try {
-			await env.BALANCE_REFRESH_QUEUE.send(message, { contentType: "json" });
-		} catch (error) {
-			logWarn("balance_refresh_queue_send_failed", {
-				errorName: error instanceof Error ? error.name : "unknown",
-			});
-		}
-	}
+async function dispatchBalanceRefreshJob(env: Bindings): Promise<void> {
+	// One scheduler wake drains many D1 rows through one Multicall batch. This
+	// avoids paying one Queue write/read/delete cycle per wallet.
+	await scheduleEventJob(env, "balance_refresh", {
+		reason: "balance_refresh_requested",
+	});
+}
+
+export async function requestBalanceRefresh(
+	env: Bindings,
+	input: BalanceRefreshInput,
+): Promise<BalanceRefreshMessage> {
+	const now = new Date().toISOString();
+	const message = buildBalanceRefreshMessage(input);
+	const persisted = await prepareBalanceRefreshUpsert(
+		env,
+		message,
+		now,
+	).run();
+
+	// A no-op conflict means an equivalent request is already queued/processing.
+	// This is where 1,000 identical Home tabs collapse into zero extra messages.
+	const shouldDispatch = (persisted.meta?.changes ?? 0) > 0;
+	if (!shouldDispatch) return message;
+
+	await dispatchBalanceRefreshJob(env);
 	return message;
+}
+
+/**
+ * Persist many independent wallet refresh signals with bounded D1 batches, then
+ * wake the shared reconciler once. Provider payload size therefore does not
+ * translate into one Queue operation per activity.
+ */
+export async function requestBalanceRefreshBatch(
+	env: Bindings,
+	inputs: readonly BalanceRefreshInput[],
+): Promise<BalanceRefreshMessage[]> {
+	const byKey = new Map<string, BalanceRefreshMessage>();
+	for (const input of inputs) {
+		const message = buildBalanceRefreshMessage(input);
+		const prior = byKey.get(message.idempotencyKey);
+		if (!prior) {
+			byKey.set(message.idempotencyKey, message);
+			continue;
+		}
+		const priorBlock =
+			prior.notBeforeBlock === undefined
+				? null
+				: BigInt(prior.notBeforeBlock);
+		const nextBlock =
+			message.notBeforeBlock === undefined
+				? null
+				: BigInt(message.notBeforeBlock);
+		byKey.set(message.idempotencyKey, {
+			...(message.priority < prior.priority ? message : prior),
+			priority: Math.min(prior.priority, message.priority) as
+				BalanceRefreshMessage["priority"],
+			notBeforeBlock:
+				priorBlock === null
+					? message.notBeforeBlock
+					: nextBlock === null || priorBlock >= nextBlock
+						? prior.notBeforeBlock
+						: message.notBeforeBlock,
+		});
+	}
+
+	const messages = [...byKey.values()];
+	if (messages.length === 0) return messages;
+	const now = new Date().toISOString();
+	let shouldDispatch = false;
+	for (let offset = 0; offset < messages.length; offset += 100) {
+		const chunk = messages.slice(offset, offset + 100);
+		const results = await env.PARMELIA_DB.batch(
+			chunk.map((message) =>
+				prepareBalanceRefreshUpsert(env, message, now),
+			),
+		);
+		shouldDispatch ||= results.some(
+			(result) => (result.meta?.changes ?? 0) > 0,
+		);
+	}
+	if (shouldDispatch) await dispatchBalanceRefreshJob(env);
+	return messages;
 }
 
 type RefreshRequestRow = {
@@ -286,16 +378,25 @@ export async function listDueBalanceRefreshes(
 	return result.results.map(mapRefreshRequest);
 }
 
-export async function claimBalanceRefresh(
+export type ClaimedBalanceRefresh = {
+	request: BalanceRefreshMessage;
+	owner: string;
+};
+
+export async function claimBalanceRefreshBatch(
 	env: Bindings,
-	request: Pick<BalanceRefreshMessage, "chainId" | "accountAddress">,
+	requests: BalanceRefreshMessage[],
 	leaseMs = 60_000,
-): Promise<string | null> {
-	const owner = crypto.randomUUID();
+): Promise<ClaimedBalanceRefresh[]> {
+	if (requests.length === 0) return [];
 	const now = new Date();
 	const nowIso = now.toISOString();
 	const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
-	const result = await env.PARMELIA_DB.prepare(
+	const claims = requests.map((request) => ({
+		request,
+		owner: crypto.randomUUID(),
+	}));
+	const prepared = env.PARMELIA_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'processing',
 		     lease_owner = ?,
@@ -307,102 +408,65 @@ export async function claimBalanceRefresh(
 		   	status IN ('pending', 'failed')
 		   	OR (status = 'processing' AND lease_expires_at <= ?)
 		   )`,
-	)
-		.bind(
-			owner,
-			leaseExpiresAt,
-			nowIso,
-			request.chainId,
-			request.accountAddress.toLowerCase(),
-			nowIso,
-		)
-		.run();
-	return (result.meta?.changes ?? 0) > 0 ? owner : null;
+	);
+	const results = await env.PARMELIA_DB.batch(
+		claims.map(({ request, owner }) =>
+			prepared.bind(
+				owner,
+				leaseExpiresAt,
+				nowIso,
+				request.chainId,
+				request.accountAddress.toLowerCase(),
+				nowIso,
+			),
+		),
+	);
+	return claims.filter(
+		(_, index) => (results[index]?.meta?.changes ?? 0) > 0,
+	);
 }
 
-export async function completeBalanceRefresh(
+export type BalanceRefreshOutcome = ClaimedBalanceRefresh & {
+	status: "completed" | "failed";
+	errorCode?: string;
+};
+
+export async function finishBalanceRefreshBatch(
 	env: Bindings,
-	request: Pick<BalanceRefreshMessage, "chainId" | "accountAddress">,
-	owner: string,
-): Promise<boolean> {
-	const result = await env.PARMELIA_DB.prepare(
+	outcomes: BalanceRefreshOutcome[],
+): Promise<void> {
+	if (outcomes.length === 0) return;
+	const now = new Date().toISOString();
+	const completed = env.PARMELIA_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'completed', updated_at = ?, lease_owner = NULL,
 		     lease_expires_at = NULL, last_error_code = NULL
 		 WHERE chain_id = ? AND account_address = ?
 		   AND status = 'processing' AND lease_owner = ?`,
-	)
-		.bind(
-			new Date().toISOString(),
-			request.chainId,
-			request.accountAddress.toLowerCase(),
-			owner,
-		)
-		.run();
-	return (result.meta?.changes ?? 0) > 0;
-}
-
-export async function failBalanceRefresh(
-	env: Bindings,
-	request: Pick<BalanceRefreshMessage, "chainId" | "accountAddress">,
-	owner: string,
-	errorCode: string,
-): Promise<void> {
-	await env.PARMELIA_DB.prepare(
+	);
+	const failed = env.PARMELIA_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'failed', updated_at = ?, lease_owner = NULL,
 		     lease_expires_at = NULL, last_error_code = ?
 		 WHERE chain_id = ? AND account_address = ?
 		   AND status = 'processing' AND lease_owner = ?`,
-	)
-		.bind(
-			new Date().toISOString(),
-			errorCode,
-			request.chainId,
-			request.accountAddress.toLowerCase(),
-			owner,
-		)
-		.run();
-}
-
-export function parseBalanceRefreshMessage(
-	value: unknown,
-): BalanceRefreshMessage | null {
-	if (!value || typeof value !== "object") return null;
-	const candidate = value as Partial<BalanceRefreshMessage>;
-	if (
-		candidate.schemaVersion !== 1 ||
-		typeof candidate.idempotencyKey !== "string" ||
-		typeof candidate.uid !== "string" ||
-		typeof candidate.accountAddress !== "string" ||
-		!/^0x[0-9a-fA-F]{40}$/.test(candidate.accountAddress) ||
-		!Number.isSafeInteger(candidate.chainId) ||
-		typeof candidate.reason !== "string" ||
-		!Number.isSafeInteger(candidate.priority) ||
-		(candidate.priority ?? -1) < 0 ||
-		(candidate.priority ?? 5) > 4
-	) {
-		return null;
-	}
-	const expectedKey = balanceRefreshKey(
-		candidate.chainId!,
-		candidate.accountAddress,
 	);
-	if (candidate.idempotencyKey !== expectedKey) return null;
-	if (
-		candidate.notBeforeBlock !== undefined &&
-		!/^\d+$/.test(candidate.notBeforeBlock)
-	) {
-		return null;
-	}
-	return {
-		schemaVersion: 1,
-		idempotencyKey: expectedKey,
-		uid: candidate.uid,
-		accountAddress: candidate.accountAddress.toLowerCase() as Address,
-		chainId: candidate.chainId!,
-		reason: candidate.reason,
-		priority: candidate.priority as 0 | 1 | 2 | 3 | 4,
-		notBeforeBlock: candidate.notBeforeBlock,
-	};
+	await env.PARMELIA_DB.batch(
+		outcomes.map(({ request, owner, status, errorCode }) =>
+			status === "completed"
+				? completed.bind(
+						now,
+						request.chainId,
+						request.accountAddress.toLowerCase(),
+						owner,
+					)
+				: failed.bind(
+						now,
+						errorCode ?? "RPC_RECONCILE_FAILED",
+						request.chainId,
+						request.accountAddress.toLowerCase(),
+						owner,
+					),
+		),
+	);
 }

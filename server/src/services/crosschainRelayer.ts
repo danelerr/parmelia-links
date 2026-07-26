@@ -1,4 +1,4 @@
-// CCTP v2 cross-chain relayer (outbound Flow B). Cron-driven; never throws.
+// CCTP v2 cross-chain relayer (outbound Flow B). Event-driven; never throws.
 //
 // For each in-flight op it: (1) polls Circle's Iris attestation API by the burn's
 // source tx hash; (2) once the attestation is "complete", calls receiveMessage on

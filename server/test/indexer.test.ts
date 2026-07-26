@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	boundedEvidenceWindowEnd,
 	boundedScanWindowEnd,
 	getIndexerScanHead,
 } from "../src/services/indexer";
@@ -72,5 +73,20 @@ describe("indexer Worker subrequest budget", () => {
 		expect(() =>
 			boundedScanWindowEnd(0n, 100_000n, 2_000n, 17),
 		).toThrow("split the stream across Queue jobs");
+	});
+
+	it("commits only a bounded number of event-bearing blocks", () => {
+		const logs = [
+			{ blockNumber: 10n },
+			{ blockNumber: 10n },
+			{ blockNumber: 20n },
+			{ blockNumber: 30n },
+			{ blockNumber: null },
+		];
+		expect(boundedEvidenceWindowEnd(100n, logs, 2)).toBe(20n);
+		expect(boundedEvidenceWindowEnd(100n, logs, 3)).toBe(100n);
+		expect(() => boundedEvidenceWindowEnd(100n, logs, 0)).toThrow(
+			"event-block budget",
+		);
 	});
 });

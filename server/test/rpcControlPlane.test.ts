@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	laneForRole,
 	providerAliasForUrl,
 	__test,
 } from "../src/services/rpcControlPlane";
+import { __test as admissionTest } from "../src/services/rpcAdmission";
 
 describe("RPC control plane", () => {
 	it("uses safe aliases and never exposes an API-key URL", () => {
@@ -60,6 +61,46 @@ describe("RPC control plane", () => {
 		expect(__test.admissionWaitMs("backfill", 10_000)).toBe(250);
 		expect(__test.admissionWaitMs("critical-write", 10_000)).toBe(2_000);
 		expect(__test.admissionWaitMs("active-reconcile", 10_000)).toBe(1_000);
+		expect(__test.admissionLeaseTtlMs(10_000)).toBe(20_000);
+		expect(__test.admissionLeaseTtlMs(120_000)).toBe(120_000);
+	});
+
+	it("uses expiring distributed leases so a terminated Worker cannot deadlock a provider", () => {
+		expect(
+			admissionTest.liveLeases(
+				{ expired: 999, live: 2_000 },
+				1_000,
+			),
+		).toEqual({ live: 2_000 });
+		expect(admissionTest.earliestExpiry({ second: 3_000, first: 2_000 }))
+			.toBe(2_000);
+		expect(() =>
+			admissionTest.validateRequest({
+				maxConcurrency: 0,
+				leaseTtlMs: 10_000,
+			}),
+		).toThrow("Invalid RPC admission request");
+	});
+
+	it("acquires capacity from the distributed provider lane", async () => {
+		const acquire = vi.fn().mockResolvedValue({
+			granted: true,
+			token: "00000000-0000-4000-8000-000000000000",
+		});
+		await expect(
+			__test.acquireDistributedAdmission(
+				{ acquire } as never,
+				{
+					maxConcurrency: 7,
+					requestTimeoutMs: 10_000,
+					waitTimeoutMs: 1_000,
+				},
+			),
+		).resolves.toBe("00000000-0000-4000-8000-000000000000");
+		expect(acquire).toHaveBeenCalledWith({
+			maxConcurrency: 7,
+			leaseTtlMs: 20_000,
+		});
 	});
 
 	it("hands a saturated lane directly to the oldest waiter", async () => {

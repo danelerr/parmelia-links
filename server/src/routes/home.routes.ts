@@ -8,6 +8,7 @@ import {
 	isHomeBalanceFresh,
 	readHomeModel,
 } from "../services/homeReadModel";
+import { scheduleWalletIndexerPartitions } from "../services/indexerPartitions";
 
 const homeRoutes = new Hono<AppContext>();
 
@@ -37,11 +38,44 @@ homeRoutes.get("/", requireAuth, async (c) => {
 	}
 
 	const { model, needsRefresh } = await readHomeModel(c.env, uid);
+	const refreshAlreadyActive = model.balance.refreshing;
 	if (needsRefresh) {
-		// This is a durable D1 enqueue plus optional Queue acceleration. It never
-		// waits for or invokes RPC from the request path.
-		await ensureHomeBalanceRefresh(c.env, model, "home_missing_asset_bootstrap");
+		// D1 deduplicates by (chain, account), then one shared event job drains
+		// many wallets through Multicall.
+		await ensureHomeBalanceRefresh(
+			c.env,
+			model,
+			"home_missing_asset_bootstrap",
+		);
 		model.balance.refreshing = true;
+	} else if (
+		!refreshAlreadyActive &&
+		model.balance.status === "stale"
+	) {
+		// A real read of stale state is a bounded repair signal. This closes the
+		// gap left by a missed provider webhook while preserving zero background
+		// work when nobody uses the app.
+		await ensureHomeBalanceRefresh(
+			c.env,
+			model,
+			"home_visible_stale_repair",
+		);
+		model.balance.refreshing = true;
+	}
+	if (
+		!refreshAlreadyActive &&
+		model.balance.status !== "fresh"
+	) {
+		// The webhook is an accelerator, not a correctness dependency. The
+		// scheduler collapses simultaneous Home requests into exact checkpointed
+		// wallet partitions; no visible client means no fallback scan.
+		if (model.account.walletAddress) {
+			await scheduleWalletIndexerPartitions(
+				c.env,
+				[model.account.walletAddress],
+				"home_on_access_index_fallback",
+			);
+		}
 	}
 	return c.json(model);
 });

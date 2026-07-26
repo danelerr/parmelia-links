@@ -6,9 +6,14 @@ import { hasAccountOperationNeedsReview } from "./services/storage";
 import { getRequestId, logError, logInfo, logWarn } from "./services/logger";
 import {
 	consumeWorkerQueue,
-	enqueueScheduledJobs,
+	recoverEventJobs,
 	type WorkerQueueMessage,
-} from "./services/cron";
+	wakeUserEventDeliveryIfPending,
+} from "./services/eventJobs";
+import {
+	EventJobScheduler,
+} from "./services/eventScheduler";
+import { RpcAdmissionController } from "./services/rpcAdmission";
 import { validateRuntimeConfig } from "./services/runtimeConfig";
 import { ERR, getNetworkConfig, isSupportedChainKey } from "../../shared";
 
@@ -34,6 +39,7 @@ import {
 } from "./services/operationalHealth";
 
 const app = new Hono<AppContext>();
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 app.use("*", async (c, next) => {
 	const startedAt = Date.now();
@@ -50,11 +56,39 @@ app.use("*", async (c, next) => {
 	});
 });
 
+// Several D1 tables create user_event_outbox rows through integrity triggers.
+// A mutation-level wakeup is the transport half of that transactional outbox;
+// the Durable Object collapses concurrent mutations into one delivery job.
+app.use("*", async (c, next) => {
+	try {
+		await next();
+	} finally {
+		if (
+			MUTATING_HTTP_METHODS.has(c.req.method.toUpperCase()) &&
+			c.res.status >= 200 &&
+			c.res.status < 400
+		) {
+			c.executionCtx.waitUntil(
+				wakeUserEventDeliveryIfPending(
+					c.env,
+					"http_mutation_outbox_check",
+				)
+					.catch((error) =>
+						logError("user_event_wakeup_failed", error, {
+							requestId: c.get("requestId"),
+						}),
+					),
+			);
+		}
+	}
+});
+
 function mustFailClosed(env: Bindings): boolean {
 	return !env.CHAIN_KEY || !isSupportedChainKey(env.CHAIN_KEY) || !getNetworkConfig(env.CHAIN_KEY).isTestnet;
 }
 
 let lastConfigWarning = "";
+let eventRecoveryLastAttemptAt = 0;
 app.use("*", async (c, next) => {
 	if (new URL(c.req.url).pathname === "/health") return next();
 	const issues = validateRuntimeConfig(c.env);
@@ -153,6 +187,30 @@ app.get("/health", async (c) => {
 		const operational = await getOperationalHealth(c.env);
 		operationalHealth = operational.summary;
 		warnings.push(...operational.warnings);
+		if (
+			Date.now() - eventRecoveryLastAttemptAt >= 60_000 &&
+			[
+				operational.summary.queues.paymentReconcileActive,
+				operational.summary.queues.userEventActive,
+				operational.summary.queues.balanceRefreshActive,
+				operational.summary.queues.accountOperationActive,
+				operational.summary.queues.crosschainActive,
+				operational.summary.queues.webhookDeliveryActive,
+				operational.summary.queues.routerIntentActive,
+				operational.summary.queues.indexerRegistryActive,
+				operational.summary.queues.providerSubscriptionActive,
+			].some((value) => value > 0)
+		) {
+			eventRecoveryLastAttemptAt = Date.now();
+			c.executionCtx.waitUntil(
+				recoverEventJobs(c.env).catch((error) => {
+					eventRecoveryLastAttemptAt = 0;
+					logError("event_job_recovery_failed", error, {
+						requestId: c.get("requestId"),
+					});
+				}),
+			);
+		}
 	} catch (error) {
 		issueCodes.push("d1_unavailable");
 		logError("health_operational_check_failed", error, { requestId: c.get("requestId") });
@@ -207,16 +265,6 @@ app.onError((error, c) => {
 export default {
 	fetch: app.fetch,
 	queue: consumeWorkerQueue,
-	// Cron never reads the chain. It sends one batch of small JSON messages;
-	// Cloudflare then gives every job an isolated Queue consumer invocation.
-	async scheduled(controller, env) {
-		const configIssues = validateRuntimeConfig(env);
-		if (mustFailClosed(env) && configIssues.length > 0) {
-			logError("cron_configuration_invalid", new Error("Worker configuration is incomplete"), {
-				issues: configIssues.map((entry) => entry.code).join(","),
-			});
-			return;
-		}
-		await enqueueScheduledJobs(env, controller.scheduledTime);
-	},
 } satisfies ExportedHandler<Bindings, WorkerQueueMessage>;
+
+export { EventJobScheduler, RpcAdmissionController };

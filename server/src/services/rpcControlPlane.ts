@@ -7,13 +7,10 @@ import {
 import type { Bindings } from "../middlewares/auth";
 import { isTransientRpcError } from "./adaptiveLogs";
 import { logError, logInfo, logWarn } from "./logger";
+import type { RpcAdmissionController } from "./rpcAdmission";
+import type { RpcRoleName } from "./rpcProviders";
 
-export type RpcRoleName =
-	| "read"
-	| "write"
-	| "indexer"
-	| "archive"
-	| "bundler";
+export type { RpcRoleName } from "./rpcProviders";
 export type RpcLane =
 	| "critical-write"
 	| "canonical-ingest"
@@ -202,6 +199,35 @@ function admissionWaitMs(lane: RpcLane, requestTimeoutMs: number): number {
 	return Math.max(100, Math.min(laneBudget, Math.floor(requestTimeoutMs / 2)));
 }
 
+function admissionLeaseTtlMs(requestTimeoutMs: number): number {
+	return Math.max(1_000, Math.min(120_000, requestTimeoutMs + 10_000));
+}
+
+type RpcAdmissionStub = DurableObjectStub<RpcAdmissionController>;
+
+async function acquireDistributedAdmission(
+	stub: RpcAdmissionStub,
+	input: {
+		maxConcurrency: number;
+		requestTimeoutMs: number;
+		waitTimeoutMs: number;
+	},
+): Promise<string> {
+	const deadline = Date.now() + input.waitTimeoutMs;
+	for (;;) {
+		const result = await stub.acquire({
+			maxConcurrency: input.maxConcurrency,
+			leaseTtlMs: admissionLeaseTtlMs(input.requestTimeoutMs),
+		});
+		if (result.granted) return result.token;
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) throw new RpcAdmissionTimeoutError();
+		await new Promise<void>((resolve) => {
+			setTimeout(resolve, Math.min(result.retryAfterMs, remainingMs));
+		});
+	}
+}
+
 async function readCircuit(
 	env: Bindings,
 	endpointKey: string,
@@ -380,12 +406,21 @@ export function controlledHttpTransport(
 		slot: number;
 		lane?: RpcLane;
 		timeoutMs: number;
+		providerAlias?: string;
+		maxConcurrency?: number;
 	},
 ): Transport {
 	const lane = options.lane ?? laneForRole(options.role);
-	const providerAlias = providerAliasForUrl(url, options.role, options.slot);
+	const providerAlias =
+		options.providerAlias ??
+		providerAliasForUrl(url, options.role, options.slot);
 	const endpointKey = `${options.role}:${options.slot}:${fnv1a(url)}`;
-	const limiter = new LocalSemaphore(concurrencyForLane(lane));
+	const maxConcurrency =
+		options.maxConcurrency ?? concurrencyForLane(lane);
+	const limiter = new LocalSemaphore(maxConcurrency);
+	const distributedAdmission = env.RPC_ADMISSION?.getByName(
+		`${endpointKey}:${lane}`,
+	);
 	const baseFactory = http(url, {
 		timeout: options.timeoutMs,
 		retryCount: 0,
@@ -447,11 +482,10 @@ export function controlledHttpTransport(
 				}
 			}
 
-			let release: () => void;
+			const waitTimeoutMs = admissionWaitMs(lane, options.timeoutMs);
+			let releaseLocal: () => void;
 			try {
-				release = await limiter.acquire(
-					admissionWaitMs(lane, options.timeoutMs),
-				);
+				releaseLocal = await limiter.acquire(waitTimeoutMs);
 			} catch (error) {
 				logWarn("rpc_request_rejected_admission", {
 					provider: providerAlias,
@@ -460,6 +494,32 @@ export function controlledHttpTransport(
 					lane,
 					method: rpcRequest.method,
 					methodFamily: rpcMethodFamily(rpcRequest.method),
+				});
+				throw error;
+			}
+			let admissionToken: string | null = null;
+			try {
+				if (distributedAdmission) {
+					admissionToken = await acquireDistributedAdmission(
+						distributedAdmission,
+						{
+							maxConcurrency,
+							requestTimeoutMs: options.timeoutMs,
+							waitTimeoutMs,
+						},
+					);
+				}
+			} catch (error) {
+				releaseLocal();
+				logWarn("rpc_request_rejected_distributed_admission", {
+					provider: providerAlias,
+					providerSlot: options.slot + 1,
+					role: options.role,
+					lane,
+					method: rpcRequest.method,
+					methodFamily: rpcMethodFamily(rpcRequest.method),
+					errorName:
+						error instanceof Error ? error.name : "unknown",
 				});
 				throw error;
 			}
@@ -549,7 +609,25 @@ export function controlledHttpTransport(
 				}
 				throw error;
 			} finally {
-				release();
+				if (distributedAdmission && admissionToken) {
+					try {
+						await distributedAdmission.release(admissionToken);
+					} catch (error) {
+						// The admission lease has a bounded TTL, so an internal
+						// release failure cannot permanently consume capacity.
+						logWarn("rpc_admission_release_failed", {
+							provider: providerAlias,
+							providerSlot: options.slot + 1,
+							role: options.role,
+							lane,
+							errorName:
+								error instanceof Error
+									? error.name
+									: "unknown",
+						});
+					}
+				}
+				releaseLocal();
 			}
 		}) as EIP1193RequestFn;
 		return createTransport(
@@ -614,6 +692,8 @@ export const __test = {
 	failureThreshold,
 	circuitOpenMs,
 	admissionWaitMs,
+	admissionLeaseTtlMs,
+	acquireDistributedAdmission,
 	fnv1a,
 	concurrencyForLane,
 	rpcMethodFamily,

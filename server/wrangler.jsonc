@@ -13,7 +13,7 @@
       "../contracts/src"
     ],
   },
-  "compatibility_date": "2026-07-13",
+  "compatibility_date": "2026-07-26",
   "compatibility_flags": [
     "nodejs_compat"
   ],
@@ -25,31 +25,59 @@
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
     "CHAIN_KEY": "arbitrum-sepolia",
-    // Public, provider-independent reconciliation defaults. RPC role URLs stay
-    // secrets because READ/WRITE may contain a managed provider API key.
+    // Provider-neutral reconciliation defaults. Endpoint-specific plan limits
+    // can be declared with the RPC_PROVIDER_CAPABILITIES secret/config.
     "RPC_INDEXER_MIN_BLOCK_RANGE": "10",
     "RPC_INDEXER_MAX_BLOCK_RANGE": "2000",
     "INDEXER_WALLET_SHARD_SIZE": "250",
-    "BALANCE_MAX_STALENESS_SECONDS": "60",
+    "INDEXER_REGISTRY_BATCH_SIZE": "25",
+    "INDEXER_MAX_RPC_CALLS_PER_JOB": "16",
+    "INDEXER_MAX_BLOCKS_PER_JOB": "20000",
+    "INDEXER_MAX_EVENT_BLOCKS_PER_JOB": "8",
+    "BALANCE_MAX_STALENESS_SECONDS": "300",
     "ARBITRUM_L1_CONFIRMATIONS_REQUIRED": "12",
     // Parmelia's EntryPoint is v0.9. Keep self-relay until a bundler proves that
     // exact capability through eth_supportedEntryPoints.
     "RELAYER_MODE": "self",
     "BUNDLER_ROLLOUT_PERCENT": "0",
     "BUNDLER_SELF_FALLBACK": "false",
-    // Address Activity is enabled only after its independent signing/admin
-    // secrets and the explicit non-Alchemy INDEXER role are configured.
+    // Address Activity is a wakeup source; RPC remains canonical truth.
     "ALCHEMY_WEBHOOK_ENABLED": "false",
+    // Custom Webhook wakes router/recovery verification on matching logs. Until
+    // configured, router intents use a bounded 2-minute polling fallback.
+    "ALCHEMY_CUSTOM_WEBHOOK_ENABLED": "false",
     // CORS allowlist (defense in depth - real auth is Firebase token + passkey).
     // Add Vercel preview domains here if you test against previews.
     "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173,https://app.parmelia.me",
   },
-  // Mini-indexer: scan external incoming ERC-20 transfers into the ledger.
-  "triggers": {
-    "crons": [
-      "*/2 * * * *"
-    ],
+  // Event-driven scheduler: no static Cron Trigger. One Durable Object per
+  // job partition owns an alarm only while that partition has pending work.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EVENT_JOB_SCHEDULER",
+        "class_name": "EventJobScheduler"
+      },
+      {
+        "name": "RPC_ADMISSION",
+        "class_name": "RpcAdmissionController"
+      }
+    ]
   },
+  "migrations": [
+    {
+      "tag": "v1_event_job_scheduler",
+      "new_sqlite_classes": [
+        "EventJobScheduler"
+      ]
+    },
+    {
+      "tag": "v2_rpc_admission",
+      "new_sqlite_classes": [
+        "RpcAdmissionController"
+      ]
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -75,31 +103,17 @@
   "queues": {
     "producers": [
       {
-        "binding": "BALANCE_REFRESH_QUEUE",
-        "queue": "parmelia-balance-refresh",
-      },
-      {
         "binding": "SCHEDULED_JOBS_QUEUE",
         "queue": "parmelia-scheduled-jobs",
       },
     ],
     "consumers": [
       {
-        "queue": "parmelia-balance-refresh",
-        "max_batch_size": 25,
-        "max_batch_timeout": 2,
-        "max_retries": 5,
-        "dead_letter_queue": "parmelia-balance-refresh-dlq",
-        "max_concurrency": 2,
-        "retry_delay": 5,
-      },
-      {
-        // One job per invocation is intentional: each indexer/reconciler gets
-        // its own Free-plan subrequest budget instead of sharing the cron's 50.
+        // One partition per invocation isolates retries and provider budgets.
         "queue": "parmelia-scheduled-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
-        "max_retries": 5,
+        "max_retries": 3,
         "dead_letter_queue": "parmelia-scheduled-jobs-dlq",
         "max_concurrency": 4,
         "retry_delay": 15,

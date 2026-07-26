@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
-	acquireCronLock,
+	acquireLease,
 	claimPendingForSubmit,
 	createAccountOperation,
 	createCrosschainOp,
@@ -10,8 +10,8 @@ import {
 	getActiveAccountOperation,
 	getCrosschainOpById,
 	listLedgerPageByUid,
-	releaseCronLock,
-	renewCronLock,
+	releaseLease,
+	renewLease,
 	updateCrosschainOp,
 	writeLedgerEntries,
 	type PendingPaymentRecord,
@@ -19,16 +19,20 @@ import {
 import { settlePayment } from "../src/services/settlement";
 import { hmacSha256Hex } from "../src/services/webhooks";
 import { SignerLeaseBusyError, withSignerLease } from "../src/services/signerLease";
-import { syncStableWalletShards } from "../src/services/indexerShards";
+import {
+	assignWalletToStableShard,
+	listIndexerShardIds,
+	listWalletsForIndexerShard,
+} from "../src/services/indexerShards";
 import { journalBlockEvents } from "../src/services/chainJournal";
 import { projectBalanceDeltas } from "../src/services/balanceProjector";
 import {
 	listBalanceSnapshots,
+	requestBalanceRefresh,
 	upsertBalanceSnapshots,
 } from "../src/services/balanceReadModel";
 import { verifyAndRecoverStream } from "../src/services/reorg";
 import { __test as rpcControlTest } from "../src/services/rpcControlPlane";
-import { scheduleStaleRpcOnlyBalanceMaintenance } from "../src/services/balanceReconciler";
 
 describe.sequential("Cloudflare Worker runtime", () => {
 	it("does not load developer secrets", () => {
@@ -69,6 +73,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0023_bundler_capabilities.sql",
 			"0024_payment_reconcile_queue.sql",
 			"0025_asset_projection_audits.sql",
+			"0026_indexer_work_partitions.sql",
 		]);
 	});
 
@@ -103,6 +108,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"bundler_capabilities",
 			"balance_projection_baselines",
 			"balance_reconciliation_audits",
+			"indexer_wallet_registry_outbox",
+			"provider_subscription_items",
+			"provider_subscription_sync_state",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -145,8 +153,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		).rejects.toThrow();
 	});
 
-	it("globally bootstraps a wallet that has no balance snapshots", async () => {
-		const uid = "runtime-missing-balance-bootstrap";
+	it("coalesces an equivalent balance wakeup in real D1", async () => {
+		const uid = "runtime-balance-event-coalesce";
 		const address = "0x0101010101010101010101010101010101010101";
 		const now = new Date().toISOString();
 		await env.PARMELIA_DB.prepare(
@@ -156,18 +164,28 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		)
 			.bind(uid, uid, address, now, now)
 			.run();
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: address,
+			chainId: 421614,
+			reason: "first_stale_read",
+			priority: 3,
+		});
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: address,
+			chainId: 421614,
+			reason: "duplicate_stale_read",
+			priority: 3,
+		});
 
-		expect(await scheduleStaleRpcOnlyBalanceMaintenance(env)).toBe(1);
-		const request = await env.PARMELIA_DB.prepare(
-			`SELECT status, reason FROM balance_refresh_requests
+		const rows = await env.PARMELIA_DB.prepare(
+			`SELECT reason FROM balance_refresh_requests
 			 WHERE chain_id = 421614 AND account_address = ?`,
 		)
 			.bind(address)
-			.first<{ status: string; reason: string }>();
-		expect(request).toEqual({
-			status: "pending",
-			reason: "scheduled_rpc_only_asset_audit",
-		});
+			.all<{ reason: string }>();
+		expect(rows.results).toEqual([{ reason: "first_stale_read" }]);
 
 		await env.PARMELIA_DB.batch([
 			env.PARMELIA_DB.prepare(
@@ -198,18 +216,35 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				),
 			),
 		);
-		const first = await syncStableWalletShards(env, {
+		const originalAssignments = new Map<string, number>();
+		for (const wallet of wallets) {
+			const assignment = await assignWalletToStableShard(env, {
+				chainId: 421614,
+				stream: "runtime-stable-shards",
+				uid: wallet.uid,
+				walletAddress: wallet.walletAddress,
+				maxWallets: 2,
+			});
+			originalAssignments.set(
+				wallet.walletAddress,
+				assignment!.shardId,
+			);
+		}
+		const initialShardIds = await listIndexerShardIds(env, {
 			chainId: 421614,
 			stream: "runtime-stable-shards",
-			wallets,
-			maxWallets: 2,
 		});
-		expect(first.shards.map((shard) => shard.wallets.length)).toEqual([2, 2, 1]);
-		const originalAssignments = new Map(
-			first.shards.flatMap((shard) =>
-				shard.wallets.map((wallet) => [wallet.walletAddress, shard.shardId] as const),
+		expect(
+			await Promise.all(
+				initialShardIds.map(async (shardId) =>
+					(await listWalletsForIndexerShard(env, {
+						chainId: 421614,
+						stream: "runtime-stable-shards",
+						shardId,
+					})).length,
+				),
 			),
-		);
+		).toEqual([2, 2, 1]);
 
 		const added = {
 			uid: "runtime-shard-user-added",
@@ -222,29 +257,36 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		)
 			.bind(added.uid, added.uid, added.walletAddress, now, now)
 			.run();
-		const second = await syncStableWalletShards(env, {
+		const second = await assignWalletToStableShard(env, {
 			chainId: 421614,
 			stream: "runtime-stable-shards",
-			wallets: [added, ...wallets],
+			uid: added.uid,
+			walletAddress: added.walletAddress,
 			maxWallets: 2,
 		});
-		expect(second.assignmentsChanged).toBe(true);
-		expect(second.shards.every((shard) => shard.wallets.length <= 2)).toBe(true);
-		for (const shard of second.shards) {
-			for (const wallet of shard.wallets) {
-				if (wallet.uid !== added.uid) {
-					expect(shard.shardId).toBe(originalAssignments.get(wallet.walletAddress));
-				}
-			}
+		expect(second?.shardId).toBe(2);
+		for (const wallet of wallets) {
+			const row = await env.PARMELIA_DB.prepare(
+				`SELECT shard_id
+				 FROM indexer_wallet_assignments
+				 WHERE chain_id = 421614 AND stream = 'runtime-stable-shards'
+				   AND account_address = ? AND active = 1`,
+			)
+				.bind(wallet.walletAddress)
+				.first<{ shard_id: number }>();
+			expect(row?.shard_id).toBe(
+				originalAssignments.get(wallet.walletAddress),
+			);
 		}
 
-		const third = await syncStableWalletShards(env, {
+		const third = await assignWalletToStableShard(env, {
 			chainId: 421614,
 			stream: "runtime-stable-shards",
-			wallets: [added, ...wallets],
+			uid: added.uid,
+			walletAddress: added.walletAddress,
 			maxWallets: 2,
 		});
-		expect(third.assignmentsChanged).toBe(false);
+		expect(third).toEqual(second);
 	});
 
 	it("paginates the ledger without gaps and commits notifications atomically", async () => {
@@ -1055,20 +1097,21 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		});
 	});
 
-	it("keeps the cron lease exclusive and owner-bound", async () => {
-		const firstOwner = await acquireCronLock(env, 60_000);
+	it("keeps a named work lease exclusive and owner-bound", async () => {
+		const key = "test:owner-bound-lease";
+		const firstOwner = await acquireLease(env, key, 60_000);
 		expect(firstOwner).toBeTypeOf("string");
-		expect(await acquireCronLock(env, 60_000)).toBeNull();
-		expect(await renewCronLock(env, "not-the-owner", 120_000)).toBe(false);
-		expect(await renewCronLock(env, firstOwner!, 120_000)).toBe(true);
+		expect(await acquireLease(env, key, 60_000)).toBeNull();
+		expect(await renewLease(env, key, "not-the-owner", 120_000)).toBe(false);
+		expect(await renewLease(env, key, firstOwner!, 120_000)).toBe(true);
 
-		await releaseCronLock(env, "not-the-owner");
-		expect(await acquireCronLock(env, 60_000)).toBeNull();
+		await releaseLease(env, key, "not-the-owner");
+		expect(await acquireLease(env, key, 60_000)).toBeNull();
 
-		await releaseCronLock(env, firstOwner!);
-		const secondOwner = await acquireCronLock(env, 60_000);
+		await releaseLease(env, key, firstOwner!);
+		const secondOwner = await acquireLease(env, key, 60_000);
 		expect(secondOwner).toBeTypeOf("string");
 		expect(secondOwner).not.toBe(firstOwner);
-		await releaseCronLock(env, secondOwner!);
+		await releaseLease(env, key, secondOwner!);
 	});
 });

@@ -1,5 +1,7 @@
 import type { Bindings } from "../middlewares/auth";
 import { logError } from "./logger";
+import { scheduleEventJob } from "./eventScheduler";
+import { scheduleWalletIndexerPartitions } from "./indexerPartitions";
 
 export type UserRecord = {
 	uid: string;
@@ -37,7 +39,7 @@ export type PaymentLinkRecord = {
  * atomic compare-and-set so a Worker death or a duplicate request can never
  * fork the state:
  *   prepared -> submitting -> submitted -> confirmed | failed
- * The reconciler cron resolves rows stranded in submitting/submitted.
+ * The event-driven reconciler resolves rows stranded in submitting/submitted.
  */
 export type PendingPaymentStatus = "prepared" | "submitting" | "submitted" | "confirmed" | "failed";
 export type PendingPaymentSubmissionTransport = "self" | "bundler";
@@ -317,6 +319,14 @@ export async function saveUser(
 	// Addresses are stored lowercase so the ledger / indexer can do exact
 	// reverse lookups (address → user) without case games.
 	const walletAddress = user.walletAddress?.toLowerCase() ?? null;
+	if (walletAddress) {
+		// Schedule before the upsert: a crash can create one harmless empty run,
+		// but can never persist a new wallet without a durable indexing wakeup.
+		await scheduleEventJob(env, "indexer_wallet_registry", {
+			delayMs: 2_000,
+			reason: "wallet_registered_backfill",
+		});
+	}
 
 	// Single atomic upsert: omitted fields keep their stored value (COALESCE), so
 	// concurrent partial saves can't clobber each other (no read-modify-write).
@@ -741,6 +751,29 @@ export async function getPendingPaymentAnyState(
  */
 export async function claimPendingForSubmit(env: Bindings, userOpHash: string): Promise<boolean> {
 	const now = nowIso();
+	const pendingSender = await d1First<{ sender_address: string }>(
+		env,
+		`SELECT sender_address
+		 FROM pending_payments
+		 WHERE user_op_hash = ? AND status = 'prepared'
+		 LIMIT 1`,
+		[userOpHash],
+	);
+	// Wake both the canonical UserOperation stream and its D1 reconciler before
+	// taking the submitting claim. If the claim loses, both jobs are harmless.
+	await Promise.all([
+		pendingSender
+			? scheduleWalletIndexerPartitions(
+					env,
+					[pendingSender.sender_address],
+					"payment_submission_claimed",
+				)
+			: Promise.resolve(0),
+		scheduleEventJob(env, "payment_reconciler", {
+			delayMs: 10_000,
+			reason: "payment_submission_claimed",
+		}),
+	]);
 	const results = await env.PARMELIA_DB.batch([
 		env.PARMELIA_DB.prepare(
 			`UPDATE pending_payments
@@ -850,7 +883,7 @@ export async function listPendingPaymentsByStatus(
 
 /**
  * Durable payment-reconciliation work. A request can be reclaimed only after
- * its owner lease expires, so overlapping cron/queue invocations remain safe.
+ * its owner lease expires, so overlapping Queue deliveries remain safe.
  */
 export async function listDuePaymentReconcileRequests(
 	env: Bindings,
@@ -973,6 +1006,10 @@ export async function createAccountOperation(
 		"status" | "attemptCount" | "lastError" | "errorCode" | "updatedAt" | "confirmedAt"
 	>,
 ): Promise<boolean> {
+	await scheduleEventJob(env, "account_operation_reconciler", {
+		delayMs: 5_000,
+		reason: "account_operation_created",
+	});
 	const result = await d1Run(
 		env,
 		`INSERT OR IGNORE INTO account_operations (
@@ -1192,7 +1229,7 @@ export async function refundRateLimitConsume(
 	);
 }
 
-/** Drop counters whose window is long gone (cron hygiene). */
+/** Drop rate-limit counters whose window is long gone. */
 export async function sweepRateLimits(env: Bindings): Promise<void> {
 	const cutoff = String(Math.floor(Date.now() / 1000) - 24 * 3600);
 	await d1Run(env, `DELETE FROM rate_limits WHERE window_start < ?`, [cutoff]);
@@ -1209,7 +1246,7 @@ export type LedgerEntry = {
 	direction: "in" | "out";
 	kind: LedgerKind;
 	txHash: string;
-	/** Only for cron-ingested on-chain entries (dedup key). */
+	/** Only for indexer-ingested on-chain entries (dedup key). */
 	logIndex?: number | null;
 	token: string;
 	amount: string;
@@ -1502,7 +1539,7 @@ export async function listLedgerByUid(
 	return (await listLedgerPageByUid(env, uid, { limit })).entries;
 }
 
-/** All wallets the cron indexer must watch. */
+/** All wallets the shared event-driven indexer must watch. */
 export async function listUserWallets(env: Bindings): Promise<{ uid: string; walletAddress: string }[]> {
 	const rows = await d1All<{ uid: string; wallet_address: string }>(
 		env,
@@ -1533,11 +1570,9 @@ export async function setSyncCursor(env: Bindings, key: string, lastBlock: bigin
 
 // ===== D1 leases =====
 //
-// Owner-bound leases protect both the scheduled handler and short transaction
-// signing critical sections. A stale holder cannot renew or release a newer
-// owner's lease.
-
-const CRON_LOCK_KEY = "cron:lock";
+// Owner-bound leases protect event jobs and short transaction-signing critical
+// sections. `cron_leases` is the legacy physical table name retained so rolling
+// deployments share the same lock domain; no Cron API remains.
 
 export async function acquireLease(
 	env: Bindings,
@@ -1582,20 +1617,10 @@ export async function renewLease(
 }
 
 export async function releaseLease(env: Bindings, key: string, owner: string): Promise<void> {
-	await d1Run(env, `DELETE FROM cron_leases WHERE key = ? AND owner = ?`, [key, owner]);
-}
-
-/** Try to acquire the global cron lease for ttlMs. */
-export function acquireCronLock(env: Bindings, ttlMs: number): Promise<string | null> {
-	return acquireLease(env, CRON_LOCK_KEY, ttlMs);
-}
-
-export function renewCronLock(env: Bindings, owner: string, ttlMs: number): Promise<boolean> {
-	return renewLease(env, CRON_LOCK_KEY, owner, ttlMs);
-}
-
-export function releaseCronLock(env: Bindings, owner: string): Promise<void> {
-	return releaseLease(env, CRON_LOCK_KEY, owner);
+	await d1Run(env, `DELETE FROM cron_leases WHERE key = ? AND owner = ?`, [
+		key,
+		owner,
+	]);
 }
 
 function mapPasskeyRow(row: PasskeyRow): PasskeyRecord {
@@ -2087,6 +2112,12 @@ function mapIntent(row: PaymentIntentRow): PaymentIntentRecord {
 }
 
 export async function createPaymentIntent(env: Bindings, rec: PaymentIntentRecord) {
+	if (rec.status === "awaiting_payment" && rec.onchainId) {
+		await scheduleEventJob(env, "router_watcher", {
+			delayMs: 2_000,
+			reason: "payment_intent_created",
+		});
+	}
 	await d1Run(
 		env,
 		`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
@@ -2105,6 +2136,12 @@ export async function createPaymentIntentWithOutbox(
 	rec: PaymentIntentRecord,
 	outbox: EventOutboxPlan,
 ): Promise<void> {
+	if (rec.status === "awaiting_payment" && rec.onchainId) {
+		await scheduleEventJob(env, "router_watcher", {
+			delayMs: 2_000,
+			reason: "payment_intent_created",
+		});
+	}
 	await env.PARMELIA_DB.batch([
 		env.PARMELIA_DB.prepare(
 			`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
@@ -2117,6 +2154,11 @@ export async function createPaymentIntentWithOutbox(
 		),
 		...eventOutboxStatements(env, outbox),
 	]);
+	if (outbox.deliveries.length > 0) {
+		await scheduleEventJob(env, "webhook_delivery", {
+			reason: "payment_intent_event_created",
+		});
+	}
 }
 
 /**
@@ -2129,6 +2171,12 @@ export async function createPaymentIntentTransaction(
 	rec: PaymentIntentRecord,
 	outbox: EventOutboxPlan,
 ): Promise<void> {
+	if (rec.status === "awaiting_payment" && rec.onchainId) {
+		await scheduleEventJob(env, "router_watcher", {
+			delayMs: 2_000,
+			reason: "payment_intent_created",
+		});
+	}
 	const statements = [
 		env.PARMELIA_DB.prepare(
 			`INSERT INTO payment_links (
@@ -2151,6 +2199,11 @@ export async function createPaymentIntentTransaction(
 		...eventOutboxStatements(env, outbox),
 	];
 	await env.PARMELIA_DB.batch(statements);
+	if (outbox.deliveries.length > 0) {
+		await scheduleEventJob(env, "webhook_delivery", {
+			reason: "payment_intent_event_created",
+		});
+	}
 }
 
 const INTENT_COLS =
@@ -2267,7 +2320,13 @@ export async function markPaymentIntentPaidWithOutbox(
 		).bind(txHash, paidAt, id),
 		...eventOutboxStatements(env, outbox, { intentId: id, txHash }),
 	]);
-	return didWrite(results[0]);
+	const written = didWrite(results[0]);
+	if (written && outbox.deliveries.length > 0) {
+		await scheduleEventJob(env, "webhook_delivery", {
+			reason: "payment_intent_paid",
+		});
+	}
+	return written;
 }
 
 /**
@@ -2317,7 +2376,13 @@ export async function settlePaymentLinkWithOutbox(
 	}
 
 	const results = await env.PARMELIA_DB.batch(statements);
-	return didWrite(results[0]);
+	const written = didWrite(results[0]);
+	if (written && params.outbox && params.outbox.deliveries.length > 0) {
+		await scheduleEventJob(env, "webhook_delivery", {
+			reason: "payment_link_settled",
+		});
+	}
+	return written;
 }
 
 export async function updatePaymentIntentStatus(env: Bindings, id: string, merchantId: string, status: PaymentIntentStatus): Promise<boolean> {
@@ -2363,6 +2428,9 @@ export async function createWebhookEndpoint(
 		 VALUES (?, ?, ?, ?, ?, 'enabled', ?, ?)`,
 		[rec.id, rec.merchantId, rec.url, rec.secret, rec.enabledEvents ? JSON.stringify(rec.enabledEvents) : null, rec.mode, rec.createdAt],
 	);
+	await scheduleEventJob(env, "webhook_key_rotation", {
+		reason: "webhook_endpoint_changed",
+	});
 	return rec;
 }
 
@@ -2462,6 +2530,11 @@ function eventOutboxStatements(
 /** Persist an immutable event and all endpoint deliveries atomically. */
 export async function enqueueEventOutbox(env: Bindings, plan: EventOutboxPlan): Promise<void> {
 	await env.PARMELIA_DB.batch(eventOutboxStatements(env, plan));
+	if (plan.deliveries.length > 0) {
+		await scheduleEventJob(env, "webhook_delivery", {
+			reason: "merchant_event_enqueued",
+		});
+	}
 }
 
 export async function createEvent(env: Bindings, rec: EventRecord) {
@@ -2564,7 +2637,7 @@ export async function listDueWebhookDeliveries(env: Bindings, limit = 25): Promi
 
 /**
  * Claim a due delivery for `leaseMs` by pushing next_retry_at into the future —
- * atomically, so two overlapping flushes (cron + post-request waitUntil) can't
+ * atomically, so two overlapping Queue deliveries can't
  * POST the same delivery twice. The winner delivers and then records the final
  * state; if it dies mid-flight, the lease expires and the delivery is retried.
  */
@@ -2642,6 +2715,9 @@ export async function requeueWebhookDelivery(env: Bindings, merchantId: string, 
 		 WHERE id = ? AND endpoint_id IN (SELECT id FROM webhook_endpoints WHERE merchant_id = ?)`,
 		[id, merchantId],
 	);
+	await scheduleEventJob(env, "webhook_delivery", {
+		reason: "merchant_webhook_manual_resend",
+	});
 }
 
 // ===== Cross-chain operations (CCTP v2) =====
@@ -2771,6 +2847,16 @@ export async function createCrosschainOp(
 	op: Omit<CrosschainOpRecord, "attemptCount" | "lastError"> &
 		Partial<Pick<CrosschainOpRecord, "attemptCount" | "lastError">>,
 ) {
+	if (
+		["submitted", "waiting_attestation", "minting", "recoverable"].includes(
+			op.status,
+		)
+	) {
+		await scheduleEventJob(env, "crosschain_relayer", {
+			delayMs: 5_000,
+			reason: "crosschain_operation_created",
+		});
+	}
 	await d1Run(
 		env,
 		`INSERT INTO crosschain_operations
@@ -2868,7 +2954,7 @@ type CrosschainPatch = Partial<
 /**
  * Partial update of an op's mutable fields; always bumps updated_at. Returns
  * whether a row was written. Two guards make the state machine safe under
- * overlapping crons:
+ * overlapping relayer deliveries:
  *   - 'completed' is terminal: no patch can ever leave it (a late/duplicate
  *     relayer pass can't demote a finished op back to 'recoverable').
  *   - opts.ifStatusIn restricts the transition to specific current states
@@ -2889,6 +2975,17 @@ export async function updateCrosschainOp(
 		}
 	}
 	if (sets.length === 0) return false;
+	if (
+		patch.status !== undefined &&
+		["submitted", "waiting_attestation", "minting", "recoverable"].includes(
+			patch.status,
+		)
+	) {
+		await scheduleEventJob(env, "crosschain_relayer", {
+			delayMs: 30_000,
+			reason: "crosschain_operation_advanced",
+		});
+	}
 	sets.push("updated_at = ?");
 	vals.push(nowIso());
 	vals.push(opId);
@@ -2948,7 +3045,7 @@ export async function recordCrosschainMintBroadcast(
 }
 
 /**
- * Operability sweep (called from the relayer cron):
+ * Operability sweep performed by an active relayer job:
  *   - ops never signed/registered ('quoted' / 'pending_signature') expire after
  *     24h — they hold no funds, they're just abandoned checkouts;
  *   - in-flight ops stuck > 7 days park as 'needs_support' (manual runbook) so

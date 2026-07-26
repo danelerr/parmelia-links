@@ -23,9 +23,9 @@ npm run cf-typegen:check      # falla si el archivo generado tiene drift
 
 La suite `test:worker-runtime` usa `wrangler.test.jsonc` y el sentinel no
 sensible `.dev.vars.runtime-test`; nunca carga `.dev.vars`. Aplica las once
-migraciones originales más todas las migraciones aditivas hasta `0025` sobre un
+migraciones originales más todas las migraciones aditivas hasta `0026` sobre un
 D1 aislado y prueba HTTP, CORS, Web Crypto, límites de body,
-FK/STRICT, operaciones de cuenta durables y exclusión del lease de cron dentro
+FK/STRICT, operaciones de cuenta durables y exclusión de leases dentro
 del runtime `workerd`.
 
 Los logs de aplicación son JSON estructurado y pasan por `services/logger.ts`,
@@ -35,8 +35,36 @@ de esa implementación.
 
 Cada request recibe un `requestId` único y estable, expuesto en
 `X-Request-Id` y reutilizado en logs y errores. Las integraciones HTTP externas
-tienen timeout, lectura JSON acotada y liberan bodies ignorados. El cron renueva
-su lease con ownership mientras corre y espera todos los jobs antes de liberarlo.
+tienen timeout, lectura JSON acotada y liberan bodies ignorados.
+
+## Ejecución dirigida por eventos
+
+El Worker no tiene `scheduled()` ni un Cron Trigger. `EventJobScheduler`, un
+Durable Object nombrado por red, job y partición, conserva como máximo una
+ejecución pendiente por shard y arma una alarma sólo cuando existe trabajo
+durable. Al vencer, publica el job en `parmelia-scheduled-jobs`; el consumidor
+toma un lease D1, ejecuta el trabajo y programa otra alarma únicamente si D1
+demuestra que el estado sigue activo. Particiones distintas no comparten un
+singleton y escalan con la concurrencia configurada de Queue.
+
+Los productores son transiciones reales: una wallet o pago recién creado, una
+operación de cuenta/cross-chain pendiente, una fila de outbox, una solicitud de
+balance, un webhook firmado de Alchemy o una entrega fallida. Mil solicitudes
+equivalentes se compactan por partición; mil Homes del mismo usuario compactan
+además su bootstrap de balance en una fila D1 y un job. El registro procesa sólo
+wallets nuevas/modificadas y los lectores trabajan por shards estables, no con
+un mensaje de Queue por wallet ni cargando todos los usuarios.
+
+**Invariante idle:** sin requests, sin estado pendiente y sin webhooks
+relevantes, no hay alarma, mensaje de Queue, invocación de background ni llamada
+RPC. El endpoint `/health` puede ejecutar una reparación única de agenda si
+encuentra trabajo preexistente; esa ejecución está causada por la propia
+solicitud de health.
+
+Mientras `ALCHEMY_CUSTOM_WEBHOOK_ENABLED=false`, sólo un invoice on-chain
+activo mantiene un fallback de `router_watcher` cada dos minutos; se detiene al
+pagarse, cancelarse o expirar el último intent. En mainnet el Custom Webhook es
+obligatorio y ese polling desaparece.
 
 ## Almacenamiento (D1)
 
@@ -48,10 +76,15 @@ Toda la data de la app vive en D1 (binding `PARMELIA_DB`): usuarios/usernames, w
 
 - Lo que la app relaya (pagos, swaps, faucet) se escribe al confirmar - ambos lados en transferencias internas.
 - Los **depósitos externos** entrantes los ingiere una sola vez el watcher
-  compartido (`services/indexer.ts`) en rangos adaptativos, los guarda con
+  particionado (`services/indexer.ts`) en rangos adaptativos, los guarda con
   bloque/hash/posición en el journal y proyecta el ledger idempotentemente.
-- Alchemy Address Activity puede acelerar la llegada del evento; el poller
-  independiente repara huecos desde checkpoints y garantiza completitud.
+- Alchemy Address Activity entrega depósitos de wallets registradas; cada
+  payload sólo despierta los shards afectados; el pool RPC vuelve a leer la
+  evidencia canónica antes de proyectarla. El mismo payload solicita una
+  reconciliación Multicall acotada para cubrir también ETH nativo. Si el webhook
+  no llega, una lectura stale de Home despierta sólo las particiones y el balance
+  de esa wallet desde sus checkpoints. La snapshot stale se sirve honestamente:
+  nunca existe un refresh global de balances.
 
 No depende de Blockscout/Etherscan/BlockVision en cada request.
 
@@ -62,7 +95,7 @@ npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
-`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0025_asset_projection_audits.sql` ANTES de desplegar el Worker que las usa.
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0026_indexer_work_partitions.sql` ANTES de desplegar el Worker que las usa.
 
 **Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente). El **watcher compartido** resuelve todos los `UserOperationEvent` mediante rangos acotados del indexador —no hace una búsqueda histórica por pago— y el reconciliador durable consulta esa proyección en D1. Sólo entonces liquida o marca `failed`, repara el hand-off CCTP y expira lo que ya no puede aterrizar. `GET /pay/status/:userOpHash` expone el estado para polling.
 
@@ -70,7 +103,7 @@ npx wrangler d1 migrations apply parmeliadb --remote
 `prepared → submitted → confirmed | failed | needs_review`. El Worker firma y
 persiste la transacción cruda y su nonce **antes** del broadcast, protegido por
 un lease D1 por firmante. Las rutas devuelven 202; el cliente consulta
-`GET /account/operations/:id` y el cron reemite la misma transacción y reconcilia
+`GET /account/operations/:id` y un job durable reemite la misma transacción y reconcilia
 el recibo. La finalización D1 es idempotente; un revert del faucet libera claim
 y presupuesto, mientras `needs_review` bloquea otro envío del mismo tipo. El
 mismo lease `chainId + signer` coordina `handleOps`, mints CCTP y operaciones de
@@ -87,10 +120,11 @@ hasta reconciliar, evitando reemplazos silenciosos de nonce. `/health` devuelve
 
 ```txt
 npx wrangler secret put RPC_URL                          # compatibilidad/base
-npx wrangler secret put RPC_READ_URLS                    # lecturas puntuales; Alchemy Free permitido
+npx wrangler secret put RPC_READ_URLS                    # pool de lecturas puntuales
 npx wrangler secret put RPC_WRITE_URLS                   # simulación/broadcast
-npx wrangler secret put RPC_INDEXER_URLS                 # logs; NO Alchemy Free con máximo 2000
+npx wrangler secret put RPC_INDEXER_URLS                 # pool canónico eth_getLogs
 npx wrangler secret put RPC_ARCHIVE_URLS                 # backfills aislados
+npx wrangler secret put RPC_PROVIDER_CAPABILITIES        # límites/priority por slot, sin URLs
 npx wrangler secret put BUNDLER_RPC_URLS                 # sólo si RELAYER_MODE=bundler
 npx wrangler secret put PRIVATE_KEY                       # EOA operativa: relayer handleOps/CCTP
 npx wrangler secret put FAUCET_PRIVATE_KEY                # EOA con presupuesto faucet (obligatoria si se activa en mainnet)
@@ -100,15 +134,34 @@ npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY # firma autorizaciones
 npx wrangler secret put TURNSTILE_SECRET_KEY              # anti-abuso (testnet: opcional; MAINNET: obligatorio, sin él create/fund fallan cerrado)
 npx wrangler secret put FCM_SERVICE_ACCOUNT               # JSON del service account, 1 línea (opcional; sin definir = sin push)
 npx wrangler secret put CCTP_RPC_URLS                     # opcional: JSON chainId->RPC para destinos cross-chain (si no, públicos)
+npx wrangler secret put ALCHEMY_WEBHOOK_ID                # Notify Address Activity
+npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK           # red exacta del webhook
+npx wrangler secret put ALCHEMY_WEBHOOK_SIGNING_KEY       # firma HMAC de Address Activity
+npx wrangler secret put ALCHEMY_ADDRESS_WEBHOOKS_JSON     # reemplazo multi-slot opcional
+npx wrangler secret put ALCHEMY_NOTIFY_AUTH_TOKEN         # API Notify para sincronizar wallets
+npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_ID         # Custom Webhook para router/recovery
+npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY # firma HMAC del Custom Webhook
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY     # 32 bytes base64/hex; AES-GCM para secretos HMAC (mainnet obligatorio)
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID  # identificador corto de la clave activa
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS # JSON id->clave, sólo durante rotación
 ```
 
-**Política de claves (least privilege, `services/keys.ts` + `runtimeConfig.ts`):** en testnet, si falta una clave dedicada se cae a la más amplia (una sola EOA sirve para dev). En **mainnet los fallbacks están prohibidos** y las cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas. El faucet usa su propio signer y lease de nonce; si está desactivado no exige una clave ociosa. `GET /health` expone únicamente códigos de checks, nunca secretos; cualquier configuración mainnet incompleta bloquea requests y cron con 503. Ver `DEPLOY.md` §11.
+La API key incluida en una URL `https://arb-*.g.alchemy.com/v2/...` sólo
+autentica JSON-RPC: no sustituye ninguno de los IDs, signing keys o el token de
+Notify anteriores. Activa los flags no sensibles
+`ALCHEMY_WEBHOOK_ENABLED=true` y `ALCHEMY_CUSTOM_WEBHOOK_ENABLED=true` sólo
+después de crear ambos webhooks.
 
-Los secretos de webhook nuevos usan `enc:v2:<key-id>` con AES-GCM y AAD. El cron
-recifra plaintext, `v1` y IDs anteriores mientras sus claves aparezcan en
+Un mismo `RPC_INDEXER_URLS` puede contener endpoints con rangos diferentes:
+`RPC_PROVIDER_CAPABILITIES` declara `maxLogRange`, `maxConcurrency` y
+`priority` para cada posición. El scanner elige sólo proveedores elegibles para
+el span y `RPC_ADMISSION` aplica la concurrencia entre todas las instancias. No
+hay reglas de plan por hostname. Ver `docs/runbooks/rpc-operations.md`.
+
+**Política de claves (least privilege, `services/keys.ts` + `runtimeConfig.ts`):** en testnet, si falta una clave dedicada se cae a la más amplia (una sola EOA sirve para dev). En **mainnet los fallbacks están prohibidos** y las cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas. El faucet usa su propio signer y lease de nonce; si está desactivado no exige una clave ociosa. `GET /health` expone únicamente códigos de checks, nunca secretos; cualquier configuración mainnet incompleta bloquea requests con 503. Ver `DEPLOY.md` §11.
+
+Los secretos de webhook nuevos usan `enc:v2:<key-id>` con AES-GCM y AAD. El job
+de rotación recifra plaintext, `v1` y IDs anteriores mientras sus claves aparezcan en
 `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS`; elimina esa variable sólo cuando D1
 ya no contenga filas antiguas.
 
