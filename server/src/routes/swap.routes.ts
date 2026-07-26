@@ -49,6 +49,7 @@ import {
 } from "../services/userOp";
 import { logError, logInfo, logWarn } from "../services/logger";
 import { encodeFunctionData } from "viem";
+import { selectUserOperationTransport } from "../services/userOperationTransport";
 
 const swapRoutes = new Hono<AppContext>();
 
@@ -334,10 +335,12 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		});
 
 		const executeCalldata = encodeExecuteBatch(calls);
+		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
 		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: SWAP_CALL_GAS_LIMIT,
+			transportMode: submissionTransport,
 		});
 
 		await createPendingPayment(c.env, {
@@ -349,6 +352,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 			wallet: account,
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			submissionTransport,
 			// Context for /pay/submit to write precise ledger entries.
 			meta: {
 				quoteId,

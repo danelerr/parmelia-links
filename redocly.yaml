@@ -1,0 +1,12 @@
+apis:
+  parmelia@v1:
+    root: ./docs/openapi.yaml
+
+extends:
+  - recommended-strict
+
+rules:
+  # Legal licensing is intentionally not inferred by an API-schema gate.
+  info-license: off
+
+telemetry: off

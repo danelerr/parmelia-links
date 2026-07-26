@@ -1,0 +1,14 @@
+title = "Parmelia Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated or vendored trees"
+paths = [
+  '''(^|[\\/])\.git([\\/])''',
+  '''(^|[\\/])\.agents([\\/])''',
+  '''(^|[\\/])node_modules([\\/])''',
+  '''(^|[\\/])contracts[\\/]lib([\\/])''',
+  '''(^|[\\/])(dist|out|cache|\.wrangler|test-results|playwright-report)([\\/])''',
+]

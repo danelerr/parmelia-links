@@ -21,6 +21,27 @@ client/pnpm-lock.yaml
 server/pnpm-lock.yaml
 shared/pnpm-lock.yaml
 
+# Playwright runtime artifacts.
+test-results/
+playwright-report/
+coverage/
+
+# Local Cloudflare/D1 state created by integration and restore drills.
+.ci-d1/
+
+# Generated Foundry coverage report and broadcast logs.
+contracts/lcov.info
+contracts/broadcast/**/run-*.json
+!contracts/broadcast/**/run-latest.json
+
+# Encrypted D1 exports and manifests contain production metadata/data.
+backups/
+.release/
+
+# Editor config
+.vscode/
+.idea/
+
 # NOTE: .agents/skills/ is intentionally vendored (committed) for now.
 # The `npx skills` toolchain has no "install everything from skills-lock.json"
 # command yet (vercel-labs/skills#283), so the only restore path is re-adding each

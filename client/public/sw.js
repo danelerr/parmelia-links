@@ -3,7 +3,7 @@
 //   - navigations: network-first with the cached shell as offline fallback
 //   - everything else (API, cross-origin, non-GET): untouched — money flows
 //     must NEVER be served from a cache.
-const CACHE = "parmelia-shell-v1";
+const CACHE = "parmelia-shell-v2";
 const SHELL = "/index.html";
 
 self.addEventListener("install", (event) => {
@@ -78,16 +78,36 @@ self.addEventListener("push", (event) => {
 		payload = {};
 	}
 	const info = payload.notification || payload.data || {};
+	const isHomeInvalidation =
+		payload.data && payload.data.type === "home.invalidate";
 	const title = info.title || "Parmelia";
 	const body = info.body || "";
 	const link = (payload.data && payload.data.link) || "/";
+	const invalidateWindows = self.clients
+				.matchAll({ type: "window", includeUncontrolled: true })
+				.then((clients) => {
+					for (const client of clients) {
+						client.postMessage({
+							type: "PARMELIA_HOME_INVALIDATE",
+							stateVersion:
+								payload.data && payload.data.stateVersion,
+						});
+					}
+				});
+	if (isHomeInvalidation) {
+		event.waitUntil(invalidateWindows);
+		return;
+	}
 	event.waitUntil(
-		self.registration.showNotification(title, {
-			body,
-			icon: "/parmelia.svg",
-			badge: "/parmelia.svg",
-			data: { link },
-		}),
+		Promise.all([
+			invalidateWindows,
+			self.registration.showNotification(title, {
+				body,
+				icon: "/parmelia.svg",
+				badge: "/parmelia.svg",
+				data: { link },
+			}),
+		]),
 	);
 });
 

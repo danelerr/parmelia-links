@@ -14,6 +14,21 @@
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
     "CHAIN_KEY": "arbitrum-sepolia",
+    // Public, provider-independent reconciliation defaults. RPC role URLs stay
+    // secrets because READ/WRITE may contain a managed provider API key.
+    "RPC_INDEXER_MIN_BLOCK_RANGE": "10",
+    "RPC_INDEXER_MAX_BLOCK_RANGE": "2000",
+    "INDEXER_WALLET_SHARD_SIZE": "250",
+    "BALANCE_MAX_STALENESS_SECONDS": "60",
+    "ARBITRUM_L1_CONFIRMATIONS_REQUIRED": "12",
+    // Parmelia's EntryPoint is v0.9. Keep self-relay until a bundler proves that
+    // exact capability through eth_supportedEntryPoints.
+    "RELAYER_MODE": "self",
+    "BUNDLER_ROLLOUT_PERCENT": "0",
+    "BUNDLER_SELF_FALLBACK": "false",
+    // Address Activity is enabled only after its independent signing/admin
+    // secrets and the explicit non-Alchemy INDEXER role are configured.
+    "ALCHEMY_WEBHOOK_ENABLED": "false",
     // CORS allowlist (defense in depth - real auth is Firebase token + passkey).
     // Add Vercel preview domains here if you test against previews.
     "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173,https://app.parmelia.me",
@@ -46,4 +61,23 @@
       "migrations_dir": "migrations",
     },
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "BALANCE_REFRESH_QUEUE",
+        "queue": "parmelia-balance-refresh",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "parmelia-balance-refresh",
+        "max_batch_size": 25,
+        "max_batch_timeout": 2,
+        "max_retries": 5,
+        "dead_letter_queue": "parmelia-balance-refresh-dlq",
+        "max_concurrency": 2,
+        "retry_delay": 5,
+      },
+    ],
+  },
 }

@@ -1,4 +1,5 @@
 import { initializeApp } from "firebase/app";
+import { clearHomeCache } from "./homeData";
 
 import {
 	browserLocalPersistence,
@@ -121,6 +122,10 @@ export async function completeEmailLink(url: string, fallbackEmail?: string) {
 }
 
 export async function logOut() {
+	const uid = auth.currentUser?.uid;
+	if (uid) {
+		await clearHomeCache(uid);
+	}
 	return signOut(auth);
 }
 

@@ -1,0 +1,13 @@
+# Public CCTP/contract addresses and documented example values.
+f97ef903d1e0dc4c238c1a5e7beb1cae0cc54528:DEPLOY.md:generic-api-key:294
+9b266a6fdd55cc7059272f2b75895d712087b0a5:BUILDATHON_FORM.md:generic-api-key:139
+9b266a6fdd55cc7059272f2b75895d712087b0a5:des.md:generic-api-key:2
+f88d437d25377dc2c8590887b9bcba56246a2a07:.agents/skills/workers-best-practices/references/rules.md:generic-api-key:82
+29f820c610c2f3e8731eab3bae624addd7061fe4:.agents/skills/workers-best-practices/references/rules.md:generic-api-key:82
+f5b7b148b80e6192b411e2e0728f789bffccabb1:server/.dev.vars.example:generic-api-key:3
+
+# Firebase web config is public client metadata; restrict the key in Google Cloud.
+74a4cb74ec7012a1380d5e31a9ffe55c7083ba52:client/.env:gcp-api-key:1
+
+# Foundry's publicly known Anvil account #0 development key.
+4aa16953977432373fb87fda7977e00067345db3:contracts/script/Deploy.s.sol:generic-api-key:15

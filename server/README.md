@@ -23,7 +23,8 @@ npm run cf-typegen:check      # falla si el archivo generado tiene drift
 
 La suite `test:worker-runtime` usa `wrangler.test.jsonc` y el sentinel no
 sensible `.dev.vars.runtime-test`; nunca carga `.dev.vars`. Aplica las once
-migraciones sobre un D1 aislado y prueba HTTP, CORS, Web Crypto, límites de body,
+migraciones originales más todas las migraciones aditivas hasta `0025` sobre un
+D1 aislado y prueba HTTP, CORS, Web Crypto, límites de body,
 FK/STRICT, operaciones de cuenta durables y exclusión del lease de cron dentro
 del runtime `workerd`.
 
@@ -41,12 +42,16 @@ su lease con ownership mientras corre y espera todos los jobs antes de liberarlo
 
 Toda la data de la app vive en D1 (binding `PARMELIA_DB`): usuarios/usernames, wallet del usuario, `credential_id` (pista de UX), `referral_code`, estado del faucet, links de cobro, pagos pendientes (`prepare`↔`submit`), operaciones on-chain durables de cuenta/faucet/recovery, cotizaciones de swap, contactos y el **ledger** unificado de movimientos.
 
-### Historial = ledger + indexer (sin indexador pago)
+### Historial = journal + proyecciones D1
 
 `/user/transactions` lee **solo** la tabla `ledger`:
 
 - Lo que la app relaya (pagos, swaps, faucet) se escribe al confirmar - ambos lados en transferencias internas.
-- Los **depósitos externos** entrantes los ingiere un **Cron Trigger** (`services/indexer.ts`, cada 2 min) escaneando logs `Transfer` ERC-20 con un cursor en `sync_state`. Escrituras idempotentes.
+- Los **depósitos externos** entrantes los ingiere una sola vez el watcher
+  compartido (`services/indexer.ts`) en rangos adaptativos, los guarda con
+  bloque/hash/posición en el journal y proyecta el ledger idempotentemente.
+- Alchemy Address Activity puede acelerar la llegada del evento; el poller
+  independiente repara huecos desde checkpoints y garantiza completitud.
 
 No depende de Blockscout/Etherscan/BlockVision en cada request.
 
@@ -57,9 +62,9 @@ npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
-`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0011_account_operations.sql` ANTES de desplegar el Worker que las usa.
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0025_asset_projection_audits.sql` ANTES de desplegar el Worker que las usa.
 
-**Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente) y el **reconciliador** del cron resuelve filas varadas por una muerte del Worker: localiza la operación on-chain por su `userOpHash`, liquida o marca `failed`, repara el hand-off CCTP si fue interrumpido y expira lo que ya no puede aterrizar (ventana del paymaster vencida). `GET /pay/status/:userOpHash` expone el estado para polling.
+**Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente). El **watcher compartido** resuelve todos los `UserOperationEvent` mediante rangos acotados del indexador —no hace una búsqueda histórica por pago— y el reconciliador durable consulta esa proyección en D1. Sólo entonces liquida o marca `failed`, repara el hand-off CCTP y expira lo que ya no puede aterrizar. `GET /pay/status/:userOpHash` expone el estado para polling.
 
 **Ciclo de vida de cuenta/faucet/recovery (`account_operations.status`):**
 `prepared → submitted → confirmed | failed | needs_review`. El Worker firma y
@@ -81,7 +86,12 @@ hasta reconciliar, evitando reemplazos silenciosos de nonce. `/health` devuelve
 `wrangler secret put` (o `.dev.vars` local, gitignored) para lo sensible:
 
 ```txt
-npx wrangler secret put RPC_URL                          # acepta varias URLs por coma (failover)
+npx wrangler secret put RPC_URL                          # compatibilidad/base
+npx wrangler secret put RPC_READ_URLS                    # lecturas puntuales; Alchemy Free permitido
+npx wrangler secret put RPC_WRITE_URLS                   # simulación/broadcast
+npx wrangler secret put RPC_INDEXER_URLS                 # logs; NO Alchemy Free con máximo 2000
+npx wrangler secret put RPC_ARCHIVE_URLS                 # backfills aislados
+npx wrangler secret put BUNDLER_RPC_URLS                 # sólo si RELAYER_MODE=bundler
 npx wrangler secret put PRIVATE_KEY                       # EOA operativa: relayer handleOps/CCTP
 npx wrangler secret put FAUCET_PRIVATE_KEY                # EOA con presupuesto faucet (obligatoria si se activa en mainnet)
 npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY     # guardian dedicado (obligatorio y distinto en mainnet)

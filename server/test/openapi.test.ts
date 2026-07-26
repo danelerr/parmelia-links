@@ -10,8 +10,12 @@ type OpenApiDocument = {
 	paths?: Record<string, Record<string, unknown>>;
 };
 
-function documentedOperations(document: OpenApiDocument): string[] {
+function documentedOperations(
+	document: OpenApiDocument,
+	pathPrefix?: string,
+): string[] {
 	return Object.entries(document.paths ?? {})
+		.filter(([path]) => !pathPrefix || path.startsWith(pathPrefix))
 		.flatMap(([path, pathItem]) =>
 			Object.keys(pathItem)
 				.filter((method) => HTTP_METHODS.has(method.toLowerCase()))
@@ -36,7 +40,9 @@ describe("public OpenAPI contract", () => {
 		const document = parse(source) as OpenApiDocument;
 
 		expect(document.openapi).toMatch(/^3\.1\./);
-		expect(documentedOperations(document)).toEqual(implementedOperations());
+		expect(documentedOperations(document, "/v1")).toEqual(
+			implementedOperations(),
+		);
 	});
 
 	it("defines responses for every documented operation", async () => {

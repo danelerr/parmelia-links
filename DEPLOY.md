@@ -7,22 +7,25 @@
 
 ## 1. Claves y fondos (una sola vez)
 
-Tres roles (least-privilege; pueden ser la misma clave en testnet, pero mejor no):
+Cinco roles básicos (pueden ser la misma clave en testnet, pero mejor no):
 
 | Rol | Para qué | Necesita |
 |---|---|---|
 | **Deployer** (tu keystore `wallet-0x75`) | Desplegar contratos + stake/deposit del paymaster | ~0.05 ETH en Arbitrum Sepolia |
-| **Relayer** (`PRIVATE_KEY` del worker) | `handleOps`, crear cuentas, guardian, faucet de bienvenida | ~0.05 ETH **+ USDC de prueba** (el welcome-fund manda 5 USDC por usuario) |
+| **Relayer** (`PRIVATE_KEY` del worker) | `handleOps`, crear cuentas y CCTP | ~0.05 ETH en las redes donde envía transacciones |
+| **Faucet** (`FAUCET_PRIVATE_KEY`) | Custodiar y transferir el presupuesto de bienvenida | ETH para gas **+ USDC de prueba** |
 | **Paymaster signer** (`PAYMASTER_SIGNER_PRIVATE_KEY`) | Firmar patrocinios de gas | Nada (solo firma) |
+| **Recovery guardian** (`RECOVERY_GUARDIAN_PRIVATE_KEY`) | Proponer/cancelar recovery con timelock | ETH para sus transacciones |
 
 ```bash
 # Generar las claves nuevas que falten
 cast wallet new   # relayer
+cast wallet new   # faucet
 cast wallet new   # paymaster signer
 ```
 
 Fondos: ETH de Sepolia → bridge a Arbitrum Sepolia (o faucet de Arbitrum);
-USDC de prueba para el **relayer** en https://faucet.circle.com (red: Arbitrum Sepolia).
+USDC de prueba para el **faucet** en https://faucet.circle.com (red: Arbitrum Sepolia).
 
 ## 2. Desplegar contratos (CREATE2 determinista)
 
@@ -35,17 +38,26 @@ forge script script/Deploy.s.sol:DeployV2 \
   --broadcast
 ```
 
-**`--sender` es obligatorio** (la dirección de `wallet-0x75`). El paymaster pone
-`owner = msg.sender` del script; sin `--sender`, `msg.sender` es el DefaultSender
-de Foundry y el `addStake` (firmado por `wallet-0x75`) revierte con
-`OwnableUnauthorizedAccount`. El script tiene una guarda que falla rápido si lo olvidas.
+**`--sender` es obligatorio** (la dirección de `wallet-0x75`). Sin él,
+`msg.sender` es el DefaultSender de Foundry y la política compartida aborta antes
+de emitir transacciones. En testnet, si no defines variables `PARMELIA_*`, el
+deployer queda como owner/sponsor por simplicidad.
 
 El summary imprime `verifier / factory / paymaster`. **Anótalos.**
-(El script ya hace `addStake` 0.001 ETH y `deposit` 0.01 ETH del paymaster.)
+(El script ya hace `addStake` 0.001 ETH, `deposit` 0.01 ETH y fija el cap de gas
+patrocinado por op `setMaxSponsoredGasCost(0.005 ether)` del paymaster.)
 
-En **testnet no necesitas** `setSponsorSigner`: el constructor ya deja al deployer
-(el `--sender`) como `sponsorSigner`. Solo lo correrás si separas las claves para
-mainnet (ver §11).
+> Nota (jul-2026): las fuentes de los contratos avanzaron respecto de lo
+> desplegado en Sepolia — router con `payInvoiceWithPermit`, recovery validada +
+> cancel del guardian, paymaster con cap de gas, `SIG_VALIDATION_FAILED` y ciclo
+> de stake (`unlockStake`/`withdrawStake`; la instancia vieja NO los tiene: su
+> stake de 0.001 ETH es costo hundido). Un redeploy cambia las direcciones
+> CREATE2 → actualizar `shared/networks.ts` (+ flag `paymentRouterHasPermit`) y
+> re-correr `setTokenSupported`. Detalle en `contracts/AUDIT.md`.
+
+En **testnet no necesitas** `setSponsorSigner`: el constructor deja al deployer
+como signer. En mainnet el script exige `PARMELIA_PAYMASTER_SIGNER`, lo configura
+antes de terminar y emite `SponsorSignerSet` (ver §11).
 
 ## 3. Verificar contratos (Sourcify - sin API key)
 
@@ -96,80 +108,254 @@ Notas:
 En `NETWORKS["arbitrum-sepolia"].contracts` reemplaza los `TODO_DEPLOY`:
 `factory`, `paymaster`, `verifier` (los del paso 2). EntryPoint y USDC ya están.
 
-> **Desplegado y verificado en Arbitrum Sepolia (jun 2026):**
+> **Desplegado en Arbitrum Sepolia (redeploy endurecido, 5-jul-2026):**
 > | Contrato | Dirección |
 > |---|---|
-> | verifier  | `0xb7fA10dEe75042D6973676A7d7882e4621B806d6` |
-> | impl      | `0xa450bc49a0dA738FA348445980b542d78A22527e` |
-> | factory   | `0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB` |
-> | paymaster | `0x31f357a64cF5899da21337f0D9e28ef8D6385753` |
+> | verifier  | `0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886` |
+> | impl      | `0xDFA9df7d6CCc3b92F8a8e245D6E9760c3346184C` |
+> | factory   | `0xb97E923E27CB258012081446e4b436afd3974108` |
+> | paymaster | `0x913a1B51c4f5b1a458A56D0d700c956834cc1d15` |
+> | paymentRouter | `0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f` (con permit; USDC habilitado, min 1 USDC) |
+> | crosschainRouter | `0x88Ae8A42d004934cD72b534bd362A49e7E4ad3a1` |
+>
+> Generación anterior (jun-2026, cuentas existentes siguen operativas):
+> verifier `0xb7fA10dE…06d6`, impl `0xa450bc49…527e`, factory
+> `0x75c7761d…EDEB`, paymaster `0x31f357a6…5753` (stake hundido; el
+> depósito de gas es recuperable con `withdrawTo`), paymentRouter
+> `0x607fF0c2…975A`, crosschainRouter `0x0816d133…D777`.
 >
 > La `impl` no va en `networks.ts` (la factory ya la referencia); solo se usó para
 > verificar. Si re-despliegas con distinto bytecode (cambio de `foundry.toml` o de
 > contratos), estas direcciones cambian.
 
-## 5. Base de datos remota (esquema v2, una sola migración)
+## 5. Base de datos remota (migraciones)
+
+### Preflight obligatorio: bookmark, backup y restore drill
+
+[D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+mantiene recuperación punto-en-tiempo automáticamente, pero su retención es
+limitada. Antes de cada migración remota, captura el bookmark y un
+[export SQL](https://developers.cloudflare.com/d1/best-practices/import-export-data/)
+cifrado de largo plazo con una clave estable guardada en el gestor de secretos
+del operador (no es un secret del Worker y nunca va al repositorio):
+
+```powershell
+$env:D1_BACKUP_ENCRYPTION_KEY = "<32 bytes en hex o base64>"
+$env:D1_BACKUP_ENCRYPTION_KEY_ID = "archivo-2026-07"
+pnpm d1:backup
+```
+
+El comando obtiene primero el bookmark actual de Time Travel, ejecuta
+`wrangler d1 export --remote`, cifra el SQL en streaming con AES-256-GCM,
+calcula hashes de plaintext/ciphertext, restaura una copia local aislada y exige
+`PRAGMA quick_check`, `foreign_key_check` y las tablas críticas. Sólo entonces
+conserva `backups/parmeliadb-<fecha>.sql.enc` y su manifest. El export remoto
+bloquea consultas mientras corre: programarlo en una ventana de bajo tráfico.
+
+Verifica de nuevo un archivo histórico antes de usarlo:
+
+```powershell
+node scripts/d1-backup.mjs --verify backups/parmeliadb-<fecha>.sql.enc
+```
+
+Para una recuperación fuera de la ventana de Time Travel, descifra a una ruta
+protegida, importa el SQL en una **D1 nueva**, valida la aplicación y cambia el
+binding. No importes el dump encima de una base con tablas existentes:
+
+```powershell
+node scripts/d1-backup.mjs --decrypt backups/parmeliadb-<fecha>.sql.enc --output C:\secure\parmeliadb-recovery.sql
+```
+
+Para errores recientes, usa preferentemente el bookmark registrado con
+`wrangler d1 time-travel restore`; es destructivo sobre la D1 activa y cancela
+queries en vuelo, por lo que exige aprobación operativa y comprobación posterior.
+Antes de desplegar, ejecuta localmente `pnpm check:d1:restore`; usa dos bases
+locales desechables para ensayar todo el formato cifrado y la restauración.
 
 ```bash
 cd server
 npx wrangler d1 migrations apply PARMELIA_DB --remote
 ```
 
-Aplica `0001_schema.sql` (esquema consolidado con prólogo DROP: resetea la DB
-vieja de testnet a v2 - ledger, referidos, swap_quotes, contactos, y token FCM).
-Decisión ya tomada: los datos eran desechables.
+No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
+`npx wrangler d1 migrations list PARMELIA_DB --remote` y aplica, en orden, todo
+lo que falte hasta `0025_asset_projection_audits.sql`. El Worker actual requiere
+la cadena completa: además del hardening y los ciclos durables originales,
+`0012`-`0025` incorporan journal canónico, read models de Home, evidencia y
+rollback de reorg, shards del indexador, suscripciones de proveedor, control
+plane RPC, finality de Arbitrum, outboxes, ciclo durable de UserOperations,
+paginación del ledger, cache durable de capacidades del bundler, cola de
+reconciliación y auditorías de proyecciones de balance.
+REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
+El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
+nunca replicar ese patrón hacia producción.
+
+### Reserva de nonce bloqueada
+
+`GET /health` devuelve `503` con `signer_nonce_blocked` si una operación queda
+en `needs_review`. Es intencional: continuar firmando podría reemplazar una
+transacción cuyo nonce ya fue consumido.
+
+1. Consulta la fila en D1 (`id`, `tx_hash`, `signer_address`, `nonce`,
+   `raw_transaction`, `last_error`).
+2. Comprueba el receipt por `tx_hash` y `eth_getTransactionCount` del firmante
+   en `latest` y `pending`, usando al menos dos RPCs.
+3. Si minó, ejecuta/repara la finalización idempotente antes de marcarla
+   terminal. Si no minó y el nonce sigue libre, reemite **la misma**
+   `raw_transaction`.
+4. No borres ni cambies la fila para “desbloquear” sin demostrar el estado
+   on-chain; documenta la resolución y conserva el hash para auditoría.
 
 ## 6. Secrets del worker
 
 ```bash
 cd server
-npx wrangler secret put RPC_URL
-#   admite VARIAS urls separadas por coma (failover), p. ej.:
-#   https://sepolia-rollup.arbitrum.io/rpc,https://arbitrum-sepolia.publicnode.com
-npx wrangler secret put PRIVATE_KEY                    # relayer
-npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY   # paymaster signer
-# Opcionales (feature-flag: sin definir, la app funciona igual):
+npx wrangler secret put RPC_URL          # compatibilidad; no mezclar roles nuevos aquí
+npx wrangler secret put RPC_READ_URLS    # lecturas puntuales; Alchemy Free es válido
+npx wrangler secret put RPC_WRITE_URLS   # broadcast/simulación crítica
+npx wrangler secret put RPC_INDEXER_URLS # eth_getLogs; NO Alchemy Free con rango 2000
+npx wrangler secret put RPC_ARCHIVE_URLS # backfills aislados, si se habilitan
+npx wrangler secret put PRIVATE_KEY                        # relayer handleOps/CCTP
+npx wrangler secret put FAUCET_PRIVATE_KEY                 # fondos del faucet (mainnet: obligatoria si se activa)
+npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY      # guardian (mainnet: obligatorio y distinto)
+npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY       # firma sponsorships
+npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY  # firma invoices Flow B
+# Opcionales en TESTNET (feature-flag). En MAINNET: TURNSTILE es OBLIGATORIO
+# (sin el, /account/create y /account/fund fallan cerrado) y las claves
+# dedicadas de arriba tambien (los fallbacks entre claves estan prohibidos).
 npx wrangler secret put TURNSTILE_SECRET_KEY           # anti-abuso en crear cuenta + faucet
 Get-Content -Raw ..\<service-account>.json | npx wrangler secret put FCM_SERVICE_ACCOUNT  # push
+npx wrangler secret put CCTP_RPC_URLS                  # opcional: RPCs dedicados cross-chain
+npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY  # 32 bytes base64/hex; obligatorio en mainnet
+npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID # ID corto, por ejemplo 2026_07
 ```
 
-Ya configurado en `wrangler.jsonc` (no requiere acción): `CHAIN_KEY=arbitrum-sepolia`,
-`ALLOWED_ORIGINS`, cron del indexer cada 2 min. Fees: apagadas por defecto
-(`PARMELIA_FEES_ENABLED` etc. cuando decidas cobrar).
+`GET /health` devuelve `200` sólo si la configuración es coherente. En mainnet,
+el Worker y el cron responden/fallan cerrado con `503 SERVICE_UNAVAILABLE` si
+faltan contratos, CORS HTTPS, Turnstile, APP_URL, cifrado o claves dedicadas. Las
+cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas.
+
+### Rotación de la clave de webhooks
+
+1. Conserva temporalmente la clave anterior en
+   `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS`, como JSON `{"id_viejo":"clave"}`.
+2. Carga la clave nueva en `WEBHOOK_SECRET_ENCRYPTION_KEY` y cambia
+   `WEBHOOK_SECRET_ENCRYPTION_KEY_ID` a un ID nuevo.
+3. Despliega. El cron descifra con la clave anterior y recifra gradualmente en
+   formato `enc:v2:<id_nuevo>`, usando compare-and-set para no pisar ediciones.
+4. Comprueba que no queden filas antiguas y elimina
+   `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS` con `wrangler secret delete`.
+
+No retires la clave previa antes del paso 4: las entregas de esos endpoints no
+podrían firmarse.
+
+Ya configurado en `wrangler.jsonc`: `CHAIN_KEY=arbitrum-sepolia`,
+`ALLOWED_ORIGINS` y el cron cada 2 min. Configura `APP_URL`, flags cross-chain y
+fees (`PARMELIA_*`) explícitamente para cada entorno; mainnet no acepta el
+fallback de `APP_URL`.
 
 ### RPC: público vs dedicado (Alchemy/Infura/dRPC)
 
-`RPC_URL` admite **varias URLs separadas por coma**; el worker arma un `fallback()`
-con ellas (`server/src/services/clients.ts`), así que si la primera falla pasa a la
-siguiente. No se usa ninguna API propietaria del proveedor; cualquier RPC compatible
-sirve.
+El Worker separa los endpoints por carga. `RPC_URL` queda sólo como fallback de
+compatibilidad para despliegues antiguos:
 
-- **Testnet / demo:** el endpoint público de Arbitrum es suficiente.
-- **Mainnet / producción:** usar un RPC **dedicado como primario** y el público como
-  **fallback**. El cuello de botella es el indexer: hace `eth_getLogs` por bloques en
-  cada cron (cada 2 min); los endpoints públicos throttlean (429) y se pueden **perder
-  depósitos/pagos**, además de no tener SLA. Un dedicado da cuota alta, rangos de
-  `getLogs` mayores, uptime y un dashboard para depurar. Alchemy, Infura, dRPC y
-  QuickNode son equivalentes para este uso.
+| Rol | Uso | Configuración recomendada con Alchemy Free |
+|---|---|---|
+| `RPC_READ_URLS` | balances puntuales, receipts y llamadas de contrato | Alchemy Free; un respaldo independiente opcional |
+| `RPC_WRITE_URLS` | simulación y broadcast | Alchemy Free o endpoint dedicado |
+| `RPC_INDEXER_URLS` | `eth_getLogs` del journal/reconciliador | RPC oficial público de Arbitrum; **no Alchemy Free** |
+| `RPC_ARCHIVE_URLS` | backfill histórico aislado | endpoint que documente el rango/cuota necesarios |
+| `BUNDLER_RPC_URLS` | métodos ERC-4337 | bundler compatible con EntryPoint v0.9; no es un Node RPC |
+
+Alchemy Free limita `eth_getLogs` sobre Arbitrum a 10 bloques. Parmelia configura
+el indexador público con un máximo adaptativo de 2.000 bloques, así que **nunca**
+se deben colocar ambos endpoints en la misma lista `RPC_INDEXER_URLS`: el
+fallback repetiría exactamente la consulta de 2.000 contra Alchemy y fallaría.
+La validación de arranque bloquea esa combinación.
+
+El máximo es una capacidad del endpoint, no una obligación de consultar siempre
+2.000. El scanner empieza hasta ese techo, reduce el rango ante errores de
+capacidad y reintenta desde el checkpoint durable. Un rango correcto persistido
+no se pierde por un `429`; el cursor sólo avanza después de guardar el journal.
+
+En testnet, el RPC oficial de Arbitrum sirve como reconciliador. Para mainnet con
+valor real, sustituir el rol `indexer/archive` por un proveedor independiente con
+SLO y rango documentados cuando las métricas lo exijan; no asumir que todos los
+planes de Alchemy, Infura, dRPC o QuickNode tienen límites equivalentes.
 
 ```bash
-# Ejemplo mainnet: dedicado primero, público de respaldo
-npx wrangler secret put RPC_URL
-#   https://arb-mainnet.g.alchemy.com/v2/<API_KEY>,https://arb1.arbitrum.io/rpc
+# Arbitrum Sepolia: punto de lectura administrado + reconciliación pública
+npx wrangler secret put RPC_READ_URLS
+#   https://arb-sepolia.g.alchemy.com/v2/<API_KEY_ROTADA>
+npx wrangler secret put RPC_WRITE_URLS
+#   https://arb-sepolia.g.alchemy.com/v2/<API_KEY_ROTADA>
+npx wrangler secret put RPC_INDEXER_URLS
+#   https://sepolia-rollup.arbitrum.io/rpc
+npx wrangler secret put RPC_ARCHIVE_URLS
+#   https://sepolia-rollup.arbitrum.io/rpc
+
+# Variables no secretas del rango:
+# RPC_INDEXER_MIN_BLOCK_RANGE=10
+# RPC_INDEXER_MAX_BLOCK_RANGE=2000
 ```
 
-La clave del proveedor va **dentro de la URL** y por eso es un secret (`wrangler
-secret put`), no una var en `wrangler.jsonc`.
+Una API key expuesta en captura, terminal o ticket se rota antes de habilitar el
+endpoint. La clave del Node RPC va dentro de la URL y por eso se carga como
+secret. Para Address Activity también hacen falta
+`ALCHEMY_WEBHOOK_SIGNING_KEY`, `ALCHEMY_WEBHOOK_ID` y
+`ALCHEMY_NOTIFY_AUTH_TOKEN`; este último es el token de Notify y **no** la API
+key del Node RPC.
 
 Consola Firebase (para login por correo/Apple, push y analytics): habilitar
 Email link (y Apple si aplica), activar account-linking "same email", generar la
 VAPID y el service account, y habilitar GA4. Detalle paso a paso en `INTEGRACIONES.md`.
 
-## 7. Desplegar el worker (registra también el cron)
+## 7. Desplegar el Worker manualmente (registra también el cron)
+
+Todo el flujo se ejecuta desde la máquina del operador. No despliegues si falla
+alguno de estos pasos:
+
+```powershell
+# 1. Validación completa local.
+pnpm verify:all
+
+# 2. Backup remoto cifrado y restore drill.
+$env:D1_BACKUP_ENCRYPTION_KEY = "<32 bytes en hex o base64>"
+$env:D1_BACKUP_ENCRYPTION_KEY_ID = "archivo-2026-07"
+pnpm d1:backup
+
+# 3. Revisar y aplicar migraciones antes del Worker.
+pnpm --filter server exec wrangler d1 migrations list PARMELIA_DB --remote
+pnpm --filter server exec wrangler d1 migrations apply PARMELIA_DB --remote
+
+# 4. Desplegar la fuente local verificada.
+$releaseSha = git rev-parse HEAD
+pnpm --filter server exec wrangler deploy --minify --keep-vars --strict `
+  --message "manual $releaseSha"
+
+# 5. Exigir readiness saludable.
+$health = Invoke-RestMethod -Uri "https://server.parmelia.workers.dev/health"
+if ($health.status -ne "ok" -or $health.issues.Count -ne 0) {
+  throw "El Worker desplegado no está saludable"
+}
+```
+
+Mueve el backup cifrado a almacenamiento protegido fuera del workspace. El
+despliegue usa las credenciales locales de Wrangler y los secrets ya guardados
+en Cloudflare; nunca copies sus valores a comandos, documentación o Git.
+
+### Rollback del Worker
+
+Si el healthcheck falla o aparece una degradación, identifica el version ID
+anterior y revierte explícitamente. Las migraciones actuales son aditivas y
+**no** se revierten con el Worker; no las deshagas a ciegas. Para daño de datos
+usa primero el bookmark Time Travel o el backup cifrado pre-deploy descrito en
+la sección 5.
 
 ```bash
 cd server
-npx wrangler deploy
+pnpm exec wrangler versions list
+pnpm exec wrangler rollback <VERSION_ID_ANTERIOR> --message "rollback <INCIDENTE>" --yes
 ```
 
 ## 8. Cliente
@@ -186,13 +372,23 @@ VITE_FIREBASE_MEASUREMENT_ID=...   # G-XXXX cuando habilites GA4
 pnpm --filter client dev
 ```
 
-**Producción (Vercel)** - mismas env vars en el dashboard (las `VITE_FIREBASE_*` ya existen) y redeploy.
+**Producción (Vercel)** - la raíz del repositorio está enlazada al proyecto
+existente `danelerrs-projects/parmelia`; `vercel.json` construye únicamente
+`client` y publica `client/dist`. Las variables `VITE_*` viven en el entorno
+Production del proyecto. Desde la raíz:
+
+```bash
+vercel --prod
+```
+
+Ese comando actualiza `app.parmelia.me`; no debe crear ni enlazar otro proyecto.
 
 ## 9. Smoke test (en orden)
 
 ```bash
-pnpm --filter server test        # 34 tests
-cd contracts && forge test       # 32 tests
+pnpm --filter server test:unit           # 129 tests Node
+pnpm --filter server test:worker-runtime # 10 tests workerd + D1 real
+cd contracts && forge test       # 124 tests unitarios
 cd server && npx wrangler tail   # dejar abierto para ver logs
 ```
 
@@ -201,15 +397,19 @@ En la app:
 2. Crear link de cobro → pagarlo desde una segunda cuenta. ✓ ambos lados aparecen en Actividad/Extractos (ledger).
 3. `/swap`: cotizar USDC/ETH. Nota: en Sepolia puede no haber liquidez v3/v4 ("sin ruta disponible" es esperado); el flujo completo se valida en One.
 4. En `wrangler tail`, esperar un log `indexer_run` (cron cada 2 min).
+   Debe incluir `finalitySource` (`safe` o `confirmations`) y un
+   `unconfirmedBlocks` acotado; un crecimiento sostenido indica RPC degradado.
 5. Enviar USDC a la wallet desde una EOA externa → en ≤2 min aparece "Depósito recibido".
 6. Contactos: copiar tu código, abrir `localhost:5173/?ref=CODIGO` en incógnito, crear cuenta → el contador sube.
 
 ## 10. Delta para Arbitrum One (cuando toque)
 
-1. Mismo `forge script` con `--rpc-url https://arb1.arbitrum.io/rpc` y `--sender <DIRECCION_DE_TU_EOA>` (el parámetro `--sender` sigue siendo obligatorio para evitar la guarda del DefaultSender de Foundry) - CREATE2 da
-   **las mismas direcciones** si el bytecode no cambió → rellenar `arbitrum-one.contracts`.
+1. Exporta todas las direcciones de rol de §11 y ejecuta el mismo `forge script`
+   con `--rpc-url https://arb1.arbitrum.io/rpc` y `--sender <DEPLOYER>`. Verifier,
+   implementación y factory conservan direcciones CREATE2 si el bytecode no
+   cambió; routers con argumentos de rol distintos tendrán direcciones distintas.
 2. `CHAIN_KEY=arbitrum-one` en `wrangler.jsonc` + secrets de mainnet (RPC, claves fondeadas con ETH real).
-3. Quitar/ajustar el faucet de bienvenida (5 USDC reales por usuario = decisión de negocio).
+3. El faucet queda apagado por defecto. Para activarlo deliberadamente configura `FAUCET_ENABLED=true` y `FAUCET_DAILY_BUDGET_USDC`; sin ambos no mueve USDC real.
 4. Activar fees si quieres: `PARMELIA_FEES_ENABLED=true`, `PARMELIA_SWAP_FEE_BPS`, `PARMELIA_TREASURY_ADDRESS`.
 5. El bridge (`/depositar`) se activa solo en One; re-verificar las USDC externas contra Circle docs.
 6. **Separar las claves de infra** - ver sección 11. Es el cambio más importante para mainnet.
@@ -217,19 +417,18 @@ En la app:
 
 ## 11. Consideraciones de seguridad para mainnet (separación de claves)
 
-> **En testnet (Arbitrum Sepolia) está bien usar UNA sola EOA para todo**
-> (deployer = relayer = paymaster signer = guardian, misma `PRIVATE_KEY`).
+> **En testnet (Arbitrum Sepolia) se permite usar UNA sola EOA para todo**
+> (deployer = relayer = faucet = paymaster signer = guardian, misma `PRIVATE_KEY`).
 > Son fondos de prueba: el riesgo es cero y simplifica el setup. Lo de abajo
 > **NO aplica al deploy de testnet** - es la lista para endurecer antes de mainnet.
 
 ### Por qué importa en mainnet
 
-El `forge script` deja a la EOA que despliega (`wallet-0x75`) como **owner del
-Paymaster** (`Ownable2Step`) y como **`sponsorSigner` inicial**. El owner puede
-`withdrawTo` (retirar el depósito de gas), `setSponsorSigner` y `addStake`: es la
-clave más poderosa de la infra. Si además esa misma clave se usa como
-`PRIVATE_KEY` (relayer) y `PAYMASTER_SIGNER_PRIVATE_KEY` en el worker, **una sola
-filtración compromete toda la infra**.
+El broadcaster necesita autoridad temporal para fondear/configurar el Paymaster,
+pero no debe conservarla. En Arbitrum One, `DeploymentRoles` falla cerrado si
+broadcaster, owner final, treasury o firmantes colisionan. El script configura
+el sponsor, inicia `transferOwnership` y deja pendiente la aceptación del owner
+final; PaymentRouter y CrosschainRouter nacen directamente con roles separados.
 
 Importante: **los fondos de los usuarios siguen a salvo** pase lo que pase -
 moverlos exige su passkey. El daño máximo de una clave de infra comprometida es
@@ -237,25 +436,42 @@ gastar el gas/faucet, spamear, o *proponer* un recovery (mitigado por timelock d
 48h + cancelación del usuario). Lo que protegemos aquí es el dinero del gas y la
 disponibilidad del servicio, no la custodia.
 
-### Setup recomendado: 3 claves separadas
+### Setup mínimo de roles separados
 
 | Clave | Rol | Dónde vive | Poder |
 |---|---|---|---|
-| **Deployer** (`wallet-0x75`) | Desplegar + **owner del Paymaster** | **FRÍA, fuera del worker** (hardware wallet ideal) | Retira el depósito de gas, rota el signer, stake |
-| **Relayer** (nueva) | `PRIVATE_KEY` del worker: `handleOps`, crear cuentas, guardian, faucet | Caliente, en el worker | Gasta su ETH/USDC; propone recovery (timelock) |
+| **Deployer** (`wallet-0x75`) | Sólo broadcast inicial | EOA de despliegue, fuera del Worker | Despliega y configura antes del handoff |
+| **Contract owner** | Owner final de Paymaster/routers | Safe/multisig o control frío | Admin, pausa, retiros y rotación |
+| **Treasury** | Recibir fees | Custodia separada | Recibe fondos; no administra contratos |
+| **Relayer** (nueva) | `PRIVATE_KEY` del worker: `handleOps`, crear cuentas y CCTP | Caliente, en el worker | Gasta ETH operativo |
+| **Faucet** (nueva) | `FAUCET_PRIVATE_KEY`: transfiere fondos de bienvenida | Caliente, en el Worker sólo si se activa | Limitada a su ETH/USDC presupuestado |
 | **Paymaster signer** (nueva) | `PAYMASTER_SIGNER_PRIVATE_KEY`: firma patrocinios | Caliente, en el worker | Solo firma (sin fondos) |
+| **Invoice signer** (nueva) | `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` | Caliente, en el Worker | Autoriza invoices; no administra |
+| **Recovery guardian** (nueva) | `RECOVERY_GUARDIAN_PRIVATE_KEY`: propone/cancela recovery | Secret separado; HSM/MPC recomendado | Recovery con timelock, sin mover fondos directamente |
 
 Pasos:
-1. Despliega con `wallet-0x75` (sección 2) y **mantenla fría** - nunca la pongas en los secrets del worker.
-2. Genera dos claves nuevas (`cast wallet new` x2): relayer y paymaster signer.
-3. **Obligatorio:** `cast send <PAYMASTER> "setSponsorSigner(address)" <ADDR_PAYMASTER_SIGNER> --account wallet-0x75`.
-   Si separas el signer pero **omites este paso, todo UserOp revierte** con `InvalidPaymasterSignature` (el paymaster solo acepta firmas de su `sponsorSigner`).
-4. Pon relayer y paymaster signer en los secrets del worker. La clave-admin nunca se expone: si el worker se compromete, `wallet-0x75` rota el signer y retira el depósito.
+1. Prepara direcciones distintas y expórtalas antes de simular/broadcast:
+
+   ```bash
+   export PARMELIA_CONTRACT_OWNER=<SAFE_O_ADMIN_FRIO>
+   export PARMELIA_TREASURY=<TESORERIA>
+   export PARMELIA_PAYMASTER_SIGNER=<SIGNER_PAYMASTER>
+   export PARMELIA_PAYMENT_ROUTER_SIGNER=<SIGNER_INVOICES>
+   ```
+
+2. Ejecuta los scripts con `--sender <DEPLOYER>`. Omitir una variable o reutilizar
+   una dirección en chain `42161` revierte antes del primer broadcast.
+3. El owner final ejecuta `acceptOwnership()` sobre el Paymaster (desde Safe si
+   corresponde). Hasta entonces el deployer sigue siendo owner actual; no des por
+   terminado el despliegue mientras `pendingOwner()` sea distinto de cero.
+4. Carga sólo relayer/faucet/paymaster/invoice/guardian en secrets del Worker. Deployer,
+   owner y treasury nunca se exponen al runtime.
 
 ### Pendientes de hardening (código)
 
-- **Guardian dedicado (#8):** hoy el guardian de cada cuenta = el relayer (`account.routes.ts`, `guardianAddress = serverAccount.address`). Para mainnet conviene una clave/contrato de guardian separado de la clave caliente del relayer. Es un cambio de código pequeño (un `GUARDIAN_*` propio en `buildInitCallData`); pídelo cuando se vaya a mainnet.
-- **Least-privilege (#7):** idealmente deployer / faucet / guardian / relayer en EOAs distintas.
+- **Guardian dedicado (#8):** implementado. Mainnet exige `RECOVERY_GUARDIAN_PRIVATE_KEY` distinta de `PRIVATE_KEY`; para producción de alto valor sigue siendo preferible un contrato multisig/MPC/HSM y aprobación humana.
+- **Least-privilege (#7):** implementado. `FAUCET_PRIVATE_KEY` firma y reserva su
+  propio nonce; mainnet rechaza su ausencia o colisión cuando el faucet está activo.
 - **Depósito del paymaster:** el script deja 0.01 ETH; recargar según volumen real.
 - **Mismo `foundry.toml`** (solc + optimizer) entre testnet y mainnet para que CREATE2 dé las mismas direcciones.
 
@@ -265,7 +481,7 @@ Pasos:
 > **`DeployCrosschainRouter`**. Son independientes del deploy base (§2); el resto
 > de la app funciona sin ellos (los endpoints quedan deshabilitados hasta que la
 > dirección esté en `shared/networks.ts`). Ambos usan CREATE2 con salt fijo y la
-> guarda de `--sender`.
+> política fail-closed de roles.
 
 ### 12.1 PaymentRouter (Payments API, Flow B - paga cualquier wallet externa)
 
@@ -278,7 +494,8 @@ forge script script/Deploy.s.sol:DeployPaymentRouter \
   --broadcast
 ```
 
-En testnet el deployer queda como `owner = treasury = invoiceSigner`. Después:
+En testnet el deployer queda como `owner = treasury = invoiceSigner`. En mainnet
+define las cuatro variables `PARMELIA_*` de §11 antes de ejecutar. Después:
 1. `cast send <PAYMENT_ROUTER> "setTokenSupported(address,bool,uint256)" <USDC> true <MIN> --account wallet-0x75` (p. ej. `MIN = 1000000` = 1 USDC).
 2. Rellenar `contracts.paymentRouter` en `shared/networks.ts` (arbitrum-sepolia).
 3. Secrets del worker: `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` (= la EOA del `invoiceSigner`) y `PARMELIA_PAYMENT_FEE_BPS`.
@@ -301,7 +518,9 @@ forge script script/Deploy.s.sol:DeployCrosschainRouter \
 
 > En PowerShell, en vez de `export`: `$env:USDC_ADDRESS="0x75fa..."; $env:CCTP_TOKEN_MESSENGER="0x8FE6..."`.
 
-En testnet el deployer queda como `owner = treasury`. Después:
+En testnet el deployer queda como `owner = treasury`. En mainnet define al menos
+`PARMELIA_CONTRACT_OWNER` y `PARMELIA_TREASURY`, distintas del broadcaster y
+entre sí. Después:
 1. Rellenar `contracts.crosschainRouter` en `shared/networks.ts` (arbitrum-sepolia).
 2. Secret del worker: `PARMELIA_CROSSCHAIN_FEE_BPS` (ya existe en `auth.ts`).
 3. No hay whitelist de tokens: la USDC es inmutable en el constructor.
@@ -316,11 +535,15 @@ En testnet el deployer queda como `owner = treasury`. Después:
 # PaymentRouter - constructor(address owner, address treasury, address signer)
 forge verify-contract <PAYMENT_ROUTER> src/ParmeliaPaymentRouter.sol:ParmeliaPaymentRouter \
   --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
-  --constructor-args $(cast abi-encode "constructor(address,address,address)" <DEPLOYER> <DEPLOYER> <DEPLOYER>)
+  --constructor-args $(cast abi-encode "constructor(address,address,address)" <OWNER> <TREASURY> <INVOICE_SIGNER>)
 
 # CrosschainRouter - constructor(address owner, address usdc, address messenger, address treasury)
 forge verify-contract <CROSSCHAIN_ROUTER> src/ParmeliaCrosschainRouter.sol:ParmeliaCrosschainRouter \
   --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
   --constructor-args $(cast abi-encode "constructor(address,address,address,address)" \
-    <DEPLOYER> 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA <DEPLOYER>)
+    <OWNER> 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA <TREASURY>)
 ```
+
+En testnet, `<OWNER>`, `<TREASURY>` e `<INVOICE_SIGNER>` son el deployer salvo
+que hayas definido las variables opcionales. En mainnet deben coincidir con los
+valores `PARMELIA_*` usados durante el broadcast.

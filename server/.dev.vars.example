@@ -1,8 +1,57 @@
 # Local dev secrets (copy to server/.dev.vars — gitignored). Production uses
 # `wrangler secret put` for each of these; see server/README.md.
 
-# RPC del chain activo; acepta varias URLs separadas por coma (failover).
+# Compatibilidad/base: RPC del chain activo; acepta URLs separadas por coma.
 RPC_URL=
+
+# Roles opcionales. Si faltan heredan RPC_URL (INDEXER nunca hereda READ).
+# READ/WRITE: lecturas puntuales y broadcast. Puede incluir Alchemy Free.
+# INDEXER: eth_getLogs por rangos; con Alchemy Free NO usar Alchemy aquí.
+# Para Sepolia hoy: mantener el RPC público de Arbitrum en RPC_INDEXER_URLS.
+RPC_READ_URLS=
+RPC_WRITE_URLS=
+RPC_INDEXER_URLS=
+RPC_ARCHIVE_URLS=
+RPC_TIMEOUT_MS=10000
+
+# ERC-4337 submission. `self` conserva el handleOps propio; `bundler` elimina
+# el nonce único del relayer. El proveedor DEBE anunciar soporte para el
+# EntryPoint v0.9 de Parmelia; la app lo verifica antes de enviar.
+RELAYER_MODE=self
+BUNDLER_RPC_URLS=
+BUNDLER_ROLLOUT_PERCENT=0
+# Firma dummy estructural para eth_estimateUserOperationGas si el proveedor la
+# exige. No es secreta; dejar 0x hasta validar el bundler elegido.
+BUNDLER_DUMMY_SIGNATURE=0x
+# Sólo para contingencia explícita: ante falla transitoria del bundler vuelve a
+# handleOps propio. Mantener false normalmente para no ocultar degradaciones.
+BUNDLER_SELF_FALLBACK=false
+
+# El rango es una capacidad de TODOS los endpoints del rol INDEXER, no de la
+# blockchain. No mezclar endpoints con límites distintos en el mismo fallback:
+# el request se reintenta sin cambiar de tamaño.
+# RPC público Arbitrum: 2000 inicial/máximo. Alchemy Free: configurar 10 si se
+# usa deliberadamente, aunque no se recomienda para el reconciliador.
+RPC_INDEXER_MIN_BLOCK_RANGE=10
+RPC_INDEXER_MAX_BLOCK_RANGE=2000
+INDEXER_WALLET_SHARD_SIZE=250
+BALANCE_MAX_STALENESS_SECONDS=60
+# Sólo activos rpc_only (ETH/aUSDC) se auditan por tiempo. Este trabajo es
+# global y acotado; abrir Home nunca crea un refresh por snapshot viejo.
+BALANCE_RPC_ONLY_REFRESH_SECONDS=900
+BALANCE_MAINTENANCE_BATCH_SIZE=25
+# Política Parmelia: una inclusión de batch sólo asciende a l1_confirmed al
+# alcanzar este umbral. No equivale a assertion/finality del Rollup.
+ARBITRUM_L1_CONFIRMATIONS_REQUIRED=12
+
+# Alchemy Free se usa como push (Address Activity webhook), no para backfill.
+# Rotar cualquier key que haya aparecido en una captura antes de habilitarlo.
+ALCHEMY_WEBHOOK_ENABLED=false
+ALCHEMY_WEBHOOK_ID=
+ALCHEMY_WEBHOOK_NETWORK=ARB_SEPOLIA
+ALCHEMY_WEBHOOK_SIGNING_KEY=
+# Token de administración de Notify (X-Alchemy-Token), distinto del API key RPC.
+ALCHEMY_NOTIFY_AUTH_TOKEN=
 
 # EOA operativa del relayer (handleOps/CCTP). No reutilizar en mainnet.
 PRIVATE_KEY=

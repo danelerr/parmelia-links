@@ -2,7 +2,12 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { AppContext, authMiddleware, type Bindings } from "./middlewares/auth";
-import { runIndexer, runRouterWatcher, runRecoveryWatcher } from "./services/indexer";
+import {
+	runIndexer,
+	runRecoveryWatcher,
+	runRouterWatcher,
+	runUserOperationWatcher,
+} from "./services/indexer";
 import { runCrosschainRelayer } from "./services/crosschainRelayer";
 import { runPaymentReconciler } from "./services/settlement";
 import { runAccountOperationReconciler } from "./services/accountOperations";
@@ -25,6 +30,21 @@ import bridgeRoutes from "./routes/bridge.routes";
 import crosschainRoutes from "./routes/crosschain.routes";
 import v1Routes from "./routes/v1.routes";
 import merchantRoutes from "./routes/merchant.routes";
+import homeRoutes from "./routes/home.routes";
+import ingestRoutes from "./routes/ingest.routes";
+import {
+	consumeBalanceRefreshQueue,
+	drainBalanceRefreshRequests,
+	scheduleStaleRpcOnlyBalanceMaintenance,
+} from "./services/balanceReconciler";
+import { syncAlchemyWebhookAddresses } from "./services/alchemyWebhookAddresses";
+import { drainUserEventOutbox } from "./services/userEventOutbox";
+import { getRpcHealthSummary, type RpcRoleName } from "./services/rpcControlPlane";
+import { getRpcUrls } from "./services/clients";
+import {
+	getOperationalHealth,
+	type OperationalHealthSummary,
+} from "./services/operationalHealth";
 
 const app = new Hono<AppContext>();
 
@@ -91,7 +111,7 @@ app.use(
 		},
 		allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
-		exposeHeaders: ["X-Request-Id"],
+		exposeHeaders: ["X-Request-Id", "ETag", "X-State-Version"],
 	}),
 );
 app.use(
@@ -104,16 +124,64 @@ app.use(
 
 app.get("/health", async (c) => {
 	const issueCodes = validateRuntimeConfig(c.env).map((entry) => entry.code);
+	const warnings: string[] = [];
+	let rpcHealth: Awaited<ReturnType<typeof getRpcHealthSummary>> = [];
+	let operationalHealth: OperationalHealthSummary | null = null;
 	try {
 		if (await hasAccountOperationNeedsReview(c.env)) issueCodes.push("signer_nonce_blocked");
+		rpcHealth = await getRpcHealthSummary(c.env);
+		const now = Date.now();
+		const roles: RpcRoleName[] = [
+			"read",
+			"write",
+			"indexer",
+			"archive",
+			"bundler",
+		];
+		for (const role of roles) {
+			const configuredCount = getRpcUrls(c.env, role).length;
+			const observed = rpcHealth.filter((entry) => entry.role === role);
+			const allConfiguredEndpointsOpen =
+				configuredCount > 0 &&
+				observed.length >= configuredCount &&
+				observed.every(
+					(entry) =>
+						entry.circuitState === "open" &&
+						Boolean(
+							entry.openedUntil &&
+								new Date(entry.openedUntil).getTime() > now,
+						),
+				);
+			if (!allConfiguredEndpointsOpen) continue;
+			if (
+				role === "read" ||
+				role === "write" ||
+				(role === "bundler" && c.env.RELAYER_MODE === "bundler")
+			) {
+				issueCodes.push(`rpc_${role}_unavailable`);
+			} else {
+				warnings.push(`rpc_${role}_degraded`);
+			}
+		}
+		const operational = await getOperationalHealth(c.env);
+		operationalHealth = operational.summary;
+		warnings.push(...operational.warnings);
 	} catch (error) {
 		issueCodes.push("d1_unavailable");
 		logError("health_operational_check_failed", error, { requestId: c.get("requestId") });
 	}
 	const payload = {
-		status: issueCodes.length === 0 ? "ok" : "not_ready",
+		status:
+			issueCodes.length > 0
+				? "not_ready"
+				: warnings.length > 0
+					? "degraded"
+					: "ok",
 		network: c.env.CHAIN_KEY ?? null,
 		issues: issueCodes,
+		warnings,
+		rpc: rpcHealth,
+		operations: operationalHealth,
 	};
 	return issueCodes.length === 0 ? c.json(payload, 200) : c.json(payload, 503);
 });
@@ -126,6 +194,8 @@ app.get("/", (c) => c.text("Parmelia Links API (Modular)"));
 // Mount Routes
 app.route("/user/transactions", txRoutes);
 app.route("/user", userRoutes);
+app.route("/home", homeRoutes);
+app.route("/ingest", ingestRoutes);
 app.route("/account", accountRoutes);
 app.route("/links", linksRoutes);
 app.route("/pay", payRoutes);
@@ -176,6 +246,7 @@ async function keepCronLeaseAlive(env: Bindings, owner: string, signal: AbortSig
 
 export default {
 	fetch: app.fetch,
+	queue: consumeBalanceRefreshQueue,
 	// Cron: ingest external incoming transfers into the ledger (see services/indexer),
 	// watch the router + recovery events, advance cross-chain ops, and flush the
 	// webhook outbox. Guarded by a best-effort D1 lease: RPC-heavy jobs every
@@ -200,17 +271,66 @@ export default {
 				const heartbeatController = new AbortController();
 				const heartbeat = keepCronLeaseAlive(env, leaseOwner, heartbeatController.signal);
 				try {
-					const jobs = [
-						{ name: "indexer", run: () => runIndexer(env) },
-						{ name: "router_watcher", run: () => runRouterWatcher(env) },
-						{ name: "recovery_watcher", run: () => runRecoveryWatcher(env) },
-						{ name: "crosschain_relayer", run: () => runCrosschainRelayer(env) },
-						{ name: "payment_reconciler", run: () => runPaymentReconciler(env) },
-						{ name: "account_operation_reconciler", run: () => runAccountOperationReconciler(env) },
-						{ name: "webhook_delivery", run: () => deliverPendingWebhooks(env) },
-						{ name: "webhook_key_rotation", run: () => migrateWebhookSecrets(env) },
+					// Stages preserve causal order without serializing independent
+					// work: ingest first, then reconcile its projections, then emit
+					// external effects. Backfills/indexing never race the critical
+					// write lane merely because the cron fired.
+					const stages = [
+						[
+							{ name: "indexer", run: () => runIndexer(env) },
+							{
+								name: "user_operation_watcher",
+								run: () => runUserOperationWatcher(env),
+							},
+							{ name: "router_watcher", run: () => runRouterWatcher(env) },
+							{ name: "recovery_watcher", run: () => runRecoveryWatcher(env) },
+							{
+								name: "alchemy_address_sync",
+								run: () => syncAlchemyWebhookAddresses(env),
+							},
+						],
+						[
+							{
+								name: "balance_refresh_repair",
+								run: async () => {
+									await scheduleStaleRpcOnlyBalanceMaintenance(env);
+									await drainBalanceRefreshRequests(env);
+								},
+							},
+							{
+								name: "payment_reconciler",
+								run: () => runPaymentReconciler(env),
+							},
+							{
+								name: "account_operation_reconciler",
+								run: () => runAccountOperationReconciler(env),
+							},
+							{
+								name: "crosschain_relayer",
+								run: () => runCrosschainRelayer(env),
+							},
+						],
+						[
+							{
+								name: "webhook_delivery",
+								run: () => deliverPendingWebhooks(env),
+							},
+							{
+								name: "user_event_delivery",
+								run: () => drainUserEventOutbox(env),
+							},
+						],
+						[
+							{
+								name: "webhook_key_rotation",
+								run: () => migrateWebhookSecrets(env),
+							},
+						],
 					];
-					const failures = await runCronJobs(jobs);
+					const failures = [];
+					for (const stage of stages) {
+						failures.push(...(await runCronJobs(stage)));
+					}
 					failures.forEach((failure) => {
 						logError("cron_job_failed", failure.reason, { job: failure.name });
 					});

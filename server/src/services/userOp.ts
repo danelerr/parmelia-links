@@ -11,7 +11,15 @@ import { assertContractsDeployed, entryPointAbi, getNetworkConfig } from "../../
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
 import { getPaymasterSignerKey } from "./keys";
-import { buildSignedPaymasterAndData } from "./paymaster";
+import {
+	buildSignedPaymasterAndData,
+	PAYMASTER_POST_OP_GAS_LIMIT,
+	PAYMASTER_VERIFICATION_GAS_LIMIT,
+} from "./paymaster";
+import {
+	getUserOperationTransport,
+	type UserOperationTransportMode,
+} from "./userOperationTransport";
 
 export type AccountCall = {
 	target: `0x${string}`;
@@ -109,11 +117,37 @@ type BuildSponsoredUserOpParams = {
 	verificationGasLimit?: bigint;
 	callGasLimit?: bigint;
 	preVerificationGas?: bigint;
+	transportMode?: UserOperationTransportMode;
 };
 
 export const DEFAULT_VERIFICATION_GAS_LIMIT = 500000n;
 export const DEFAULT_CALL_GAS_LIMIT = 300000n;
 export const DEFAULT_PRE_VERIFICATION_GAS = 100000n;
+
+function bufferedEstimate(
+	value: bigint,
+	basisPoints: bigint,
+	maximum: bigint,
+): bigint {
+	if (value <= 0n || value > maximum) {
+		throw new Error("Bundler returned an unsafe gas estimate");
+	}
+	const buffered = (value * basisPoints + 9_999n) / 10_000n;
+	if (buffered > maximum) {
+		throw new Error("Bundler returned an unsafe gas estimate");
+	}
+	return buffered;
+}
+
+function packGasLimits(
+	verificationGasLimit: bigint,
+	callGasLimit: bigint,
+): Hex {
+	return concat([
+		pad(toHex(verificationGasLimit), { size: 16 }),
+		pad(toHex(callGasLimit), { size: 16 }),
+	]) as Hex;
+}
 
 /**
  * Build a paymaster-sponsored, unsigned ERC-4337 UserOperation for the active
@@ -148,10 +182,10 @@ export async function buildSponsoredUserOp(
 	const maxPriorityFeePerGas =
 		gasPrice / 10n > 1000000n ? gasPrice / 10n : 1000000n;
 
-	const accountGasLimits = concat([
-		pad(toHex(verificationGasLimit), { size: 16 }),
-		pad(toHex(callGasLimit), { size: 16 }),
-	]) as Hex;
+	const accountGasLimits = packGasLimits(
+		verificationGasLimit,
+		callGasLimit,
+	);
 	const gasFees = concat([
 		pad(toHex(maxPriorityFeePerGas), { size: 16 }),
 		pad(toHex(maxFeePerGas), { size: 16 }),
@@ -178,6 +212,53 @@ export async function buildSponsoredUserOp(
 		userOp,
 		signerPrivateKey,
 	});
+
+	if (params.transportMode === "bundler") {
+		const estimate = await getUserOperationTransport(
+			env,
+			"bundler",
+		).estimate(userOp, contracts.entryPoint);
+		const estimatedVerification = bufferedEstimate(
+			estimate.verificationGasLimit,
+			12_000n,
+			10_000_000n,
+		);
+		const estimatedCall = bufferedEstimate(
+			estimate.callGasLimit,
+			12_000n,
+			10_000_000n,
+		);
+		userOp.accountGasLimits = packGasLimits(
+			estimatedVerification,
+			estimatedCall,
+		);
+		userOp.preVerificationGas = bufferedEstimate(
+			estimate.preVerificationGas,
+			11_000n,
+			2_000_000n,
+		);
+		const paymasterVerificationGasLimit = bufferedEstimate(
+			estimate.paymasterVerificationGasLimit ??
+				PAYMASTER_VERIFICATION_GAS_LIMIT,
+			12_000n,
+			2_000_000n,
+		);
+		const paymasterPostOpGasLimit = bufferedEstimate(
+			estimate.paymasterPostOpGasLimit ?? PAYMASTER_POST_OP_GAS_LIMIT,
+			12_000n,
+			1_000_000n,
+		);
+		// Gas fields are part of Parmelia's paymaster authorization. Re-sign only
+		// after the bundler estimate is final.
+		userOp.paymasterAndData = await buildSignedPaymasterAndData({
+			chainId,
+			paymasterAddress: contracts.paymaster,
+			userOp,
+			signerPrivateKey,
+			paymasterVerificationGasLimit,
+			paymasterPostOpGasLimit,
+		});
+	}
 
 	const userOpHash = (await publicClient.readContract({
 		address: contracts.entryPoint,

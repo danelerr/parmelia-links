@@ -40,6 +40,7 @@ export type PaymentLinkRecord = {
  * The reconciler cron resolves rows stranded in submitting/submitted.
  */
 export type PendingPaymentStatus = "prepared" | "submitting" | "submitted" | "confirmed" | "failed";
+export type PendingPaymentSubmissionTransport = "self" | "bundler";
 
 export type PendingPaymentRecord = {
 	userOpHash: string;
@@ -54,6 +55,10 @@ export type PendingPaymentRecord = {
 	meta: Record<string, unknown> | null;
 	status: PendingPaymentStatus;
 	submittedTxHash: string | null;
+	submissionTransport: PendingPaymentSubmissionTransport;
+	submittedAt: string | null;
+	submissionAttemptCount: number;
+	lastSubmissionErrorCode: string | null;
 	createdAt: string;
 	expiresAt: string;
 };
@@ -98,6 +103,11 @@ export type AccountOperationRecord = {
 	updatedAt: string;
 	confirmedAt: string | null;
 	expiresAt: string;
+};
+
+export type PaymentReconcileRequest = {
+	userOpHash: string;
+	attemptCount: number;
 };
 
 type UserRow = {
@@ -149,12 +159,16 @@ type PendingPaymentRow = {
 	meta: string | null;
 	status: PendingPaymentStatus;
 	submitted_tx_hash: string | null;
+	submission_transport: PendingPaymentSubmissionTransport;
+	submitted_at: string | null;
+	submission_attempt_count: number;
+	last_submission_error_code: string | null;
 	created_at: string;
 	expires_at: string;
 };
 
 const PENDING_COLS =
-	"user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, created_at, expires_at";
+	"user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, submission_transport, submitted_at, submission_attempt_count, last_submission_error_code, created_at, expires_at";
 
 type PasskeyRow = {
 	credential_id: string;
@@ -257,6 +271,10 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 		meta: row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : null,
 		status: row.status ?? "prepared",
 		submittedTxHash: row.submitted_tx_hash ?? null,
+		submissionTransport: row.submission_transport ?? "self",
+		submittedAt: row.submitted_at ?? null,
+		submissionAttemptCount: row.submission_attempt_count ?? 0,
+		lastSubmissionErrorCode: row.last_submission_error_code ?? null,
 		createdAt: row.created_at,
 		expiresAt: row.expires_at,
 	};
@@ -394,6 +412,38 @@ export async function getUserByWallet(env: Bindings, walletAddress: string): Pro
 		[walletAddress.toLowerCase()],
 	);
 	return row ? mapUserRow(row) : null;
+}
+
+export async function listUsersByWalletAddresses(
+	env: Bindings,
+	walletAddresses: string[],
+): Promise<Array<{ uid: string; walletAddress: string }>> {
+	const normalized = [
+		...new Set(
+			walletAddresses
+				.map((address) => address.toLowerCase())
+				.filter((address) => /^0x[0-9a-f]{40}$/.test(address)),
+		),
+	];
+	if (normalized.length === 0) return [];
+	const users: Array<{ uid: string; walletAddress: string }> = [];
+	for (let offset = 0; offset < normalized.length; offset += 100) {
+		const chunk = normalized.slice(offset, offset + 100);
+		const placeholders = chunk.map(() => "?").join(", ");
+		const rows = await d1All<{ uid: string; wallet_address: string }>(
+			env,
+			`SELECT uid, wallet_address FROM users
+			 WHERE wallet_address IN (${placeholders})`,
+			chunk,
+		);
+		users.push(
+			...rows.map((row) => ({
+				uid: row.uid,
+				walletAddress: row.wallet_address,
+			})),
+		);
+	}
+	return users;
 }
 
 export async function getUserByReferralCode(env: Bindings, code: string): Promise<UserRecord | null> {
@@ -574,8 +624,20 @@ export async function releasePaymentLinkClaim(
 
 export async function createPendingPayment(
 	env: Bindings,
-	pending: Omit<PendingPaymentRecord, "createdAt" | "expiresAt" | "meta" | "status" | "submittedTxHash"> & {
+	pending: Omit<
+		PendingPaymentRecord,
+		| "createdAt"
+		| "expiresAt"
+		| "meta"
+		| "status"
+		| "submittedTxHash"
+		| "submissionTransport"
+		| "submittedAt"
+		| "submissionAttemptCount"
+		| "lastSubmissionErrorCode"
+	> & {
 		meta?: Record<string, unknown> | null;
+		submissionTransport?: PendingPaymentSubmissionTransport;
 		createdAt?: string;
 		expiresAt?: string;
 	},
@@ -601,9 +663,13 @@ export async function createPendingPayment(
 			meta,
 			status,
 			submitted_tx_hash,
+			submission_transport,
+			submitted_at,
+			submission_attempt_count,
+			last_submission_error_code,
 			created_at,
 			expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, NULL, 0, NULL, ?, ?)
 		ON CONFLICT(user_op_hash) DO UPDATE SET
 			uid = excluded.uid,
 			link_id = excluded.link_id,
@@ -615,6 +681,10 @@ export async function createPendingPayment(
 			meta = excluded.meta,
 			status = 'prepared',
 			submitted_tx_hash = NULL,
+			submission_transport = excluded.submission_transport,
+			submitted_at = NULL,
+			submission_attempt_count = 0,
+			last_submission_error_code = NULL,
 			created_at = excluded.created_at,
 			expires_at = excluded.expires_at`,
 		[
@@ -627,6 +697,7 @@ export async function createPendingPayment(
 			pending.currency,
 			JSON.stringify(pending.userOp),
 			pending.meta ? JSON.stringify(pending.meta) : null,
+			pending.submissionTransport ?? "self",
 			createdAt,
 			expiresAt,
 		],
@@ -669,20 +740,77 @@ export async function getPendingPaymentAnyState(
  * the duplicate anyway, but this stops it before burning relayer gas).
  */
 export async function claimPendingForSubmit(env: Bindings, userOpHash: string): Promise<boolean> {
-	const result = await d1Run(
-		env,
-		`UPDATE pending_payments SET status = 'submitting' WHERE user_op_hash = ? AND status = 'prepared'`,
-		[userOpHash],
-	);
-	return didWrite(result);
+	const now = nowIso();
+	const results = await env.PARMELIA_DB.batch([
+		env.PARMELIA_DB.prepare(
+			`UPDATE pending_payments
+			 SET status = 'submitting',
+			     submission_attempt_count = submission_attempt_count + 1,
+			     last_submission_error_code = NULL
+			 WHERE user_op_hash = ? AND status = 'prepared'`,
+		).bind(userOpHash),
+		// D1 batch is transactional: a Worker cannot die after taking the claim
+		// while leaving no durable work capable of discovering an ambiguous
+		// broadcast. The existing submitted trigger can later raise priority.
+		env.PARMELIA_DB.prepare(
+			`INSERT INTO payment_reconcile_requests (
+				user_op_hash, status, priority, attempt_count, next_attempt_at,
+				lease_owner, lease_expires_at, last_error_code, created_at,
+				updated_at, completed_at
+			)
+			SELECT user_op_hash, 'pending', 2, 0, ?, NULL, NULL, NULL, ?, ?, NULL
+			FROM pending_payments
+			WHERE user_op_hash = ? AND status = 'submitting'
+			ON CONFLICT(user_op_hash) DO UPDATE SET
+				priority = MIN(payment_reconcile_requests.priority, excluded.priority),
+				next_attempt_at = excluded.next_attempt_at,
+				updated_at = excluded.updated_at,
+				last_error_code = NULL,
+				status = CASE
+					WHEN payment_reconcile_requests.status = 'processing'
+					  AND payment_reconcile_requests.lease_expires_at >
+					      excluded.updated_at
+					THEN 'processing'
+					ELSE 'pending'
+				END,
+				lease_owner = CASE
+					WHEN payment_reconcile_requests.status = 'processing'
+					  AND payment_reconcile_requests.lease_expires_at >
+					      excluded.updated_at
+					THEN payment_reconcile_requests.lease_owner
+					ELSE NULL
+				END,
+				lease_expires_at = CASE
+					WHEN payment_reconcile_requests.status = 'processing'
+					  AND payment_reconcile_requests.lease_expires_at >
+					      excluded.updated_at
+					THEN payment_reconcile_requests.lease_expires_at
+					ELSE NULL
+				END,
+				completed_at = CASE
+					WHEN payment_reconcile_requests.status = 'processing'
+					  AND payment_reconcile_requests.lease_expires_at >
+					      excluded.updated_at
+					THEN payment_reconcile_requests.completed_at
+					ELSE NULL
+				END`,
+		).bind(now, now, now, userOpHash),
+	]);
+	return didWrite(results[0]);
 }
 
 /** Release a claim when submit fails BEFORE broadcasting (so the user can retry). */
-export async function releasePendingClaim(env: Bindings, userOpHash: string): Promise<void> {
+export async function releasePendingClaim(
+	env: Bindings,
+	userOpHash: string,
+	errorCode?: string | null,
+): Promise<void> {
 	await d1Run(
 		env,
-		`UPDATE pending_payments SET status = 'prepared' WHERE user_op_hash = ? AND status = 'submitting'`,
-		[userOpHash],
+		`UPDATE pending_payments
+		 SET status = 'prepared', last_submission_error_code = ?
+		 WHERE user_op_hash = ? AND status = 'submitting'`,
+		[errorCode ?? null, userOpHash],
 	);
 }
 
@@ -718,6 +846,108 @@ export async function listPendingPaymentsByStatus(
 		[...statuses, limit],
 	);
 	return rows.map(mapPendingRow);
+}
+
+/**
+ * Durable payment-reconciliation work. A request can be reclaimed only after
+ * its owner lease expires, so overlapping cron/queue invocations remain safe.
+ */
+export async function listDuePaymentReconcileRequests(
+	env: Bindings,
+	limit = 25,
+): Promise<PaymentReconcileRequest[]> {
+	const now = nowIso();
+	const rows = await d1All<{
+		user_op_hash: string;
+		attempt_count: number;
+	}>(
+		env,
+		`SELECT user_op_hash, attempt_count
+		 FROM payment_reconcile_requests
+		 WHERE (
+			status IN ('pending', 'failed') AND next_attempt_at <= ?
+		 ) OR (
+			status = 'processing' AND lease_expires_at <= ?
+		 )
+		 ORDER BY priority ASC, next_attempt_at ASC, created_at ASC
+		 LIMIT ?`,
+		[now, now, Math.min(100, Math.max(1, Math.trunc(limit)))],
+	);
+	return rows.map((row) => ({
+		userOpHash: row.user_op_hash,
+		attemptCount: row.attempt_count,
+	}));
+}
+
+export async function claimPaymentReconcileRequest(
+	env: Bindings,
+	userOpHash: string,
+	leaseMs = 60_000,
+): Promise<string | null> {
+	const owner = crypto.randomUUID();
+	const now = nowIso();
+	const leaseExpiresAt = new Date(
+		Date.now() + Math.min(5 * 60_000, Math.max(10_000, leaseMs)),
+	).toISOString();
+	const result = await d1Run(
+		env,
+		`UPDATE payment_reconcile_requests
+		 SET status = 'processing', attempt_count = attempt_count + 1,
+		     lease_owner = ?, lease_expires_at = ?, updated_at = ?,
+		     last_error_code = NULL
+		 WHERE user_op_hash = ? AND (
+			(status IN ('pending', 'failed') AND next_attempt_at <= ?)
+			OR (status = 'processing' AND lease_expires_at <= ?)
+		 )`,
+		[owner, leaseExpiresAt, now, userOpHash, now, now],
+	);
+	return didWrite(result) ? owner : null;
+}
+
+export async function reschedulePaymentReconcileRequest(
+	env: Bindings,
+	userOpHash: string,
+	owner: string,
+	delayMs: number,
+	errorCode?: string | null,
+	terminal = false,
+): Promise<void> {
+	const now = nowIso();
+	const nextAttemptAt = new Date(
+		Date.now() + Math.min(30 * 60_000, Math.max(1_000, delayMs)),
+	).toISOString();
+	await d1Run(
+		env,
+		`UPDATE payment_reconcile_requests
+		 SET status = ?, next_attempt_at = ?, lease_owner = NULL,
+		     lease_expires_at = NULL, last_error_code = ?, updated_at = ?
+		 WHERE user_op_hash = ? AND status = 'processing' AND lease_owner = ?`,
+		[
+			terminal ? "dead" : errorCode ? "failed" : "pending",
+			nextAttemptAt,
+			errorCode ?? null,
+			now,
+			userOpHash,
+			owner,
+		],
+	);
+}
+
+export async function completePaymentReconcileRequest(
+	env: Bindings,
+	userOpHash: string,
+	owner: string,
+): Promise<void> {
+	const now = nowIso();
+	await d1Run(
+		env,
+		`UPDATE payment_reconcile_requests
+		 SET status = 'completed', completed_at = ?, updated_at = ?,
+		     lease_owner = NULL, lease_expires_at = NULL,
+		     last_error_code = NULL
+		 WHERE user_op_hash = ? AND status = 'processing' AND lease_owner = ?`,
+		[now, now, userOpHash, owner],
+	);
 }
 
 /** Sweep terminal rows once GET /pay/status no longer needs them (~1h). */
@@ -925,6 +1155,27 @@ export async function rateLimitConsume(
 	}
 }
 
+/** Persist a successful hand-off to either self-handleOps or a standard bundler. */
+export async function setPendingPaymentSubmitted(
+	env: Bindings,
+	userOpHash: string,
+	transport: PendingPaymentSubmissionTransport,
+	submittedTxHash: string | null,
+): Promise<void> {
+	const now = nowIso();
+	await d1Run(
+		env,
+		`UPDATE pending_payments
+		 SET status = 'submitted',
+		     submitted_tx_hash = ?,
+		     submission_transport = ?,
+		     submitted_at = ?,
+		     last_submission_error_code = NULL
+		 WHERE user_op_hash = ? AND status IN ('submitting', 'submitted')`,
+		[submittedTxHash, transport, now, userOpHash],
+	);
+}
+
 /** Compensate a claimed monetary budget when the corresponding transfer fails. */
 export async function refundRateLimitConsume(
 	env: Bindings,
@@ -952,6 +1203,8 @@ export async function sweepRateLimits(env: Bindings): Promise<void> {
 export type LedgerKind = "payment" | "link" | "swap" | "fund" | "external" | "earn";
 
 export type LedgerEntry = {
+	/** Present on read models; writers leave it unset and D1 generates the id. */
+	id?: string;
 	uid: string;
 	direction: "in" | "out";
 	kind: LedgerKind;
@@ -961,6 +1214,14 @@ export type LedgerEntry = {
 	token: string;
 	amount: string;
 	amountSource?: "executed" | "estimated";
+	amountRaw?: string | null;
+	decimals?: number | null;
+	chainId?: number | null;
+	blockNumber?: bigint | null;
+	blockHash?: string | null;
+	transactionIndex?: number | null;
+	consistencyLevel?: string | null;
+	projectionVersion?: number | null;
 	counterparty?: string | null;
 	counterpartyUid?: string | null;
 	reference?: string | null;
@@ -968,7 +1229,16 @@ export type LedgerEntry = {
 	createdAt: string;
 };
 
+export type LedgerUserEvent = {
+	dedupeKey: string;
+	uid: string;
+	eventType: string;
+	payload: Record<string, unknown>;
+	priority?: 0 | 1 | 2 | 3 | 4;
+};
+
 type LedgerRow = {
+	id: string;
 	uid: string;
 	direction: "in" | "out";
 	kind: LedgerKind;
@@ -977,6 +1247,14 @@ type LedgerRow = {
 	token: string;
 	amount: string;
 	amount_source: "executed" | "estimated";
+	amount_raw: string | null;
+	decimals: number | null;
+	chain_id: number | null;
+	block_number: number | string | null;
+	block_hash: string | null;
+	transaction_index: number | null;
+	consistency_level: string | null;
+	projection_version: number | null;
 	counterparty: string | null;
 	counterparty_uid: string | null;
 	reference: string | null;
@@ -991,52 +1269,156 @@ type LedgerRow = {
  * actually inserted, false if the dedup index absorbed it (lets callers notify
  * only on genuinely new movements).
  */
-export async function writeLedgerEntries(env: Bindings, entries: LedgerEntry[]): Promise<boolean[]> {
+export async function writeLedgerEntries(
+	env: Bindings,
+	entries: LedgerEntry[],
+	options: { userEvents?: LedgerUserEvent[] } = {},
+): Promise<boolean[]> {
 	if (entries.length === 0) return [];
 	const stmt = env.PARMELIA_DB.prepare(
 		`INSERT OR IGNORE INTO ledger (
 			id, uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
-			counterparty, counterparty_uid, reference, link_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			amount_raw, decimals, chain_id, block_number, block_hash, transaction_index,
+			consistency_level, projection_version, counterparty, counterparty_uid,
+			reference, link_id, created_at, canonical
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT DO UPDATE SET
+			amount = excluded.amount,
+			amount_source = excluded.amount_source,
+			amount_raw = excluded.amount_raw,
+			decimals = excluded.decimals,
+			chain_id = excluded.chain_id,
+			block_number = excluded.block_number,
+			block_hash = excluded.block_hash,
+			transaction_index = excluded.transaction_index,
+			consistency_level = excluded.consistency_level,
+			projection_version = excluded.projection_version,
+			counterparty = excluded.counterparty,
+			counterparty_uid = excluded.counterparty_uid,
+			reference = excluded.reference,
+			link_id = excluded.link_id,
+			created_at = excluded.created_at,
+			canonical = 1
+		WHERE ledger.canonical = 0 AND excluded.block_hash IS NOT NULL`,
 	);
-	const results = await env.PARMELIA_DB.batch(
-		entries.map((entry) =>
-			stmt.bind(
-				crypto.randomUUID(),
-				entry.uid,
-				entry.direction,
-				entry.kind,
-				entry.txHash,
-				entry.logIndex ?? null,
-				entry.token,
-				entry.amount,
-				entry.amountSource ?? "executed",
-				entry.counterparty?.toLowerCase() ?? null,
-				entry.counterpartyUid ?? null,
-				entry.reference ?? null,
-				entry.linkId ?? null,
-				entry.createdAt,
-			),
+	const entryStatements = entries.map((entry) =>
+		stmt.bind(
+			crypto.randomUUID(),
+			entry.uid,
+			entry.direction,
+			entry.kind,
+			entry.txHash,
+			entry.logIndex ?? null,
+			entry.token,
+			entry.amount,
+			entry.amountSource ?? "executed",
+			entry.amountRaw ?? null,
+			entry.decimals ?? null,
+			entry.chainId ?? null,
+			entry.blockNumber?.toString() ?? null,
+			entry.blockHash?.toLowerCase() ?? null,
+			entry.transactionIndex ?? null,
+			entry.consistencyLevel ?? null,
+			entry.projectionVersion ?? null,
+			entry.counterparty?.toLowerCase() ?? null,
+			entry.counterpartyUid ?? null,
+			entry.reference ?? null,
+			entry.linkId ?? null,
+			entry.createdAt,
 		),
 	);
-	return results.map((r) => ((r.meta?.changes ?? 0) > 0));
+	const now = nowIso();
+	const userEventStatements = (options.userEvents ?? []).map((effect) =>
+		env.PARMELIA_DB.prepare(
+			`INSERT OR IGNORE INTO user_event_outbox (
+				id, dedupe_key, uid, event_type, payload_json, priority,
+				status, attempt_count, next_attempt_at, lease_owner,
+				lease_expires_at, last_error_code, created_at, updated_at,
+				delivered_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL,
+			           ?, ?, NULL)`,
+		).bind(
+			effect.dedupeKey,
+			effect.dedupeKey,
+			effect.uid,
+			effect.eventType,
+			JSON.stringify(effect.payload),
+			effect.priority ?? 2,
+			now,
+			now,
+			now,
+		),
+	);
+	const results = await env.PARMELIA_DB.batch([
+		...entryStatements,
+		...userEventStatements,
+	]);
+	return results
+		.slice(0, entries.length)
+		.map((result) => (result.meta?.changes ?? 0) > 0);
 }
 
-export async function listLedgerByUid(env: Bindings, uid: string, limit = 200): Promise<LedgerEntry[]> {
-	// created_at is always an ISO-8601 string (writers pass nowIso()/block time),
-	// so plain ORDER BY sorts chronologically AND uses idx_ledger_uid_created —
-	// wrapping it in datetime() would force a full scan of the user's rows.
-	const rows = await d1All<LedgerRow>(
-		env,
-		`SELECT uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
-			counterparty, counterparty_uid, reference, link_id, created_at
-		 FROM ledger
-		 WHERE uid = ?
-		 ORDER BY created_at DESC
-		 LIMIT ?`,
-		[uid, limit],
-	);
-	return rows.map((row) => ({
+export const LEDGER_PAGE_DEFAULT = 50;
+export const LEDGER_PAGE_MAX = 100;
+
+type LedgerPageCursor = {
+	v: 1;
+	createdAt: string;
+	id: string;
+};
+
+export class InvalidLedgerCursorError extends Error {
+	constructor() {
+		super("Invalid ledger pagination cursor");
+		this.name = "InvalidLedgerCursorError";
+	}
+}
+
+export function encodeLedgerCursor(cursor: Omit<LedgerPageCursor, "v">): string {
+	return btoa(JSON.stringify({ v: 1, ...cursor } satisfies LedgerPageCursor))
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replace(/=+$/u, "");
+}
+
+export function decodeLedgerCursor(value: string): LedgerPageCursor {
+	try {
+		if (
+			value.length < 1 ||
+			value.length > 512 ||
+			!/^[A-Za-z0-9_-]+$/u.test(value)
+		) {
+			throw new InvalidLedgerCursorError();
+		}
+		const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+		const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+		const parsed = JSON.parse(atob(padded)) as Partial<LedgerPageCursor>;
+		if (
+			parsed.v !== 1 ||
+			typeof parsed.createdAt !== "string" ||
+			parsed.createdAt.length < 20 ||
+			parsed.createdAt.length > 40 ||
+			!Number.isFinite(Date.parse(parsed.createdAt)) ||
+			typeof parsed.id !== "string" ||
+			parsed.id.length < 1 ||
+			parsed.id.length > 128
+		) {
+			throw new InvalidLedgerCursorError();
+		}
+		return {
+			v: 1,
+			createdAt: parsed.createdAt,
+			id: parsed.id,
+		};
+	} catch (error) {
+		if (error instanceof InvalidLedgerCursorError) throw error;
+		throw new InvalidLedgerCursorError();
+	}
+}
+
+function ledgerEntryFromRow(row: LedgerRow): LedgerEntry {
+	return {
+		id: row.id,
 		uid: row.uid,
 		direction: row.direction,
 		kind: row.kind,
@@ -1045,12 +1427,79 @@ export async function listLedgerByUid(env: Bindings, uid: string, limit = 200): 
 		token: row.token,
 		amount: row.amount,
 		amountSource: row.amount_source,
+		amountRaw: row.amount_raw,
+		decimals: row.decimals,
+		chainId: row.chain_id,
+		blockNumber: row.block_number === null ? null : BigInt(row.block_number),
+		blockHash: row.block_hash,
+		transactionIndex: row.transaction_index,
+		consistencyLevel: row.consistency_level,
+		projectionVersion: row.projection_version,
 		counterparty: row.counterparty,
 		counterpartyUid: row.counterparty_uid,
 		reference: row.reference,
 		linkId: row.link_id,
 		createdAt: row.created_at,
-	}));
+	};
+}
+
+export async function listLedgerPageByUid(
+	env: Bindings,
+	uid: string,
+	options: { limit?: number; before?: string | null } = {},
+): Promise<{ entries: LedgerEntry[]; nextCursor: string | null }> {
+	const limit = Math.min(
+		LEDGER_PAGE_MAX,
+		Math.max(1, Math.trunc(options.limit ?? LEDGER_PAGE_DEFAULT)),
+	);
+	const before = options.before ? decodeLedgerCursor(options.before) : null;
+	// created_at is always an ISO-8601 string for ledger writers. Keyset
+	// pagination plus id is stable under concurrent inserts and uses the
+	// idx_ledger_uid_canonical_created_id covering order.
+	const selection = `SELECT id, uid, direction, kind, tx_hash, log_index, token,
+			amount, amount_source, amount_raw, decimals, chain_id, block_number,
+			block_hash, transaction_index, consistency_level, projection_version,
+			counterparty, counterparty_uid, reference, link_id, created_at
+		 FROM ledger
+		 WHERE uid = ? AND canonical = 1`;
+	const rows = before
+		? await d1All<LedgerRow>(
+				env,
+				`${selection}
+				 AND (
+					created_at < ?
+					OR (created_at = ? AND id < ?)
+				 )
+				 ORDER BY created_at DESC, id DESC
+				 LIMIT ?`,
+				[uid, before.createdAt, before.createdAt, before.id, limit + 1],
+			)
+		: await d1All<LedgerRow>(
+				env,
+				`${selection}
+				 ORDER BY created_at DESC, id DESC
+				 LIMIT ?`,
+				[uid, limit + 1],
+			);
+	const hasNext = rows.length > limit;
+	const pageRows = hasNext ? rows.slice(0, limit) : rows;
+	const tail = pageRows.at(-1);
+	return {
+		entries: pageRows.map(ledgerEntryFromRow),
+		nextCursor:
+			hasNext && tail
+				? encodeLedgerCursor({ createdAt: tail.created_at, id: tail.id })
+				: null,
+	};
+}
+
+/** Compatibility helper for callers that do not need a cursor. */
+export async function listLedgerByUid(
+	env: Bindings,
+	uid: string,
+	limit = LEDGER_PAGE_DEFAULT,
+): Promise<LedgerEntry[]> {
+	return (await listLedgerPageByUid(env, uid, { limit })).entries;
 }
 
 /** All wallets the cron indexer must watch. */

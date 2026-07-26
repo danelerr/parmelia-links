@@ -17,13 +17,17 @@
 import { formatUnits, parseAbiItem, parseEventLogs, type Hex, type Log } from "viem";
 import { getNetworkConfig, getTokenBySymbol } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
-import { getPublicClient } from "./clients";
+import { getRpcUrls } from "./clients";
 import {
+	claimPaymentReconcileRequest,
+	completePaymentReconcileRequest,
 	getPaymentIntentByLinkId,
 	getPaymentLinkById,
+	getPendingPaymentAnyState,
 	getUserByWallet,
-	listPendingPaymentsByStatus,
+	listDuePaymentReconcileRequests,
 	releasePaymentLinkClaim,
+	reschedulePaymentReconcileRequest,
 	settlePaymentLinkWithOutbox,
 	setPendingPaymentStatus,
 	sweepRateLimits,
@@ -35,9 +39,9 @@ import {
 	type PendingPaymentRecord,
 } from "./storage";
 import { isStoredPaymentLink } from "./validation";
-import { notifyUser } from "./push";
 import { deliverPendingWebhooks, prepareEventOutbox } from "./webhooks";
 import { logError, logInfo, logWarn } from "./logger";
+import { getUserOperationTransport } from "./userOperationTransport";
 
 // Pending ops that are account/DeFi actions rather than payments: they reuse
 // the same sign+submit pipeline but must not be recorded as transfers.
@@ -95,7 +99,31 @@ type SettleOpts = {
 	/** Defer non-critical follow-ups past the response (route passes waitUntil). */
 	waitUntil?: (p: Promise<unknown>) => void;
 	receiptLogs?: Log[];
+	chainEvidence?: {
+		chainId: number;
+		blockNumber: bigint;
+		blockHash: string;
+		transactionIndex: number | null;
+		consistencyLevel: string;
+		blockTimestamp: string | null;
+	};
 };
+
+function attachChainEvidence(
+	entries: LedgerEntry[],
+	evidence: SettleOpts["chainEvidence"],
+): LedgerEntry[] {
+	if (!evidence) return entries;
+	return entries.map((entry) => ({
+		...entry,
+		chainId: evidence.chainId,
+		blockNumber: evidence.blockNumber,
+		blockHash: evidence.blockHash,
+		transactionIndex: evidence.transactionIndex,
+		consistencyLevel: evidence.consistencyLevel,
+		projectionVersion: 1,
+	}));
+}
 
 /**
  * Record everything a CONFIRMED payment implies. Money truth (the ledger) is
@@ -124,7 +152,8 @@ export async function settlePayment(
 		deferred.push(handled);
 	};
 
-	const createdAt = new Date().toISOString();
+	const createdAt =
+		opts.chainEvidence?.blockTimestamp ?? new Date().toISOString();
 	const uid = pending.uid;
 	const isAccountAction = NON_PAYMENT_CURRENCIES.has(pending.currency);
 	const linkId = pending.linkId;
@@ -174,7 +203,12 @@ export async function settlePayment(
 				createdAt,
 			});
 		}
-		if (swapEntries.length > 0) await writeLedgerEntries(env, swapEntries);
+		if (swapEntries.length > 0) {
+			await writeLedgerEntries(
+				env,
+				attachChainEvidence(swapEntries, opts.chainEvidence),
+			);
+		}
 		if (typeof meta.quoteId === "string") {
 			await updateSwapQuoteStatus(env, meta.quoteId, "executed");
 		}
@@ -192,8 +226,10 @@ export async function settlePayment(
 			);
 		}
 		const amountInRaw = String(meta.amountIn ?? "0");
-		await writeLedgerEntries(env, [
-			{
+		await writeLedgerEntries(
+			env,
+			attachChainEvidence([
+				{
 				uid,
 				direction: "out",
 				kind: "payment",
@@ -203,8 +239,9 @@ export async function settlePayment(
 				counterparty: String(meta.recipient ?? ""),
 				reference: "Envío a otra red",
 				createdAt,
-			},
-		]);
+				},
+			], opts.chainEvidence),
+		);
 	} else if (pending.currency === "EARN_DEPOSIT" || pending.currency === "EARN_WITHDRAW") {
 		// Savings movement (Aave): the user's own money changing pockets. The
 		// aToken on-chain is the position's source of truth; this row is only
@@ -219,8 +256,10 @@ export async function settlePayment(
 			pending.senderAddress,
 			isDeposit ? "out" : "in",
 		);
-		await writeLedgerEntries(env, [
-			{
+		await writeLedgerEntries(
+			env,
+			attachChainEvidence([
+				{
 				uid,
 				direction: isDeposit ? "out" : "in",
 				kind: "earn",
@@ -233,8 +272,9 @@ export async function settlePayment(
 				counterparty: typeof meta.pool === "string" ? meta.pool.toLowerCase() : null,
 				reference: isDeposit ? "Depósito a ahorro" : "Retiro de ahorro",
 				createdAt,
-			},
-		]);
+				},
+			], opts.chainEvidence),
+		);
 	} else if (!isAccountAction) {
 		const recipient = await getUserByWallet(env, pending.wallet || "");
 		const entries: LedgerEntry[] = [
@@ -268,19 +308,29 @@ export async function settlePayment(
 				createdAt,
 			});
 		}
-		const inserted = await writeLedgerEntries(env, entries);
-
-		// "Te pagaron" push — ONLY when this run actually inserted the recipient's
-		// row, so a reconciler re-run after a mid-request crash can't re-notify.
-		if (notifyRecipient && inserted[1]) {
-			defer(
-				notifyUser(env, recipient.uid, {
-					title: "Te pagaron",
-					body: `Recibiste ${pending.amount} ${pending.currency}`,
-					link: "/",
-				}),
-			);
-		}
+		await writeLedgerEntries(
+			env,
+			attachChainEvidence(entries, opts.chainEvidence),
+			notifyRecipient
+				? {
+						userEvents: [
+							{
+								dedupeKey: `payment-received:${txHash.toLowerCase()}:${recipient.uid}`,
+								uid: recipient.uid,
+								eventType: "activity.payment_received",
+								// Push screens can appear on a locked device. Keep
+								// monetary details inside the authenticated app.
+								payload: {
+									title: "Te pagaron",
+									body: "Recibiste un pago en Parmelia.",
+									link: "/",
+								},
+								priority: 1,
+							},
+						],
+					}
+				: {},
+		);
 	}
 
 	// 2. Link + backing intent settlement (compare-and-set: only flips from
@@ -336,22 +386,156 @@ export async function settlePayment(
 // success → settle exactly like the live path; found + !success → failed;
 // not found after the paymaster validity window → it can never land → failed.
 
-/** Leave fresh rows to their own live request before touching them. */
-const RECONCILE_MIN_AGE_MS = 90_000;
 /** After expires_at + this margin an unlanded op is dead (paymaster window). */
 const EXPIRY_MARGIN_MS = 5 * 60_000;
-/** How far back to scan for the op's event (Arbitrum ~250ms blocks ≫ TTL). */
-const LOOKBACK_BLOCKS = 300_000n;
+const RECONCILE_BATCH_SIZE = 25;
+const RECONCILE_LEASE_MS = 60_000;
+const RECONCILE_MAX_ERROR_ATTEMPTS = 12;
+
+type CanonicalUserOperationRow = {
+	chain_id: number;
+	tx_hash: string;
+	block_number: number | string;
+	block_hash: string;
+	transaction_index: number | null;
+	success: number;
+	consistency_level: string;
+	block_timestamp: string | null;
+};
+
+async function getCanonicalUserOperation(
+	env: Bindings,
+	userOpHash: string,
+): Promise<CanonicalUserOperationRow | null> {
+	return env.PARMELIA_DB.prepare(
+		`SELECT uor.chain_id, uor.tx_hash, uor.block_number, uor.block_hash,
+		        uor.transaction_index, uor.success, uor.consistency_level,
+		        cb.block_timestamp
+		 FROM user_operation_receipts uor
+		 JOIN chain_blocks cb
+		   ON cb.chain_id = uor.chain_id
+		  AND cb.block_number = uor.block_number
+		  AND cb.block_hash = uor.block_hash
+		  AND cb.canonical = 1
+		 WHERE uor.user_op_hash = ? AND uor.canonical = 1
+		 LIMIT 1`,
+	)
+		.bind(userOpHash.toLowerCase())
+		.first<CanonicalUserOperationRow>();
+}
+
+async function userOperationStreamCoveredPast(
+	env: Bindings,
+	chainId: number,
+	timestampMs: number,
+): Promise<boolean> {
+	const row = await env.PARMELIA_DB.prepare(
+		`SELECT cb.block_timestamp
+		 FROM chain_stream_checkpoints cp
+		 JOIN chain_blocks cb
+		   ON cb.chain_id = cp.chain_id
+		  AND cb.block_number = cp.block_number
+		  AND cb.block_hash = cp.block_hash
+		  AND cb.canonical = 1
+		 WHERE cp.chain_id = ? AND cp.stream = ?`,
+	)
+		.bind(chainId, `userops:${chainId}`)
+		.first<{ block_timestamp: string | null }>();
+	if (!row?.block_timestamp) return false;
+	const checkpointTime = new Date(row.block_timestamp).getTime();
+	return Number.isFinite(checkpointTime) && checkpointTime >= timestampMs;
+}
+
+async function enqueueMissingReconcileRequests(env: Bindings): Promise<void> {
+	const now = new Date().toISOString();
+	await env.PARMELIA_DB.prepare(
+		`INSERT OR IGNORE INTO payment_reconcile_requests (
+			user_op_hash, status, priority, attempt_count, next_attempt_at,
+			lease_owner, lease_expires_at, last_error_code, created_at,
+			updated_at, completed_at
+		 )
+		 SELECT user_op_hash, 'pending', 1, 0, ?, NULL, NULL, NULL, ?, ?, NULL
+		 FROM pending_payments
+		 WHERE status IN ('submitting', 'submitted')`,
+	)
+		.bind(now, now, now)
+		.run();
+}
 
 export async function runPaymentReconciler(env: Bindings): Promise<void> {
 	try {
-		if (!env.RPC_URL) return;
-		const rows = await listPendingPaymentsByStatus(env, ["submitting", "submitted"], 25);
-		for (const row of rows) {
+		if (getRpcUrls(env, "indexer").length === 0) return;
+		await enqueueMissingReconcileRequests(env);
+		const requests = await listDuePaymentReconcileRequests(
+			env,
+			RECONCILE_BATCH_SIZE,
+		);
+		for (const request of requests) {
+			const owner = await claimPaymentReconcileRequest(
+				env,
+				request.userOpHash,
+				RECONCILE_LEASE_MS,
+			);
+			if (!owner) continue;
+			const attemptCount = request.attemptCount + 1;
 			try {
-				await reconcileOne(env, row);
+				const row = await getPendingPaymentAnyState(
+					env,
+					request.userOpHash,
+				);
+				if (
+					!row ||
+					row.status === "confirmed" ||
+					row.status === "failed"
+				) {
+					await completePaymentReconcileRequest(
+						env,
+						request.userOpHash,
+						owner,
+					);
+					continue;
+				}
+				const terminal = await reconcileOne(env, row);
+				if (terminal) {
+					await completePaymentReconcileRequest(
+						env,
+						request.userOpHash,
+						owner,
+					);
+				} else {
+					const delayMs = Math.min(
+						5 * 60_000,
+						15_000 * 2 ** Math.min(attemptCount - 1, 4),
+					);
+					await reschedulePaymentReconcileRequest(
+						env,
+						request.userOpHash,
+						owner,
+						delayMs,
+					);
+				}
 			} catch (error) {
-				logError("payment_reconcile_failed", error, { userOpHash: row.userOpHash });
+				const terminal =
+					attemptCount >= RECONCILE_MAX_ERROR_ATTEMPTS;
+				const delayMs = Math.min(
+					10 * 60_000,
+					30_000 * 2 ** Math.min(attemptCount - 1, 4),
+				);
+				await reschedulePaymentReconcileRequest(
+					env,
+					request.userOpHash,
+					owner,
+					delayMs,
+					terminal
+						? "TERMINAL_RECONCILE_ERROR"
+						: "RECONCILE_ERROR",
+					terminal,
+				);
+				logError("payment_reconcile_failed", error, {
+					userOpHash: request.userOpHash,
+					attemptCount,
+					terminal,
+				});
 			}
 		}
 		await sweepTerminalPendingPayments(env);
@@ -361,56 +545,88 @@ export async function runPaymentReconciler(env: Bindings): Promise<void> {
 	}
 }
 
-async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<void> {
-	if (Date.now() - new Date(row.createdAt).getTime() < RECONCILE_MIN_AGE_MS) return;
-
-	const publicClient = getPublicClient(env);
+async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<boolean> {
 	let txHash = (row.submittedTxHash ?? null) as Hex | null;
 	let success: boolean | null = null;
 	let receiptLogs: Log[] | undefined;
 
-	// Fast path: we know the broadcast tx — read its receipt.
-	if (txHash) {
-		try {
-			const receipt = await publicClient.getTransactionReceipt({ hash: txHash });
-			receiptLogs = receipt.logs as Log[];
-			const result = getUserOpResult(receipt.logs as Log[], row.userOpHash as Hex);
-			// Mined without our op's event = the bundle landed but the op did not.
-			success = result ? result.success : false;
-		} catch {
-			/* not mined / receipt unavailable → fall through to the event scan */
-		}
+	// Canonical journal projection: the shared watcher scans one bounded window
+	// for every Parmelia account. Reconciliation is therefore O(pending rows) in
+	// D1, not one enormous eth_getLogs query per payment.
+	const canonical = await getCanonicalUserOperation(env, row.userOpHash);
+	if (canonical) {
+		txHash = canonical.tx_hash as Hex;
+		success = canonical.success === 1;
 	}
 
-	// Authoritative path: find the op's event no matter which tx included it.
-	if (success === null) {
-		const { contracts } = getNetworkConfig(env.CHAIN_KEY);
-		const latest = await publicClient.getBlockNumber();
-		const fromBlock = latest > LOOKBACK_BLOCKS ? latest - LOOKBACK_BLOCKS : 0n;
-		const logs = await publicClient.getLogs({
-			address: contracts.entryPoint,
-			event: USER_OPERATION_EVENT,
-			args: { userOpHash: row.userOpHash as Hex },
-			fromBlock,
-			toBlock: latest,
+	// A bundler receipt is an efficient point lookup for discovering the bundle
+	// tx hash. It is not financial truth by itself: settlement still waits for
+	// the independently reconciled canonical journal occurrence.
+	if (!txHash && row.submissionTransport === "bundler") {
+		const discovery = await getUserOperationTransport(
+			env,
+			"bundler",
+		).receipt({
+			userOpHash: row.userOpHash as Hex,
 		});
-		const found = logs[0];
-		if (found?.transactionHash) {
-			txHash = found.transactionHash;
-			success = Boolean(found.args.success);
-			try {
-				receiptLogs = (await publicClient.getTransactionReceipt({ hash: txHash })).logs as Log[];
-			} catch {
-				/* Settlement can still proceed and labels unverifiable values estimated. */
+		if (discovery) {
+			txHash = discovery.transactionHash;
+			await setPendingPaymentStatus(
+				env,
+				row.userOpHash,
+				"submitted",
+				txHash,
+			);
+			if (
+				row.currency === "CROSSCHAIN" &&
+				typeof row.meta?.opId === "string"
+			) {
+				await updateCrosschainOp(
+					env,
+					row.meta.opId,
+					{ status: "submitted", sourceTxHash: txHash },
+					{ ifStatusIn: ["quoted", "submitted"] },
+				);
 			}
 		}
 	}
 
-	if (success === true && txHash) {
-		await settlePayment(env, row, txHash, { receiptLogs });
+	// Once the watcher has canonical evidence, fetch this one transaction by
+	// hash to recover executed token amounts. This is a point read, never an
+	// eth_getLogs range, and it is verified against the journaled block hash.
+	if (canonical && txHash) {
+		const transactionReceipt = await getUserOperationTransport(
+			env,
+			"self",
+		).receipt({
+			userOpHash: row.userOpHash as Hex,
+			transactionHash: txHash,
+		});
+		if (
+			transactionReceipt &&
+			transactionReceipt.blockHash.toLowerCase() ===
+				canonical.block_hash.toLowerCase() &&
+			transactionReceipt.blockNumber === BigInt(canonical.block_number)
+		) {
+			receiptLogs = transactionReceipt.logs;
+		}
+	}
+
+	if (success === true && txHash && canonical) {
+		await settlePayment(env, row, txHash, {
+			receiptLogs,
+			chainEvidence: {
+				chainId: canonical.chain_id,
+				blockNumber: BigInt(canonical.block_number),
+				blockHash: canonical.block_hash,
+				transactionIndex: canonical.transaction_index,
+				consistencyLevel: canonical.consistency_level,
+				blockTimestamp: canonical.block_timestamp,
+			},
+		});
 		await setPendingPaymentStatus(env, row.userOpHash, "confirmed", txHash);
 		logInfo("payment_reconciled", { userOpHash: row.userOpHash, txHash, uid: row.uid });
-		return;
+		return true;
 	}
 	if (success === false) {
 		await setPendingPaymentStatus(env, row.userOpHash, "failed", txHash);
@@ -419,18 +635,31 @@ async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<v
 		}
 		await failLinkedCrosschainOp(env, row, "userOp failed (reconciler)");
 		logWarn("payment_reconciled_failed_op", { userOpHash: row.userOpHash, txHash, uid: row.uid });
-		return;
+		return true;
 	}
 	// Never seen on-chain. Once the signed paymaster window is safely over, the
 	// op can never validate again — close the row so the queue stays clean.
-	if (Date.now() > new Date(row.expiresAt).getTime() + EXPIRY_MARGIN_MS) {
+	const expiryWithMargin =
+		new Date(row.expiresAt).getTime() + EXPIRY_MARGIN_MS;
+	const chainId = getNetworkConfig(env.CHAIN_KEY).chainId;
+	if (
+		Date.now() > expiryWithMargin &&
+		(await userOperationStreamCoveredPast(env, chainId, expiryWithMargin))
+	) {
 		await setPendingPaymentStatus(env, row.userOpHash, "failed");
 		if (isStoredPaymentLink(row.linkId)) {
 			await releasePaymentLinkClaim(env, row.linkId, row.userOpHash, true);
 		}
 		await failLinkedCrosschainOp(env, row, "burn never landed (reconciler)");
 		logWarn("payment_expired_unlanded", { userOpHash: row.userOpHash, uid: row.uid });
+		return true;
+	} else if (Date.now() > expiryWithMargin) {
+		logWarn("payment_expiry_waiting_for_canonical_stream", {
+			userOpHash: row.userOpHash,
+			uid: row.uid,
+		});
 	}
+	return false;
 }
 
 /**

@@ -32,6 +32,7 @@ import {
 import { buildSponsoredUserOp, matchOnchainSigner, serializeBigInts } from "../services/userOp";
 import { verifyTurnstile } from "../services/turnstile";
 import { logError } from "../services/logger";
+import { selectUserOperationTransport } from "../services/userOperationTransport";
 
 const accountRoutes = new Hono<AppContext>();
 
@@ -278,11 +279,13 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 	}
 
 	try {
+		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
 		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData: callData as Hex,
 			verificationGasLimit: 400000n,
 			callGasLimit: 250000n,
+			transportMode: submissionTransport,
 		});
 
 		await createPendingPayment(c.env, {
@@ -294,9 +297,14 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 			wallet: walletAddress,
 			senderAddress: walletAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			submissionTransport,
 		});
 
-		return c.json({ userOpHash, credentialId: profile?.credentialId ?? null });
+		return c.json({
+			userOpHash,
+			credentialId: profile?.credentialId ?? null,
+			submissionTransport,
+		});
 	} catch (error) {
 		logError("account_passkey_prepare_failed", error, { uid: user.sub });
 		return c.json({ error: "No pudimos preparar la operación. Intenta de nuevo.", error_code: ERR.SERVER_ERROR }, 500);

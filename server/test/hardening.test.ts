@@ -17,6 +17,10 @@ import { validateWebhookUrl } from "../src/routes/merchant.routes";
 import { routerAuthorizationDeadline, RouterError } from "../src/services/paymentRouter";
 import { validateRuntimeConfig } from "../src/services/runtimeConfig";
 import { internalTransferSenderAddresses } from "../src/services/indexer";
+import {
+	getIndexerClient,
+	RpcLogRangeConfigurationError,
+} from "../src/services/clients";
 import worker from "../src/index";
 import {
 	activeWebhookSecretPrefix,
@@ -29,10 +33,22 @@ import {
 // ---------- helpers ----------
 
 function envFor(chainKey: string, extra: Partial<Bindings> = {}): Bindings {
+	const emptyRow = {
+		payment_reconcile_dead: 0,
+		payment_reconcile_active: 0,
+		user_event_dead: 0,
+		user_event_active: 0,
+		balance_refresh_failed: 0,
+	};
 	const emptyDb = {
-		prepare: () => ({
-			bind: () => ({ first: async () => null }),
-		}),
+		prepare: () => {
+			const statement = {
+				first: async () => emptyRow,
+				all: async () => ({ results: [] }),
+				bind: () => statement,
+			};
+			return statement;
+		},
 	} as unknown as D1Database;
 	return {
 		RPC_URL: "http://localhost:1",
@@ -406,6 +422,47 @@ describe("runtime configuration", () => {
 		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
 			CCTP_RPC_URLS: '{"84532":"ftp://invalid"}',
 		})).map((entry) => entry.code)).toContain("CCTP_RPC_URLS_INVALID");
+	});
+
+	it("never sends a 2000-block indexer request to Alchemy Free", () => {
+		const alchemy = "https://arb-sepolia.g.alchemy.com/v2/redacted";
+		const invalidEnv = envFor("arbitrum-sepolia", {
+			RPC_URL: alchemy,
+			RPC_INDEXER_MAX_BLOCK_RANGE: "2000",
+		});
+		const invalid = validateRuntimeConfig(invalidEnv);
+		expect(invalid.map((entry) => entry.code)).toContain(
+			"RPC_INDEXER_ALCHEMY_RANGE_INVALID",
+		);
+		expect(() => getIndexerClient(invalidEnv)).toThrow(
+			RpcLogRangeConfigurationError,
+		);
+
+		const cappedEnv = envFor("arbitrum-sepolia", {
+			RPC_URL: alchemy,
+			RPC_INDEXER_MIN_BLOCK_RANGE: "10",
+			RPC_INDEXER_MAX_BLOCK_RANGE: "10",
+		});
+		const explicitlyCapped = validateRuntimeConfig(cappedEnv);
+		expect(explicitlyCapped.map((entry) => entry.code)).not.toContain(
+			"RPC_INDEXER_ALCHEMY_RANGE_INVALID",
+		);
+		expect(() => getIndexerClient(cappedEnv)).not.toThrow();
+	});
+
+	it("requires webhook reconciliation to use an independent non-Alchemy RPC", () => {
+		const issues = validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			ALCHEMY_WEBHOOK_ENABLED: "true",
+			ALCHEMY_WEBHOOK_ID: "wh_123",
+			ALCHEMY_WEBHOOK_NETWORK: "ARB_SEPOLIA",
+			ALCHEMY_WEBHOOK_SIGNING_KEY: "signing-key",
+			ALCHEMY_NOTIFY_AUTH_TOKEN: "notify-auth-token",
+			RPC_INDEXER_URLS: "https://arb-sepolia.g.alchemy.com/v2/redacted",
+			RPC_INDEXER_MAX_BLOCK_RANGE: "10",
+		}));
+		expect(issues.map((entry) => entry.code)).toContain(
+			"RPC_INDEXER_NOT_INDEPENDENT",
+		);
 	});
 
 	it("exposes readiness and blocks invalid mainnet traffic", async () => {

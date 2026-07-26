@@ -49,6 +49,7 @@ import {
 	serializeBigInts,
 } from "../services/userOp";
 import { logError, logInfo } from "../services/logger";
+import { selectUserOperationTransport } from "../services/userOperationTransport";
 
 const crosschainRoutes = new Hono<AppContext>();
 
@@ -316,10 +317,12 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			{ target: router, value: 0n, data: bridgeData },
 		];
 		const executeCalldata = encodeExecuteBatch(calls);
+		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
 		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: CROSSCHAIN_CALL_GAS_LIMIT,
+			transportMode: submissionTransport,
 		});
 
 		// Register the op BEFORE the user signs the burn (CROSSCHAIN_DESIGN §flow):
@@ -368,6 +371,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			wallet: account,
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			submissionTransport,
 			meta: {
 				opId,
 				direction: "outbound",

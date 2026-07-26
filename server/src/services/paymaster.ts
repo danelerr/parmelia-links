@@ -25,13 +25,20 @@ type SponsorableUserOp = {
 	gasFees: Hex;
 };
 
-export function buildPaymasterHeader(paymasterAddress: `0x${string}`): Hex {
+export function buildPaymasterHeader(
+	paymasterAddress: `0x${string}`,
+	gasLimits: {
+		verificationGasLimit?: bigint;
+		postOpGasLimit?: bigint;
+	} = {},
+): Hex {
 	return encodePacked(
 		["address", "uint128", "uint128"],
 		[
 			paymasterAddress,
-			PAYMASTER_VERIFICATION_GAS_LIMIT,
-			PAYMASTER_POST_OP_GAS_LIMIT,
+			gasLimits.verificationGasLimit ??
+				PAYMASTER_VERIFICATION_GAS_LIMIT,
+			gasLimits.postOpGasLimit ?? PAYMASTER_POST_OP_GAS_LIMIT,
 		],
 	);
 }
@@ -77,13 +84,18 @@ export async function buildSignedPaymasterAndData(params: {
 	signerPrivateKey: `0x${string}`;
 	validAfter?: bigint;
 	validUntil?: bigint;
+	paymasterVerificationGasLimit?: bigint;
+	paymasterPostOpGasLimit?: bigint;
 }): Promise<Hex> {
 	const validAfter = params.validAfter ?? 0n;
 	const validUntil =
 		params.validUntil ??
 		BigInt(Math.floor(Date.now() / 1000) + DEFAULT_SPONSOR_TTL_SECONDS);
 
-	const paymasterHeader = buildPaymasterHeader(params.paymasterAddress);
+	const paymasterHeader = buildPaymasterHeader(params.paymasterAddress, {
+		verificationGasLimit: params.paymasterVerificationGasLimit,
+		postOpGasLimit: params.paymasterPostOpGasLimit,
+	});
 	const sponsorHash = getPaymasterSponsorHash({
 		chainId: params.chainId,
 		paymasterAddress: params.paymasterAddress,

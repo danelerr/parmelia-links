@@ -1,14 +1,20 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { mutate as mutateSWR } from "swr";
 import { Toaster } from "sileo";
 import { useTranslation } from "react-i18next";
 import { onAuthChange, type User } from "./lib/firebase";
-import { fetchWithAuth } from "./lib/authFetch";
 import Logo from "./components/Logo";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DesktopNotice from "./components/DesktopNotice";
 import { SERVER_URL } from "./lib/api";
 import { initAnalytics } from "./lib/analytics";
+import { activeNetwork } from "./lib/activeNetwork";
+import {
+	fetchHomeModel,
+	loadHomeCache,
+	saveHomeCache,
+} from "./lib/homeData";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
 const Login = lazy(() => import("./pages/Login"));
@@ -48,14 +54,26 @@ function App() {
 
 	const checkWallet = async (currentUser: User) => {
 		try {
-			const res = await fetchWithAuth(currentUser, `${SERVER_URL}/user/profile`);
-
-			if (!res.ok) {
-				throw new Error(`Profile request failed with status ${res.status}`);
-			}
-
-			const data = await res.json();
-			setHasWallet(!!data.walletAddress);
+			const cached = await loadHomeCache(
+				currentUser.uid,
+				activeNetwork.chainId,
+			);
+			const { model, etag } = await fetchHomeModel(
+				currentUser,
+				`${SERVER_URL}/home`,
+				cached,
+				activeNetwork.chainId,
+			);
+			await saveHomeCache(
+				currentUser.uid,
+				activeNetwork.chainId,
+				model,
+				etag,
+			);
+			// Seed Home's canonical SWR key. Mounting Home does not create a
+			// second request after this account gate.
+			await mutateSWR(`${SERVER_URL}/home`, model, { revalidate: false });
+			setHasWallet(!!model.account.walletAddress);
 			setWalletCheckFailed(false);
 		} catch (error) {
 			console.error("Wallet check failed", error);

@@ -1,0 +1,18 @@
+title = "Parmelia worktree Gitleaks configuration"
+
+[extend]
+path = ".gitleaks.toml"
+
+[[allowlists]]
+description = "Expected local environment stores; Git history uses the stricter base config"
+paths = [
+  '''(^|[\\/])\.env$''',
+  '''(^|[\\/])\.dev\.vars$''',
+  '''(^|[\\/])server[\\/]\.dev\.vars\.example$''',
+]
+
+[[allowlists]]
+description = "Circle's public CCTP v2 TokenMessenger address"
+regexes = [
+  '''(?i)0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa''',
+]

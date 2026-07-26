@@ -12,6 +12,13 @@
       "sourceType": "github",
       "computedHash": "7b22662fd9137957d012fd9b0e87118235fb13d7b5588350faad8909e26740f0"
     },
+    "onchain-pay-open-api": {
+      "source": "binance/binance-skills-hub",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/binance/onchain-pay/SKILL.md",
+      "computedHash": "cdb08b7156cf2e62412b55ed56999cd7ac720366e7baf5b0990dfe7d4b983be2"
+    },
     "setup-solidity-contracts": {
       "source": "openzeppelin/openzeppelin-skills",
       "sourceType": "github",

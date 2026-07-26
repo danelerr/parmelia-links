@@ -78,6 +78,14 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
  *  error (keep the token - a retry may succeed). */
 type SendResult = "ok" | "dead" | "error";
 
+export type PushDeliveryResult = {
+	configured: boolean;
+	devices: number;
+	delivered: number;
+	dead: number;
+	failed: number;
+};
+
 /**
  * Send a push to a single device token. Returns "dead" ONLY when FCM says the
  * token is gone (404 / UNREGISTERED), so transient failures never prune a valid
@@ -86,12 +94,43 @@ type SendResult = "ok" | "dead" | "error";
 async function sendToToken(
 	env: Bindings,
 	token: string,
-	payload: { title: string; body: string; link?: string },
+	payload:
+		| { kind: "notification"; title: string; body: string; link?: string }
+		| { kind: "home_invalidation"; stateVersion: string },
 ): Promise<SendResult> {
 	const sa = parseServiceAccount(env);
 	if (!sa) return "error";
 	try {
 		const accessToken = await getAccessToken(sa);
+		const notification =
+			payload.kind === "notification"
+				? { title: payload.title, body: payload.body }
+				: undefined;
+		const data =
+			payload.kind === "notification"
+				? {
+						type: "notification",
+						title: payload.title,
+						body: payload.body,
+						link: payload.link ?? "/",
+					}
+				: {
+						type: "home.invalidate",
+						stateVersion: payload.stateVersion,
+						link: "/",
+					};
+		const webpush =
+			payload.kind === "notification"
+				? {
+						notification: {
+							icon: "/parmelia.svg",
+							badge: "/parmelia.svg",
+						},
+						fcm_options: { link: payload.link ?? "/" },
+					}
+				: {
+						headers: { Urgency: "normal" },
+					};
 		const res = await fetch(
 			`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`,
 			{
@@ -103,12 +142,9 @@ async function sendToToken(
 				body: JSON.stringify({
 					message: {
 						token,
-						notification: { title: payload.title, body: payload.body },
-						data: { title: payload.title, body: payload.body, link: payload.link ?? "/" },
-						webpush: {
-							notification: { icon: "/parmelia.svg", badge: "/parmelia.svg" },
-							fcm_options: { link: payload.link ?? "/" },
-						},
+						...(notification ? { notification } : {}),
+						data,
+						webpush,
 					},
 				}),
 				signal: AbortSignal.timeout(FCM_TIMEOUT_MS),
@@ -137,18 +173,108 @@ export async function notifyUser(
 	env: Bindings,
 	uid: string,
 	payload: { title: string; body: string; link?: string },
-): Promise<void> {
+): Promise<PushDeliveryResult> {
 	try {
-		if (!env.FCM_SERVICE_ACCOUNT) return;
+		if (!env.FCM_SERVICE_ACCOUNT) {
+			return {
+				configured: false,
+				devices: 0,
+				delivered: 0,
+				dead: 0,
+				failed: 0,
+			};
+		}
 		const tokens = await listPushTokens(env, uid);
-		if (tokens.length === 0) return;
-		await Promise.all(
+		if (tokens.length === 0) {
+			return {
+				configured: true,
+				devices: 0,
+				delivered: 0,
+				dead: 0,
+				failed: 0,
+			};
+		}
+		const results = await Promise.all(
 			tokens.map(async (token) => {
-				const result = await sendToToken(env, token, payload);
+				const result = await sendToToken(env, token, {
+					kind: "notification",
+					...payload,
+				});
 				if (result === "dead") await deletePushToken(env, token).catch(() => {});
+				return result;
 			}),
 		);
+		return {
+			configured: true,
+			devices: tokens.length,
+			delivered: results.filter((result) => result === "ok").length,
+			dead: results.filter((result) => result === "dead").length,
+			failed: results.filter((result) => result === "error").length,
+		};
 	} catch (error) {
 		logError("notify_user_error", error, {});
+		return {
+			configured: Boolean(env.FCM_SERVICE_ACCOUNT),
+			devices: 0,
+			delivered: 0,
+			dead: 0,
+			failed: 1,
+		};
+	}
+}
+
+export async function invalidateUserHome(
+	env: Bindings,
+	uid: string,
+	stateVersion: string,
+): Promise<PushDeliveryResult> {
+	try {
+		if (!env.FCM_SERVICE_ACCOUNT) {
+			return {
+				configured: false,
+				devices: 0,
+				delivered: 0,
+				dead: 0,
+				failed: 0,
+			};
+		}
+		const tokens = await listPushTokens(env, uid);
+		if (tokens.length === 0) {
+			return {
+				configured: true,
+				devices: 0,
+				delivered: 0,
+				dead: 0,
+				failed: 0,
+			};
+		}
+		const results = await Promise.all(
+			tokens.map(async (token) => {
+				const result = await sendToToken(env, token, {
+					kind: "home_invalidation",
+					stateVersion,
+				});
+				if (result === "dead") {
+					await deletePushToken(env, token).catch(() => {});
+				}
+				return result;
+			}),
+		);
+		return {
+			configured: true,
+			devices: tokens.length,
+			delivered: results.filter((result) => result === "ok").length,
+			dead: results.filter((result) => result === "dead").length,
+			failed: results.filter((result) => result === "error").length,
+		};
+	} catch (error) {
+		logError("invalidate_user_home_error", error, {});
+		return {
+			configured: Boolean(env.FCM_SERVICE_ACCOUNT),
+			devices: 0,
+			delivered: 0,
+			dead: 0,
+			failed: 1,
+		};
 	}
 }

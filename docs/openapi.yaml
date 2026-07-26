@@ -16,11 +16,20 @@ security:
 
 tags:
   - name: Payment Intents
+    description: Create, inspect, cancel, authorize, and simulate payment intents.
   - name: Events
+    description: Retrieve the immutable merchant event stream used by webhooks.
+  - name: App Home
+    description: Authenticated PWA read models; these handlers never call RPC.
+  - name: App Activity
+    description: Authenticated, cursor-paginated account activity from D1.
+  - name: App Payments
+    description: Authenticated asynchronous UserOperation lifecycle.
 
 paths:
   /v1/payment_intents:
     post:
+      operationId: createPaymentIntent
       tags: [Payment Intents]
       summary: Create a payment intent
       parameters:
@@ -50,6 +59,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
     get:
+      operationId: listPaymentIntents
       tags: [Payment Intents]
       summary: List payment intents
       responses:
@@ -63,6 +73,7 @@ paths:
 
   /v1/payment_intents/{id}:
     get:
+      operationId: getPaymentIntent
       tags: [Payment Intents]
       summary: Retrieve a payment intent
       parameters: [{ $ref: "#/components/parameters/IntentId" }]
@@ -79,6 +90,7 @@ paths:
 
   /v1/payment_intents/{id}/cancel:
     post:
+      operationId: cancelPaymentIntent
       tags: [Payment Intents]
       summary: Cancel a payment intent
       description: Only valid while the intent is `awaiting_payment`.
@@ -98,6 +110,7 @@ paths:
 
   /v1/payment_intents/{id}/onchain:
     get:
+      operationId: getPaymentIntentOnchainAuthorization
       tags: [Payment Intents]
       summary: Get an on-chain authorization (Flow B)
       description: >
@@ -121,6 +134,7 @@ paths:
 
   /v1/payment_intents/{id}/simulate_payment:
     post:
+      operationId: simulatePaymentIntent
       tags: [Payment Intents]
       summary: Simulate a payment (test mode only)
       description: >
@@ -144,6 +158,7 @@ paths:
 
   /v1/events:
     get:
+      operationId: listEvents
       tags: [Events]
       summary: List events
       responses:
@@ -157,6 +172,7 @@ paths:
 
   /v1/events/{id}:
     get:
+      operationId: getEvent
       tags: [Events]
       summary: Retrieve an event
       parameters:
@@ -175,12 +191,106 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /home:
+    get:
+      operationId: getHome
+      tags: [App Home]
+      summary: Read the aggregated Home model
+      description: >
+        Reads only versioned D1 projections. A missing asset may enqueue a
+        deduplicated bootstrap, but the request itself never waits for RPC.
+        Supports private ETag revalidation.
+      security:
+        - firebaseAuth: []
+      parameters:
+        - in: header
+          name: If-None-Match
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current Home read model
+          headers:
+            ETag:
+              schema: { type: string }
+            X-State-Version:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HomeReadModel" }
+        "304":
+          description: The authenticated user's fresh model is unchanged
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /user/transactions:
+    get:
+      operationId: listUserTransactions
+      tags: [App Activity]
+      summary: List ledger activity using a stable cursor
+      security:
+        - firebaseAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: before
+          description: Opaque cursor returned as nextCursor.
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: One stable page, newest first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransactionPage" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /pay/status/{userOpHash}:
+    get:
+      operationId: getPaymentStatus
+      tags: [App Payments]
+      summary: Get an asynchronous payment's durable state
+      security:
+        - firebaseAuth: []
+      parameters:
+        - in: path
+          name: userOpHash
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Lifecycle state, or unknown after retention expiry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentStatus" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The UserOperation belongs to another authenticated user
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       description: "Secret API key: Authorization: Bearer sk_live_… (or sk_test_…)."
+    firebaseAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Firebase ID token
+      description: Firebase ID token issued to the Parmelia PWA user.
 
   parameters:
     IntentId:
@@ -220,6 +330,85 @@ components:
         error_code: { type: string, description: Stable machine-readable code. }
         requestId: { type: string }
       required: [error]
+
+    HomeReadModel:
+      type: object
+      required:
+        - schemaVersion
+        - identity
+        - account
+        - balance
+        - security
+        - activity
+        - operations
+        - alerts
+        - stateVersion
+        - observedAt
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        identity: { type: object, additionalProperties: true }
+        account: { type: object, additionalProperties: true }
+        balance:
+          type: object
+          required: [tokens, assets, status, refreshing]
+          properties:
+            tokens:
+              type: object
+              additionalProperties: { type: string }
+            assets:
+              type: object
+              additionalProperties: { type: object, additionalProperties: true }
+            savings: { type: [string, "null"] }
+            status:
+              type: string
+              enum: [fresh, stale, unavailable]
+            observedAt: { type: [string, "null"], format: date-time }
+            consistentThroughBlock: { type: [string, "null"] }
+            refreshing: { type: boolean }
+          additionalProperties: true
+        security: { type: object, additionalProperties: true }
+        activity: { type: object, additionalProperties: true }
+        operations: { type: object, additionalProperties: true }
+        alerts:
+          type: array
+          items: { type: object, additionalProperties: true }
+        stateVersion: { type: string }
+        observedAt: { type: string, format: date-time }
+        consistentThroughBlock: { type: [string, "null"] }
+
+    TransactionPage:
+      type: object
+      required: [sent, received, source, nextCursor]
+      properties:
+        sent:
+          type: array
+          items: { type: object, additionalProperties: true }
+        received:
+          type: array
+          items: { type: object, additionalProperties: true }
+        source: { type: string, enum: [ledger, none] }
+        nextCursor: { type: [string, "null"] }
+
+    PaymentStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum:
+            - prepared
+            - submitting
+            - submitted
+            - confirmed
+            - failed
+            - unknown
+        txHash:
+          type: [string, "null"]
+        transport:
+          type: string
+          enum: [self, bundler]
+        currency: { type: string }
+        amount: { type: string }
 
     CreatePaymentIntent:
       type: object
@@ -291,6 +480,19 @@ components:
         signature: { type: string }
         call:
           type: object
+          description: Standard call — payer approves USDC, then calls payInvoice.
+          properties:
+            function: { type: string }
+            args: { type: string }
+        callWithPermit:
+          type: object
+          description: >
+            One-transaction alternative: the payer signs an EIP-2612 permit
+            (gasless approval) and calls payInvoiceWithPermit — no separate
+            approve. USDC supports permit. OPTIONAL — only present when the
+            deployed router on the active chain supports payInvoiceWithPermit
+            (feature-detect on this field; the current testnet router predates
+            it).
           properties:
             function: { type: string }
             args: { type: string }

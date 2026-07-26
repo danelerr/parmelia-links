@@ -56,7 +56,10 @@
     "createFirstLink": "Crear un link de cobro",
     "shareAddressNudge": "o comparte tu dirección para recibir",
     "shareAddressText": "Envíame un pago a mi dirección Parmelia: {{address}}",
-    "viewFullStatement": "Ver extracto completo"
+    "viewFullStatement": "Ver extracto completo",
+    "dataFresh": "Saldo actualizado",
+    "dataCached": "Último saldo guardado",
+    "balanceUnavailable": "Saldo temporalmente no disponible"
   },
   "tx": {
     "swap": "Cambio de tokens",
@@ -258,7 +261,9 @@
     "noMovements": "No hay movimientos con estos filtros.",
     "movement_one": "{{count}} movimiento",
     "movement_other": "{{count}} movimientos",
-    "fromLink": "Link de cobro"
+    "fromLink": "Link de cobro",
+    "loadMore": "Cargar movimientos anteriores",
+    "loadingMore": "Cargando…"
   },
   "earn": {
     "title": "Ahorro",
@@ -421,6 +426,7 @@
     "RECOVERY_NONE": "No hay ninguna recuperación en proceso.",
     "RECOVERY_NOT_READY": "La recuperación todavía no está disponible.",
     "INVALID_USERNAME": "Usuario inválido. Solo minúsculas, números y guiones (3-30 caracteres).",
+    "INVALID_CURSOR": "La página solicitada ya no es válida. Vuelve a cargar el extracto.",
     "USERNAME_RESERVED": "Ese usuario está reservado.",
     "USERNAME_TAKEN": "Ese usuario ya está en uso.",
     "USER_NOT_FOUND": "No encontramos a ese usuario.",
@@ -436,7 +442,9 @@
     "TX_REVERTED": "La transacción no se completó. No se movió tu dinero.",
 		"PAYMENT_FAILED": "No se pudo procesar el pago. Intenta de nuevo.",
 		"PAYLOAD_TOO_LARGE": "Los datos enviados son demasiado grandes.",
-		"SERVICE_UNAVAILABLE": "El servicio no está disponible temporalmente.",
+    "SERVICE_UNAVAILABLE": "El servicio no está disponible temporalmente.",
+    "BUNDLER_UNAVAILABLE": "La red de operaciones está temporalmente ocupada. Intenta de nuevo.",
+    "BUNDLER_ENTRYPOINT_UNSUPPORTED": "El proveedor de operaciones no es compatible con esta versión de Parmelia.",
     "SWAPS_DISABLED": "Los cambios no están disponibles en esta red.",
     "EARN_DISABLED": "El ahorro no está disponible en esta red por ahora.",
     "UNSUPPORTED_TOKEN": "Token no soportado.",

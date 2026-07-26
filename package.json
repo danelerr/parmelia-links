@@ -1,14 +1,55 @@
 {
   "name": "parmelia-links",
   "private": true,
+  "packageManager": "pnpm@10.31.0",
   "scripts": {
     "dev:client": "pnpm --filter client dev",
     "dev:server": "pnpm --filter server dev",
+    "dev:dashboard": "pnpm --filter dashboard dev",
     "build:client": "pnpm --filter client build",
+    "build:dashboard": "pnpm --filter dashboard build",
     "build:contracts": "cd contracts && forge build",
+    "build": "pnpm build:client && pnpm build:dashboard",
+    "typecheck:server": "pnpm --filter server cf-typegen:check && pnpm --filter server exec tsc --noEmit && pnpm --filter server typecheck:worker-runtime",
+    "test:server": "pnpm --filter server test",
+    "test:fork": "cd contracts && forge test --match-path test/ArbitrumSepoliaFork.t.sol -vv",
+    "test:e2e": "playwright test",
+    "check:bundle": "node scripts/check-bundle-size.mjs",
+    "check:rpc-indexer": "node scripts/check-rpc-indexer.mjs",
+    "check:openapi": "redocly lint parmelia@v1",
+    "check:home-no-rpc": "node scripts/check-home-no-rpc.mjs",
+    "check:router-rsc": "node scripts/check-react-router-rsc.mjs",
+    "check:server-console": "node scripts/check-server-console.mjs",
+    "check:contracts:storage": "node scripts/check-storage-layout.mjs",
+    "check:contracts:coverage": "node scripts/check-contract-coverage.mjs",
+    "check:d1:restore": "node scripts/d1-backup.mjs --drill",
+    "check:release-artifact": "node scripts/release-artifact.mjs --drill",
+    "d1:backup": "node scripts/d1-backup.mjs --remote",
+    "load:home": "node scripts/load-home.mjs",
+    "audit:prod": "pnpm audit --prod",
+    "verify": "pnpm lint && pnpm check:server-console && pnpm check:openapi && pnpm check:rpc-indexer && pnpm check:home-no-rpc && pnpm check:router-rsc && pnpm typecheck:server && pnpm test:server && pnpm build && pnpm check:bundle",
+    "verify:all": "pnpm verify && pnpm audit:prod && pnpm test:e2e && pnpm check:release-artifact && pnpm check:d1:restore && pnpm check:contracts:storage && pnpm check:contracts:coverage && cd contracts && forge build --sizes && forge lint --severity high med low --deny warnings && forge test",
+    "lint": "pnpm --filter client lint && pnpm --filter dashboard lint && pnpm --filter server lint",
+    "test": "pnpm --filter server test && cd contracts && forge test",
     "install:all": "pnpm install && cd contracts && forge install"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
+  },
+  "pnpm": {
+    "overrides": {
+      "@grpc/grpc-js@<1.9.16": ">=1.9.16",
+      "protobufjs@<7.6.3": ">=7.6.3",
+      "ws@<8.21.0": ">=8.21.0",
+      "esbuild@>=0.18.0 <0.28.1": ">=0.28.1",
+      "picomatch@>=4.0.0 <4.0.4": ">=4.0.4",
+      "postcss@<8.5.18": ">=8.5.18",
+      "websocket-driver@<0.7.5": ">=0.7.5"
+    }
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
+    "@redocly/cli": "2.37.0"
   }
 }

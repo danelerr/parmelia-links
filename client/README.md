@@ -27,4 +27,5 @@ Copia `client/.env.example` a `client/.env` y complétalo (gitignored):
 - El service worker (`public/sw.js`) se registra solo en producción (PWA shell + push FCM).
 - Las páginas usan `React.lazy`; todo va envuelto en `ErrorBoundary`.
 - Capas transversales en `src/lib/`: `api` (fetch tipado), `notify` (avisos), `firebase` (auth), `push`, `analytics`.
-- Deploy: Vercel construye desde esta carpeta.
+- Deploy: desde la raíz del repositorio, `vercel --prod` construye esta carpeta
+  y despliega el proyecto existente `parmelia` (`app.parmelia.me`).

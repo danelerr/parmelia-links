@@ -1,30 +1,192 @@
-import { createPublicClient, createWalletClient, fallback, http, type Chain, type Transport } from "viem";
+import {
+	createPublicClient,
+	createWalletClient,
+	fallback,
+	http,
+	type Chain,
+	type Transport,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { getActiveChain } from "../chain";
 import type { Bindings } from "../middlewares/auth";
 import { getFaucetKey, getRecoveryGuardianKey } from "./keys";
+import {
+	controlledHttpTransport,
+	laneForRole,
+	type RpcRoleName,
+} from "./rpcControlPlane";
+
+export type RpcRole = RpcRoleName;
+
+const DEFAULT_RPC_TIMEOUT_MS = 10_000;
+const MIN_RPC_TIMEOUT_MS = 1_000;
+const MAX_RPC_TIMEOUT_MS = 30_000;
+const ALCHEMY_FREE_MAX_LOG_BLOCKS = 10;
+
+function boundedInteger(
+	raw: string | undefined,
+	fallbackValue: number,
+	min: number,
+	max: number,
+): number {
+	const parsed = Number(raw);
+	if (!Number.isSafeInteger(parsed)) return fallbackValue;
+	return Math.min(max, Math.max(min, parsed));
+}
+
+function configuredRpcValue(env: Bindings, role: RpcRole): string {
+	const roleValue =
+		role === "read"
+			? env.RPC_READ_URLS
+			: role === "write"
+				? env.RPC_WRITE_URLS
+				: role === "indexer"
+					? env.RPC_INDEXER_URLS
+					: role === "archive"
+						? env.RPC_ARCHIVE_URLS
+						: env.BUNDLER_RPC_URLS;
+
+	// Compatibility path: existing deployments only have RPC_URL. Roles can be
+	// introduced one at a time without an outage.
+	if (roleValue?.trim()) return roleValue;
+	if (role === "bundler") return "";
+	if (role === "archive" && env.RPC_INDEXER_URLS?.trim()) return env.RPC_INDEXER_URLS;
+	if (role === "write" && env.RPC_READ_URLS?.trim()) return env.RPC_READ_URLS;
+	return env.RPC_URL ?? "";
+}
+
+export function getRpcUrls(env: Bindings, role: RpcRole): string[] {
+	return configuredRpcValue(env, role)
+		.split(",")
+		.map((url) => url.trim())
+		.filter(Boolean);
+}
+
+function isAlchemyRpcUrl(value: string): boolean {
+	try {
+		const hostname = new URL(value).hostname.toLowerCase();
+		return (
+			hostname === "alchemy.com" ||
+			hostname.endsWith(".alchemy.com") ||
+			hostname === "alchemyapi.io" ||
+			hostname.endsWith(".alchemyapi.io")
+		);
+	} catch {
+		return false;
+	}
+}
+
+export class RpcLogRangeConfigurationError extends Error {
+	constructor() {
+		super(
+			"Indexer provider does not support the configured eth_getLogs block range",
+		);
+		this.name = "RpcLogRangeConfigurationError";
+	}
+}
 
 /**
- * Build the RPC transport for the active chain. `RPC_URL` may be a single URL or
- * a comma-separated list; with multiple URLs viem fails over between them.
+ * Hard runtime boundary, independent of readiness policy. Testnet tolerates
+ * unrelated incomplete configuration, but it must still never emit an invalid
+ * 2,000-block request to an Alchemy Free endpoint.
  */
-export function buildRpcTransport(rpcUrl: string): Transport {
+export function assertIndexerProviderRange(env: Bindings): void {
+	const maximum = Number(env.RPC_INDEXER_MAX_BLOCK_RANGE ?? "2000");
+	if (
+		Number.isSafeInteger(maximum) &&
+		maximum > ALCHEMY_FREE_MAX_LOG_BLOCKS &&
+		getRpcUrls(env, "indexer").some(isAlchemyRpcUrl)
+	) {
+		throw new RpcLogRangeConfigurationError();
+	}
+}
+
+/**
+ * Build a deterministic failover transport. Ranking is deliberately disabled:
+ * endpoint order expresses operator intent and does not oscillate between a
+ * managed endpoint and the public reconciliation endpoint.
+ */
+export function buildRpcTransport(
+	rpcUrl: string,
+	options: {
+		timeoutMs?: number;
+		env?: Bindings;
+		role?: RpcRole;
+		/** Preserve the endpoint's configured position when building one URL. */
+		slotOffset?: number;
+	} = {},
+): Transport {
 	const urls = rpcUrl
 		.split(",")
 		.map((url) => url.trim())
 		.filter(Boolean);
+	const timeout = options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+	const transports = urls.map((url, slot) => {
+		const configuredSlot = (options.slotOffset ?? 0) + slot;
+		return (
+			options.env && options.role
+				? controlledHttpTransport(options.env, url, {
+						role: options.role,
+						slot: configuredSlot,
+						lane: laneForRole(options.role),
+						timeoutMs: timeout,
+					})
+				: http(url, {
+						timeout,
+						// One retry policy lives at the call/control-plane layer. Hidden
+						// transport retries make CU accounting and deadlines misleading.
+						retryCount: 0,
+					})
+		);
+	});
 	if (urls.length > 1) {
-		return fallback(urls.map((url) => http(url)));
+		return fallback(transports, { rank: false, retryCount: 0 });
 	}
-	return http(urls[0] ?? rpcUrl);
+	return transports[0] ?? http(rpcUrl, { timeout, retryCount: 0 });
 }
 
-/** Read-only client for the active chain. */
-export function getPublicClient(env: Bindings) {
+function getRpcTimeout(env: Bindings): number {
+	return boundedInteger(
+		env.RPC_TIMEOUT_MS,
+		DEFAULT_RPC_TIMEOUT_MS,
+		MIN_RPC_TIMEOUT_MS,
+		MAX_RPC_TIMEOUT_MS,
+	);
+}
+
+/** Read-only client for a declared workload role. */
+export function getPublicClientForRole(env: Bindings, role: RpcRole) {
+	const urls = getRpcUrls(env, role);
 	return createPublicClient({
 		chain: getActiveChain(env.CHAIN_KEY),
-		transport: buildRpcTransport(env.RPC_URL),
+		transport: buildRpcTransport(urls.join(","), {
+			timeoutMs: getRpcTimeout(env),
+			env,
+			role,
+		}),
+		batch: {
+			multicall: {
+				batchSize: 32 * 1024,
+				wait: 8,
+			},
+		},
 	});
+}
+
+/** Point reads used by API/background reconciliation. Never used by Home. */
+export function getPublicClient(env: Bindings) {
+	return getPublicClientForRole(env, "read");
+}
+
+/** Wide eth_getLogs ranges. Keep Alchemy Free out of this role. */
+export function getIndexerClient(env: Bindings) {
+	assertIndexerProviderRange(env);
+	return getPublicClientForRole(env, "indexer");
+}
+
+/** Historical/backfill traffic isolated from critical point reads. */
+export function getArchivePublicClient(env: Bindings) {
+	return getPublicClientForRole(env, "archive");
 }
 
 /** The server EOA used to deploy accounts and relay handleOps/CCTP. */
@@ -34,9 +196,14 @@ export function getServerAccount(env: Bindings) {
 
 /** Write client signing with the server EOA. */
 export function getWalletClient(env: Bindings) {
+	const urls = getRpcUrls(env, "write");
 	return createWalletClient({
 		chain: getActiveChain(env.CHAIN_KEY),
-		transport: buildRpcTransport(env.RPC_URL),
+		transport: buildRpcTransport(urls.join(","), {
+			timeoutMs: getRpcTimeout(env),
+			env,
+			role: "write",
+		}),
 		account: getServerAccount(env),
 	});
 }
@@ -46,9 +213,14 @@ export function getFaucetAccount(env: Bindings) {
 }
 
 export function getFaucetWalletClient(env: Bindings) {
+	const urls = getRpcUrls(env, "write");
 	return createWalletClient({
 		chain: getActiveChain(env.CHAIN_KEY),
-		transport: buildRpcTransport(env.RPC_URL),
+		transport: buildRpcTransport(urls.join(","), {
+			timeoutMs: getRpcTimeout(env),
+			env,
+			role: "write",
+		}),
 		account: getFaucetAccount(env),
 	});
 }
@@ -58,9 +230,14 @@ export function getRecoveryGuardianAccount(env: Bindings) {
 }
 
 export function getRecoveryGuardianWalletClient(env: Bindings) {
+	const urls = getRpcUrls(env, "write");
 	return createWalletClient({
 		chain: getActiveChain(env.CHAIN_KEY),
-		transport: buildRpcTransport(env.RPC_URL),
+		transport: buildRpcTransport(urls.join(","), {
+			timeoutMs: getRpcTimeout(env),
+			env,
+			role: "write",
+		}),
 		account: getRecoveryGuardianAccount(env),
 	});
 }
@@ -71,10 +248,24 @@ export function getRecoveryGuardianWalletClient(env: Bindings) {
  * that EOA must hold gas on the destination chain.
  */
 export function getChainClients(env: Bindings, chain: Chain, rpcUrl: string) {
-	const transport = buildRpcTransport(rpcUrl);
 	return {
-		publicClient: createPublicClient({ chain, transport }),
-		walletClient: createWalletClient({ chain, transport, account: getServerAccount(env) }),
+		publicClient: createPublicClient({
+			chain,
+			transport: buildRpcTransport(rpcUrl, {
+				timeoutMs: getRpcTimeout(env),
+				env,
+				role: "read",
+			}),
+		}),
+		walletClient: createWalletClient({
+			chain,
+			transport: buildRpcTransport(rpcUrl, {
+				timeoutMs: getRpcTimeout(env),
+				env,
+				role: "write",
+			}),
+			account: getServerAccount(env),
+		}),
 	};
 }
 

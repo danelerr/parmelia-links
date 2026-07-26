@@ -7,6 +7,7 @@ import { apiFetch } from "./api";
 import { notifySuccess } from "./notify";
 
 const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
+const PUSH_REGISTERED_KEY = "parmelia:push-registered:v1";
 
 export async function pushSupported(): Promise<boolean> {
 	if (!VAPID_KEY || !("serviceWorker" in navigator) || !("Notification" in window)) {
@@ -21,7 +22,11 @@ export async function pushSupported(): Promise<boolean> {
 
 /** Already granted permission this session/device? */
 export function pushAlreadyEnabled(): boolean {
-	return "Notification" in window && Notification.permission === "granted";
+	return (
+		"Notification" in window &&
+		Notification.permission === "granted" &&
+		localStorage.getItem(PUSH_REGISTERED_KEY) === "1"
+	);
 }
 
 async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
@@ -48,9 +53,13 @@ export async function enablePush(user: User): Promise<boolean> {
 	if (!token) return false;
 
 	await apiFetch("/user/push-token", { user, method: "PUT", body: { token } });
+	localStorage.setItem(PUSH_REGISTERED_KEY, "1");
 
 	// Foreground messages: show a calm in-app toast instead of an OS banner.
 	onMessage(messaging, (payload) => {
+		// Push carries only an invalidation signal. Home refetches its private,
+		// authenticated aggregate instead of trusting financial data in FCM.
+		window.dispatchEvent(new Event("parmelia:home-invalidate"));
 		const title = payload.notification?.title || payload.data?.title;
 		const body = payload.notification?.body || payload.data?.body;
 		if (title) notifySuccess(title, body);

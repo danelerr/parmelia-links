@@ -27,15 +27,18 @@ Authorization: Bearer sk_live_your_key_here
 - Keys come in two modes:
   - `sk_test_…` — **test mode**, settles on Arbitrum Sepolia. Use it to build and
     to drive the [sandbox](#test-mode--sandbox).
-  - `sk_live_…` — **live mode**, settles on Arbitrum One.
+  - `sk_live_…` — **live mode**. Will settle on Arbitrum One; the Arbitrum One
+    contracts are **not deployed yet**, so live mode is not operational — the API
+    fails closed (`CONTRACT_NOT_DEPLOYED`) rather than pointing at placeholder
+    addresses. Build against test mode today.
 - The secret is shown **once**, at creation, in the dashboard. Store it securely;
   only its hash is kept server-side. If leaked, revoke it in the dashboard.
 - Never expose `sk_` keys in client-side code. They are server-to-server only.
 
-A missing or invalid key returns `401`:
+A missing or invalid key returns `401` with a stable code:
 
 ```json
-{ "error": "Invalid or revoked API key." }
+{ "error": "Invalid or revoked API key.", "error_code": "INVALID_API_KEY", "requestId": "…" }
 ```
 
 ---
@@ -190,9 +193,18 @@ merchant and fee — the payer cannot change any of them.
   "call": {
     "function": "payInvoice(bytes32,address,uint256,address,uint256,uint256,bytes,bytes)",
     "args": "invoiceId, token, amount, merchant, feeBps, deadline, signature, metadata(0x)"
+  },
+  "callWithPermit": {
+    "function": "payInvoiceWithPermit(bytes32,address,uint256,address,uint256,uint256,bytes,bytes,uint256,uint8,bytes32,bytes32)",
+    "args": "…same first 8 args…, permitDeadline, v, r, s"
   }
 }
 ```
+
+`callWithPermit` is **only present when the deployed router on the active chain
+supports it** (feature-flagged per network). Always feature-detect on the field
+instead of assuming it: the currently deployed testnet router predates
+`payInvoiceWithPermit`, so today the response carries `call` only.
 
 The payer's wallet then sends two transactions on the active Arbitrum chain:
 
@@ -203,6 +215,12 @@ USDC.approve(router, amount)
 // 2) pay — funds go straight to `merchant`, fee (if any) to the treasury
 PaymentRouter.payInvoice(invoiceId, token, amount, merchant, feeBps, deadline, signature, "0x")
 ```
+
+**One transaction with permit (optional, when `callWithPermit` is present).** If
+the token supports EIP-2612 (USDC does) and the deployed router exposes it, the
+payer can skip the `approve` by signing a permit off-chain and calling
+`payInvoiceWithPermit(...)` with the permit's `permitDeadline, v, r, s` appended —
+a single transaction instead of two.
 
 When the router's `InvoicePaid` event is observed, the intent flips to `paid` and
 the `payment.paid` webhook fires. Notes:
@@ -353,7 +371,8 @@ the first intent created with it, so safe retries never double-charge.
 - Use `sk_test_…` keys. Test data is isolated from live (`mode` on every object).
 - Drive the full lifecycle without funds via
   [`simulate_payment`](#simulate-a-payment-test-mode).
-- Test settles on Arbitrum Sepolia; live on Arbitrum One.
+- Test settles on Arbitrum Sepolia. Live will settle on Arbitrum One once its
+  contracts are deployed (not yet operational; see Authentication).
 
 ---
 
@@ -382,10 +401,12 @@ Errors use standard HTTP status codes and a JSON body:
 | 400 | `NO_WALLET` | The merchant has no receiving wallet yet. |
 | 400 | `ROUTER_DISABLED` | On-chain pay unavailable on the active chain. |
 | 400 | `SANDBOX_ONLY` | `simulate_payment` called with a live key. |
-| 401 | _(none)_ | Missing, invalid, or revoked API key. |
+| 401 | `UNAUTHENTICATED` | Missing `Authorization: Bearer sk_…` header. |
+| 401 | `INVALID_API_KEY` | Malformed, unknown, or revoked API key. |
 | 404 | `INTENT_NOT_FOUND` | No such payment intent for this account. |
 | 404 | `EVENT_NOT_FOUND` | No such event for this account. |
-| 409 | `INTENT_NOT_PAYABLE` | Intent is not in a state that allows the action (e.g. cancel/pay an already-paid intent). |
+| 409 | `INTENT_NOT_PAYABLE` | Intent is not in a state that allows the action (already paid, canceled, or past `expires_at`). |
+| 500 | `CONTRACT_NOT_DEPLOYED` | The active chain's contracts are not deployed yet (live mode pre-launch). |
 | 500 | `SERVER_ERROR` | Unexpected error on our side. Retry; if it persists, contact support with `requestId`. |
 
 ---
@@ -395,7 +416,8 @@ Errors use standard HTTP status codes and a JSON body:
 | Item | Value |
 |---|---|
 | Chain (test) | Arbitrum Sepolia (`421614`) |
-| Chain (live) | Arbitrum One (`42161`) |
+| Chain (live) | Arbitrum One (`42161`) — contracts not deployed yet |
 | PaymentRouter | returned by `GET /v1/payment_intents/{id}/onchain` (`router`) |
 | `payInvoice` | `payInvoice(bytes32 invoiceId, address token, uint256 amount, address merchant, uint256 feeBps, uint256 deadline, bytes signature, bytes metadata)` |
+| `payInvoiceWithPermit` | `payInvoiceWithPermit(…payInvoice args…, uint256 permitDeadline, uint8 v, bytes32 r, bytes32 s)` — one-tx pay with an EIP-2612 permit. Only where the deployed router supports it (feature-detect on `callWithPermit`) |
 | `InvoicePaid` | `event InvoicePaid(bytes32 indexed invoiceId, address indexed payer, address indexed merchant, address token, uint256 amount, uint256 fee, bytes metadata)` |

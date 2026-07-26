@@ -1,9 +1,11 @@
 import { Hono } from "hono";
-import { formatEther, formatUnits } from "viem";
-import { erc20Abi, getNetworkConfig, ERR } from "../../../shared";
+import { getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { getPublicClient } from "../services/clients";
 import { getUserByUid, getUserByUsername, saveUser, addPushToken, updateProfileFields } from "../services/storage";
+import {
+	readBalanceModel,
+} from "../services/homeReadModel";
+import { requestBalanceRefresh } from "../services/balanceReadModel";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -96,71 +98,32 @@ userRoutes.put("/username", requireAuth, async (c) => {
 // Get User Balance
 userRoutes.get("/balance", requireAuth, async (c) => {
 	const user = c.get("user")!;
-	const profile = await getUserByUid(c.env, user.sub);
-	const walletAddress = profile?.walletAddress ?? undefined;
+	const { walletAddress, balance, needsRefresh } = await readBalanceModel(
+		c.env,
+		user.sub,
+	);
 	if (!walletAddress) return c.json({ error: "No wallet", error_code: ERR.NO_WALLET }, 404);
 
-	const network = getNetworkConfig(c.env.CHAIN_KEY);
-	const { usdc, usdcDecimals } = network.contracts;
-	const publicClient = getPublicClient(c.env);
-	const account = walletAddress as `0x${string}`;
-
-	// Extra whitelisted ERC-20s beyond USDC (e.g. WBTC) for the swap UI.
-	const extraTokens = network.tokens.filter(
-		(t) => t.address && t.address.toLowerCase() !== usdc.toLowerCase(),
-	);
-
-	const [ethBalanceWei, usdcBalanceRaw, ...extraRaw] = await Promise.all([
-		publicClient.getBalance({ address: account }),
-		publicClient.readContract({
-			address: usdc,
-			abi: erc20Abi,
-			functionName: "balanceOf",
-			args: [account],
-		}) as Promise<bigint>,
-		...extraTokens.map(
-			(t) =>
-				publicClient.readContract({
-					address: t.address!,
-					abi: erc20Abi,
-					functionName: "balanceOf",
-					args: [account],
-				}) as Promise<bigint>,
-		),
-	]);
-
-	const tokens: Record<string, string> = {
-		ETH: formatEther(ethBalanceWei),
-		USDC: formatUnits(usdcBalanceRaw, usdcDecimals),
-	};
-	extraTokens.forEach((t, i) => {
-		tokens[t.symbol] = formatUnits(extraRaw[i], t.decimals);
-	});
-
-	// Savings pocket (Earn): the aToken balance, kept separate from the
-	// available balance on purpose (opt-in product; never mixed with payments).
-	let savings: string | null = null;
-	if (network.aave) {
-		try {
-			const savingsRaw = (await publicClient.readContract({
-				address: network.aave.aUsdc,
-				abi: erc20Abi,
-				functionName: "balanceOf",
-				args: [account],
-			})) as bigint;
-			savings = formatUnits(savingsRaw, usdcDecimals);
-		} catch {
-			savings = null; // RPC blip: omit rather than show a wrong 0
-		}
+	if (needsRefresh) {
+		const network = getNetworkConfig(c.env.CHAIN_KEY);
+		await requestBalanceRefresh(c.env, {
+			uid: user.sub,
+			accountAddress: walletAddress,
+			chainId: network.chainId,
+			reason: "balance_endpoint_missing_asset_bootstrap",
+			priority: 1,
+		});
+		balance.refreshing = true;
 	}
 
 	return c.json({
-		eth: formatEther(ethBalanceWei),
-		usdc: formatUnits(usdcBalanceRaw, usdcDecimals),
-		ethRaw: ethBalanceWei.toString(),
-		usdcRaw: usdcBalanceRaw.toString(),
-		tokens,
-		savings,
+		...balance,
+		// Compatibility fields during the Home rollout. Missing/stale data stays
+		// null/absent; an RPC failure can never be rendered as a zero balance.
+		eth: balance.tokens.ETH ?? null,
+		usdc: balance.tokens.USDC ?? null,
+		ethRaw: balance.assets.ETH?.raw ?? null,
+		usdcRaw: balance.assets.USDC?.raw ?? null,
 	});
 });
 

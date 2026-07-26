@@ -25,6 +25,7 @@ import {
 import { createPendingPayment, getUserByUid } from "../services/storage";
 import { buildSponsoredUserOp, encodeExecuteBatch, serializeBigInts } from "../services/userOp";
 import { logError, logInfo } from "../services/logger";
+import { selectUserOperationTransport } from "../services/userOperationTransport";
 
 const earnRoutes = new Hono<AppContext>();
 
@@ -163,10 +164,12 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 			action === "deposit"
 				? buildDepositCalls(network, account, amountRaw!)
 				: buildWithdrawCalls(network, account, withdrawAll ? null : amountRaw);
+		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
 		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: encodeExecuteBatch(calls),
 			callGasLimit: EARN_CALL_GAS_LIMIT,
+			transportMode: submissionTransport,
 		});
 
 		await createPendingPayment(c.env, {
@@ -179,12 +182,14 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			meta: { action, pool: network.aave!.pool, withdrawAll },
+			submissionTransport,
 		});
 
 		logInfo("earn_prepare_created", { requestId, uid: user.sub, userOpHash, action, amount: ledgerAmount });
 		return c.json({
 			userOpHash,
 			credentialId: profile?.credentialId ?? null,
+			submissionTransport,
 			summary: { action, amount: ledgerAmount, apyPercent: status.apyPercent },
 		});
 	} catch (error) {

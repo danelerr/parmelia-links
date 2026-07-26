@@ -33,7 +33,8 @@ export function txLabel(t: Transaction): string {
 }
 
 /** Raw ledger row as returned by GET /user/transactions (loosely typed). */
-interface RawLedgerRow {
+export interface RawLedgerRow {
+	id?: string;
 	txHash?: string;
 	amount?: string;
 	currency?: string;
@@ -44,16 +45,17 @@ interface RawLedgerRow {
 	kind?: string;
 }
 
-interface RawTxPayload {
+export interface RawTxPayload {
 	sent?: RawLedgerRow[];
 	received?: RawLedgerRow[];
+	nextCursor?: string | null;
 }
 
 /** Merge + sort the /user/transactions payload into a single timeline. */
 export function parseTransactions(txData: RawTxPayload | null | undefined): Transaction[] {
 	if (!txData) return [];
 	const sent: Transaction[] = (txData.sent || []).map((t) => ({
-		id: "",
+		id: t.id ?? "",
 		type: "sent" as const,
 		txHash: t.txHash ?? "",
 		amount: t.amount ?? "0",
@@ -64,7 +66,7 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 		kind: t.kind ?? "payment",
 	}));
 	const received: Transaction[] = (txData.received || []).map((t) => ({
-		id: "",
+		id: t.id ?? "",
 		type: "received" as const,
 		txHash: t.txHash ?? "",
 		amount: t.amount ?? "0",
@@ -99,7 +101,7 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 	// duplicate keys even if two genuinely distinct movements share a tx hash.
 	return [...byMovement.values()].map((tx, i) => ({
 		...tx,
-		id: `${tx.type}:${tx.txHash}:${tx.currency}:${i}`,
+		id: tx.id || `${tx.type}:${tx.txHash}:${tx.currency}:${i}`,
 	}));
 }
 

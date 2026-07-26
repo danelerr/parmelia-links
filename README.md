@@ -35,10 +35,16 @@ custody of user funds.
 - Create a wallet with a **passkey** (biometrics), no seed phrase.
 - Receive payments through **public links and QR codes**.
 - Send to **usernames**, scanned QR codes, or addresses.
-- A **ledger-based activity feed** with payments, deposits, swaps, and receipts
-  (date, time, and a receipt number = tx hash).
+- A **ledger-based activity feed** with payments, deposits, swaps, receipts
+  (date, time, and a receipt number = tx hash), and a **statement page** with
+  shareable URL filters.
 - An **integrated swap module** with Uniswap routing and server-side quoting.
-- **Contacts, invites, push notifications**, and an installable **PWA**.
+- **Cross-chain USDC** via Circle CCTP v2: send to another chain from the app,
+  and a public checkout (`/cc/username`) so external wallets can pay in from
+  other chains (code complete; pending deploy + Flow A smoke test).
+- A **merchant dashboard** (API keys, payment intents, webhooks with signed
+  deliveries and retries, sandbox) backed by a `/v1` payments API in test mode.
+- **Contacts, invites, push notifications**, ES/EN i18n, and an installable **PWA**.
 
 ## What is onchain (Account Abstraction)
 
@@ -62,6 +68,13 @@ The backend relays UserOperations and sponsors gas, but **cannot move user funds
 | AccountWebAuthnV2 (impl) | [`0xa450bc49a0dA738FA348445980b542d78A22527e`](https://sepolia.arbiscan.io/address/0xa450bc49a0dA738FA348445980b542d78A22527e) |
 | AccountFactoryV2 | [`0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB`](https://sepolia.arbiscan.io/address/0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB) |
 | ParmeliaPaymaster | [`0x31f357a64cF5899da21337f0D9e28ef8D6385753`](https://sepolia.arbiscan.io/address/0x31f357a64cF5899da21337f0D9e28ef8D6385753) |
+| ParmeliaPaymentRouter (Flow B) | [`0x607fF0c2eE5E4ae9a7bD2F7E343ea53a1992975A`](https://sepolia.arbiscan.io/address/0x607fF0c2eE5E4ae9a7bD2F7E343ea53a1992975A) |
+| ParmeliaCrosschainRouter (CCTP) | [`0x0816d13337C3A7a03Df639F40993e88B771dD777`](https://sepolia.arbiscan.io/address/0x0816d13337C3A7a03Df639F40993e88B771dD777) |
+
+Contract sources have moved ahead of these deployments in some places (e.g.
+`payInvoiceWithPermit`, recovery-proposal validation, the paymaster gas-cost
+cap): those improvements take effect on the next redeploy and are feature-flagged
+off until then. See [contracts/AUDIT.md](contracts/AUDIT.md).
 
 ## Why Arbitrum
 
@@ -79,7 +92,9 @@ Firebase Auth/Messaging · Arbitrum.
 
 ## Architecture
 
-Full write-up in [ARCHITECTURE.md](ARCHITECTURE.md). In short:
+Full write-up in [ARCHITECTURE.md](ARCHITECTURE.md). RPC roles, the Alchemy Free
+10-block limit and the 2.000-block adaptive indexer are covered in
+[docs/runbooks/rpc-operations.md](docs/runbooks/rpc-operations.md). In short:
 
 ```
 client (React PWA)  ──>  Cloudflare Worker (Hono + D1)  ──>  Arbitrum
@@ -87,6 +102,10 @@ client (React PWA)  ──>  Cloudflare Worker (Hono + D1)  ──>  Arbitrum
   payment links/QR         paymaster sponsors gas              smart accounts
   swaps, receipts          ledger + cron indexer               Uniswap
 ```
+
+The zero-RPC Home invariant and bounded 1/100/1,000-identity load procedure are
+documented in
+[docs/runbooks/home-capacity.md](docs/runbooks/home-capacity.md).
 
 ## Run locally
 
@@ -97,13 +116,55 @@ pnpm install
 pnpm --filter client dev      # web app
 cd server && npx wrangler dev  # API (needs .dev.vars)
 cd contracts && forge test     # contracts
+pnpm verify                    # lint + types + server tests + builds + bundle budgets
+pnpm check:contracts:storage   # append-only storage-layout gate
+pnpm check:contracts:coverage  # Foundry coverage floors for critical contracts
+pnpm check:d1:restore          # encrypted export + isolated D1 restore drill
+pnpm check:release-artifact    # release manifest tamper/extra-file drill
+pnpm check:openapi             # strict OpenAPI 3.1 structure/reference lint
+pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
 ```
 
 ## Tests
 
-- Contracts: `cd contracts && forge test` — 32 passing (Foundry).
-- Server: `pnpm --filter server test` — 34 passing (Vitest: swap encoding,
-  fee/slippage math, validation, UserOperation serialization).
+- Contracts: `cd contracts && forge test` — 124 unit tests passing (Foundry: account +
+  recovery hardening, paymaster + gas-cost cap, payment router incl. permit,
+  crosschain router, upgrade-path storage regression).
+- `pnpm verify:all` enforces append-only contract storage layouts and
+  per-contract coverage floors. Current branch coverage is 88.24% for
+  `AccountWebAuthnV2` and 100% for Factory, Paymaster, PaymentRouter and
+  CrosschainRouter.
+- Arbitrum One deployment scripts reject missing/reused owner, treasury,
+  broadcaster and signing roles before broadcast; testnet retains simple defaults.
+- Server: `pnpm --filter server test` — 129 Node tests plus 10 tests inside
+  `workerd` with a real isolated D1 binding. Coverage includes OpenAPI drift,
+  key rotation, production readiness, all eleven migrations, schema constraints,
+  authentication, body limits, Web Crypto and cron lease ownership, in addition to swap encoding,
+  fee/slippage math, validation, UserOperation serialization, error contract,
+  CCTP message validation, key policy, durable account operations and faucet/turnstile fail-closed).
+- Redocly validates the public API with the OpenAPI 3.1 `recommended-strict`
+  ruleset, while the server test suite independently requires an exact match
+  between every documented `/v1` method/path and the routes registered by Hono.
+- Server logs are structured and centrally redact credentials, secret fields and
+  sensitive URL data. `pnpm check:server-console` prevents direct `console.*`
+  calls outside the logger implementation.
+- `pnpm check:d1:restore` applies all D1 migrations to a local fixture, encrypts
+  its export with AES-256-GCM, restores it into a second isolated D1 and requires
+  integrity/FK checks plus the fixture join to survive.
+- Production operations are manual: the operator runs `pnpm verify:all`, creates
+  and restore-checks an encrypted D1 backup, applies pending migrations, deploys
+  with Wrangler and requires a healthy `/health` response. Rollback is also an
+  explicit Wrangler operation; D1 is never rolled back automatically.
+- Lint is blocking (`--max-warnings 0`) on `client`, `dashboard` and `server`;
+  server lint is type-aware and rejects floating or misused promises.
+- `pnpm test:fork` runs three live integration tests for deployed Parmelia,
+  EntryPoint, CCTP, Uniswap and Aave contracts, including Aave supply/withdraw
+  and CCTP burn state changes.
+- Manual release verification scans Git history and the checked-out worktree
+  with Gitleaks and executes twelve Playwright checks across four viewport
+  profiles, including automated WCAG 2.2 AA rules and keyboard focus order.
+  Semgrep, a reviewed Slither medium/high gate and Foundry lint remain available
+  as local blocking checks.
 
 ## Security model
 
@@ -112,23 +173,31 @@ passkey-controlled smart account). The server's keys can deploy accounts, pay
 gas, and relay `handleOps`, but **cannot move funds** without a valid passkey
 signature the contract accepts. Key-separation guidance for mainnet is in
 [DEPLOY.md](DEPLOY.md) §11.
+Private reporting, secret handling and incident response are documented in
+[SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-Designed as the next phases, not presented as live features: a **Parmelia card**
-and **local bank-QR settlement** so people can spend their stablecoin balance in
-the real world, **Earn** on idle balances, **cross-chain deposits**, and a
-**Stripe-like payments API** for stablecoins. The DeFi direction is written up in
-[DEFI_DESIGN.md](DEFI_DESIGN.md) and the API direction in
-[API_DESIGN.md](API_DESIGN.md).
+Shipped since the buildathon: the **Stripe-like payments API** (test mode, with
+merchant dashboard and signed webhooks) and **cross-chain USDC via CCTP v2**
+(code complete, pending deploy). Designed as the next phases: a **Parmelia
+card** and **local bank-QR settlement** so people can spend their stablecoin
+balance in the real world, and **Earn** on idle balances. The DeFi direction is
+written up in [DEFI_DESIGN.md](DEFI_DESIGN.md), the API direction in
+[API_DESIGN.md](API_DESIGN.md), cross-chain in
+[CROSSCHAIN_DESIGN.md](CROSSCHAIN_DESIGN.md), and the current audit +
+implementation plan in [CLAUDE_REVIEW_FABLE.md](CLAUDE_REVIEW_FABLE.md).
 
 ## Repository layout
 
 ```
 client/      React PWA (deployed to Vercel → app.parmelia.me)
-server/      Cloudflare Worker API (Hono + D1)
-contracts/   Foundry: AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster, verifier
-shared/      Network config, ABIs, token + Uniswap addresses (source of truth)
+server/      Cloudflare Worker API (Hono + D1 + cron indexer/relayer)
+dashboard/   Merchant dashboard (React; API keys, payments, webhooks, sandbox)
+contracts/   Foundry: AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
+             ParmeliaPaymentRouter, ParmeliaCrosschainRouter, verifier
+shared/      Network config, ABIs, error contract (source of truth)
+docs/        Public API reference (api.md + openapi.yaml)
 ```
 
 Landing page lives in a separate repo:

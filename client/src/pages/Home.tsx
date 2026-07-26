@@ -1,8 +1,5 @@
 import { type User } from "../lib/firebase";
 import { useMemo, useState } from "react";
-import useSWR from "swr";
-import { SERVER_URL } from "../lib/api";
-import { fetchWithAuth } from "../lib/authFetch";
 import { notifySuccess } from "../lib/notify";
 import Logo from "../components/Logo";
 import LinkButton from "../components/LinkButton";
@@ -12,8 +9,8 @@ import { activeNetwork } from "../lib/activeNetwork";
 import { useTranslation } from "react-i18next";
 import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
 import { formatAmount, formatNumber } from "../lib/format";
-import { hasUsableKeyForSigners } from "../lib/webauthn";
 import MenuSheet from "../components/MenuSheet";
+import { useHomeModel } from "../hooks/useHomeModel";
 
 const RECENT_COUNT = 5;
 
@@ -29,81 +26,26 @@ export default function Home({ user }: { user: User }) {
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 	const [menuOpen, setMenuOpen] = useState(false);
 
-	// "New device?" hint: none of this device's remembered passkeys is an
-	// on-chain signer of the account (orphan credentials don't count). Still a
-	// heuristic for absence (synced keys sign without a hint) - it only
-	// SUGGESTS; /recover's intro and the 48h timelock are the real gates.
-	const [recoveryBannerDismissed, setRecoveryBannerDismissed] = useState(() => {
-		try {
-			return localStorage.getItem(`parmelia:recovery-banner-dismissed:${user.uid}`) === "1";
-		} catch {
-			return true;
-		}
-	});
+	const {
+		data: home,
+		isLoading,
+		isValidating,
+		fromLocalCache,
+	} = useHomeModel(user);
+	const balance = home?.balance;
+	const txData = home?.activity;
 
-	function dismissRecoveryBanner() {
-		try {
-			localStorage.setItem(`parmelia:recovery-banner-dismissed:${user.uid}`, "1");
-		} catch {
-			/* storage unavailable - hide for the session anyway */
-		}
-		setRecoveryBannerDismissed(true);
-	}
-
-	const fetcher = async (url: string) => {
-		const res = await fetchWithAuth(user, url);
-		if (!res.ok) throw new Error("API error");
-		return res.json();
-	};
-
-	const { data: profile } = useSWR(`${SERVER_URL}/user/profile`, fetcher, {
-		revalidateOnFocus: true,
-		revalidateOnReconnect: true,
-	});
-
-	const { data: balance, isLoading: isBalanceLoading } = useSWR(
-		profile?.walletAddress ? `${SERVER_URL}/user/balance` : null,
-		fetcher,
-		{ refreshInterval: 10000, keepPreviousData: true },
+	const transactions: Transaction[] = useMemo(
+		() => parseTransactions(txData),
+		[txData],
 	);
-
-	const { data: txData, isLoading: isTxLoading } = useSWR(
-		profile?.walletAddress ? `${SERVER_URL}/user/transactions` : null,
-		fetcher,
-		{ refreshInterval: 15000, keepPreviousData: true },
-	);
-
-	// Once per mount (no polling): feeds the recovery banner with the account's
-	// on-chain signers so it can compare them against this device's passkeys.
-	const { data: passkeyInfo } = useSWR(
-		profile?.walletAddress ? `${SERVER_URL}/account/passkey` : null,
-		fetcher,
-		{ revalidateOnFocus: false },
-	);
-	const accountSigners: string[] | null = Array.isArray(passkeyInfo?.signers)
-		? passkeyInfo.signers
-		: null;
-	const showRecoveryBanner = useMemo(
-		() =>
-			!recoveryBannerDismissed &&
-			accountSigners !== null &&
-			accountSigners.length > 0 &&
-			!hasUsableKeyForSigners(accountSigners),
-		[recoveryBannerDismissed, accountSigners],
-	);
-
-	// Derived from polled data - memoized so maps + sort don't re-run per render.
-	const transactions: Transaction[] = useMemo(() => parseTransactions(txData), [txData]);
 	const recent = transactions.slice(0, RECENT_COUNT);
 
-	const balanceLoading = isBalanceLoading && !balance;
+	const balanceLoading = isLoading && !balance;
 
-	const walletAddress = profile?.walletAddress || null;
-	const username = profile?.username || null;
-	const balances: Record<string, string> = balance?.tokens || {
-		ETH: balance?.eth,
-		USDC: balance?.usdc,
-	};
+	const walletAddress = home?.account.walletAddress || null;
+	const username = home?.identity.username || null;
+	const balances: Record<string, string> = balance?.tokens || {};
 
 	function handleCopyAddress() {
 		if (!walletAddress) return;
@@ -196,23 +138,6 @@ export default function Home({ user }: { user: User }) {
 				</div>
 			</header>
 
-			{showRecoveryBanner && (
-				<div className="bg-surface border border-border rounded-[18px] p-4 mb-4 shadow-e1">
-					<p className="text-[14px] mb-1">{t("recover.bannerTitle")}</p>
-					<p className="text-[12px] text-text-muted leading-relaxed mb-3">
-						{t("recover.bannerBody")}
-					</p>
-					<div className="flex items-center gap-4">
-						<LinkButton to="/recover" className="text-[13px] text-glow-sky font-medium">
-							{t("recover.bannerCta")}
-						</LinkButton>
-						<button onClick={dismissRecoveryBanner} className="text-[13px] text-text-faint">
-							{t("recover.bannerDismiss")}
-						</button>
-					</div>
-				</div>
-			)}
-
 			{/* Balance card */}
 			<div className="relative overflow-hidden bg-surface border border-border rounded-[22px] p-6 mb-4 shadow-e2">
 				<div
@@ -253,6 +178,13 @@ export default function Home({ user }: { user: User }) {
 					</p>
 					{balanceLoading ? (
 						<Skeleton className="h-[46px] w-44 rounded-[14px] my-0.5" />
+					) : balances[selectedCurrency] === undefined ? (
+						<p
+							className="font-display text-[46px] leading-none text-text-faint"
+							aria-label={t("home.balanceUnavailable")}
+						>
+							—
+						</p>
 					) : (
 						<p className="font-display text-[46px] leading-none tabular select-none">
 							{selectedCurrency === "USDC" && (
@@ -279,6 +211,14 @@ export default function Home({ user }: { user: User }) {
 				</div>
 
 				<div className="flex flex-col items-center gap-1 relative z-1">
+					{balance?.observedAt && (
+						<span className="text-[10px] text-text-faint">
+							{balance.status === "fresh" && !fromLocalCache
+								? t("home.dataFresh")
+								: t("home.dataCached")}
+							{isValidating ? " · …" : ""}
+						</span>
+					)}
 					<span className="text-[10px] uppercase tracking-[0.1em] text-text-faint">
 						{t("home.yourAddress")}
 					</span>
@@ -359,10 +299,10 @@ export default function Home({ user }: { user: User }) {
 			{/* Recent activity - compact; the full statement lives in /extractos */}
 			<div className="flex items-center justify-between mb-3 px-1">
 				<h2 className="font-display text-[18px]">{t("home.recentActivity")}</h2>
-				{isTxLoading && txData && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
+				{isValidating && txData && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
 			</div>
 
-			{isTxLoading && !txData ? (
+			{isLoading && !txData ? (
 				<RowSkeletonList count={RECENT_COUNT} />
 			) : transactions.length === 0 ? (
 				<div className="flex flex-col items-center text-center py-14 px-6">

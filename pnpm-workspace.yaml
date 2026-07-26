@@ -3,6 +3,15 @@ packages:
   - server
   - shared
   - dashboard
+minimumReleaseAge: 10080
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+auditConfig:
+  # GHSA-qwww-vcr4-c8h2 affects only unstable React Router RSC APIs. Parmelia is
+  # a Vite SPA and CI forbids those imports via check:router-rsc. Remove this
+  # exact exception as soon as the announced fixed npm release is available.
+  ignoreGhsas:
+    - GHSA-qwww-vcr4-c8h2
 allowBuilds:
   '@swc/core': false
   esbuild: false

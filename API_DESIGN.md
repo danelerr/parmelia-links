@@ -9,12 +9,17 @@
 > **Ahora / Siguiente / Horizonte**, no "MVP vs después".
 > Fecha: junio 2026. Relacionado: `ARCHITECTURE.md`, `DEFI_DESIGN.md`.
 >
-> **Estado de implementación (jun-2026):** Flujo A (lazo cerrado) y Flujo B
-> (PaymentRouter) **construidos**: merchants, API keys (`sk_`), payment intents,
-> webhooks firmados con outbox+cron, event log, idempotencia, sandbox
-> "simular pago", el contrato `ParmeliaPaymentRouter` (+11 tests), su firma de
-> autorización y el indexer que reconcilia `InvoicePaid`. **Falta:** desplegar el
-> router on-chain y el dashboard de UI. Ver §15.
+> **Estado de implementación (jul-2026):** Flujo A (lazo cerrado) y Flujo B
+> (PaymentRouter) **construidos y operativos en test mode**: merchants, API keys
+> (`sk_`), payment intents (con `expires_at` aplicado), webhooks firmados con
+> outbox + claim atómico + reintentos con backoff, event log, idempotencia
+> (incl. carrera de `Idempotency-Key`), sandbox "simular pago", el contrato
+> `ParmeliaPaymentRouter` **desplegado en Arbitrum Sepolia** (`0x607f…`;
+> `payInvoiceWithPermit` llega con el próximo redeploy, feature-flagged), su
+> firma de autorización, el indexer que reconcilia `InvoicePaid`, y el
+> **dashboard de comerciantes** (keys, pagos con paginación, webhooks con
+> reenvío, sandbox). Referencia pública: `docs/api.md` + `docs/openapi.yaml`.
+> Estado vivo: `CLAUDE_REVIEW_FABLE.md`.
 
 ---
 

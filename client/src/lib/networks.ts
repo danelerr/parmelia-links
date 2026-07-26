@@ -8,6 +8,7 @@ export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-
 
 export type NetworkConfig = {
 	key: SupportedChainKey;
+	chainId: number;
 	name: string;
 	nativeTokenSymbol: string;
 	explorerBaseUrl: string;
@@ -22,6 +23,7 @@ export const DEFAULT_CHAIN_KEY: SupportedChainKey = "arbitrum-sepolia";
 export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 	"base-sepolia": {
 		key: "base-sepolia",
+		chainId: 84532,
 		name: "Base Sepolia",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
@@ -31,6 +33,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 	},
 	"arbitrum-sepolia": {
 		key: "arbitrum-sepolia",
+		chainId: 421614,
 		name: "Arbitrum Sepolia",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://sepolia.arbiscan.io",
@@ -40,6 +43,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 	},
 	"arbitrum-one": {
 		key: "arbitrum-one",
+		chainId: 42161,
 		name: "Arbitrum One",
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://arbiscan.io",

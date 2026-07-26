@@ -5,6 +5,46 @@
 > Estado: junio 2026 (migrando a Arbitrum). Convenciones de prioridad:
 > **P0** = bloquea el lanzamiento en Arbitrum · **P1** = pre-producción ·
 > **P2** = al escalar · **Futuro** = post-PMF / opcional.
+>
+> **Nota de precedencia (14-jul-2026):** este backlog conserva contexto
+> histórico. El estado verificado y los pendientes vigentes están en
+> `CODEX_REAUDITORIA_2026-07-13.md`.
+
+> **Pendiente de promover (código ya integrado):** configurar branch protection
+> y el environment `worker-testnet`, y ejecutar `deploy-worker.yml`. Ese workflow
+> verifica el artefacto CI, respalda D1, aplica la migración 0011 y despliega el
+> Worker sin recompilar; si readiness falla, revierte el Worker automáticamente.
+> También falta promover cliente/dashboard en Vercel,
+> fondear gas del relayer en **Base Sepolia** y revocar/rotar en GCP la service
+> account de Firebase retirada. El JSON local ya fue eliminado; eso no revoca la
+> credencial en el proveedor.
+>
+> **Pasada de endurecimiento jul-2026 (Claude Fable):** auditoría integral +
+> implementación del backlog implementable por código. Detalle, prioridades y lo
+> que sigue: **`CLAUDE_REVIEW_FABLE.md`**. Resumen: correctitud transaccional del
+> backend (faucet atómico, receipts verificados, doble-pago de links, expiración
+> de intents, webhooks con claim, cron con lock, relayer CCTP con validación de
+> mensaje/TTL/intentos, fail-closed de Turnstile/claves/gas/TODO_DEPLOY,
+> migración 0006 STRICT+FK+CHECK), contratos (validación de recovery + cancel
+> del guardian, cap de gas del paymaster, SIG_VALIDATION_FAILED, solc pineado,
+> test de upgrade, snapshots de storage layout — **requieren redeploy**), cliente
+> (focus-visible, diálogos accesibles, AmountInput decimal-coma, confirmación
+> cross-chain, navegación con Link, i18n de restos, filtros en URL, lint 0
+> bloqueante) y dashboard (estados de error, paginación, ESLint). Segunda pasada
+> de contratos: **M-4 stake irrecuperable del paymaster** (sin
+> `unlockStake`/`withdrawStake`) encontrado y resuelto, `opId` validado en el
+> CrosschainRouter, fuzz de conservación + tampering en routers y paymaster, cap
+> de gas en el script de deploy. Tercera pasada (backend, cierre): **bug de
+> falso éxito corregido** (el submit confiaba en `receipt.status` del bundle; una
+> ejecución interna revertida se contabilizaba como pago — ahora decide el
+> `UserOperationEvent`), máquina de estados de `pending_payments` con claim
+> atómico anti doble-submit (migración **0007**, aplicarla antes del deploy),
+> liquidación extraída a `services/settlement.ts` (idempotente) + **reconciliador
+> cron** para pagos varados por muerte del Worker, `GET /pay/status/:hash` y
+> `GET /crosschain/status/:opId` para polling (cubre el #15 del lado servidor),
+> rate limiting D1 en `/account/create|fund` y `/crosschain/inbound/*`
+> (`RATE_LIMITED` 429), warning de CORS abierto en mainnet, `.dev.vars.example`
+> completo. Tests: server 38→59, contratos 57→80.
 
 ---
 
@@ -27,9 +67,9 @@ La app ya está operativa en Arbitrum Sepolia.
 
 | # | Tarea | Impacto | Esfuerzo |
 |---|---|---|---|
-| 7 | **Least-privilege de claves**: separar deployer / faucet / guardian / relayer en EOAs distintas | Reduce blast radius si una clave se filtra. **Documentado en `DEPLOY.md` §11** (en testnet una sola EOA es aceptable; separar para mainnet) | Bajo (config de deploy) |
-| 8 | **Guardian fuera de la clave caliente** del relayer (clave dedicada o multisig) | El guardian de todas las wallets hoy es el EOA del server (`account.routes.ts`). Ver `DEPLOY.md` §11 | Medio |
-| 9 | **Rate limiting** en endpoints públicos (`/account/create`, `/account/fund`) | Anti-abuso. ✅ **Turnstile ya hecho** (ver #39); falta rate-limiting de zona (regla de Cloudflare cuando haya dominio propio). | Bajo |
+| 7 | ~~**Least-privilege adicional**: separar faucet de relayer~~ | ✅ `FAUCET_PRIVATE_KEY` dedicada, lease de nonce propio, exclusión correcta del indexer y colisiones bloqueadas en mainnet. | - |
+| 8 | ~~**Guardian fuera de la clave caliente**~~ | ✅ Clave dedicada obligatoria y distinta en mainnet; para alto valor queda multisig/MPC/HSM. | Operativo |
+| 9 | ~~**Rate limiting in-Worker**~~ | ✅ Turnstile + límites D1 fail-closed; falta sólo la regla de zona Cloudflare cuando haya dominio propio. | Operativo |
 | 10 | ~~Setear `ALLOWED_ORIGINS`~~ | ✅ Hecho: allowlist en `wrangler.jsonc` (parmelia.me + www + localhost). Agregar dominios de preview si se usan. | - |
 | 11 | ~~Label humano del passkey~~ | ✅ Hecho: `createPasskey(uid, label)` - el diálogo del SO muestra email/nombre; el `uid` sigue siendo el id estable. | - |
 | 12 | ~~Fallback `"parmelia-user"`~~ | ✅ Hecho: sin uid se corta con error de sesión en vez de un id compartido. | - |
@@ -42,8 +82,8 @@ La app ya está operativa en Arbitrum Sepolia.
 |---|---|---|---|
 | 13 | **Migrar a un bundler ERC-4337 (Pimlico/Alchemy/Stackup)** | Resuelve el **cuello de botella del relayer único** (nonce/throughput), da **batching automático** y **estimación de gas L2 correcta** | Mantener el paymaster propio; cambia el `submit` de self-`handleOps` a `eth_sendUserOperation`. Requiere API key. |
 | 14 | ~~Indexer para historial~~ | ✅ Resuelto **Cloudflare-nativo** (sin Ponder/hosting): tabla `ledger` en D1 escrita al relayar (la app conoce todo lo que pasa por ella, ambos lados si es interno) + **cron indexer** (`services/indexer.ts`, cada 2 min) que ingiere solo transferencias ERC-20 **entrantes externas** con cursor en `sync_state`. `/user/transactions` lee solo D1. `history.ts` eliminado. | Límite conocido: depósitos externos de ETH nativo no emiten logs (Across entrega USDC); sharding del filtro `to` al pasar miles de wallets. |
-| 15 | **`waitForReceipt` async completo**: `submit` responde inmediato + cliente pollea estado | Quita la espera síncrona del request | Toca frontend (por eso quedó pendiente; ya tuneamos polling para Arbitrum) |
-| 16 | **Cola idempotente** para pagos (Cloudflare Queues) | Reconciliar "tx enviada pero recibo no confirmado" | Va de la mano con #13/#15. Las escrituras del ledger ya son idempotentes (índice único). |
+| 15 | ~~**`waitForReceipt` async completo**~~ | ✅ Resuelto | `/pay/submit` y cuenta/faucet/recovery responden 202; cliente pollea estado y los cron reconciliadores finalizan de forma durable. |
+| 16 | ~~**Cola idempotente para pagos**~~ | ✅ Resuelto sin Queue obligatoria | D1 conserva la máquina de estados, tx/userOp, claims y outbox; el cron reconcilia operaciones varadas y las escrituras de ledger son idempotentes. |
 | 17 | ~~Caché de balance/historial~~ | ✅ Resuelto de raíz por #14: el historial ya no toca RPC/explorer en el request (solo D1). El balance sigue on-chain (barato, 2-4 eth_call). | - |
 
 ---
@@ -108,11 +148,12 @@ La app ya está operativa en Arbitrum Sepolia.
 
 | # | Tarea | Notas |
 |---|---|---|
-| 30 | **Multi-red en producción** | La portabilidad ya está lista (config por red). Elegir red(es) de settlement por fees/liquidez de USDC. |
+| 30 | **Multi-red en producción** | La portabilidad ya está lista (config por red). Elegir red(es) de settlement por fees/liquidez de USDC. **Evaluación Avalanche (jul-2026): NO migrar.** Sus dos ventajas citadas se evaporan al inspeccionarlas (CCTP v2 Fast está igual en Arbitrum — el módulo propio ya corre sobre él; fees: ambas sub-centavo, ruido vs el costo de migrar) y Avalanche recién activó P256 (ACP-204, nov-2025, 6.900 gas vs 3.450 de RIP-7212 en Arbitrum) mientras su liquidez Uniswap/Aave es más fina. Regla de decisión: migrar solo con (1) ventaja de NEGOCIO concreta (grant/partnership/usuarios), (2) target con CCTP v2 + precompile P256 + profundidad Aave/Uniswap + EntryPoint canónico, (3) transición corriendo ambas redes, nunca corte duro. La arquitectura config-driven es el seguro: ejercerlo por negocio, no por spec-sheet. |
 | 31 | **Uniswap crosschain / pagos multi-activo** | Post-PMF. UUPS permite agregarlo **sin cambiar direcciones de wallet**. |
 | 32 | **EIP-7702** (EOAs que delegan a contratos) | Complementario a 4337; no urgente para el modelo de passkeys. |
 | 33 | **Compresión de calldata** | ⚠️ **No recomendado** salvo que se mida como techo real: forzaría forkear el verifier auditado de OZ (alto riesgo). Post-blobs en Arbitrum el beneficio es chico. |
 | 34 | **Descentralizar el guardian** (guardians plurales / social recovery) | Evolución de #8. |
+| 50 | **Rescate de depósitos mal dirigidos** | Si alguien manda USDC a la dirección de un usuario en **otra red** (sin checkout/CCTP), queda varado ahí. **Recuperable SI la smart account puede reproducirse y controlarse en esa red** (CREATE2 determinista: desplegar la cuenta ahí + bridge); hoy es manual y no automático. Futuro: watcher que detecte y recupere vía CCTP. Detalle en `CROSSCHAIN_DESIGN.md` §12. Soporte/seguro, no core. |
 
 ---
 
@@ -122,9 +163,9 @@ La app ya está operativa en Arbitrum Sepolia.
 |---|---|---|
 | 35 | ~~Soporte de Tokens Adicionales~~ | ✅ Hecho: **WBTC** (8 dec, `0x2f2a...5B0f`) whitelisted en `shared/networks.ts` (Arbitrum One); selector de saldo en Home, pagos/links genéricos por whitelist (server), balance en `/user/balance`. WETH es interno (wrap de rutas), no se muestra al usuario. Sin WBTC canónico en Sepolia (omitido a propósito). |
 | 36 | ~~Intercambios Nativos (Swaps)~~ | ✅ Hecho: `/swap/quote` + `/swap/prepare` (quoters v3+v4 on-chain, Universal Router, fees con hard cap 1%), página `/cambiar` con confirmación passkey. Pendiente: smoke test on-chain tras el deploy P0. |
-| 37 | **Modo Ahorro / Rendimiento (Earn en Arbitrum)** | Diseñado en `DEFI_DESIGN.md` §4 (LP v3 primero, 3 niveles de riesgo, performance fee sobre fees). Implementación pendiente. |
-| 38 | **Depósitos y Retiros Cross-Chain** | 🟡 Parcial. **Diseño afinado y autoritativo en `CROSSCHAIN_DESIGN.md`**: rail principal **CCTP v2 directo** (USDC-only v1, relayer propio, sin apilar fees), Across queda como fallback/benchmark (ya no depender del endpoint legacy keyless - requiere API key + integratorId). Hecho hoy: quotes vía Across + página `/depositar` (handoff sin custodia) + **contrato `ParmeliaCrosschainRouter` (Flow B outbound) con tests (12) y script de deploy**. Pendiente: deploy + backend (storage/relayer/rutas) → Flow A inbound. Ver orden en el design doc §10. |
-| 49 | **`payInvoiceWithPermit` (EIP-2612) en ParmeliaPaymentRouter** | Mejora extraída de AvaSettle (única que aplica): pago de wallet externa en **1 tx** (en vez de `approve`+`payInvoice`). Solo aplica a **Payments API Flow B** (y futuro inbound cross-chain), **no** al `CrosschainRouter` (ese lo llama la propia smart account, que ya batchea el approve). USDC soporta permit; usar patrón `try/catch` anti-front-run. El router **aún no está desplegado** → agregar la función ahora es gratis (sin redeploy). Alternativa superior: **EIP-3009 `receiveWithAuthorization`** (gasless). **No** adoptar el modelo sin-firma de AvaSettle (incompatible con non-custodial + fee). `SettlementVault` de AvaSettle = rail de payouts custodial, archivado como referencia para payouts masivos/referidos a futuro. |
+| 37 | ~~Modo Ahorro / Rendimiento (Earn en Arbitrum)~~ | ✅ **IMPLEMENTADO (2026-07-03)** según `DEFI_DESIGN.md` v2.0: Aave v3 supply de USDC directo desde la smart account (cero contratos nuevos, cero custodia, fee 0). Direcciones verificadas contra el aave-address-book (el reserve de Sepolia usa el mismo Circle USDC de Parmelia → probable en testnet). Server: `services/earn.ts` + `/earn/{config,prepare}` + settlement `EARN_*` + migración `0008` (ledger kind `earn`) + 8 tests. Cliente: `Earn.tsx` producto completo ("Ahorro") + i18n + `savings` en balance. **Pendiente (operador):** promoción verificada y smoke e2e autenticado con el faucet de Aave. |
+| 38 | **Depósitos y Retiros Cross-Chain** | 🟢 **Flow B (enviar) y Flow A (recibir) completos** (CCTP v2 directo, USDC-only), código integrado y verificado. Diseño en `CROSSCHAIN_DESIGN.md`. **Flow B outbound:** contrato `ParmeliaCrosschainRouter` desplegado (`0x0816…D777`) + 12 tests; relayer; rutas `/crosschain/{config,quote,prepare}` + rama submit; `CrosschainSend` (`/crosschain`) — **probado e2e** (Arbitrum→Base). **Flow A inbound:** rutas públicas `/crosschain/inbound/{config,prepare,register,status}` (el pagador externo llama directo al TokenMessenger de CCTP, sin nuestro router); relayer maneja inbound (mint en Arbitrum, lo acredita el indexer); checkout público `CrosschainReceive` (`/cc/:recipient`, wallet externa vía `window.ethereum`, sin viem). El link `/cc/<username>` ya se muestra con acciones de copiar y compartir en la pantalla Recibir. Storage `crosschain_operations` (migración 0005 aplicada ✅). **Pendiente:** deploy mediante `deploy-worker.yml`, promoción del cliente y gas del relayer por red destino. Across queda como fallback/benchmark (sigue en endpoint legacy). |
+| 49 | ~~**`payInvoiceWithPermit` (EIP-2612)**~~ | ✅ **Implementado** en `ParmeliaPaymentRouter` (`_settle` factorizado + `payInvoiceWithPermit` con permit `try/catch` anti-front-run; +2 tests, 13 total). Backend `/onchain` devuelve `callWithPermit`; docs (api.md + openapi) actualizados. **Pendiente: redeploy del router** (el bytecode cambió → nueva dirección CREATE2 → actualizar `networks.ts` + re-`setTokenSupported`). El router viejo (`0x607f…`) sigue funcionando con `payInvoice` normal hasta el redeploy. Alternativa futura superior: EIP-3009 `receiveWithAuthorization` (gasless). `SettlementVault` de AvaSettle = rail de payouts custodial, archivado como referencia. |
 
 ---
 
@@ -139,6 +180,6 @@ Limpieza y refactors hechos en esta tanda:
 - **Paymaster v2**: `validAfter`/`validUntil` firmados (anti-replay) + hook de fee documentado en `postOp`.
 - **Tabla `passkeys`** (D1): qx/qy server-side → multi-passkey/recovery cross-device real.
 - **RPC failover** (multi-URL), **CORS configurable** (`ALLOWED_ORIGINS`), **code-splitting** del cliente.
-- **Tests**: 18 (Vitest server) + 32 (Foundry: 27 cuenta + 5 paymaster).
+- **Tests**: 18 (Vitest server) + 32 (Foundry) en aquella tanda; hoy 59 + 80 (ver arriba).
 - **Limpieza**: `.DS_Store`, lockfiles npm en workspace pnpm, leftovers de Vite, `walkthrough.md` stale.
 - **Docs**: `ARCHITECTURE.md` reescrito (D1, Arbitrum, v0.9), `EVALUACION_TECNICA.md`.

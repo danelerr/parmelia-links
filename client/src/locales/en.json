@@ -56,7 +56,10 @@
     "createFirstLink": "Create a payment link",
     "shareAddressNudge": "or share your address to get paid",
     "shareAddressText": "Send me a payment to my Parmelia address: {{address}}",
-    "viewFullStatement": "See full statement"
+    "viewFullStatement": "See full statement",
+    "dataFresh": "Balance updated",
+    "dataCached": "Last saved balance",
+    "balanceUnavailable": "Balance temporarily unavailable"
   },
   "tx": {
     "swap": "Token swap",
@@ -258,7 +261,9 @@
     "noMovements": "No movements match these filters.",
     "movement_one": "{{count}} movement",
     "movement_other": "{{count}} movements",
-    "fromLink": "Payment link"
+    "fromLink": "Payment link",
+    "loadMore": "Load older movements",
+    "loadingMore": "Loading…"
   },
   "earn": {
     "title": "Savings",
@@ -421,6 +426,7 @@
     "RECOVERY_NONE": "There's no recovery in progress.",
     "RECOVERY_NOT_READY": "The recovery isn't available yet.",
     "INVALID_USERNAME": "Invalid username. Only lowercase, numbers and dashes (3-30 characters).",
+    "INVALID_CURSOR": "That page is no longer valid. Reload the statement.",
     "USERNAME_RESERVED": "That username is reserved.",
     "USERNAME_TAKEN": "That username is already taken.",
     "USER_NOT_FOUND": "We couldn't find that user.",
@@ -436,7 +442,9 @@
     "TX_REVERTED": "The transaction didn't go through. Your money wasn't moved.",
 		"PAYMENT_FAILED": "The payment couldn't be processed. Please try again.",
 		"PAYLOAD_TOO_LARGE": "The submitted data is too large.",
-		"SERVICE_UNAVAILABLE": "The service is temporarily unavailable.",
+    "SERVICE_UNAVAILABLE": "The service is temporarily unavailable.",
+    "BUNDLER_UNAVAILABLE": "The operation network is temporarily busy. Try again.",
+    "BUNDLER_ENTRYPOINT_UNSUPPORTED": "The operation provider does not support this Parmelia version.",
     "SWAPS_DISABLED": "Swaps aren't available on this network.",
     "EARN_DISABLED": "Savings aren't available on this network right now.",
     "UNSUPPORTED_TOKEN": "Unsupported token.",

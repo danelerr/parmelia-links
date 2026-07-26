@@ -6,7 +6,7 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import useSWR from "swr";
+import useSWRInfinite from "swr/infinite";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
@@ -15,7 +15,13 @@ import BackHeader from "../components/BackHeader";
 import ReceiptModal from "../components/ReceiptModal";
 import { RowSkeletonList } from "../components/Skeleton";
 import { activeNetwork } from "../lib/activeNetwork";
-import { parseTransactions, formatShortDate, txLabel, type Transaction } from "../lib/transactions";
+import {
+	parseTransactions,
+	formatShortDate,
+	txLabel,
+	type RawTxPayload,
+	type Transaction,
+} from "../lib/transactions";
 import { formatAmount } from "../lib/format";
 
 
@@ -87,15 +93,38 @@ export default function Statement({ user }: { user: User }) {
 		setSearchParams(next);
 	}
 
-	const fetcher = async (url: string) => {
+	const fetcher = async (url: string): Promise<RawTxPayload> => {
 		const res = await fetchWithAuth(user, url);
 		if (!res.ok) throw new Error("API error");
 		return res.json();
 	};
 
-	const { data: txData, isLoading } = useSWR(`${SERVER_URL}/user/transactions`, fetcher, {
-		revalidateOnFocus: true,
-	});
+	const { data: pages, isLoading, isValidating, size, setSize } =
+		useSWRInfinite<RawTxPayload>(
+			(_pageIndex, previousPage) => {
+				if (previousPage && !previousPage.nextCursor) return null;
+				const query = new URLSearchParams({ limit: "50" });
+				if (previousPage?.nextCursor) {
+					query.set("before", previousPage.nextCursor);
+				}
+				return `${SERVER_URL}/user/transactions?${query.toString()}`;
+			},
+			fetcher,
+			{
+				revalidateOnFocus: true,
+				revalidateFirstPage: true,
+			},
+		);
+	const txData = useMemo<RawTxPayload | undefined>(() => {
+		if (!pages) return undefined;
+		return {
+			sent: pages.flatMap((page) => page.sent ?? []),
+			received: pages.flatMap((page) => page.received ?? []),
+		};
+	}, [pages]);
+	const hasMore = Boolean(pages?.at(-1)?.nextCursor);
+	const isLoadingMore =
+		isValidating && Boolean(pages) && pages!.length < size;
 
 	const transactions = useMemo(() => parseTransactions(txData), [txData]);
 
@@ -302,6 +331,18 @@ export default function Statement({ user }: { user: User }) {
 						})}
 					</div>
 				</>
+			)}
+			{hasMore && (
+				<button
+					type="button"
+					disabled={isLoadingMore}
+					onClick={() => void setSize((current) => current + 1)}
+					className="mt-5 h-11 rounded-[14px] border border-border bg-surface text-[14px] text-text-muted hover:text-text disabled:opacity-50 transition-colors"
+				>
+					{isLoadingMore
+						? t("statement.loadingMore")
+						: t("statement.loadMore")}
+				</button>
 			)}
 
 			{selectedTx && <ReceiptModal tx={selectedTx} onClose={() => setSelectedTx(null)} />}

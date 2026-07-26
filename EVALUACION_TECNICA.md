@@ -8,10 +8,15 @@
 > **Actualización (jun-2026):** desde esta evaluación el proyecto **migró a
 > Arbitrum** (ya no Monad) y se resolvieron varios puntos de abajo: el historial
 > ahora se sirve desde un **ledger en D1 + cron indexer** (no se reconstruye en
-> cada request - §5.2 resuelto), el login es **multi-método** (Google/Apple/
-> enlace mágico), y se añadieron **Turnstile**, **push FCM** y **analytics**. El
-> cuello de botella del **relayer EOA único (§5.1)** sigue pendiente (se resuelve
-> al migrar a un bundler gestionado). Ver `ARCHITECTURE.md` y `MEJORAS_PENDIENTES.md`.
+> cada request - §5.2 resuelto), el login es **multi-método** (Google + enlace
+> mágico; Apple se descartó), y se añadieron **Turnstile**, **push FCM** y
+> **analytics**. El cuello de botella del **relayer EOA único (§5.1)** sigue
+> pendiente (se resuelve al migrar a un bundler gestionado).
+>
+> **Nota (jul-2026):** este documento es un **snapshot histórico**. El estado
+> vigente (auditoría integral, endurecimiento de backend/contratos, API `/v1` +
+> dashboard, cross-chain CCTP) vive en `CODEX_REAUDITORIA_2026-07-13.md` y
+> `ARCHITECTURE.md`.
 
 ---
 
@@ -65,7 +70,8 @@ Cloudflare D1 (SQLite) para metadata de la app (perfiles, links, pending ops, hi
 - **ERC-4337** (EntryPoint, UserOperations, paymaster) - estándar de AA.
 - **AccountWebAuthnV2**: MultiSigner (ERC-7913) + ejecución (ERC-7821) + UUPS + recovery con guardian y timelock.
 - **WebAuthn/P256** vía verificador ERC-7913 stateless.
-- **27 tests de Foundry** sobre la V2 - el único módulo con cobertura real de tests.
+- **124 tests de Foundry** en la suite vigente, con floors de cobertura por
+  contrato y storage-layout diff bloqueantes en CI.
 
 Esto es un diseño de wallet de calidad: passkeys múltiples en la misma dirección, recuperación social con ventana de 48h, y upgradeabilidad. Para un producto de pagos sin seed phrase, es exactamente lo que se necesita.
 
@@ -109,20 +115,29 @@ Arbitrum (Sepolia testnet / One producción): L2 madura, fees bajos, RIP-7212 (P
 
 ### 5.1 Cuello de botella dominante: el relayer EOA único 🔴
 
-Hoy un solo EOA (`PRIVATE_KEY`) hace **todo** lo on-chain: enviar `handleOps` de cada pago, desplegar cada cuenta nueva, mandar el faucet, y además es el **guardian** de todas las wallets.
+La EOA operativa (`PRIVATE_KEY`) envía `handleOps`, despliega cuentas, fondea el
+faucet y ejecuta mints CCTP. El guardian y los firmantes de paymaster/router son
+roles separados y mainnet rechaza configuraciones que reutilicen claves.
 
 Por qué es un techo:
 
-- **Los nonces de un EOA son estrictamente secuenciales.** Dos pagos concurrentes de dos usuarios distintos compiten por el mismo nonce. Bajo concurrencia real hay colisiones de nonce: una tx falla, se reordena o hay que serializar todo. El throughput práctico queda en ~1 transacción en vuelo por ese EOA → unos pocos TPS en el mejor caso, y bastante menos porque cada request **espera el recibo** (§5.3).
-- **Punto único de falla / seguridad.** Si esa clave se compromete: puede drenar el depósito del paymaster (gas), desplegar, y proponer recovery sobre cualquier cuenta. Si se pierde: el servicio cae.
+- **Los nonces de un EOA son estrictamente secuenciales.** Un lease D1 común por
+  red+firmante coordina hoy `handleOps`, CCTP y operaciones de cuenta, por lo que
+  ya no colisionan. Esto preserva correctitud, pero no elimina el techo de
+  throughput de una sola EOA.
+- **Punto único de disponibilidad.** Si esa clave se compromete puede gastar su
+  ETH/USDC operativo; ya no controla guardian ni firma sponsorships. Si se
+  pierde, el relaying sigue detenido hasta rotarla.
 - **No escala horizontalmente.** Los Workers escalan infinito, pero todos embudan a un EOA.
 
 **Cómo se arregla (acotado, no reescritura):**
 
 - **Opción A (recomendada): delegar a un bundler ERC-4337 real** (Pimlico / Alchemy / Stackup / Candide). El proyecto reimplementó un mini-bundler (`handleOps` a mano). Un bundler de verdad te da mempool, estimación de gas, reintentos y paralelismo; tú conservas tu paymaster. Es el camino estándar de la industria para escalar AA.
 - **Opción B: pool de EOAs relayer** con un nonce manager (round-robin de N claves) si quieres seguir self-relaying.
-- **Least privilege de claves:** separar deployer / faucet / guardian / relayer en claves distintas. Hoy una sola clave concentra todo.
-- **Sacar el guardian de la clave caliente del relayer** (clave dedicada o guardian multisig/contrato).
+- **Least privilege:** faucet y relayer ya usan claves y leases distintos; migrar
+  a un servicio de firma/pool sigue siendo una opción de escala.
+- **Guardian:** la clave dedicada ya está implementada; para alto valor sigue
+  recomendado un multisig/MPC/HSM.
 
 ### 5.2 Reconstrucción de historial en cada poll - ✅ RESUELTO
 
@@ -130,32 +145,33 @@ _(Original)_ `GET /user/transactions` reconstruía historial llamando al explore
 
 **Resuelto:** el historial ahora se sirve desde la tabla **`ledger`** en D1 (escrita al relayar cada operación; ambos lados en transferencias internas) y un **cron indexer** (`services/indexer.ts`, cada 2 min) ingiere los depósitos externos con cursor en `sync_state`. `/user/transactions` ya **no toca RPC/explorer** en el request - solo D1. (El balance sigue on-chain: 2-4 `eth_call` baratos.)
 
-### 5.3 Espera síncrona del recibo en el request 🟠
+### 5.3 Espera síncrona del recibo en el request - ✅ RESUELTO
 
-`prepare` y `submit` hacen `waitForTransactionReceipt` dentro del request. Eso mantiene la petición abierta hasta que la tx entra en bloque: mala UX en bloques lentos y serializa aún más el relayer.
+Pagos, cuenta, faucet y recovery devuelven 202 con `txHash`/`userOpHash`; el
+cliente consulta estado y reconciliadores cron verifican receipts/eventos y
+finalizan D1. La única espera restante está dentro del job CCTP, no de HTTP.
 
-**Fix:** `submit` devuelve `txHash`/`userOpHash` de inmediato y el cliente hace polling de estado; el manejo del recibo va asíncrono (Cloudflare Queues / Durable Objects).
+### 5.4 Dependencia de un solo RPC - ✅ RESUELTO
 
-### 5.4 Dependencia de un solo RPC 🟠
-
-`RPC_URL` único; cada `prepare` hace varios round-trips (nonce, gasPrice, getUserOpHash, balance) y `submit` agrega simulate + send + wait. El propio código nota límites de RPC gratis (getLogs de 10 bloques).
-
-**Fix:** RPC con failover/redundancia, batching y caché de `gasPrice`.
+`RPC_URL` acepta varias URLs y viem hace failover. CCTP admite además RPCs por
+cadena en `CCTP_RPC_URLS`; producción debe configurar proveedores redundantes.
 
 ### 5.5 Cloudflare D1 🟢 (por ahora)
 
 D1 aguanta de sobra esta escala (millones de filas). A vigilar a largo plazo: throughput de escritura, límite de tamaño por DB y latencia de escritura monorregión. El `DELETE` de `pending_payments` por `expires_at` está indexado y es barato.
 
-### 5.6 Sin cola / reintentos / idempotencia 🟠
+### 5.6 Sin cola / reintentos / idempotencia - ✅ RESUELTO
 
-Si `submit` falla a medias (tx enviada pero recibo nunca confirmado), no hay reconciliación ni reintento; el `pending` solo expira. Para dinero, esto necesita una cola con idempotencia.
+D1 conserva máquinas de estado, claims, transacciones raw, intentos CCTP y
+outbox; los jobs cron recuperan muertes entre broadcast y persistencia. Los
+compare-and-set e índices únicos hacen idempotente la liquidación.
 
 ### Resumen de escalabilidad por horizonte
 
 | Horizonte | ¿Aguanta hoy? | Cambio mínimo necesario |
 | --- | --- | --- |
 | Demo / pocos usuarios | ✅ | - |
-| Cientos concurrentes | ⚠️ | Sacar `waitForReceipt` del request + cachear historial |
+| Cientos concurrentes | ⚠️ | Medir saturación del relayer y RPC; escalar firmantes/bundler |
 | Miles+ | 🔴 | Bundler real (o pool de relayers) + indexer + colas |
 
 ---
@@ -163,12 +179,16 @@ Si `submit` falla a medias (tx enviada pero recibo nunca confirmado), no hay rec
 ## 6. Seguridad y modelo de confianza
 
 - **Custodia:** ✅ el server no guarda la clave de firma; la passkey on-chain es la autoridad. Bien.
-- **Guardian centralizado:** ⚠️ el EOA del server es guardian de **todas** las cuentas. Puede *proponer* recovery sobre cualquiera (mitigado por timelock 48h + cancelación del usuario), pero es una suposición de confianza fuerte y concentra poder. A futuro: guardian dedicado / multisig / esquema de guardians plurales.
-- **Una sola clave para todo:** 🔴 ver §5.1; least privilege pendiente.
+- **Guardian centralizado:** ⚠️ existe una clave dedicada con timelock y
+  cancelación; para alto valor sigue pendiente multisig/MPC/HSM o recuperación
+  social.
+- **Claves por rol:** ✅ mainnet exige relayer, guardian, paymaster signer y
+  router signer distintos; deployer permanece fuera del Worker.
 - **Normalización low-s P256:** ✅ correcta (OpenZeppelin).
 - **Validación de inputs:** ✅ usernames con regex + reservados; montos/wallets normalizados.
-- **CORS `*`:** 🟡 aceptable porque la auth real es por token Firebase + firma WebAuthn; aun así conviene restringir orígenes como defensa en profundidad.
-- **Sin rate limiting** en endpoints sensibles (`create`, `fund`) más allá de flags por uid. Añadir rate limiting (Workers + D1/KV o Turnstile) antes de abrir al público.
+- **CORS:** ✅ allowlist configurable y mainnet falla cerrado si falta.
+- **Rate limiting:** ✅ Turnstile + límites D1 fail-closed en rutas monetarias;
+  las reglas de zona Cloudflare siguen siendo defensa operacional adicional.
 - **`qx`/`qy` en localStorage:** 🟡 ver §8 - limita la portabilidad real de cuentas multi-passkey entre dispositivos.
 
 ---
@@ -218,32 +238,33 @@ De ahí se separan dos lados con necesidades distintas:
 | # | Tema | Severidad | Acción |
 | --- | --- | --- | --- |
 | 1 | Relayer EOA único (throughput + SPOF) | 🔴 | Bundler real o pool de relayers; separar claves por rol |
-| 2 | Historial reconstruido en cada poll | 🟠 | Caché / indexer + reconciliación en background |
-| 3 | `waitForReceipt` dentro del request | 🟠 | Respuesta inmediata + polling de estado async |
-| 4 | Sin cola/idempotencia en pagos | 🟠 | Cloudflare Queues + claves idempotentes |
-| 5 | Guardian = clave caliente del server | 🟠 | Guardian dedicado / multisig |
+| 2 | ~~Historial reconstruido en cada poll~~ | ✅ | Ledger D1 + indexer cron |
+| 3 | ~~`waitForReceipt` dentro del request~~ | ✅ | 202 + polling + reconciliadores |
+| 4 | ~~Sin cola/idempotencia en pagos~~ | ✅ | Estado durable D1 + CAS + outbox |
+| 5 | Guardian centralizado | 🟠 | Clave dedicada hecha; multisig/MPC/HSM para alto valor |
 | 6 | Sin rate limiting de zona | 🟡 | **Turnstile ✅ hecho** en crear cuenta + faucet; `ALLOWED_ORIGINS` ✅. Falta rate-limit de zona (regla Cloudflare con dominio propio) |
-| 7 | `qx`/`qy` solo en localStorage | 🟡 | Guardar el set de signers (clave pública, no secreta) server-side para portabilidad multi-dispositivo |
-| 8 | ~~Sin tests de server~~ | ✅ Hecho | Vitest + 18 tests sobre validación, `normalizeLowS` y `serializeBigInts` |
+| 7 | ~~`qx`/`qy` solo en localStorage~~ | ✅ | Tabla `passkeys` y resolución server/on-chain por credential ID |
+| 8 | ~~Sin tests de server~~ | ✅ Hecho | 129 pruebas Node + 10 en workerd/D1 |
 | 9 | ~~RPC único~~ | ✅ Hecho | `RPC_URL` acepta múltiples URLs con failover (viem `fallback`) |
 | 10 | ~~Bundle pesado del cliente~~ | ✅ Hecho | Code-splitting por ruta (jsqr/ScanQR ya no carga en el inicio) |
 
-> Nota sobre #7: hoy, una passkey **sincronizada** en un dispositivo **nuevo** no tiene `qx`/`qy` en localStorage; para wallets **multi-passkey** eso hace fallar `/pay/submit` (el caso de un solo signer se infiere on-chain). Es una limitación real de la promesa "passkey sincronizada = cuenta portátil".
+> Nota sobre #7: las coordenadas públicas se guardan en `passkeys` y el submit
+> resuelve por `credentialId` o por el set on-chain; no son material secreto.
 
 ---
 
 ## 9. Roadmap técnico recomendado
 
 **Corto plazo (endurecer el MVP):**
-- Sacar `waitForReceipt` del request + cachear historial (quita el dolor de escalabilidad inmediato).
-- Rate limiting + restringir CORS.
-- Tests con Vitest de la lógica de firma/normalización.
+- Aplicar migraciones/despliegues pendientes y ejecutar smoke autenticado real.
+- Configurar métricas, alertas, budgets y ensayo de backup/restore D1.
+- Rotar la credencial Firebase retirada y completar runbooks de incidentes.
 
 **Medio plazo (camino a producto):**
 - Migrar self-relay → **bundler ERC-4337** (o pool de relayers + nonce manager).
-- Separar claves por rol (deployer/faucet/guardian/relayer).
-- Cola con idempotencia para pagos; reconciliación en background.
-- PWA instalable con push.
+- Ensayar rotación de las claves separadas de faucet y relayer.
+- Sustituir guardian EOA por multisig/MPC/HSM para alto valor.
+- Mantener pruebas de fork y QA autenticado como gates de release.
 
 **Largo plazo (escala y diferenciación):**
 - Indexer dedicado para historial/analytics.
@@ -257,6 +278,8 @@ De ahí se separan dos lados con necesidades distintas:
 
 Parmelia está **bien construido y bien apostado**: el stack es correcto, el diseño de wallet (AA + passkeys + gas patrocinado + recovery) es sofisticado y encaja con el producto, y la portabilidad reciente lo libera del lock-in de red. **Sí sirve para el producto que quiere ser.**
 
-Lo que lo separa de "demo" a "producto" no es rehacerlo, sino **resolver la capa de relaying on-chain** (el EOA único) y **sacar las esperas/agregaciones del path del request**. Son cambios acotados y de manual.
+Lo que lo separa de "demo" a "producto" no es rehacerlo, sino desplegar y
+operar con disciplina la capa ya endurecida, y escalar el **relaying on-chain**
+cuando una EOA coordinada deje de dar el throughput necesario.
 
 En plataforma: **web primero y siempre** para el pagador, **PWA ahora** para retención sin forzar instalación, y **nativa después de PMF** para el comerciante. No obligues a instalar nada para pagar: eso es lo único que el producto no se puede permitir.

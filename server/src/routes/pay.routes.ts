@@ -14,7 +14,6 @@ import {
 } from "viem";
 import {
 	accountWebAuthnV2Abi,
-	entryPointAbi,
 	erc20Abi,
 	getNetworkConfig,
 	getTokenBySymbol,
@@ -36,18 +35,11 @@ import {
 	releasePendingClaim,
 	savePasskey,
 	saveUser,
-	setPendingPaymentStatus,
+	setPendingPaymentSubmitted,
 	updateCrosschainOp,
 } from "../services/storage";
 import { NON_PAYMENT_CURRENCIES } from "../services/settlement";
 import {
-	PAYMASTER_POST_OP_GAS_LIMIT,
-	PAYMASTER_VERIFICATION_GAS_LIMIT,
-} from "../services/paymaster";
-import {
-	DEFAULT_CALL_GAS_LIMIT,
-	DEFAULT_PRE_VERIFICATION_GAS,
-	DEFAULT_VERIFICATION_GAS_LIMIT,
 	buildSponsoredUserOp,
 	matchOnchainSigner,
 	normalizeLowS,
@@ -61,44 +53,14 @@ import {
 } from "../services/validation";
 import { getClients } from "../services/clients";
 import { extractErrorMessage, logError, logInfo, logWarn } from "../services/logger";
-import { SignerLeaseBusyError, withSignerLease } from "../services/signerLease";
+import { SignerLeaseBusyError } from "../services/signerLease";
+import {
+	selectUserOperationTransport,
+	sendUserOperation,
+	UserOperationTransportError,
+} from "../services/userOperationTransport";
 
 const payRoutes = new Hono<AppContext>();
-
-// Gas budget for the relayer's handleOps transaction (mirrors the UserOp gas budget
-// produced by buildSponsoredUserOp, plus the paymaster limits and tx overhead).
-const HANDLE_OPS_TX_GAS_OVERHEAD = 300000n;
-const HANDLE_OPS_TX_GAS_LIMIT =
-	DEFAULT_VERIFICATION_GAS_LIMIT +
-	DEFAULT_CALL_GAS_LIMIT +
-	DEFAULT_PRE_VERIFICATION_GAS +
-	PAYMASTER_VERIFICATION_GAS_LIMIT +
-	PAYMASTER_POST_OP_GAS_LIMIT +
-	HANDLE_OPS_TX_GAS_OVERHEAD;
-
-/**
- * Derive the relayer tx gas limit from the stored op itself, so ops with a
- * larger call budget (e.g. swaps) are not strangled by the default constant.
- * accountGasLimits packs verificationGas (16 bytes) | callGas (16 bytes).
- */
-function handleOpsGasFor(raw: Record<string, unknown>): bigint {
-	try {
-		const packed = String(raw.accountGasLimits);
-		const verification = BigInt("0x" + packed.slice(2, 34));
-		const call = BigInt("0x" + packed.slice(34, 66));
-		const preVerification = BigInt(String(raw.preVerificationGas));
-		return (
-			verification +
-			call +
-			preVerification +
-			PAYMASTER_VERIFICATION_GAS_LIMIT +
-			PAYMASTER_POST_OP_GAS_LIMIT +
-			HANDLE_OPS_TX_GAS_OVERHEAD
-		);
-	} catch {
-		return HANDLE_OPS_TX_GAS_LIMIT;
-	}
-}
 
 function buildExecuteCalldata(target: `0x${string}`, value: bigint, data: Hex): Hex {
 	const mode = pad("0x01", { size: 32, dir: "right" }) as Hex;
@@ -140,6 +102,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 
 		const credentialId = profile?.credentialId ?? null;
+		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
 		const allowedCurrencies = network.tokens.length
 			? network.tokens.map((t) => t.symbol)
@@ -270,6 +233,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		const { userOp, userOpHash, chainId } = await buildSponsoredUserOp(c.env, {
 			sender: senderAddress as `0x${string}`,
 			callData: executeCalldata,
+			transportMode: submissionTransport,
 		});
 
 		await createPendingPayment(c.env, {
@@ -281,6 +245,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			wallet: recipientAddress,
 			senderAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			submissionTransport,
 		});
 
 		logInfo("payment_prepare_created", {
@@ -293,8 +258,9 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			currency: paymentCurrency,
 			linkId: pendingLinkId,
 			chainId,
+			submissionTransport,
 		});
-		return c.json({ userOpHash, credentialId });
+		return c.json({ userOpHash, credentialId, submissionTransport });
 	} catch (error) {
 		const user = c.get("user");
 		logError("payment_prepare_failed", error, { requestId, uid: user?.sub ?? null });
@@ -310,6 +276,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 	let claimed = false;
 	let claimedLinkId: string | null = null;
 	let broadcastTxHash: string | null = null;
+	let submissionAccepted = false;
 	try {
 		const user = c.get("user")!;
 		const { userOpHash, authenticatorData, clientDataJSON, r, s, credentialId, qx, qy } = await c.req.json();
@@ -365,7 +332,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
 		const { contracts } = network;
-		const { publicClient, walletClient, serverAccount } = getClients(c.env);
+		const { publicClient } = getClients(c.env);
 
 		const typeIndex = (clientDataJSON as string).indexOf('"type"');
 		const challengeIndex = (clientDataJSON as string).indexOf('"challenge"');
@@ -530,58 +497,43 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			claimedLinkId = pending.linkId;
 		}
 
-		const handleOpsGas = handleOpsGasFor(raw);
-		logInfo("payment_submit_handleops_sending", {
+		logInfo("payment_submit_transport_sending", {
 			requestId,
 			uid: user.sub,
 			userOpHash: userOpHashForLog,
-			entryPoint: contracts.entryPoint,
-			relayerAddress: serverAccount.address,
-			gasLimit: handleOpsGas.toString(),
+			transport: pending.submissionTransport,
 		});
-		try {
-			await publicClient.simulateContract({
-				account: serverAccount.address,
-				address: contracts.entryPoint,
-				abi: entryPointAbi,
-				functionName: "handleOps",
-				args: [[userOp], serverAccount.address],
-				gas: handleOpsGas,
-			});
-			logInfo("payment_submit_handleops_simulation_ok", {
-				requestId,
-				uid: user.sub,
-				userOpHash: userOpHashForLog,
-				gasLimit: handleOpsGas.toString(),
-			});
-		} catch (error) {
-			logError("payment_submit_handleops_simulation_failed", error, {
-				requestId,
-				uid: user.sub,
-				userOpHash: userOpHashForLog,
-				gasLimit: handleOpsGas.toString(),
-			});
-			throw error;
-		}
-		const txHash = await withSignerLease(
-			c.env,
-			{ chainId: network.chainId, signerAddress: serverAccount.address },
-			() => walletClient.writeContract({
-				address: contracts.entryPoint,
-				abi: entryPointAbi,
-				functionName: "handleOps",
-				args: [[userOp], serverAccount.address],
-				gas: handleOpsGas,
-			}),
-		);
-
-		logInfo("payment_submit_handleops_sent", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
-		broadcastTxHash = txHash;
+		const submission = await sendUserOperation(c.env, pending.submissionTransport, {
+			userOp,
+			userOpHash: userOpHash as Hex,
+			entryPoint: contracts.entryPoint,
+		});
+		submissionAccepted = true;
+		broadcastTxHash = submission.transactionHash;
+		logInfo("payment_submit_transport_accepted", {
+			requestId,
+			uid: user.sub,
+			userOpHash: userOpHashForLog,
+			transport: submission.transport,
+			hasTransactionHash: Boolean(submission.transactionHash),
+		});
 		// Persist the authoritative payment hand-off first. If a later auxiliary
 		// write fails, the reconciler has the exact transaction fast path.
-		await setPendingPaymentStatus(c.env, userOpHash, "submitted", txHash);
+		await setPendingPaymentSubmitted(
+			c.env,
+			userOpHash,
+			submission.transport,
+			submission.transactionHash,
+		);
 		if (claimedLinkId) {
-			await markPaymentLinkClaimBroadcast(c.env, claimedLinkId, userOpHash, txHash);
+			// Bundlers return the stable UserOperation hash, not a bundle tx hash.
+			// Either value proves the claim was handed off and must not expire.
+			await markPaymentLinkClaimBroadcast(
+				c.env,
+				claimedLinkId,
+				userOpHash,
+				submission.transactionHash ?? submission.userOpHash,
+			);
 		}
 
 		// Cross-chain: attach the burn tx to its op (created at /crosschain/prepare,
@@ -589,11 +541,14 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// §"register before signing").
 		const crosschainOpId =
 			pending.currency === "CROSSCHAIN" && typeof pending.meta?.opId === "string" ? pending.meta.opId : null;
-		if (crosschainOpId) {
+		if (crosschainOpId && submission.transactionHash) {
 			await updateCrosschainOp(
 				c.env,
 				crosschainOpId,
-				{ status: "submitted", sourceTxHash: txHash },
+				{
+					status: "submitted",
+					sourceTxHash: submission.transactionHash,
+				},
 				{ ifStatusIn: ["quoted", "submitted"] },
 			);
 		}
@@ -620,8 +575,23 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// `submitted` row is the durable hand-off to runPaymentReconciler, which
 		// verifies both the transaction receipt and UserOperationEvent(success),
 		// then performs idempotent accounting and outbox settlement.
-		logInfo("payment_submit_accepted", { requestId, uid: user.sub, userOpHash: userOpHashForLog, txHash });
-		return c.json({ status: "pending", txHash, userOpHash, requestId }, 202);
+		logInfo("payment_submit_accepted", {
+			requestId,
+			uid: user.sub,
+			userOpHash: userOpHashForLog,
+			transport: submission.transport,
+			hasTransactionHash: Boolean(submission.transactionHash),
+		});
+		return c.json(
+			{
+				status: "pending",
+				txHash: submission.transactionHash ?? undefined,
+				userOpHash,
+				transport: submission.transport,
+				requestId,
+			},
+			202,
+		);
 	} catch (error) {
 		const msg = extractErrorMessage(error);
 		const user = c.get("user");
@@ -631,11 +601,59 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			userOpHash: userOpHashForLog,
 		});
 
+		// A timeout can occur after a node/bundler accepted the request. Treating
+		// that as "not sent" would release a payment link while funds may still
+		// move. Keep the durable claim and let the universal watcher resolve the
+		// UserOperation by hash.
+		if (
+			error instanceof UserOperationTransportError &&
+			error.possiblySubmitted &&
+			userOpHashForLog
+		) {
+			submissionAccepted = true;
+			const ambiguousTransport = error.transport ?? "bundler";
+			await setPendingPaymentSubmitted(
+				c.env,
+				userOpHashForLog,
+				ambiguousTransport,
+				null,
+			).catch((persistError) =>
+				logError(
+					"payment_ambiguous_submission_persist_failed",
+					persistError,
+					{ requestId, userOpHash: userOpHashForLog },
+				),
+			);
+			if (claimedLinkId) {
+				await markPaymentLinkClaimBroadcast(
+					c.env,
+					claimedLinkId,
+					userOpHashForLog,
+					userOpHashForLog,
+				).catch((persistError) =>
+					logError(
+						"payment_ambiguous_link_claim_persist_failed",
+						persistError,
+						{ requestId, userOpHash: userOpHashForLog },
+					),
+				);
+			}
+			return c.json(
+				{
+					status: "pending",
+					userOpHash: userOpHashForLog,
+					transport: ambiguousTransport,
+					requestId,
+				},
+				202,
+			);
+		}
+
 		// The tx is already out but a post-broadcast persistence step failed. This
 		// is NOT a payment failure. The row remains 'submitted', or 'submitting' if
 		// the first write failed; the reconciler handles both states and can find
 		// the operation by userOpHash. GET /pay/status/:hash resolves it.
-		if (broadcastTxHash) {
+		if (submissionAccepted) {
 			return c.json(
 				{ status: "pending", txHash: broadcastTxHash, userOpHash: userOpHashForLog, requestId },
 				202,
@@ -643,7 +661,17 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		}
 		// Claimed but never broadcast: give the claim back so the user can retry.
 		if (claimed && userOpHashForLog) {
-			await releasePendingClaim(c.env, userOpHashForLog).catch(() => null);
+			const submissionErrorCode =
+				error instanceof UserOperationTransportError
+					? error.errorCode
+					: error instanceof SignerLeaseBusyError
+						? "SIGNER_BUSY"
+						: "SUBMISSION_FAILED";
+			await releasePendingClaim(
+				c.env,
+				userOpHashForLog,
+				submissionErrorCode,
+			).catch(() => null);
 			if (claimedLinkId) {
 				await releasePaymentLinkClaim(c.env, claimedLinkId, userOpHashForLog).catch(() => null);
 			}
@@ -652,6 +680,18 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		if (msg.includes("AA24")) return c.json({ error: "Error de firma: esta passkey no coincide con tu wallet.", error_code: ERR.PASSKEY_MISMATCH, requestId }, 500);
 		if (error instanceof SignerLeaseBusyError) {
 			return c.json({ error: "El relayer está ocupado. Intenta nuevamente.", error_code: ERR.SERVICE_UNAVAILABLE, requestId }, 503);
+		}
+		if (error instanceof UserOperationTransportError) {
+			return c.json(
+				{
+					error: error.retryable
+						? "El bundler está temporalmente no disponible. Intenta nuevamente."
+						: "El bundler rechazó la operación.",
+					error_code: error.errorCode,
+					requestId,
+				},
+				error.retryable ? 503 : 400,
+			);
 		}
 		if (msg.includes("AA21")) return c.json({ error: "Tu wallet no tiene fondos suficientes para cubrir el gas.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
 		if (msg.includes("AA95")) return c.json({ error: "La transaccion de handleOps no tenia gas suficiente. Revisa el gas limit del relayer.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
@@ -690,6 +730,7 @@ payRoutes.get("/status/:userOpHash", requireAuth, async (c) => {
 	return c.json({
 		status: row.status,
 		txHash: row.submittedTxHash,
+		transport: row.submissionTransport,
 		currency: row.currency,
 		amount: row.amount,
 	});

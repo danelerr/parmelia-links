@@ -1,310 +1,437 @@
-# Parmelia Cross-Chain - Diseño y decisiones
+# Parmelia Cross-Chain — Diseño definitivo (v2.0)
 
-> Diseño autoritativo del módulo cross-chain de Parmelia (USDC). Reemplaza y
-> amplía el boceto de `DEFI_DESIGN.md` §1. Estado: **diseñado, no implementado**.
-> Fecha: junio 2026.
+> Diseño autoritativo del módulo cross-chain de Parmelia (USDC). Estado del
+> código: **implementado y endurecido** (contrato desplegado en Sepolia, server
+> completo, checkout público, relayer con reconciliación); pendiente de
+> activación operativa — ver §11. Fecha: julio 2026. Historia de versiones al
+> final (§14).
 >
-> Datos de fees/mecánica verificados contra documentación primaria (Circle, Across,
-> LI.FI) - ver §11 Referencias. Cualquier número debe re-cotizarse en vivo antes
-> de fijar la fee de producto.
->
-> **v1.1 (aprobado para codear):** `maxFee` sin fallback silencioso (§5),
-> `destinationCaller = bytes32(0)` en v1 (§3, §5), campos CCTP en la tabla (§7), y
-> tiempos siempre como estimados (§4).
+> Este documento CIERRA el debate de arquitectura. Las decisiones de §2, §3 y
+> §13 no se re-litigan salvo que cambie un hecho externo (pricing de Circle,
+> aparición de un dominio CCTP nuevo, cambio de alcance de producto). Si una
+> conversación futura vuelve a abrir "¿y si usamos X?", la respuesta está en §13.
 
 ---
 
-## 0. Decisiones clave (resumen ejecutivo)
+## 0. Veredicto
 
-| Decisión | Elección | Por qué |
+Después de semanas de debate (CCTP vs Across vs LI.FI vs Forwarding, relayer
+propio vs gestionado, router vs llamadas directas), la conclusión fría es que
+**la arquitectura elegida era correcta desde v1.1 y sigue siéndolo**:
+
+> **CCTP v2 directo, router propio de fee-skim en origen, relayer propio
+> best-effort para el mint, `receiveMessage` permissionless, registro en D1
+> antes de firmar.**
+
+Lo que mantenía la sensación de "no encontramos la manera ideal" no era el rail.
+Eran cuatro huecos del diseño original, todos ya cerrados:
+
+1. **No estaban escritos los invariantes** (§4). Sin invariantes explícitos,
+   cada caso borde reabría la arquitectura entera.
+2. **No había tabla de modos de fallo con su recuperación** (§7). El miedo a
+   "¿y si se pierde un burn?" se respondía con intuición en vez de con el hecho
+   de que un burn atestado es completable por cualquiera, para siempre.
+3. **La operación (gas, alertas, runbooks) estaba subespecificada** (§10). El
+   costo real del módulo no es el código: es tener gas del relayer en cada
+   destino y saber qué hacer cuando algo se atasca.
+4. **No había procedimiento de decisión para lo futuro** (§2.1). "¿Agregamos
+   Polygon?" o "¿y tokens que no son USDC?" no deben reabrir el debate: tienen
+   una regla.
+
+El módulo hoy es **seguro por construcción** (no por vigilancia): el peor caso
+alcanzable es *demora*, nunca pérdida ni custodia. Lo que falta no es diseño —
+es activación operativa (§11) y tres mejoras de producto por fases (§12).
+
+---
+
+## 1. Alcance y no-objetivos
+
+Cross-chain **no es el core** de Parmelia; es una capa de flexibilidad sobre una
+base Arbitrum-first. Tres objetivos:
+
+1. **Outbound (Flow B):** un usuario Parmelia envía USDC desde Arbitrum hacia
+   otra chain CCTP. Aquí Parmelia monetiza (fee con cap duro 1%).
+2. **Inbound (Flow A):** una wallet externa paga a un usuario Parmelia desde
+   otra chain; el receptor recibe USDC nativo en su smart account de Arbitrum.
+   Checkout público `/cc/:username`. Sin fee de Parmelia en v1.
+3. **Confiabilidad:** ninguna operación puede perder fondos ni requerir
+   confianza en el relayer.
+
+**No-objetivos permanentes de esta versión** (cambiarlos exige nuevo diseño):
+ETH/WBTC cross-chain; chains fuera de CCTP v2; agregadores (LI.FI) como default;
+Uniswap cross-chain como rail; custodia o pooling de fondos en tránsito;
+multichain core (la app sigue siendo mono-chain con CHAIN_KEY); migración de
+chain vía redeploy.
+
+**Decisión de producto vigente:** cross-chain es **capa avanzada**, no el método
+principal de depósito (ese es Arbitrum directo + a futuro fiat/Binance).
+
+---
+
+## 2. La decisión del rail: CCTP v2 directo
+
+Para USDC↔USDC entre dominios CCTP, CCTP v2 **no es una opción entre varias: es
+el primitivo canónico**. Es burn-and-mint operado por el emisor del activo
+(Circle): quema USDC nativo en origen y acuña USDC nativo 1:1 en destino. Todo
+lo demás (Across, LI.FI, "Uniswap cross-chain") es una capa de liquidez o
+agregación ENCIMA de pools o del propio CCTP, que añade riesgo de contraparte,
+fees apiladas y dependencias de API — sin aportar nada cuando origen y destino
+son el mismo activo canónico.
+
+Concretamente:
+
+- **USDC nativo, no wrapped.** El receptor nunca recibe USDC.e/axlUSDC.
+- **El más barato posible:** Standard es gratis; Fast cuesta 1.3 bps desde
+  Arbitrum/Base. No hay fee de liquidez ni de relayer de terceros, así que el
+  margen del producto lo captura Parmelia completo.
+- **Sin API keys** (Iris es REST público, ~35 req/s) ni contratos de terceros
+  que auditar: las direcciones de TokenMessenger/MessageTransmitter v2 son
+  deterministas y auditadas por Circle.
+- **Encaja con la infraestructura existente:** el patrón relayer-EOA + cron +
+  watcher ya existía para el indexer y el PaymentRouter; CCTP es el mismo patrón.
+
+### 2.1 Procedimiento de decisión para casos futuros
+
+Para que nadie re-litigue el rail:
+
+| Pregunta | Regla |
+|---|---|
+| ¿USDC entre dos dominios CCTP v2? | **CCTP v2 directo. Siempre.** |
+| ¿Chain sin dominio CCTP? | Fuera de alcance. No se soporta hasta que Circle la agregue o el producto lo exija con volumen real — en ese caso evaluar agregador COMO EXCEPCIÓN documentada. |
+| ¿Token que no es USDC? | Fuera de alcance (no-objetivo). La ruta futura es "swap interno a USDC en Arbitrum → cross-chain USDC", no un rail multi-token. |
+| ¿Aparece un rail "mejor"? | Solo se reevalúa si supera a CCTP en LAS TRES: costo, riesgo (canónico vs liquidez) y dependencia (sin API key). Ninguno de los conocidos lo hace. |
+
+---
+
+## 3. Por qué NO las alternativas (con números)
+
+| Opción | Fee | Problema decisivo |
 |---|---|---|
-| Alcance v1 | **Solo USDC**, solo chains soportadas por CCTP v2 | El caso de Parmelia es USDC↔USDC. ETH/WBTC cross-chain: fuera de v1. |
-| Rail principal | **CCTP v2 directo** (sin Across/LI.FI/Uniswap encima) | USDC nativo (no wrapped), el más barato, y Parmelia captura su fee sin compartir margen. |
-| Relayer | **Propio**, para ejecutar el mint en destino | Evita el fee fijo del Forwarding Service ($0.20), que mata pagos pequeños. Reusa el patrón relayer+indexer existente. |
-| Modo CCTP | **Fast por default** en outbound desde Arbitrum; **Standard** opcional ("Económico") | Standard depende de la finalidad de la chain origen (lento). Fast = 8-20s. |
-| Captura de fee | **Router propio en una sola tx** (fee-skim + `depositForBurn`) | Atómico: nunca se cobra el fee sin que ocurra el burn. Extiende el patrón ya auditado de `ParmeliaPaymentRouter`. |
-| Across | **Fallback / benchmark**, y candidato para inbound desde wallets externas | Requiere API key + `integratorId` (el endpoint legacy keyless es deuda técnica). No depender de él para USDC→USDC si CCTP cubre la ruta. |
-| LI.FI | **Solo fallback** (chain no-CCTP, token no-USDC) | Cobra 0.25% + tu fee → apila fees. Inaceptable como default de pagos. |
-| Uniswap cross-chain | **No es un rail** | Es Across + routing de Uniswap por debajo; sirve para "token distinto → USDC", fase posterior. |
-| Persistencia | Tabla nueva **`crosschain_operations`** | Semántica distinta de `pending_payments` (multi-paso, multi-chain, horas de vida). No mezclar. |
-| Custodia | **Cero.** El relayer solo paga gas | Ver §3 (modelo de seguridad). |
+| **Across** | ~6 bps dinámico + requiere API key/`integratorId` | Rail de intents sobre liquidez de terceros. Su única ventaja (fill en ~2s vs ~8-20s de Fast) es inmaterial para un checkout de pagos. Fee apilada sobre la nuestra. **Se retira** (§12, Fase 1): el endpoint legacy `/bridge` y la ruta de depósito vía UI de Across quedan obsoletos frente al checkout `/cc` propio. |
+| **LI.FI** | 0.25% + fee de integrador encima | Apila 25 bps sobre el 1.3 bps de CCTP: ~20x más caro. Solo tendría sentido para no-USDC/no-CCTP, que es no-objetivo. |
+| **Circle Forwarding Service** | $0.20 fijo + gas, además del fee de protocolo | $0.20 sobre un pago de $10 = 2%. Mata el ticket típico de Parmelia. Solo se reevaluaría si el costo operativo del relayer propio superara con claridad su costo (§10). |
+| **"Uniswap cross-chain"** | Across + routing | No es un rail: es Across por debajo. Irrelevante para USDC→USDC. |
+| **Sin relayer (el usuario mintea)** | 0 | Requiere que el usuario tenga gas en la red destino: destruye la UX que el módulo existe para dar. Queda como *fallback* natural gracias al permissionless (§7). |
+| **`destinationCaller` restringido + red de relayers de terceros** | variable | Rompe el permissionless de `receiveMessage` → rompe el invariante I1 (un burn nunca se pierde). Inaceptable. |
+
+**El relayer propio, bien entendido:** gracias a que `receiveMessage` es
+permissionless y la atestación no expira, el relayer de Parmelia **no es un
+componente de confianza ni de liveness crítica — es un acelerador best-effort**.
+Si muere, el peor caso es demora hasta que se recupere, otro relayer mintee, o
+el propio usuario complete el mint. Su costo marginal es el gas del mint en
+destino (~$0.001-0.01 en L2s). Esta reformulación es la que disuelve la mitad
+del debate histórico: no estamos eligiendo "en quién confiar", porque el diseño
+no confía en nadie.
 
 ---
 
-## 1. Alcance y objetivo
+## 4. Invariantes del sistema
 
-Cross-chain **no es el core** de Parmelia. Es una capa de flexibilidad sobre una
-base Arbitrum-first, con tres objetivos:
+Estos son los hechos que el código garantiza y que cualquier cambio futuro debe
+preservar. Cada uno tiene su enforcement señalado.
 
-1. **Inbound (Flow A):** una wallet externa / red externa paga a un usuario
-   Parmelia, que recibe USDC nativo en su smart account de Arbitrum.
-2. **Outbound (Flow B):** un usuario Parmelia envía USDC desde Arbitrum hacia
-   otra chain.
-3. **Monetización:** Parmelia cobra una fee de producto en el flujo outbound.
-
-**v1 es estrictamente USDC-only** y solo entre chains soportadas por CCTP v2.
-Parmelia maneja USDC, ETH y WBTC internamente, pero el cross-chain v1 no toca
-ETH/WBTC.
-
----
-
-## 2. Por qué CCTP v2 directo
-
-Como ambos flujos son **USDC nativo → USDC nativo**, el primitivo correcto es
-CCTP (Circle Cross-Chain Transfer Protocol), no un bridge de liquidez genérico ni
-un agregador de swaps:
-
-- **USDC nativo, no wrapped.** CCTP quema USDC en origen y acuña USDC nativo 1:1
-  en destino (burn-and-mint). El receptor nunca recibe USDC.e, axlUSDC ni wrappers
-  raros.
-- **El más barato.** Standard es gratis; Fast cobra 0-14 bps (ver §4). No hay fee
-  de liquidez ni de relayer de terceros.
-- **Sin apilar fees.** Usar Across/LI.FI significaría su fee **más** la de Parmelia
-  (doble fee). Con CCTP directo las únicas fees son CCTP + gas + la de Parmelia, y
-  el margen lo captura Parmelia. Decisivo para el flujo monetizado.
-- **Sin dependencia de API key.** Elimina la deuda del endpoint legacy de Across.
-- **Encaja con la arquitectura existente.** Parmelia ya corre un relayer EOA + un
-  indexer/cron que vigila logs y reconcilia (`runIndexer`, `runRouterWatcher`). El
-  flujo CCTP es el mismo patrón: vigilar el burn → pollear la atestación de Circle
-  (Iris, sin key) → enviar el mint.
+| # | Invariante | Dónde se garantiza |
+|---|---|---|
+| I1 | **Un burn nunca se pierde.** Toda quema atestada es completable por cualquiera, para siempre. | `destinationCaller = bytes32(0)` en todo `depositForBurn`; atestación de Iris sin expiración. |
+| I2 | **La fee de Parmelia solo se cobra si el burn ocurre.** | Atomicidad de `ParmeliaCrosschainRouter.bridgeUSDC` (fee-skim + burn en una tx); cap 1% on-chain. |
+| I3 | **El relayer no puede robar ni desviar.** | `mintRecipient` queda fijado dentro del burn firmado en origen; `receiveMessage` solo acuña a ese destinatario. |
+| I4 | **Toda operación existe en D1 antes de que exista el burn.** | Outbound: `/crosschain/prepare` crea la fila `quoted` antes de devolver la UserOp; `/pay/submit` registra el tx ANTES de esperar el receipt. Inbound: `/inbound/prepare` crea `pending_signature` antes de devolver las txs. |
+| I5 | **Un burn tx ↔ una operación.** | Índice único de `source_tx_hash` (migración 0006) + dedupe en `/inbound/register`. |
+| I6 | **Solo se mintean burns que corresponden a su operación.** | `validateCctpMessage`: dominios, `mintRecipient` y monto del mensaje CCTP contra la fila, antes de gastar gas. Mismatch → `needs_support`, nunca mint. |
+| I7 | **Los estados son monótonos; `completed` es terminal.** | Guard en `updateCrosschainOp` (CAS + prohibición de salir de `completed`). |
+| I8 | **Disponibilidad honesta (fail-closed).** No se ofrece una ruta cuyo gas de relayer no se pudo VERIFICAR. | `relayerGasStatus` tri-estado; `unknown` cuenta como no disponible en config y prepare. |
+| I9 | **Nunca degradación silenciosa Fast→Standard.** | `maxFee` sale de una quote viva; si no cubre, se recotiza o no se firma. Standard es elección explícita del usuario. |
+| I10 | **Cero custodia.** El router no retiene fondos entre transacciones; el relayer solo paga gas. | Diseño del contrato (+ fuzz de conservación: el router nunca queda con saldo). |
 
 ---
 
-## 3. Modelo de seguridad (verificado)
+## 5. Arquitectura (cinco capas)
 
-Tres propiedades de CCTP v2, confirmadas en la documentación e implementación de
-Circle, hacen este diseño seguro frente a las pérdidas históricas:
+### 5.1 Contrato (origen)
+`ParmeliaCrosschainRouter` en Arbitrum (`0x0816d133…D777` en Sepolia): valida
+`opId != 0`, monto > 0, recipient != 0, fee ≤ 1%; skim de fee al treasury; pull
+del neto; `forceApprove` + `depositForBurn` al TokenMessenger v2; evento
+`CrosschainSent` indexado por `opId`. Pausable, Ownable2Step, sin custodia.
+En destino NO hay contrato propio: el mint es `receiveMessage` del
+MessageTransmitter de Circle.
 
-1. **El relayer no puede robar ni desviar fondos.** El `mintRecipient` queda
-   **fijado dentro del `depositForBurn`**, firmado por el pagador en la chain
-   origen. El relayer solo llama `receiveMessage`, que acuña al destinatario ya
-   comprometido. El relayer no elige destino ni monto.
-2. **Un transfer quemado NUNCA se pierde.** `receiveMessage` es **permissionless**:
-   una vez que Iris firma la atestación, *cualquiera* con gas en destino puede
-   completar el mint, y la atestación es válida indefinidamente. Si el relayer de
-   Parmelia se cae, los fondos no quedan atrapados - los completa otro relayer o el
-   propio usuario. Un "burn hecho, mint pendiente" es **recuperable**, no una
-   pérdida.
-3. **Doble-mint imposible a nivel de protocolo.** El destino marca el nonce del
-   mensaje como usado; un segundo `receiveMessage` revierte. La idempotencia del
-   relayer es defensa en profundidad, no la única barrera.
+### 5.2 Server (Cloudflare Worker)
+- **Rutas outbound** (auth): `GET /crosschain/config` (destinos verificados),
+  `POST /crosschain/quote` (determinista, sin estado), `POST /crosschain/prepare`
+  (valida, registra `quoted`, arma la UserOp approve+bridge), y el submit va por
+  el pipeline general `/pay/submit` (claim atómico, `UserOperationEvent` como
+  verdad, tx registrado pre-receipt). `GET /crosschain/status/:opId` para el
+  progreso del dueño.
+- **Rutas inbound** (públicas, rate-limited por IP): `GET /inbound/config`,
+  `POST /inbound/prepare` (resuelve username → registra `pending_signature` →
+  devuelve las DOS txs crudas: approve al TokenMessenger + `depositForBurn`),
+  `POST /inbound/register` (adjunta el burn tx con dedupe I5 y CAS),
+  `GET /inbound/status/:opId` (polling del checkout).
+- **Relayer** (cron cada 2 min, con lock global anti-solapamiento): barre ops
+  in-flight rotando por `updated_at` (sin inanición), pollea Iris por
+  `sourceTxHash`, valida el mensaje (I6), mintea con idempotencia (receipt del
+  `destinationTxHash` antes de re-enviar), contador de intentos con tope (20 →
+  `needs_support`), TTLs (abandonadas 24h → `expired`; in-flight 7d →
+  `needs_support`).
 
-Consecuencia de diseño: **el estado `refunded` casi no aplica.** Un burn siempre
-puede acuñar. Los únicos fallos reales son (a) el `depositForBurn` revierte → no
-pasó nada, o (b) en Fast el `maxFee` queda por debajo del fee actual → a nivel de
-protocolo caería a Standard; el producto lo evita recotizando y **no firmando** si
-la quote venció (§5). El trabajo del relayer es *garantizar que el mint ocurra*;
-esencialmente no puede fallar de forma permanente.
+### 5.3 Datos
+`crosschain_operations` (STRICT + FK + CHECK, migración 0006): identidad de la
+op, dominios/chains, montos y fees, `message_bytes`/`attestation` cacheados,
+`attempt_count`/`last_error` de operabilidad, timestamps. Separada de
+`pending_payments` a propósito (vida de horas, multi-chain, multi-paso).
 
-Para preservar estas propiedades, en v1 `depositForBurn` usa
-**`destinationCaller = bytes32(0)`** (cualquiera puede acuñar). Fijar un caller
-específico restringiría `receiveMessage` a esa dirección y rompería tanto el
-permissionless como el `manual_complete`.
+### 5.4 Cliente
+- **`CrosschainSend` (`/crosschain`, outbound):** monto con `AmountInput`,
+  selector de red verificada, quote con cancelación de races, **hoja de
+  confirmación** (red, dirección, monto, fees, ETA, advertencia de
+  irreversibilidad), firma con passkey, éxito con ETA. *Gap pendiente (Fase 0):
+  pollear `GET /crosschain/status/:opId` tras el envío para mostrar
+  burn→attestation→mint en vivo en vez de depender solo del push.*
+- **`CrosschainReceive` (`/cc/:username`, checkout público):** wallet externa
+  vía `window.ethereum` (sin viem, chunk mínimo), switch/add de red, approve +
+  burn con receipts validados, registro del tx, polling de estado hasta
+  `completed`.
+- **`Receive` (`/receive`):** Arbitrum directo (QR + dirección) como método
+  principal; el link `/cc` como opción avanzada. SIEMPRE advierte "solo USDC en
+  Arbitrum" para el path directo.
+
+### 5.5 Operación
+La capa que faltaba especificar. Ver §10: presupuesto de gas por destino,
+alertas, runbooks (incluido `manual_complete`), y el criterio para agregar
+chains (§12.1).
 
 ---
 
-## 4. Fees y velocidad (verificado - re-cotizar en vivo)
+## 6. Máquina de estados (autoritativa)
 
-**CCTP (Circle):**
+```
+outbound:  quoted ──────────────┐
+inbound:   pending_signature ───┴→ submitted → waiting_attestation → minting → completed
+```
+
+Ramas terminales y de mantenimiento:
+
+| Estado | Significado | Cómo se llega | Salida |
+|---|---|---|---|
+| `failed` | El burn revirtió o la UserOp falló: **no se movió nada**. | `/pay/submit` (receipt/`UserOperationEvent`), reconciliador. | Terminal. |
+| `expired` | Abandonada antes de cualquier burn (nunca firmada/registrada). | TTL 24h sobre `quoted`/`pending_signature`. | Terminal. No retiene fondos. |
+| `recoverable` | Burn hecho, mint revertido: reintentable. | Mint con receipt `reverted`. | Relayer reintenta; manual (§10.3). |
+| `needs_support` | Parqueada: tope de intentos, mensaje que no corresponde (I6), o in-flight > 7 días. | Relayer. | Runbook manual (§10.3). El burn sigue completable (I1). |
+
+No existe `refunded`: la recuperación de un burn siempre es *completar el mint*,
+nunca devolver. Estados monótonos, `completed` terminal (I7).
+
+---
+
+## 7. Modos de fallo y recuperación
+
+| Modo de fallo | Detección | Manejo automático | Manual |
+|---|---|---|---|
+| El burn revierte en origen | `UserOperationEvent(success=false)` o receipt reverted | Op → `failed`; nada se movió; fee no cobrada (I2) | — |
+| Worker muere tras difundir el burn | Fila `submitted` con tx (I4) | El reconciliador de pagos liquida la parte contable; el relayer continúa el mint | — |
+| Iris caído / atestación lenta | Op se queda en `waiting_attestation` | Rotación evita inanición; reintento cada cron | Alerta si > 30 min (§10.2) |
+| Relayer sin gas en destino | `relayerGasStatus` | Rutas NUEVAS ocultas (I8); alerta `crosschain_relayer_low_gas` para in-flight | Fondear la EOA; o el usuario/quien sea mintea (I1) |
+| Mint revierte repetidamente | Contador de intentos | Tope 20 → `needs_support` | Runbook §10.3 |
+| Tx registrado no corresponde a la op (abuso del endpoint público) | `validateCctpMessage` (I6) | `needs_support` con detalle "mismatch"; sin mint, sin gas gastado | Ignorar (es spam); el dedupe I5 y el rate limit acotan el volumen |
+| Usuario escribe mal el destinatario outbound | — | **Irreversible por diseño** (así funciona un burn/mint). Mitigación: hoja de confirmación obligatoria | Soporte solo puede verificar, no recuperar |
+| Transfer plano de USDC a la dirección del usuario en OTRA red (sin checkout) | Fuera del sistema; el indexer solo ve Arbitrum | Ninguno en v2.0 | Rescate posible por CREATE2 (misma dirección en toda red): desplegar infra + cuenta allí y bridgear. Fase 3 lo automatiza (§12) |
+| Reorg en origen antes de la atestación | Iris no atesta un tx huérfano | La op se queda esperando; si el tx re-mina, sigue; si no, TTL | — |
+
+---
+
+## 8. Fees y velocidad (verificado jun-2026; re-cotizar en vivo antes de fijar el fee de producto)
 
 | Modo | Fee de protocolo | Velocidad | Uso |
 |---|---|---|---|
-| **Standard** | **Gratis (0 bps)** | Finalidad dura de la chain origen (minutos; ~13-19 min típico) | Modo "Económico" cuando la origen es rápida o el usuario puede esperar |
-| **Fast** | **0-14 bps** según chain origen | **~8-20s (estimado, no garantizado)** | Default para outbound desde Arbitrum |
+| **Fast** (`minFinalityThreshold=1000`) | 0-14 bps según origen (**Arbitrum/Base: 1.3 bps**) | ~8-20 s (estimado, no garantizado) | **Default** outbound e inbound |
+| **Standard** (`minFinalityThreshold=2000`) | **Gratis** | Finalidad dura del origen (~13-19 min típico) | "Económico", elección explícita |
 
-Fees Fast por chain origen relevantes: Ethereum/Solana 1 bps; **Arbitrum/Base/OP
-Mainnet/World 1.3 bps**; Linea 11 bps; Starknet 14 bps. Se descuenta del monto al
-acuñar en destino.
+Costo total de una operación = fee CCTP (si Fast) + gas en origen (paymaster en
+outbound; el pagador externo en inbound) + gas del mint en destino (el relayer)
++ fee de Parmelia (outbound; cap duro 1% on-chain y en server). El `maxFee` de
+Fast sale de la quote viva con buffer pequeño (I9). Para montos pequeños el
+componente fijo de gas domina sobre el porcentaje en cualquier rail — otra razón
+por la que apilar fees de terceros es inaceptable.
 
-**Costo total de una operación** = fee CCTP (si Fast) + gas en origen + gas del
-mint en destino (lo paga el relayer) + **fee de Parmelia**. Ejemplo medido en vivo
-(Base→Arbitrum, 10 USDC, vía Across para referencia): ~$0.006 + 2s; CCTP Fast
-1.3 bps sería ~$0.00013 + gas. Para montos pequeños, el componente fijo de gas
-domina sobre el porcentaje en cualquier rail.
+**Matiz de finalidad por chain origen (verificado contra Circle, jul-2026):** la
+velocidad del Standard la define la finalidad de la CHAIN ORIGEN. Las chains de
+finalidad instantánea (Avalanche: Standard ~8s, 1 confirmación — ni figura en la
+tabla de Fast porque no lo necesita) tienen outbound rápido GRATIS; las L2 de
+Ethereum (Arbitrum/Base: Standard ~15-19 min, ~65 bloques de L1) necesitan Fast
+(~1.3 bps) para ser rápidas como origen. Consecuencias: (a) el costo de 1.3 bps
+del outbound desde Arbitrum es estructural, no un descuido — y es inmaterial
+($0.13 por $1.000; se muestra en la quote y cabe dentro del fee de producto);
+(b) para INBOUND lo que importa es la finalidad de la chain del PAGADOR, no la
+nuestra — vivir en Avalanche no aceleraría los cobros desde Base/Ethereum;
+(c) si algún día se evalúa una segunda red de settlement por razones de negocio
+(MEJORAS #30), la finalidad instantánea de Avalanche cuenta como punto técnico
+genuino a su favor.
 
-**Circle Forwarding Service** (NO usar en v1): elimina la necesidad de correr el
-relayer, pero cobra **$0.20 fijo + gas dinámico**, *además* del fee de protocolo.
-$0.20 sobre un pago de $10 = 2% → daña pagos pequeños. Por eso v1 corre relayer
-propio.
+---
 
-**Comparativa de terceros (por qué quedan como fallback):**
+## 9. Seguridad
 
-| Opción | Fee | Notas |
+- Modelo de amenaza del relayer: su clave comprometida arriesga **solo su gas**
+  (I3, I10). No custodia, no puede desviar mints, no firma pagos de usuarios.
+- Endpoints inbound públicos endurecidos: rate limit por IP, dedupe I5,
+  validación de mensaje I6, formato de hash, CAS de estado.
+- Server-side siempre: whitelist de token (USDC inmutable en el router),
+  dominios/chains validados contra `CCTP_CHAINS`, montos recomputados, ningún
+  calldata construido desde input libre del cliente.
+- Direcciones de Circle fijadas de la documentación oficial (deterministas);
+  **jamás forkear los contratos de CCTP** (historial de bugs de mint en forks).
+- Kill switch (`CROSSCHAIN_PAUSED`) y flags por chain
+  (`CROSSCHAIN_DISABLED_CHAINS`) para respuesta a incidentes.
+- No usar `tx.origin`; no prometer tiempos exactos; no cobrar fees ocultas
+  (la hoja de confirmación muestra monto, fees y ETA).
+
+---
+
+## 10. Operación
+
+### 10.1 Gas del relayer (el costo real del módulo)
+- El relayer (EOA `wallet-0x75`) necesita gas nativo en **cada chain destino
+  ofrecida**. Recibir (inbound) NO requiere gas nuevo: mintea en Arbitrum, donde
+  ya opera.
+- Presupuesto: mint ≈ 120-200k gas; en L2s ≈ $0.001-0.01 por operación. Umbral
+  de servicio: `CROSSCHAIN_MIN_RELAYER_GAS_WEI` (default 0.0005 ETH) — por
+  debajo, la ruta se oculta (I8).
+- Regla v1: **máximo 1-2 destinos activos** (Base primero). Cada destino nuevo
+  es una obligación operativa permanente (§12.1).
+
+### 10.2 Alertas (mínimas para operar)
+- `crosschain_relayer_low_gas` — fondear la EOA en esa chain.
+- Ops en `waiting_attestation`/`minting` > 30 min — revisar Iris/RPC.
+- Cualquier op en `needs_support` — runbook §10.3 dentro de las 24h.
+- `crosschain_message_mismatch` — probable abuso del endpoint público; verificar
+  rate limits, no requiere acción sobre fondos.
+
+### 10.3 Runbook: completar un mint a mano (`manual_complete`)
+Válido para `recoverable`/`needs_support` con burn real (y como fallback si el
+relayer está caído — cualquiera con gas puede ejecutarlo, I1):
+1. Obtener mensaje y atestación (de la fila en D1, o re-fetch:
+   `GET https://iris-api[-sandbox].circle.com/v2/messages/{sourceDomain}?transactionHash={burnTx}`).
+2. En la chain destino:
+   `cast send <MessageTransmitterV2> "receiveMessage(bytes,bytes)" <message> <attestation> --account <cualquiera-con-gas>`.
+3. Verificar el `MintAndWithdraw`/Transfer al `mintRecipient`; marcar la op
+   `completed` (o dejar que el relayer la detecte por el receipt idempotente).
+4. Si `receiveMessage` revierte con nonce usado: el mint YA ocurrió — buscar el
+   tx existente y cerrar la op.
+
+### 10.4 RPCs
+Testnet puede vivir con RPCs públicos (`DEFAULT_RPC_BY_CHAIN`). Producción exige
+`CCTP_RPC_URLS` dedicados por chain destino: el gas-gating fail-closed (I8)
+convierte un RPC caído en rutas ocultas — correcto para la seguridad, malo para
+la disponibilidad si el RPC es público y flaky.
+
+---
+
+## 11. Checklist de activación (testnet) y de mainnet
+
+**Activación (Fase 0, días):**
+1. Redeploy del cliente (Vercel) → `/receive`, `/crosschain` y `/cc` en vivo
+   (el Worker ya está; migraciones 0006-0008 ANTES del próximo deploy).
+2. Fondear gas del relayer en Base Sepolia.
+3. Smoke e2e de **Flow A** (recibir) — Flow B ya se probó e2e.
+4. ✅ UI: `CrosschainSend` pollea `GET /crosschain/status/:opId` tras el envío
+   (implementado 2026-07-03: tracking en vivo burn → atestación → entrega →
+   "llegó", con link al explorer del destino y copy de reaseguro si demora —
+   el push deja de ser el único canal).
+5. Config: `PARMELIA_CROSSCHAIN_FEE_BPS` (decidir 0 vs 30-50 bps), flags.
+
+Con el punto 4 hecho, **todo el flujo cross-chain está implementado en código**
+(server + relayer + checkout inbound + UI outbound con tracking); los puntos
+1-3 y 5 son activación operativa, no desarrollo.
+
+**Mainnet (además de los gates generales del proyecto):**
+1. Verificar direcciones y dominios CCTP v2 **mainnet** contra
+   developers.circle.com/cctp y registrar fecha/fuente en `shared/networks.ts`
+   (las direcciones son deterministas, verificar igual).
+2. Iris producción (`iris-api.circle.com`) — ya se selecciona por chainId.
+3. `CCTP_RPC_URLS` dedicados; gas del relayer en cada destino mainnet.
+4. Habilitar destinos gradualmente (Base primero), `CROSSCHAIN_DISABLED_CHAINS`
+   para el resto.
+5. Smoke e2e de ambos flujos con montos reales pequeños, documentado con fecha.
+6. Alertas de §10.2 conectadas.
+
+---
+
+## 12. Roadmap por fases
+
+- **Fase 0 — Activación** (§11). Sin código nuevo salvo el polling de estado en
+  `CrosschainSend`.
+- **Fase 1 — Consolidación:** retirar Across por completo (endpoint legacy
+  `/bridge` + la ruta de depósito de `Deposit.tsx` que manda a la UI de Across)
+  una vez que Flow A esté probado e2e — el checkout `/cc` lo reemplaza siendo
+  más barato, nativo y sin dependencia externa. Madurar alertas.
+  ✅ Pulido de UX en `/cc` (implementado 2026-07-03): la página ahora muestra
+  SIEMPRE el atajo de misma red — "¿Ya tienes USDC en {red}? Envíalo directo a
+  esta dirección" con la dirección del receptor resuelta públicamente y botón
+  de copiar (no hay nada que cruzar si el pagador ya está en la red destino).
+  ✅ Orígenes inbound ampliados (2026-07-03): además de Base Sepolia, el
+  registro CCTP incluye **Ethereum Sepolia (dominio 0)** y **Avalanche Fuji
+  (dominio 1)** — direcciones verificadas contra developers.circle.com (los
+  messengers v2 son deterministas; USDC por chain verificado). Un origen
+  inbound nuevo no exige gas nuevo del relayer (el mint siempre es en
+  Arbitrum); como destinos OUTBOUND estas chains quedan ocultas
+  automáticamente por el gas-gating fail-closed (I8) hasta que se decida
+  soportarlas de ida. Al habilitar orígenes mainnet, mismo patrón, priorizando
+  por finalidad del origen: Avalanche es Standard ~8s GRATIS como origen (§8).
+- **Fase 2 — Inbound de una sola tx + fee inbound:** desplegar el MISMO
+  `ParmeliaCrosschainRouter` de forma determinista en las 1-2 chains origen con
+  más volumen (misma dirección por CREATE2). El checkout pasa de
+  approve+`depositForBurn` (2 firmas) a `bridgeUSDC` (1 firma tras approve, o
+  permit/EIP-3009 para una sola firma total), y habilita capturar fee inbound
+  de forma explícita y atómica (I2 simétrico). Solo si el volumen inbound lo
+  justifica.
+- **Fase 3 — Rescate de depósitos mal dirigidos (#50):** watcher sobre redes
+  comunes (Base/OP/Polygon) buscando USDC en direcciones de usuarios → notificar
+  + recuperar reproduciendo la cuenta por CREATE2 (misma factory/impl/initData →
+  misma dirección; la passkey del usuario la controla allí) + bridge vía CCTP.
+  Es soporte/seguro, no producto; requiere la infra de Fase 2 en esa red. Hasta
+  entonces el caso queda mitigado por la advertencia permanente en las UIs de
+  recibir ("solo USDC en Arbitrum") y es recuperable manualmente.
+
+### 12.1 Criterio para agregar una chain destino
+Checklist completo o no se agrega: (a) dominio CCTP v2 existente; (b) entrada en
+`CCTP_CHAINS` + `CHAIN_BY_ID` del server; (c) RPC dedicado en `CCTP_RPC_URLS`;
+(d) gas del relayer fondeado + alerta configurada; (e) explorer para los links
+de la UI; (f) demanda real que justifique la obligación operativa permanente.
+
+---
+
+## 13. Preguntas cerradas (no re-litigar)
+
+| Pregunta recurrente | Respuesta cerrada | Razón corta |
 |---|---|---|
-| **Across** | Relayer fee dinámica (~0.06% medido en Base→Arb USDC) | Rápido (~2-3s). Requiere API key + `integratorId`. `/suggested-fees` es legacy. |
-| **LI.FI** | **0.25%** + tu fee encima | Apila fees. Solo fallback no-USDC / chain no-CCTP. |
-| **Uniswap cross-chain** | Across + routing | No es un rail; es Across por debajo. 9 chains EVM. Para "token → USDC", futuro. |
+| ¿Across para inbound? | No. Se retira entero en Fase 1. | Fee apilada + API key + su ventaja (2s vs 20s) es inmaterial en checkout. |
+| ¿LI.FI / agregadores? | No, salvo excepción documentada para no-USDC/no-CCTP futuro. | 0.25% ≈ 20x el costo de CCTP Fast. |
+| ¿Forwarding Service? | No al ticket actual. | $0.20 fijo = 2% de un pago de $10. |
+| ¿`destinationCaller` restringido? | No. `bytes32(0)` permanente. | Sostiene I1 (ningún burn se pierde) y el manual_complete. |
+| ¿Relayer gestionado / red de relayers? | No. El propio es best-effort, no de confianza. | I1 hace que su caída sea demora, no pérdida. |
+| ¿Fast o Standard por default? | Fast; Standard como "Económico" explícito. | 1.3 bps ≈ $0.0013 por $10; nunca degradar en silencio (I9). |
+| ¿Fee en inbound v1? | 0. | Sin contrato en origen no hay forma atómica de cobrarla (I2). Llega con Fase 2. |
+| ¿Tokens no-USDC? | No-objetivo. Ruta futura: swap interno → USDC → cross-chain. | Un solo rail canónico; sin matriz de wrappers. |
+| ¿Hooks de CCTP v2 (auto-forward a Earn, etc.)? | No por ahora. | Los patrones con `destinationCaller`/hooks comprometen I1; reevaluar solo con un patrón que preserve el permissionless. |
+| ¿Estado `refunded`? | No existe. | Un burn siempre se completa hacia adelante; no hay devoluciones en burn/mint. |
 
 ---
 
-## 5. Flow B - Outbound (PRIORITARIO: aquí Parmelia monetiza)
+## 14. Referencias y changelog
 
-Usuario Parmelia envía USDC desde su smart account en Arbitrum a una dirección en
-otra chain CCTP.
+Referencias primarias (verificadas jun-2026): Circle CCTP fees
+(developers.circle.com/cctp/concepts/fees — Standard gratis, Fast 0-14 bps),
+Forwarding Service (…/concepts/forwarding-service — $0.20 + gas), TokenMessenger
+`depositForBurn` (github.com/circlefin/evm-cctp-contracts), mecánica v2
+(receiveMessage permissionless, maxFee/minFinalityThreshold), Across API
+(docs.across.to/api-reference), LI.FI fees (docs.li.fi/faqs/fees-monetization).
 
-1. Usuario elige chain destino + dirección destino + monto, y modo (Rápido/Económico).
-2. Backend valida server-side: token en whitelist, `chainId`/CCTP domain válidos,
-   `recipient` válido. Cotiza fee Parmelia + fee CCTP estimada. Registra la
-   operación (`quoted`) **antes** de firmar.
-3. **UserOp en Arbitrum (una sola tx, vía `CrosschainRouter` propio):**
-   1. cobra la fee Parmelia hacia treasury (o la descuenta del monto);
-   2. ejecuta `depositForBurn(neto, destDomain, mintRecipient, USDC, destinationCaller, maxFee, minFinalityThreshold)`
-      con `destinationCaller = bytes32(0)` → `receiveMessage` permissionless + `manual_complete`;
-   3. emite evento de operación.
-   - Firmado con la **passkey** (los fondos salen de la smart account del usuario).
-4. Relayer detecta el burn → pollea la atestación de Iris → ejecuta `receiveMessage`
-   en destino → el destinatario recibe USDC nativo.
-
-Atómico: la fee y el burn ocurren en la misma tx; nunca se cobra fee sin burn.
-
-**`maxFee` (sin fallback silencioso):** sale de un quote en vivo con buffer pequeño.
-**No firmar** si la quote venció o si el `maxFee` aceptado por el usuario no cubre
-la fee Fast actual: en ese caso **recotizar** (re-confirmar con el usuario) o
-**fallar antes del burn**. El modo Económico (Standard) es una **elección
-explícita** del usuario, nunca una degradación silenciosa de Fast.
-
----
-
-## 6. Flow A - Inbound (MÁS DIFÍCIL: no es simétrico al outbound)
-
-Una wallet externa paga a un usuario Parmelia; el receptor recibe en Arbitrum.
-
-**El riesgo principal del módulo está aquí.** A diferencia del outbound (donde
-Parmelia controla la smart account y firma un UserOp), en inbound una **wallet
-externa tiene que firmar `depositForBurn`**, y eso **no es un "enviar USDC"
-normal**: un transfer plano de USDC a una dirección **no bridgea**. Requiere que
-Parmelia hostee una dApp de checkout que:
-
-- conecte la wallet externa (wagmi/walletconnect - única pantalla con wallet externa);
-- haga `approve` de USDC al TokenMessenger;
-- construya y haga firmar el `depositForBurn` con `mintRecipient` = smart account
-  del receptor en Arbitrum;
-- muestre sin ocultar: monto enviado, monto recibido, fee Parmelia (si aplica),
-  fee CCTP/Fast (si aplica), gas estimado, tiempo estimado.
-
-Luego el mismo relayer completa el mint.
-
-**Decisiones de Flow A:**
-- Es un **hito aparte y posterior** a Flow B, no "lo mismo al revés".
-- Modo: si la chain origen tiene Standard rápido, usar Standard; si no y la UX
-  importa, Fast.
-- **Reconsiderar Across para inbound**: su modelo de intents es más amigable para
-  "pagador externo que solo quiere pagar". Decidir con el benchmark (§10), no por
-  simetría con el outbound.
-- Fee en inbound: si complica, dejarlo **sin fee** en v1 o cobrarlo explícito vía
-  router de origen. Nunca ocultar fees.
-
----
-
-## 7. Persistencia: `crosschain_operations`
-
-Tabla nueva, separada de `pending_payments` (semántica multi-paso/multi-chain).
-
-Campos mínimos:
-
-```
-op_id                   text  PK
-uid                     text
-direction               inbound | outbound
-provider                cctp                 -- (across en fallback futuro)
-cctp_mode               standard | fast
-source_chain_id         int                  -- EVM chainId
-destination_chain_id    int                  -- EVM chainId
-source_domain           int                  -- dominio CCTP (distinto del chainId)
-destination_domain      int                  -- dominio CCTP (distinto del chainId)
-destination_caller      text                 -- bytes32(0) en v1 (permissionless)
-source_tx_hash          text
-destination_tx_hash     text
-message_nonce           text                 -- nonce del mensaje CCTP, para reconciliar el mint
-message_bytes           text                 -- opcional: mensaje crudo (o re-fetch de Iris)
-attestation             text                 -- opcional: atestación de Iris (necesaria para receiveMessage / manual_complete)
-token                   USDC
-amount_in               text
-parmelia_fee            text
-max_fee                 text                 -- maxFee usado en depositForBurn (Fast)
-min_finality_threshold  int                  -- umbral de finalidad (Fast bajo / Standard alto)
-cctp_fee_estimated      text
-amount_out_expected     text
-recipient               text
-status                  text
-status_detail           text
-created_at              text
-updated_at              text
-completed_at            text
-```
-
----
-
-## 8. Máquina de estados
-
-```
-quoted -> pending_signature -> submitted -> waiting_attestation -> minting -> completed
-```
-
-Ramas de error (simplificadas por §3 - un burn no se pierde):
-
-```
-failed         -- el depositForBurn revirtió: no pasó nada
-expired         -- quote venció antes de firmar
-recoverable     -- burn hecho, mint pendiente: reintentar el mint; manual_complete por
-                cualquiera (receiveMessage es permissionless)
-needs_support   -- intervención manual (caso raro)
-```
-
-No existe `refunded` real: la recuperación de un burn siempre es "completar el
-mint", nunca devolver. Como último recurso, `receiveMessage` es permissionless y
-el propio usuario puede completarlo.
-
----
-
-## 9. Reglas de seguridad y operación
-
-- **No custodiar** fondos en tránsito. El relayer solo paga gas.
-- **Whitelist estricta** de tokens; rechazar fuera de ella.
-- **No construir calldata desde input libre** del cliente. Validar server-side
-  `chainId`, address del token, CCTP domain y `recipient`.
-- **Registrar la operación antes** de firmar/enviar.
-- **Relayer idempotente**: si el nonce ya se acuñó, no repetir (el protocolo
-  además lo impide).
-- **Manejar reintentos** y **alertar** si una operación queda en
-  `waiting_attestation`/`minting` más de X minutos.
-- No usar `tx.origin`. No mezclar con `pending_payments`. No prometer tiempos
-  exactos (usar estimados). No cobrar fees ocultas.
-- **Superficie de gas-ops:** el relayer necesita gas nativo en **cada** chain
-  destino. v1: **limitar a 1-2 chains destino**. Monitorear y recargar saldos. Si
-  la key del relayer se filtra, el riesgo es el gas, no el principal de usuarios.
-  Ofrecer fallback "completar yo mismo" (permissionless) si el relayer está caído.
-- **Contratos de Circle**: fijar las direcciones auditadas oficiales; no forkear
-  (hubo bugs históricos de mint en CCTP).
-
----
-
-## 10. Orden de implementación
-
-1. **`CrosschainRouter` en Arbitrum** (fee-skim + `depositForBurn` atómico) +
-   relayer de mint para **una** chain destino (ej. Base). **Flow B, Fast.**
-2. Tracking robusto (`crosschain_operations`) + máquina de estados (§8).
-3. **Benchmark** CCTP Fast vs Across en rutas reales de Parmelia.
-4. **Flow A inbound** - y decidir con datos si para inbound se usa
-   CCTP-checkout-hospedado o Across.
-5. Recién entonces: ¿Across queda como fallback activo?
-
-**No implementar todavía:** ETH/WBTC cross-chain, LI.FI como default, Uniswap
-cross-chain, Forwarding Service como default, multichain core, migración de chain.
-
----
-
-## 11. Referencias (verificadas, junio 2026)
-
-- Circle CCTP - Fees: https://developers.circle.com/cctp/concepts/fees
-  (Standard gratis; Fast 0-14 bps por chain; se descuenta al acuñar).
-- Circle CCTP - Forwarding Service: https://developers.circle.com/cctp/concepts/forwarding-service
-  ($0.20 fijo + gas, además del fee de protocolo).
-- Circle CCTP v2 - mecánica (receiveMessage permissionless, Fast 8-20s, maxFee /
-  minFinalityThreshold): https://eco.com/support/en/articles/11813797-circle-cctp-v2-native-usdc-across-13-chains
-- Circle TokenMessenger / depositForBurn (mintRecipient): https://github.com/circlefin/evm-cctp-contracts/blob/master/src/TokenMessenger.sol
-- Across - API Reference (requiere Bearer + integratorId; suggested-fees legacy):
-  https://docs.across.to/api-reference
-- LI.FI - Fees & Monetization (0.25% service fee + fee de integrador):
-  https://docs.li.fi/faqs/fees-monetization
-- Uniswap - What are crosschain swaps (powered by Across): https://support.uniswap.org/hc/en-us/articles/43793128689549-What-are-crosschain-swaps
+Changelog: **v1.1** decisiones base (maxFee sin fallback, destinationCaller=0).
+**v1.2** Flow B implementado + probado e2e; Flow A implementado. **v1.3**
+pantalla Recibir + hardening operativo (kill switch, flags, gas-gating).
+**v1.4** endurecimiento (registro antes de firmar, fail-closed, dedupe +
+validación de mensaje, rotación/TTL/intentos, estados monótonos, migración
+0006). **v2.0 (este documento)** cierre del debate de arquitectura: invariantes
+explícitos (§4), tabla de modos de fallo (§7), capa de operación (§10),
+procedimiento de decisión (§2.1), preguntas cerradas (§13) y roadmap por fases
+con el retiro de Across y el camino a inbound de una tx (§12).
