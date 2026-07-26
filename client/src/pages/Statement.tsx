@@ -150,7 +150,7 @@ export default function Statement({ user }: { user: User }) {
 	}, [transactions, period, fromDate, toDate, asset, typeFilter]);
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+3rem)] w-full max-w-115 mx-auto animate-fade-up">
 			<BackHeader to="/" title={t("statement.title")} className="mb-6" />
 
 			{/* Period dropdown */}
@@ -163,7 +163,7 @@ export default function Statement({ user }: { user: User }) {
 						// Leaving "custom" drops the stale date range from the URL.
 						setFilter({ period: value, ...(value !== "custom" ? { from: "", to: "" } : {}) });
 					}}
-					className="w-full h-12 appearance-none bg-surface border border-border rounded-[14px] pl-4 pr-10 text-[14px] text-text [color-scheme:dark] focus:border-border-strong transition-colors"
+					className="w-full h-12 appearance-none bg-surface border border-border rounded-[14px] pl-4 pr-10 text-[14px] text-text scheme-dark focus:border-border-strong transition-colors"
 				>
 					{PERIOD_OPTIONS.map(([value, label]) => (
 						<option key={value} value={value}>
@@ -202,7 +202,7 @@ export default function Statement({ user }: { user: User }) {
 								name={param}
 								value={value}
 								onChange={(e) => setFilter({ [param]: e.target.value })}
-								className="w-full bg-transparent text-[13px] text-text [color-scheme:dark]"
+								className="w-full bg-transparent text-[13px] text-text scheme-dark"
 							/>
 						</label>
 					))}
@@ -293,9 +293,8 @@ export default function Statement({ user }: { user: User }) {
 									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
 								>
 									<span
-										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-											received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
-										}`}
+										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
+											}`}
 									>
 										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											{received ? (
@@ -319,9 +318,8 @@ export default function Statement({ user }: { user: User }) {
 										</p>
 									</div>
 									<span
-										className={`text-[15px] font-medium tabular shrink-0 ${
-											hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
-										}`}
+										className={`text-[15px] font-medium tabular shrink-0 ${hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
+											}`}
 									>
 										{!hideBalance && (received ? "+" : "−")}
 										{hideBalance ? "••••" : `${formatAmount(tx.amount, tx.currency)} ${tx.currency}`}
