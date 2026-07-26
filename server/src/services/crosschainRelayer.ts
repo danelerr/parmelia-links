@@ -145,14 +145,17 @@ async function fetchAttestation(
 
 const IN_FLIGHT: CrosschainOpRecord["status"][] = ["submitted", "waiting_attestation", "minting", "recoverable"];
 
-export async function runCrosschainRelayer(env: Bindings): Promise<void> {
+export async function runCrosschainRelayer(
+	env: Bindings,
+	limit = 25,
+): Promise<void> {
 	try {
 		if (!env.RPC_URL) return;
 
 		// Operability sweep: expire abandoned checkouts, park week-old in-flight ops.
 		await expireStaleCrosschainOps(env);
 
-		const ops = await listCrosschainOpsByStatus(env, IN_FLIGHT, 25);
+		const ops = await listCrosschainOpsByStatus(env, IN_FLIGHT, limit);
 		if (ops.length === 0) return;
 
 		// Alert if the relayer is low on gas on any destination it must mint to.

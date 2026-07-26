@@ -2,6 +2,17 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "server",
   "main": "src/index.ts",
+  // shared/index.ts consumes four Forge-generated ABI artifacts. Make every
+  // direct `npx wrangler dev/deploy` self-contained after a clean checkout.
+  "build": {
+    "command": "pnpm build:contracts",
+    "cwd": "..",
+    "watch_dir": [
+      "src",
+      "../shared",
+      "../contracts/src"
+    ],
+  },
   "compatibility_date": "2026-07-13",
   "compatibility_flags": [
     "nodejs_compat"
@@ -67,6 +78,10 @@
         "binding": "BALANCE_REFRESH_QUEUE",
         "queue": "parmelia-balance-refresh",
       },
+      {
+        "binding": "SCHEDULED_JOBS_QUEUE",
+        "queue": "parmelia-scheduled-jobs",
+      },
     ],
     "consumers": [
       {
@@ -77,6 +92,17 @@
         "dead_letter_queue": "parmelia-balance-refresh-dlq",
         "max_concurrency": 2,
         "retry_delay": 5,
+      },
+      {
+        // One job per invocation is intentional: each indexer/reconciler gets
+        // its own Free-plan subrequest budget instead of sharing the cron's 50.
+        "queue": "parmelia-scheduled-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "parmelia-scheduled-jobs-dlq",
+        "max_concurrency": 4,
+        "retry_delay": 15,
       },
     ],
   },

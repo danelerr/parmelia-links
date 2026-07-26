@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	AdaptiveLogScanBudgetExceededError,
 	isRangeCapacityError,
 	isTransientRpcError,
 	scanLogsAdaptive,
@@ -60,6 +61,22 @@ describe("adaptive eth_getLogs ranges", () => {
 		expect(isRangeCapacityError(new Error("query returned more than 10000 results"))).toBe(true);
 		expect(isTransientRpcError(new Error("HTTP 429 rate limit"))).toBe(true);
 		expect(isTransientRpcError(new Error("execution reverted"))).toBe(false);
+	});
+
+	it("stops before exceeding the explicit per-invocation call budget", async () => {
+		const fetchRange = vi.fn().mockResolvedValue([]);
+		await expect(
+			scanLogsAdaptive({
+				fromBlock: 1n,
+				toBlock: 30n,
+				minBlockSpan: 10n,
+				maxBlockSpan: 10n,
+				maxCalls: 2,
+				fetchRange,
+				onRange: vi.fn(),
+			}),
+		).rejects.toBeInstanceOf(AdaptiveLogScanBudgetExceededError);
+		expect(fetchRange).toHaveBeenCalledTimes(2);
 	});
 
 	it("creates bounded deterministic wallet shards", () => {

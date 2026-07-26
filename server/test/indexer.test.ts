@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { getIndexerScanHead } from "../src/services/indexer";
+import {
+	boundedScanWindowEnd,
+	getIndexerScanHead,
+} from "../src/services/indexer";
 
 type ScanHeadClient = Parameters<typeof getIndexerScanHead>[0];
 
@@ -49,5 +52,25 @@ describe("indexer canonical scan head", () => {
 			scanHead: 9_936n,
 			finalitySource: "confirmations",
 		});
+	});
+});
+
+describe("indexer Worker subrequest budget", () => {
+	it("shrinks the block window as wallet filter count grows", () => {
+		expect(boundedScanWindowEnd(0n, 100_000n, 2_000n, 1)).toBe(
+			19_999n,
+		);
+		expect(boundedScanWindowEnd(0n, 100_000n, 2_000n, 2)).toBe(
+			15_999n,
+		);
+		expect(boundedScanWindowEnd(0n, 100_000n, 2_000n, 8)).toBe(
+			3_999n,
+		);
+	});
+
+	it("fails before one invocation would require more filters than its budget", () => {
+		expect(() =>
+			boundedScanWindowEnd(0n, 100_000n, 2_000n, 17),
+		).toThrow("split the stream across Queue jobs");
 	});
 });

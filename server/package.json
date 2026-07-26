@@ -2,6 +2,7 @@
   "name": "server",
   "type": "module",
   "scripts": {
+    "pretest": "pnpm --dir .. build:contracts",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
@@ -25,7 +26,7 @@
     "globals": "^16.5.0",
     "typescript-eslint": "^8.56.1",
     "vitest": "^4.1.8",
-    "wrangler": "4.107.0",
+    "wrangler": "4.112.0",
     "yaml": "^2.9.0"
   }
 }

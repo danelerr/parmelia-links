@@ -462,13 +462,16 @@ async function enqueueMissingReconcileRequests(env: Bindings): Promise<void> {
 		.run();
 }
 
-export async function runPaymentReconciler(env: Bindings): Promise<void> {
+export async function runPaymentReconciler(
+	env: Bindings,
+	limit = RECONCILE_BATCH_SIZE,
+): Promise<void> {
 	try {
 		if (getRpcUrls(env, "indexer").length === 0) return;
 		await enqueueMissingReconcileRequests(env);
 		const requests = await listDuePaymentReconcileRequests(
 			env,
-			RECONCILE_BATCH_SIZE,
+			limit,
 		);
 		for (const request of requests) {
 			const owner = await claimPaymentReconcileRequest(

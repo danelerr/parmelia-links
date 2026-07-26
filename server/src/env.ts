@@ -56,7 +56,9 @@ type StringBindingKey = {
 // Wrangler preserves literal values from `vars` in generated types. Runtime
 // deployments legitimately override those values per environment, so expose
 // every string binding as `string` while retaining D1 and other binding types.
-type OptionalQueueBindings = "BALANCE_REFRESH_QUEUE";
+type OptionalQueueBindings =
+	| "BALANCE_REFRESH_QUEUE"
+	| "SCHEDULED_JOBS_QUEUE";
 
 export type Bindings = Omit<CloudflareBindings, StringBindingKey | OptionalQueueBindings> &
 	Record<Exclude<StringBindingKey, OptionalBindingKey>, string> &

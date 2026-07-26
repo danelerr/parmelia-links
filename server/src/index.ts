@@ -2,19 +2,13 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { AppContext, authMiddleware, type Bindings } from "./middlewares/auth";
-import {
-	runIndexer,
-	runRecoveryWatcher,
-	runRouterWatcher,
-	runUserOperationWatcher,
-} from "./services/indexer";
-import { runCrosschainRelayer } from "./services/crosschainRelayer";
-import { runPaymentReconciler } from "./services/settlement";
-import { runAccountOperationReconciler } from "./services/accountOperations";
-import { deliverPendingWebhooks, migrateWebhookSecrets } from "./services/webhooks";
-import { acquireCronLock, hasAccountOperationNeedsReview, releaseCronLock, renewCronLock } from "./services/storage";
+import { hasAccountOperationNeedsReview } from "./services/storage";
 import { getRequestId, logError, logInfo, logWarn } from "./services/logger";
-import { runCronJobs } from "./services/cron";
+import {
+	consumeWorkerQueue,
+	enqueueScheduledJobs,
+	type WorkerQueueMessage,
+} from "./services/cron";
 import { validateRuntimeConfig } from "./services/runtimeConfig";
 import { ERR, getNetworkConfig, isSupportedChainKey } from "../../shared";
 
@@ -32,13 +26,6 @@ import v1Routes from "./routes/v1.routes";
 import merchantRoutes from "./routes/merchant.routes";
 import homeRoutes from "./routes/home.routes";
 import ingestRoutes from "./routes/ingest.routes";
-import {
-	consumeBalanceRefreshQueue,
-	drainBalanceRefreshRequests,
-	scheduleStaleRpcOnlyBalanceMaintenance,
-} from "./services/balanceReconciler";
-import { syncAlchemyWebhookAddresses } from "./services/alchemyWebhookAddresses";
-import { drainUserEventOutbox } from "./services/userEventOutbox";
 import { getRpcHealthSummary, type RpcRoleName } from "./services/rpcControlPlane";
 import { getRpcUrls } from "./services/clients";
 import {
@@ -217,131 +204,19 @@ app.onError((error, c) => {
 	return c.json({ error: "Internal server error", error_code: ERR.SERVER_ERROR, requestId }, 500);
 });
 
-// Cron overlap lease: shorter than the 2-min cron interval so a wedged run
-// can't block the schedule for more than one tick.
-const CRON_LOCK_TTL_MS = 100_000;
-const CRON_LOCK_HEARTBEAT_MS = Math.floor(CRON_LOCK_TTL_MS / 3);
-
-async function keepCronLeaseAlive(env: Bindings, owner: string, signal: AbortSignal) {
-	while (!signal.aborted) {
-		try {
-			await scheduler.wait(CRON_LOCK_HEARTBEAT_MS, { signal });
-		} catch (error) {
-			if (signal.aborted) return;
-			logError("cron_lease_heartbeat_wait_failed", error, { owner });
-			return;
-		}
-		if (signal.aborted) return;
-		try {
-			if (!(await renewCronLock(env, owner, CRON_LOCK_TTL_MS))) {
-				logError("cron_lease_lost", new Error("Cron lease ownership changed"), { owner });
-				return;
-			}
-		} catch (error) {
-			logError("cron_lease_renewal_failed", error, { owner });
-			return;
-		}
-	}
-}
-
 export default {
 	fetch: app.fetch,
-	queue: consumeBalanceRefreshQueue,
-	// Cron: ingest external incoming transfers into the ledger (see services/indexer),
-	// watch the router + recovery events, advance cross-chain ops, and flush the
-	// webhook outbox. Guarded by a best-effort D1 lease: RPC-heavy jobs every
-	// 2 minutes can outlive their tick on a slow RPC, and two overlapping runs
-	// would double pushes/mints and race the log cursors. Each job is individually
-	// idempotent, so the lock is mitigation, not correctness-critical.
-	async scheduled(_controller, env, ctx) {
-		ctx.waitUntil(
-			(async () => {
-				const configIssues = validateRuntimeConfig(env);
-				if (mustFailClosed(env) && configIssues.length > 0) {
-					logError("cron_configuration_invalid", new Error("Worker configuration is incomplete"), {
-						issues: configIssues.map((entry) => entry.code).join(","),
-					});
-					return;
-				}
-				const leaseOwner = await acquireCronLock(env, CRON_LOCK_TTL_MS);
-				if (!leaseOwner) {
-					logInfo("cron_skipped_overlap", {});
-					return;
-				}
-				const heartbeatController = new AbortController();
-				const heartbeat = keepCronLeaseAlive(env, leaseOwner, heartbeatController.signal);
-				try {
-					// Stages preserve causal order without serializing independent
-					// work: ingest first, then reconcile its projections, then emit
-					// external effects. Backfills/indexing never race the critical
-					// write lane merely because the cron fired.
-					const stages = [
-						[
-							{ name: "indexer", run: () => runIndexer(env) },
-							{
-								name: "user_operation_watcher",
-								run: () => runUserOperationWatcher(env),
-							},
-							{ name: "router_watcher", run: () => runRouterWatcher(env) },
-							{ name: "recovery_watcher", run: () => runRecoveryWatcher(env) },
-							{
-								name: "alchemy_address_sync",
-								run: () => syncAlchemyWebhookAddresses(env),
-							},
-						],
-						[
-							{
-								name: "balance_refresh_repair",
-								run: async () => {
-									await scheduleStaleRpcOnlyBalanceMaintenance(env);
-									await drainBalanceRefreshRequests(env);
-								},
-							},
-							{
-								name: "payment_reconciler",
-								run: () => runPaymentReconciler(env),
-							},
-							{
-								name: "account_operation_reconciler",
-								run: () => runAccountOperationReconciler(env),
-							},
-							{
-								name: "crosschain_relayer",
-								run: () => runCrosschainRelayer(env),
-							},
-						],
-						[
-							{
-								name: "webhook_delivery",
-								run: () => deliverPendingWebhooks(env),
-							},
-							{
-								name: "user_event_delivery",
-								run: () => drainUserEventOutbox(env),
-							},
-						],
-						[
-							{
-								name: "webhook_key_rotation",
-								run: () => migrateWebhookSecrets(env),
-							},
-						],
-					];
-					const failures = [];
-					for (const stage of stages) {
-						failures.push(...(await runCronJobs(stage)));
-					}
-					failures.forEach((failure) => {
-						logError("cron_job_failed", failure.reason, { job: failure.name });
-					});
-				} finally {
-					heartbeatController.abort();
-					await heartbeat;
-					await releaseCronLock(env, leaseOwner).catch((error) =>
-						logWarn("cron_lease_release_failed", { reason: error instanceof Error ? error.name : "unknown" }),
-					);
-				}
-			})().catch((error) => logError("cron_run_failed", error, {})),
-		);
+	queue: consumeWorkerQueue,
+	// Cron never reads the chain. It sends one batch of small JSON messages;
+	// Cloudflare then gives every job an isolated Queue consumer invocation.
+	async scheduled(controller, env) {
+		const configIssues = validateRuntimeConfig(env);
+		if (mustFailClosed(env) && configIssues.length > 0) {
+			logError("cron_configuration_invalid", new Error("Worker configuration is incomplete"), {
+				issues: configIssues.map((entry) => entry.code).join(","),
+			});
+			return;
+		}
+		await enqueueScheduledJobs(env, controller.scheduledTime);
 	},
-} satisfies ExportedHandler<Bindings>;
+} satisfies ExportedHandler<Bindings, WorkerQueueMessage>;

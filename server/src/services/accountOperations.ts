@@ -420,9 +420,12 @@ export async function reconcileAccountOperation(
 	return await getAccountOperationById(env, operation.id);
 }
 
-export async function runAccountOperationReconciler(env: Bindings): Promise<void> {
+export async function runAccountOperationReconciler(
+	env: Bindings,
+	limit = 25,
+): Promise<void> {
 	try {
-		const operations = await listActiveAccountOperations(env, 25);
+		const operations = await listActiveAccountOperations(env, limit);
 		for (const operation of operations) {
 			try {
 				await reconcileAccountOperation(env, operation);

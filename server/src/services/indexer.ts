@@ -1,4 +1,4 @@
-// Cron-driven mini-indexer (Cloudflare-native; no external hosting).
+// Queue-driven mini-indexer (Cloudflare-native; no external hosting).
 //
 // Parmelia relays every in-app operation, so those are written to the ledger at
 // submit time. The ONLY movements the app can't see are incoming transfers sent
@@ -82,15 +82,21 @@ const USER_OPERATION_EVENT = parseAbiItem(
 /** First run only scans this far back (then the cursor takes over). */
 const BACKFILL_BLOCKS = 5000n;
 /**
- * Hard cap of blocks scanned per cron tick. Without it, a cursor that falls
- * behind makes every tick retry an ever-growing range until the Worker's
+ * Hard cap of blocks scanned per Queue delivery. Without it, a cursor that
+ * falls behind makes every delivery retry an ever-growing range until the Worker's
  * subrequest/CPU budget kills the run BEFORE the cursor advances — a
- * permanent stall (jul-2026: 11 days behind = ~1,900 getLogs per tick, every
- * tick died, deposits stopped being credited). With the cap, each tick
+ * permanent stall (jul-2026: 11 days behind = ~1,900 getLogs in one cron,
+ * every invocation died, deposits stopped being credited). With the cap, each delivery
  * processes a bounded window and commits the cursor, so any backlog drains at
- * ~20k blocks per tick.
+ * up to 20k blocks.
  */
 const MAX_BLOCKS_PER_RUN = 20_000n;
+/**
+ * Leave most of the Free-plan 50 external subrequests available for block
+ * evidence, retries, and event processing. Queue isolation prevents unrelated
+ * jobs from sharing this budget; this guard bounds the eth_getLogs portion.
+ */
+const MAX_LOG_SCAN_REQUESTS_PER_JOB = 16;
 
 type TransferLog = {
 	address: Address;
@@ -206,9 +212,35 @@ function transferLogKey(log: TransferLog): string | null {
 export { getIndexerScanHead };
 export type { IndexerScanHead };
 
-/** End of this tick's scan window: bounded progress that always commits. */
-function scanWindowEnd(fromBlock: bigint, latest: bigint): bigint {
-	const capped = fromBlock + MAX_BLOCKS_PER_RUN - 1n;
+/**
+ * End of this Queue delivery's scan window. More wallet filters reduce the
+ * window instead of increasing subrequests, so adding users cannot make a
+ * single Worker invocation cross its log-call budget.
+ */
+export function boundedScanWindowEnd(
+	fromBlock: bigint,
+	latest: bigint,
+	maxBlockSpan: bigint,
+	filterCount: number,
+): bigint {
+	if (!Number.isSafeInteger(filterCount) || filterCount < 1) {
+		throw new Error("Indexer filter count must be a positive safe integer");
+	}
+	if (filterCount > MAX_LOG_SCAN_REQUESTS_PER_JOB) {
+		throw new Error(
+			`Indexer requires ${filterCount} filters; split the stream across Queue jobs`,
+		);
+	}
+	const rangesPerFilter = Math.max(
+		1,
+		Math.floor(MAX_LOG_SCAN_REQUESTS_PER_JOB / filterCount),
+	);
+	const budgetedBlocks = maxBlockSpan * BigInt(rangesPerFilter);
+	const windowBlocks =
+		budgetedBlocks < MAX_BLOCKS_PER_RUN
+			? budgetedBlocks
+			: MAX_BLOCKS_PER_RUN;
+	const capped = fromBlock + windowBlocks - 1n;
 	return capped > latest ? latest : capped;
 }
 
@@ -251,21 +283,32 @@ export async function runIndexer(env: Bindings): Promise<void> {
 				? assignmentBackfill
 				: normalFromBlock;
 		if (fromBlock > scanHead) return;
-		const scanEnd = scanWindowEnd(fromBlock, scanHead);
+		const range = logRangeConfig(env);
+		const scanEnd = boundedScanWindowEnd(
+			fromBlock,
+			scanHead,
+			range.max,
+			erc20Tokens.length * walletShards.length * 2,
+		);
 
 		const logByIdentity = new Map<string, TransferLog>();
 		let rpcCalls = 0;
 		let rpcRetries = 0;
-		const range = logRangeConfig(env);
 		for (const token of erc20Tokens) {
 			for (const shard of walletShards) {
 				const addresses = shard.map((wallet) => wallet.walletAddress as Address);
 				for (const direction of ["from", "to"] as const) {
+					const remainingCalls =
+						MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
+					if (remainingCalls < 1) {
+						throw new Error("Indexer log-call budget was exhausted");
+					}
 					const stats = await scanLogsAdaptive<TransferLog>({
 						fromBlock,
 						toBlock: scanEnd,
 						minBlockSpan: range.min,
 						maxBlockSpan: range.max,
+						maxCalls: remainingCalls,
 						fetchRange: async (rangeFrom, rangeTo) =>
 							(await publicClient.getLogs({
 								address: token.address!,
@@ -501,7 +544,7 @@ export async function runIndexer(env: Bindings): Promise<void> {
 		}
 
 		// Persist the exact end-of-window hash even when no relevant event exists.
-		// It turns the next cron tick into a real hash continuity check instead of
+		// It turns the next Queue delivery into a real hash continuity check instead of
 		// trusting a numeric cursor.
 		const scanEndBlock = await publicClient.getBlock({
 			blockNumber: scanEnd,
@@ -552,9 +595,10 @@ export async function runIndexer(env: Bindings): Promise<void> {
 			ingested,
 		});
 	} catch (error) {
-		// Never throw from the cron - the cursor simply stays put and the next
-		// run retries the same range (writes are idempotent).
+		// Queue retries the same range because the cursor advances only after a
+		// fully journaled window. Writes remain idempotent across redelivery.
 		logError("indexer_failed", error, {});
+		throw error;
 	}
 }
 
@@ -570,8 +614,8 @@ export function internalTransferSenderAddresses(env: Bindings): Set<string> {
 /**
  * Flow B reconciliation: scan PaymentRouter `InvoicePaid` events, attribute each
  * to its payment intent by `invoiceId` (= onchain_id), validate the destination
- * and amount against the intent, mark it paid, and fire payment.paid. Cron-driven,
- * idempotent (markPaymentIntentPaid only acts on `awaiting_payment`), never throws.
+ * and amount against the intent, mark it paid, and fire payment.paid. Queue-driven
+ * and idempotent (markPaymentIntentPaid only acts on `awaiting_payment`).
  */
 export async function runRouterWatcher(env: Bindings): Promise<void> {
 	try {
@@ -597,17 +641,23 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 		const fromBlock =
 			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
 		if (fromBlock > scanHead) return;
-		const scanEnd = scanWindowEnd(fromBlock, scanHead);
+		const range = logRangeConfig(env);
+		const scanEnd = boundedScanWindowEnd(
+			fromBlock,
+			scanHead,
+			range.max,
+			1,
+		);
 
 		let confirmed = 0;
 		const blockTimestamps = new Map<bigint, bigint>();
 		const routerLogs: InvoicePaidLog[] = [];
-		const range = logRangeConfig(env);
 		const scanStats = await scanLogsAdaptive({
 			fromBlock,
 			toBlock: scanEnd,
 			minBlockSpan: range.min,
 			maxBlockSpan: range.max,
+			maxCalls: MAX_LOG_SCAN_REQUESTS_PER_JOB,
 			fetchRange: async (rangeFrom, rangeTo) =>
 				(await publicClient.getLogs({
 					address: router,
@@ -825,6 +875,7 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
 		});
 	} catch (error) {
 		logError("router_watch_failed", error, {});
+		throw error;
 	}
 }
 
@@ -832,7 +883,7 @@ export async function runRouterWatcher(env: Bindings): Promise<void> {
  * Security watcher: scan our accounts for `RecoveryProposed` events and push the
  * owner so they can cancel within the 48h timelock if it wasn't them. Mitigates
  * the shared-guardian risk (audit M-1): a compromised guardian can start a
- * recovery, but the owner is alerted and can veto it. Cron-driven, never throws.
+ * recovery, but the owner is alerted and can veto it. Queue-driven and retryable.
  * Filters logs to our own wallet addresses, so it only sees our accounts.
  */
 export async function runRecoveryWatcher(env: Bindings): Promise<void> {
@@ -871,14 +922,24 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 				? assignmentBackfill
 				: normalFromBlock;
 		if (fromBlock > scanHead) return;
-		const scanEnd = scanWindowEnd(fromBlock, scanHead);
+		const range = logRangeConfig(env);
+		const scanEnd = boundedScanWindowEnd(
+			fromBlock,
+			scanHead,
+			range.max,
+			walletShards.length,
+		);
 
 		let alerted = 0;
 		let rpcCalls = 0;
 		let rpcRetries = 0;
-		const range = logRangeConfig(env);
 		const recoveryByOccurrence = new Map<string, RecoveryProposedLog>();
 		for (const shard of walletShards) {
+			const remainingCalls =
+				MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
+			if (remainingCalls < 1) {
+				throw new Error("Recovery watcher log-call budget was exhausted");
+			}
 			const walletAddresses = shard.map(
 				(wallet) => wallet.walletAddress as Address,
 			);
@@ -888,6 +949,7 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 				toBlock: scanEnd,
 				minBlockSpan: range.min,
 				maxBlockSpan: range.max,
+				maxCalls: remainingCalls,
 				fetchRange: async (rangeFrom, rangeTo) =>
 					(await publicClient.getLogs({
 						address: walletAddresses,
@@ -1073,6 +1135,7 @@ export async function runRecoveryWatcher(env: Bindings): Promise<void> {
 		});
 	} catch (error) {
 		logError("recovery_watch_failed", error, {});
+		throw error;
 	}
 }
 
@@ -1128,13 +1191,25 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 				? assignmentBackfill
 				: normalFromBlock;
 		if (fromBlock > scanHead) return;
-		const scanEnd = scanWindowEnd(fromBlock, scanHead);
+		const range = logRangeConfig(env);
+		const scanEnd = boundedScanWindowEnd(
+			fromBlock,
+			scanHead,
+			range.max,
+			shardState.shards.length,
+		);
 
 		const occurrenceMap = new Map<string, UserOperationLog>();
 		let rpcCalls = 0;
 		let rpcRetries = 0;
-		const range = logRangeConfig(env);
 		for (const shard of shardState.shards) {
+			const remainingCalls =
+				MAX_LOG_SCAN_REQUESTS_PER_JOB - rpcCalls;
+			if (remainingCalls < 1) {
+				throw new Error(
+					"UserOperation watcher log-call budget was exhausted",
+				);
+			}
 			const senders = shard.wallets.map(
 				(wallet) => wallet.walletAddress as Address,
 			);
@@ -1143,6 +1218,7 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 				toBlock: scanEnd,
 				minBlockSpan: range.min,
 				maxBlockSpan: range.max,
+				maxCalls: remainingCalls,
 				fetchRange: async (rangeFrom, rangeTo) =>
 					(await publicClient.getLogs({
 						address: network.contracts.entryPoint,
@@ -1354,5 +1430,6 @@ export async function runUserOperationWatcher(env: Bindings): Promise<void> {
 		});
 	} catch (error) {
 		logError("user_operation_watch_failed", error, {});
+		throw error;
 	}
 }

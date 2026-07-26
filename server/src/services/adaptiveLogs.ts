@@ -20,7 +20,16 @@ export type AdaptiveLogScanOptions<Log> = {
 		range: { fromBlock: bigint; toBlock: bigint },
 	) => Promise<void> | void;
 	maxTransientRetries?: number;
+	/** Hard guard for the Worker's per-invocation external subrequest budget. */
+	maxCalls?: number;
 };
+
+export class AdaptiveLogScanBudgetExceededError extends Error {
+	constructor(maxCalls: number) {
+		super(`Adaptive log scan exhausted its ${maxCalls}-call budget`);
+		this.name = "AdaptiveLogScanBudgetExceededError";
+	}
+}
 
 function errorText(error: unknown): string {
 	if (error instanceof Error) {
@@ -106,6 +115,12 @@ export async function scanLogsAdaptive<Log>(
 	if (options.maxBlockSpan < options.minBlockSpan) {
 		throw new Error("maxBlockSpan must be >= minBlockSpan");
 	}
+	if (
+		options.maxCalls !== undefined &&
+		(!Number.isSafeInteger(options.maxCalls) || options.maxCalls < 1)
+	) {
+		throw new Error("maxCalls must be a positive safe integer");
+	}
 
 	let span = clamp(
 		options.initialBlockSpan ?? options.maxBlockSpan,
@@ -131,6 +146,14 @@ export async function scanLogsAdaptive<Log>(
 
 		for (;;) {
 			try {
+				if (
+					options.maxCalls !== undefined &&
+					calls >= options.maxCalls
+				) {
+					throw new AdaptiveLogScanBudgetExceededError(
+						options.maxCalls,
+					);
+				}
 				calls++;
 				const logs = await options.fetchRange(cursor, end);
 				await options.onRange(logs, { fromBlock: cursor, toBlock: end });
