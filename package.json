@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.31.0",
   "scripts": {
+    "preverify": "pnpm build:contracts",
     "dev:client": "pnpm --filter client dev",
     "dev:server": "pnpm --filter server dev",
     "dev:dashboard": "pnpm --filter dashboard dev",

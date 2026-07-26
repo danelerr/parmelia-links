@@ -87,8 +87,9 @@ Concretamente:
 - **Sin API keys** (Iris es REST público, ~35 req/s) ni contratos de terceros
   que auditar: las direcciones de TokenMessenger/MessageTransmitter v2 son
   deterministas y auditadas por Circle.
-- **Encaja con la infraestructura existente:** el patrón relayer-EOA + cron +
-  watcher ya existía para el indexer y el PaymentRouter; CCTP es el mismo patrón.
+- **Encaja con la infraestructura existente:** el patrón relayer-EOA + job
+  durable + watcher ya existe para el indexer y el PaymentRouter; CCTP usa el
+  mismo scheduler dirigido por estado.
 
 ### 2.1 Procedimiento de decisión para casos futuros
 
@@ -167,8 +168,8 @@ MessageTransmitter de Circle.
   devuelve las DOS txs crudas: approve al TokenMessenger + `depositForBurn`),
   `POST /inbound/register` (adjunta el burn tx con dedupe I5 y CAS),
   `GET /inbound/status/:opId` (polling del checkout).
-- **Relayer** (cron cada 2 min, con lock global anti-solapamiento): barre ops
-  in-flight rotando por `updated_at` (sin inanición), pollea Iris por
+- **Relayer** (job que sólo se reprograma mientras haya ops in-flight, con lease
+  anti-solapamiento): rota por `updated_at` (sin inanición), consulta Iris por
   `sourceTxHash`, valida el mensaje (I6), mintea con idempotencia (receipt del
   `destinationTxHash` antes de re-enviar), contador de intentos con tope (20 →
   `needs_support`), TTLs (abandonadas 24h → `expired`; in-flight 7d →
@@ -229,7 +230,7 @@ nunca devolver. Estados monótonos, `completed` terminal (I7).
 |---|---|---|---|
 | El burn revierte en origen | `UserOperationEvent(success=false)` o receipt reverted | Op → `failed`; nada se movió; fee no cobrada (I2) | — |
 | Worker muere tras difundir el burn | Fila `submitted` con tx (I4) | El reconciliador de pagos liquida la parte contable; el relayer continúa el mint | — |
-| Iris caído / atestación lenta | Op se queda en `waiting_attestation` | Rotación evita inanición; reintento cada cron | Alerta si > 30 min (§10.2) |
+| Iris caído / atestación lenta | Op se queda en `waiting_attestation` | Rotación evita inanición; alarma con backoff mientras la op siga activa | Alerta si > 30 min (§10.2) |
 | Relayer sin gas en destino | `relayerGasStatus` | Rutas NUEVAS ocultas (I8); alerta `crosschain_relayer_low_gas` para in-flight | Fondear la EOA; o el usuario/quien sea mintea (I1) |
 | Mint revierte repetidamente | Contador de intentos | Tope 20 → `needs_support` | Runbook §10.3 |
 | Tx registrado no corresponde a la op (abuso del endpoint público) | `validateCctpMessage` (I6) | `needs_support` con detalle "mismatch"; sin mint, sin gas gastado | Ignorar (es spam); el dedupe I5 y el rate limit acotan el volumen |

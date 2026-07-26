@@ -28,7 +28,7 @@ El backend prepara y transmite UserOperations, pero **no custodia la clave de fi
 | Contratos | Solidity (solc pineado `0.8.28`), Foundry, OpenZeppelin v5 (ERC-7913 / ERC-7821 / UUPS)                                             |
 | Cliente   | React 19, TypeScript 5.9, Vite 7, Tailwind CSS v4, react-i18next, Firebase (Auth + Messaging + Analytics), SWR, react-router-dom, qrcode.react, jsqr (lazy), html-to-image, sileo, Turnstile |
 | Dashboard | React 19, Vite, SWR (`useSWRInfinite` para paginación), Firebase Auth — panel del comerciante para la API `/v1`                     |
-| Servidor  | Hono, Cloudflare Workers (+ Cron Triggers), viem, jose, **Cloudflare D1 (SQLite)**                                                  |
+| Servidor  | Hono, Cloudflare Workers + Queues + Durable Objects, viem, jose, **Cloudflare D1 (SQLite)**                                        |
 | Shared    | Módulo TypeScript compartido: ABIs, redes/direcciones, tokens, config Uniswap/CCTP y **contrato de errores** (`errors.ts`)          |
 | Red       | Arbitrum Sepolia (421614) - testnet activa. Arbitrum One (42161) - producción (contratos aún no desplegados). Base Sepolia - destino CCTP / legacy. |
 | Deploy    | Cliente y dashboard en Vercel, servidor en Cloudflare Workers                                                                        |
@@ -64,7 +64,7 @@ parmelia-links/
 ├── server/                  # Cloudflare Worker (Hono)
 │   ├── migrations/               # 0001..0007 (ver "Modelo de Datos")
 │   └── src/
-│       ├── index.ts              # middlewares + rutas + handler `scheduled` (cron con lock)
+│       ├── index.ts              # middlewares + rutas + consumers de Queue
 │       ├── chain.ts              # chainKey -> viem Chain
 │       ├── middlewares/          # auth.ts (Firebase JWKS), apiAuth.ts (API keys sk_)
 │       ├── routes/               # user, account, links, pay, transactions, swap, contacts,
@@ -72,7 +72,7 @@ parmelia-links/
 │       └── services/             # storage(D1), settlement (liquidación+reconciliador), userOp,
 │                                 #   paymaster, paymentRouter, crosschainRelayer, clients, keys,
 │                                 #   validation, swap, uniswap, bridge, push, turnstile, indexer,
-│                                 #   webhooks, apiKeys, apiError, logger
+│                                 #   eventScheduler, eventJobs, webhooks, apiKeys, apiError, logger
 ├── contracts/               # Foundry (V2 activo)
 │   ├── src/                      # AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
 │   │                             #   ParmeliaPaymentRouter, ParmeliaCrosschainRouter, ERC7913WebAuthnVerifier
@@ -134,7 +134,22 @@ Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos
 - Verifica Firebase ID tokens con JWKS de Google (cache 1h); la superficie `/v1` autentica con API keys `sk_` (hash SHA-256 en D1).
 - API de usuario, cuenta, links, pagos, swaps, contactos, cross-chain, historial (ledger), API pública `/v1` y rutas del dashboard (`/merchant`).
 - Despliega smart accounts; construye UserOps ERC-4337 patrocinadas y las envía con `handleOps`.
-- **Cron Trigger** (cada 2 min, con **lock anti-solapamiento** en D1) ejecuta 6 jobs: indexer de depósitos externos, watcher de `InvoicePaid` (router), watcher de `RecoveryProposed` (seguridad), relayer CCTP, **reconciliador de pagos** y flush del outbox de webhooks.
+- No existe Cron Trigger. Las transiciones de dominio y los webhooks firmados
+  registran trabajo en `EventJobScheduler`: un Durable Object independiente por
+  red, job y partición. Cada objeto compacta duplicados de su shard, conserva
+  una alarma sólo mientras tiene trabajo y publica en Queue. El consumidor usa
+  un lease D1 y se reprograma sólo si aún existe estado activo.
+- Alchemy Address Activity entrega actividad de wallets y un Custom Webhook
+  filtrado despierta `InvoicePaid`/recovery. Ambos se verifican por HMAC y sólo
+  producen señales particionadas; el pool RPC vuelve a leer la evidencia
+  canónica antes de cambiar journal, ledger o balances. Address Activity también
+  solicita una reconciliación puntual y deduplicada para cubrir ETH nativo; la
+  suscripción usa un espejo D1 incremental, no una lectura completa por cambio.
+- Los límites de rango, prioridad y concurrencia pertenecen a la configuración
+  de cada endpoint. `RpcAdmissionController` aplica el límite entre todas las
+  instancias; no existe lógica de negocio dependiente de un plan gratuito.
+- Invariante de reposo: agenda vacía implica cero alarmas, mensajes de Queue,
+  invocaciones background y lecturas RPC.
 - Persiste todo en D1.
 
 ### 3. Contratos y Account Abstraction (ERC-4337)
@@ -157,7 +172,7 @@ El relayer es el EOA del servidor: paga el gas de `handleOps`. No puede mover fo
   esperando el receipt.
 - El éxito lo decide el **`UserOperationEvent` del EntryPoint**, no `receipt.status` (una ejecución interna revertida mina igual el bundle con `success=false`).
 - La contabilidad vive en **`services/settlement.ts`** y es **idempotente** (ledger con índice único de dedupe, link/intent por CAS, push solo si la fila se insertó en esa corrida).
-- El **reconciliador** del cron es el único que confirma el resultado: localiza
+- El **reconciliador dirigido por eventos** es el único que confirma el resultado: localiza
   la op on-chain por `userOpHash`, liquida o marca `failed`, y expira lo que ya
   no puede aterrizar (ventana del paymaster vencida). `GET
   /pay/status/:userOpHash` expone el estado para polling.
@@ -165,11 +180,24 @@ El relayer es el EOA del servidor: paga el gas de `handleOps`. No puede mover fo
 ### 5. Ledger e Indexer (historial)
 Parmelia **relaya** todas las operaciones de la app, así que las conoce al ocurrir. La tabla **`ledger`** es la única fuente de `/user/transactions`:
 - Cada pago/swap/faucet escribe sus filas al confirmar (batch atómico); para transferencias internas se escriben **ambos lados** al instante.
-- Lo único que la app no ve son **depósitos externos** entrantes: el **cron indexer** escanea logs `Transfer` ERC-20 hacia las wallets de usuarios desde un cursor (`sync_state`) y los ingiere como `kind="external"`. Los tres watchers nunca avanzan hasta el tip mutable: prefieren el bloque RPC `safe` si está a <=512 bloques de `latest` y, ante soporte ausente o un `safe` demasiado rezagado, conservan 64 confirmaciones. Los logs exponen `finalitySource` y `unconfirmedBlocks`. Escrituras idempotentes; el push de "depósito recibido" solo dispara para filas realmente insertadas.
+- Lo único que la app no conoce al escribir son **depósitos externos**
+  entrantes. Con Alchemy Address Activity, el proveedor empuja sólo actividad
+  de wallets registradas. El registro incremental asigna wallets a shards
+  estables y el evento despierta sólo token, dirección y shard afectados. Sin
+  Notify —o si se perdió una entrega— un Home stale despierta esas mismas
+  particiones y la reconciliación puntual desde su checkpoint; si nadie abre la
+  app, no existe fallback. Los watchers usan evidencia
+  `safe`/confirmaciones y journal idempotente antes de mover cada cursor.
 - `/user/transactions` no toca RPC/explorer en cada request: lee solo D1.
 
 ### 6. Cross-chain (CCTP v2)
-Diseño completo en `CROSSCHAIN_DESIGN.md`. Outbound: la op se registra en D1 **antes** de firmar el burn; el relayer del cron pollea la atestación de Iris y mintea en destino, **validando el mensaje CCTP contra la op** (dominios/recipient/amount) antes de gastar gas. Inbound: checkout público `/cc/:username`; el pagador externo llama al TokenMessenger directamente y registra su tx (dedupe único por hash). Cola con rotación, contador de intentos con tope y TTLs; `completed` es terminal.
+Diseño completo en `CROSSCHAIN_DESIGN.md`. Outbound: la op se registra en D1
+**antes** de firmar el burn; esa transición despierta el relayer, que consulta
+Iris sólo mientras haya una op en vuelo y se apaga al llegar a un estado
+terminal. Antes de gastar gas valida el mensaje CCTP contra la op
+(dominios/recipient/amount). Inbound: checkout público `/cc/:username`; el
+pagador externo llama al TokenMessenger directamente y registra su tx (dedupe
+único por hash).
 
 ### 7. API de cobros `/v1` + dashboard
 Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables on-chain por cualquier wallet vía PaymentRouter (Flow B, reconciliado por el watcher de `InvoicePaid`). Webhooks firmados HMAC-SHA256 con outbox en D1, claim atómico anti doble-entrega, reintentos con backoff (1m→24h, 6 intentos) y reenvío manual desde el dashboard. `expires_at` se aplica en pago, autorización on-chain y simulate. Referencia pública en `docs/api.md` + `docs/openapi.yaml`.
@@ -179,17 +207,28 @@ Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables 
 ## Backend (`server/`)
 
 ### Entry point
-`server/src/index.ts` compone la API y exporta `{ fetch, scheduled }`:
+`server/src/index.ts` compone la API, exporta `{ fetch, queue }`,
+`EventJobScheduler` y `RpcAdmissionController`:
 - `cors()` (allowlist por `ALLOWED_ORIGINS`; abierto = warning en mainnet), `logger()`, `authMiddleware` globales; healthcheck `GET /`.
 - Montaje: `/user/transactions`, `/user`, `/account`, `/links`, `/pay`, `/swap`, `/contacts`, `/bridge`, `/crosschain`, `/v1`, `/merchant`.
-- `scheduled` (cron, lock en `sync_state`) → 6 jobs en paralelo (ver arriba).
+- `queue` transporta jobs de dominio compactados; los mensajes inválidos se
+  confirman sin bloquear hermanos y los fallos usan retry con backoff.
+- `EventJobScheduler` almacena como máximo una generación por
+  job/partición, compacta productores equivalentes sin serializar shards
+  independientes y elimina su alarma al quedar vacío.
 
 ### Servicios
-- `clients.ts`: clients viem + `waitForTx` (tuneado para Arbitrum) + `assertTxSuccess`.
+- `clients.ts`, `rpcProviders.ts`, `rpcControlPlane.ts` y `rpcAdmission.ts`:
+  pool viem por rol/capacidad, failover determinista, circuit breakers,
+  concurrencia distribuida y atribución por lane, sin exponer URLs.
 - `userOp.ts`: `buildSponsoredUserOp` (con guard de contratos desplegados), `encodeExecuteBatch` (ERC-7821), `serializeBigInts`, `normalizeLowS`.
 - `paymaster.ts`: firma del sponsorship. `keys.ts`: **política de claves least-privilege** (fallbacks solo en testnet; mainnet exige claves dedicadas).
-- `settlement.ts`: liquidación idempotente + `getUserOpResult` (parser del `UserOperationEvent`) + reconciliador cron.
-- `storage.ts`: acceso tipado a D1 (todas las tablas) + claim atómicos (faucet, submit, webhooks, cron lock) + rate limiter de ventana fija.
+- `settlement.ts`: liquidación idempotente + `getUserOpResult` (parser del `UserOperationEvent`) + reconciliador dirigido por eventos.
+- `storage.ts`: acceso tipado a D1 (todas las tablas) + claims atómicos (faucet, submit, webhooks, leases) + productores de jobs + rate limiter de ventana fija.
+- `eventScheduler.ts` / `eventJobs.ts`: agenda particionada con alarmas,
+  compactación, dispatch por Queue, continuaciones basadas en D1 y recuperación.
+- `indexerPartitions.ts` / `indexerShards.ts`: registro incremental de wallets,
+  asignaciones estables y particiones por token/dirección/shard.
 - `paymentRouter.ts`: autorización firmada de invoices (Flow B; permit condicionado por `paymentRouterHasPermit`).
 - `crosschainRelayer.ts`: relayer CCTP (atestaciones Iris, mint en destino, validación de mensaje, gas-gating tri-estado fail-closed).
 - `webhooks.ts`: outbox firmado (HMAC estilo Stripe) con claim + concurrencia limitada. `apiKeys.ts`: generación/verificación de claves `sk_`.
@@ -243,7 +282,7 @@ Migraciones en `server/migrations/` (aplicar SIEMPRE antes de desplegar el Worke
 | `swap_quotes`      | cotización con TTL: par, montos, protocolo (v3/v4), pool, slippage, `status`                           |
 | `contacts`         | contactos del usuario                                                                                   |
 | `ledger`           | movimientos unificados (in/out × payment/link/swap/fund/external) con **índice único de dedupe**       |
-| `sync_state`       | cursores de los watchers + **lock del cron**                                                            |
+| `sync_state`       | estado compatible heredado; los cursores canónicos viven en `chain_stream_checkpoints`                 |
 | `merchants` / `api_keys` | comercio + claves `sk_` (solo hash)                                                              |
 | `payment_intents`  | intents `/v1` (respaldados por payment_links; `onchain_id` para Flow B; `expires_at` aplicado)         |
 | `webhook_endpoints` / `events` / `webhook_deliveries` | outbox firmado con reintentos/backoff y claim atómico            |
@@ -313,10 +352,11 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | ------------------------------ | ------- | ---------------------------------------------------- |
 | `FIREBASE_PROJECT_ID` / `CHAIN_KEY` / `ALLOWED_ORIGINS` / `APP_URL` | var | Identidad, red activa, CORS, URL de checkout |
 | `RPC_URL`                      | secret  | Compatibilidad para despliegues antiguos             |
-| `RPC_READ_URLS`                | secret  | Lecturas puntuales/receipts; admite Alchemy Free     |
+| `RPC_READ_URLS`                | secret  | Pool de lecturas puntuales/receipts                  |
 | `RPC_WRITE_URLS`               | secret  | Simulación y broadcast                               |
-| `RPC_INDEXER_URLS`             | secret  | `eth_getLogs`; no Alchemy Free con rango 2000        |
+| `RPC_INDEXER_URLS`             | secret  | Pool canónico `eth_getLogs`; admite límites distintos |
 | `RPC_ARCHIVE_URLS`             | secret  | Backfill histórico aislado                           |
+| `RPC_PROVIDER_CAPABILITIES`    | secret/config | ID, prioridad, rango y concurrencia por endpoint |
 | `BUNDLER_RPC_URLS`             | secret  | ERC-4337 bundler compatible con EntryPoint v0.9      |
 | `PRIVATE_KEY`                  | secret  | EOA relayer (`handleOps` y CCTP)                     |
 | `FAUCET_PRIVATE_KEY`           | secret  | EOA con el presupuesto del faucet                    |
@@ -330,17 +370,21 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | `CROSSCHAIN_PAUSED` / `CROSSCHAIN_DISABLED_CHAINS` / `CROSSCHAIN_MIN_RELAYER_GAS_WEI` | var | Kill switch y flags cross-chain |
 | `EARN_PAUSED`                  | var     | Kill switch del Ahorro (Aave)                        |
 | `PARMELIA_DB`                  | binding | Base D1 principal                                    |
-| (cron)                         | trigger | `*/2 * * * *` → 8 jobs con lock anti-solapamiento    |
+| `EVENT_JOB_SCHEDULER`          | binding | Durable Object: agenda compactada y alarma sólo con trabajo |
+| `RPC_ADMISSION`                | binding | Durable Object: concurrencia global por endpoint/lane |
+| `SCHEDULED_JOBS_QUEUE`         | binding | Jobs de dominio; permanece vacía en reposo           |
+| `ALCHEMY_WEBHOOK_*` / `ALCHEMY_ADDRESS_WEBHOOKS_JSON` | secret/var | Uno o varios slots Address Activity |
+| `ALCHEMY_CUSTOM_WEBHOOK_*`     | secret/var | Eventos filtrados de router/recovery              |
 
 ---
 
 ## Estado Actual
 
 - Backend modularizado; config de red/tokens/Uniswap/CCTP unificada y portable; contrato de errores estable con i18n.
-- Pagos con ciclo de vida crash-safe (claim atómico, `UserOperationEvent` como verdad, liquidación idempotente, reconciliador cron, `GET /pay/status`).
+- Pagos con ciclo de vida crash-safe (claim atómico, `UserOperationEvent` como verdad, liquidación idempotente, reconciliador dirigido por eventos, `GET /pay/status`).
 - Cuentas V2: múltiples passkeys en la misma dirección + recovery endurecido con guardian/timelock.
 - Swaps internos (v3/v4), cross-chain CCTP v2 (outbound e inbound, código completo), contactos + referidos, extracto con filtros en URL, comprobantes, i18n ES/EN.
 - API de cobros `/v1` (test mode) + dashboard de comerciantes con webhooks firmados.
-- Historial servido desde el `ledger` (D1) + cron indexer; sin dependencia de indexador pago.
+- Historial servido desde el `ledger` (D1) + ingestión push/backfill bajo demanda; sin RPC por tab ni dependencia obligatoria de un indexador pago.
 - Login Google/correo, Turnstile, push FCM multi-dispositivo y analytics — feature-flagged (fail-closed en mainnet donde aplica).
 - Pendiente para producción: ver la lista de gates y acciones del operador en `CLAUDE_REVIEW_FABLE.md` §8 y `MEJORAS_PENDIENTES.md`.

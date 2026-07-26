@@ -1,7 +1,7 @@
 # Runbook - Poner Parmelia a funcionar en Arbitrum
 
 > Orden exacto para activar todo lo implementado (contratos V2, ledger D1,
-> indexer cron, swaps, referidos) en **Arbitrum Sepolia**. Al final, el delta
+> indexación dirigida por eventos, swaps, referidos) en **Arbitrum Sepolia**. Al final, el delta
 > para **Arbitrum One**.
 
 
@@ -179,13 +179,13 @@ npx wrangler d1 migrations apply PARMELIA_DB --remote
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
 `npx wrangler d1 migrations list PARMELIA_DB --remote` y aplica, en orden, todo
-lo que falte hasta `0025_asset_projection_audits.sql`. El Worker actual requiere
+lo que falte hasta `0026_indexer_work_partitions.sql`. El Worker actual requiere
 la cadena completa: además del hardening y los ciclos durables originales,
-`0012`-`0025` incorporan journal canónico, read models de Home, evidencia y
+`0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
 rollback de reorg, shards del indexador, suscripciones de proveedor, control
 plane RPC, finality de Arbitrum, outboxes, ciclo durable de UserOperations,
 paginación del ledger, cache durable de capacidades del bundler, cola de
-reconciliación y auditorías de proyecciones de balance.
+reconciliación, auditorías de balance y registro incremental de wallets.
 REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
 El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
 nunca replicar ese patrón hacia producción.
@@ -211,10 +211,11 @@ transacción cuyo nonce ya fue consumido.
 ```bash
 cd server
 npx wrangler secret put RPC_URL          # compatibilidad; no mezclar roles nuevos aquí
-npx wrangler secret put RPC_READ_URLS    # lecturas puntuales; Alchemy Free es válido
+npx wrangler secret put RPC_READ_URLS    # pool de lecturas puntuales
 npx wrangler secret put RPC_WRITE_URLS   # broadcast/simulación crítica
-npx wrangler secret put RPC_INDEXER_URLS # eth_getLogs; NO Alchemy Free con rango 2000
+npx wrangler secret put RPC_INDEXER_URLS # pool canónico eth_getLogs
 npx wrangler secret put RPC_ARCHIVE_URLS # backfills aislados, si se habilitan
+npx wrangler secret put RPC_PROVIDER_CAPABILITIES # límites/prioridad por endpoint
 npx wrangler secret put PRIVATE_KEY                        # relayer handleOps/CCTP
 npx wrangler secret put FAUCET_PRIVATE_KEY                 # fondos del faucet (mainnet: obligatoria si se activa)
 npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY      # guardian (mainnet: obligatorio y distinto)
@@ -226,12 +227,19 @@ npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY  # firma invoices Flow
 npx wrangler secret put TURNSTILE_SECRET_KEY           # anti-abuso en crear cuenta + faucet
 Get-Content -Raw ..\<service-account>.json | npx wrangler secret put FCM_SERVICE_ACCOUNT  # push
 npx wrangler secret put CCTP_RPC_URLS                  # opcional: RPCs dedicados cross-chain
+npx wrangler secret put ALCHEMY_WEBHOOK_ID             # Address Activity
+npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK        # red exacta del webhook
+npx wrangler secret put ALCHEMY_WEBHOOK_SIGNING_KEY    # HMAC Address Activity
+npx wrangler secret put ALCHEMY_ADDRESS_WEBHOOKS_JSON  # reemplazo multi-slot opcional
+npx wrangler secret put ALCHEMY_NOTIFY_AUTH_TOKEN      # API Notify; no es la key RPC
+npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_ID      # eventos de router/recovery
+npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY  # 32 bytes base64/hex; obligatorio en mainnet
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID # ID corto, por ejemplo 2026_07
 ```
 
 `GET /health` devuelve `200` sólo si la configuración es coherente. En mainnet,
-el Worker y el cron responden/fallan cerrado con `503 SERVICE_UNAVAILABLE` si
+el Worker responde/falla cerrado con `503 SERVICE_UNAVAILABLE` si
 faltan contratos, CORS HTTPS, Turnstile, APP_URL, cifrado o claves dedicadas. Las
 cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas.
 
@@ -241,7 +249,7 @@ cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser dis
    `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS`, como JSON `{"id_viejo":"clave"}`.
 2. Carga la clave nueva en `WEBHOOK_SECRET_ENCRYPTION_KEY` y cambia
    `WEBHOOK_SECRET_ENCRYPTION_KEY_ID` a un ID nuevo.
-3. Despliega. El cron descifra con la clave anterior y recifra gradualmente en
+3. Despliega. El job de rotación descifra con la clave anterior y recifra gradualmente en
    formato `enc:v2:<id_nuevo>`, usando compare-and-set para no pisar ediciones.
 4. Comprueba que no queden filas antiguas y elimina
    `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS` con `wrangler secret delete`.
@@ -250,53 +258,53 @@ No retires la clave previa antes del paso 4: las entregas de esos endpoints no
 podrían firmarse.
 
 Ya configurado en `wrangler.jsonc`: `CHAIN_KEY=arbitrum-sepolia`,
-`ALLOWED_ORIGINS` y el cron cada 2 min. Configura `APP_URL`, flags cross-chain y
-fees (`PARMELIA_*`) explícitamente para cada entorno; mainnet no acepta el
-fallback de `APP_URL`.
+`ALLOWED_ORIGINS`, una Queue y `EventJobScheduler`. No hay Cron Trigger: el
+Durable Object conserva una alarma sólo mientras exista trabajo y la elimina al
+vaciarse. El consumidor usa `max_batch_size=1`, de modo que cada
+indexador/reconciliador recibe una invocación y un presupuesto de subrequests
+independiente. Configura `APP_URL`, flags cross-chain y fees (`PARMELIA_*`)
+explícitamente para cada entorno; mainnet no acepta el fallback de `APP_URL`.
 
-### RPC: público vs dedicado (Alchemy/Infura/dRPC)
+### RPC: capacidades por endpoint
 
-El Worker separa los endpoints por carga. `RPC_URL` queda sólo como fallback de
-compatibilidad para despliegues antiguos:
+El Worker separa lecturas, escrituras, indexación y archivo. Cada rol admite un
+pool y `RPC_URL` queda sólo como fallback de compatibilidad:
 
-| Rol | Uso | Configuración recomendada con Alchemy Free |
-|---|---|---|
-| `RPC_READ_URLS` | balances puntuales, receipts y llamadas de contrato | Alchemy Free; un respaldo independiente opcional |
-| `RPC_WRITE_URLS` | simulación y broadcast | Alchemy Free o endpoint dedicado |
-| `RPC_INDEXER_URLS` | `eth_getLogs` del journal/reconciliador | RPC oficial público de Arbitrum; **no Alchemy Free** |
-| `RPC_ARCHIVE_URLS` | backfill histórico aislado | endpoint que documente el rango/cuota necesarios |
-| `BUNDLER_RPC_URLS` | métodos ERC-4337 | bundler compatible con EntryPoint v0.9; no es un Node RPC |
+| Rol | Uso |
+|---|---|
+| `RPC_READ_URLS` | balances puntuales, receipts y llamadas de contrato |
+| `RPC_WRITE_URLS` | simulación y broadcast |
+| `RPC_INDEXER_URLS` | `eth_getLogs` del journal y reconciliadores |
+| `RPC_ARCHIVE_URLS` | backfill histórico aislado |
+| `BUNDLER_RPC_URLS` | métodos ERC-4337; no equivale a un Node RPC |
 
-Alchemy Free limita `eth_getLogs` sobre Arbitrum a 10 bloques. Parmelia configura
-el indexador público con un máximo adaptativo de 2.000 bloques, así que **nunca**
-se deben colocar ambos endpoints en la misma lista `RPC_INDEXER_URLS`: el
-fallback repetiría exactamente la consulta de 2.000 contra Alchemy y fallaría.
-La validación de arranque bloquea esa combinación.
+Los planes no se codifican por hostname. En
+`RPC_PROVIDER_CAPABILITIES`, cada posición declara ID seguro, prioridad,
+concurrencia y rango:
 
-El máximo es una capacidad del endpoint, no una obligación de consultar siempre
-2.000. El scanner empieza hasta ese techo, reduce el rango ante errores de
-capacidad y reintenta desde el checkpoint durable. Un rango correcto persistido
-no se pierde por un `429`; el cursor sólo avanza después de guardar el journal.
+```json
+{
+  "indexer": [
+    { "id": "managed", "priority": 0, "maxConcurrency": 4, "maxLogRange": 10 },
+    { "id": "public", "priority": 1, "maxConcurrency": 2, "maxLogRange": 2000 }
+  ]
+}
+```
 
-En testnet, el RPC oficial de Arbitrum sirve como reconciliador. Para mainnet con
-valor real, sustituir el rol `indexer/archive` por un proveedor independiente con
-SLO y rango documentados cuando las métricas lo exijan; no asumir que todos los
-planes de Alchemy, Infura, dRPC o QuickNode tienen límites equivalentes.
+Así ambos endpoints pueden coexistir. Una consulta de 2.000 usa sólo un
+proveedor elegible; una de 10 intenta por prioridad. Si falla el proveedor
+grande, el scanner reduce el span hasta que otro sea elegible. El checkpoint
+sólo avanza después de persistir journal y proyecciones.
 
-```bash
-# Arbitrum Sepolia: punto de lectura administrado + reconciliación pública
-npx wrangler secret put RPC_READ_URLS
-#   https://arb-sepolia.g.alchemy.com/v2/<API_KEY_ROTADA>
-npx wrangler secret put RPC_WRITE_URLS
-#   https://arb-sepolia.g.alchemy.com/v2/<API_KEY_ROTADA>
-npx wrangler secret put RPC_INDEXER_URLS
-#   https://sepolia-rollup.arbitrum.io/rpc
-npx wrangler secret put RPC_ARCHIVE_URLS
-#   https://sepolia-rollup.arbitrum.io/rpc
+`RpcAdmissionController` impone `maxConcurrency` globalmente por endpoint/lane,
+además del semáforo local y circuit breaker. Subir o bajar de plan cambia la
+configuración, no el indexador. Antes de promover:
 
-# Variables no secretas del rango:
-# RPC_INDEXER_MIN_BLOCK_RANGE=10
-# RPC_INDEXER_MAX_BLOCK_RANGE=2000
+```powershell
+$env:CHAIN_KEY = "arbitrum-sepolia"
+$env:RPC_INDEXER_URLS = "<ENDPOINT_1>,<ENDPOINT_2>"
+$env:RPC_PROVIDER_CAPABILITIES = '{"indexer":[...]}'
+pnpm check:rpc-indexer
 ```
 
 Una API key expuesta en captura, terminal o ticket se rota antes de habilitar el
@@ -306,11 +314,42 @@ secret. Para Address Activity también hacen falta
 `ALCHEMY_NOTIFY_AUTH_TOKEN`; este último es el token de Notify y **no** la API
 key del Node RPC.
 
+### Alchemy Notify (para cero polling permanente)
+
+La URL RPC de Node no activa Notify. Crea dos webhooks en Alchemy:
+
+Nunca reutilices una Node API key que haya aparecido en una captura o chat:
+rótala primero. Notify usa además signing keys y un auth token propios; mantener
+los dos flags en `false` es el modo seguro mientras falten esas credenciales.
+
+1. **Address Activity** → `https://server.parmelia.workers.dev/ingest/alchemy`.
+   Guarda su ID, network, signing key y el token de administración Notify en los
+   secrets `ALCHEMY_WEBHOOK_*`/`ALCHEMY_NOTIFY_AUTH_TOKEN`, o usa
+   `ALCHEMY_ADDRESS_WEBHOOKS_JSON` para varios slots. Luego cambia
+   `ALCHEMY_WEBHOOK_ENABLED` a `true`. Parmelia sincroniza las wallets nuevas en
+   ese webhook y vuelve a leer cada bloque con el pool `RPC_INDEXER_URLS`. El
+   primer inventario remoto se pagina y persiste; después sólo se envían diffs
+   de hasta 500 direcciones contra un espejo D1. Las señales de actividad
+   solicitan además un balance canónico de la wallet para cubrir ETH nativo.
+2. **Custom Webhook (GraphQL)** →
+   `https://server.parmelia.workers.dev/ingest/alchemy/custom`. Filtra
+   exclusivamente las direcciones y topics de `InvoicePaid` del
+   `ParmeliaPaymentRouter` y de los eventos de recovery de
+   `AccountWebAuthnV2`; no uses un stream de todos los logs. Guarda ID y signing
+   key, y cambia `ALCHEMY_CUSTOM_WEBHOOK_ENABLED` a `true`.
+
+El Custom Webhook es una señal de despertar, no la fuente de verdad: los
+watchers vuelven a leer por el pool RPC antes de mutar D1. Los topics conocidos
+se enrutan sólo al stream/shard afectado; un esquema desconocido usa fallback
+conservador. En testnet
+puede quedar apagado; sólo mientras exista un invoice activo habrá un fallback
+acotado cada dos minutos. En mainnet la validación exige el Custom Webhook.
+
 Consola Firebase (para login por correo/Apple, push y analytics): habilitar
 Email link (y Apple si aplica), activar account-linking "same email", generar la
 VAPID y el service account, y habilitar GA4. Detalle paso a paso en `INTEGRACIONES.md`.
 
-## 7. Desplegar el Worker manualmente (registra también el cron)
+## 7. Desplegar el Worker manualmente (registra DO y consumers)
 
 Todo el flujo se ejecuta desde la máquina del operador. No despliegues si falla
 alguno de estos pasos:
@@ -328,12 +367,25 @@ pnpm d1:backup
 pnpm --filter server exec wrangler d1 migrations list PARMELIA_DB --remote
 pnpm --filter server exec wrangler d1 migrations apply PARMELIA_DB --remote
 
-# 4. Desplegar la fuente local verificada.
+# 4. Sólo en la primera instalación: comprobar y crear las Queues declaradas.
+pnpm --filter server exec wrangler queues list
+# Si no existen:
+# pnpm --filter server exec wrangler queues create parmelia-scheduled-jobs
+# pnpm --filter server exec wrangler queues create parmelia-scheduled-jobs-dlq
+
+# 5. Regenerar bindings y validar el bundle/config sin publicar.
+pnpm --filter server cf-typegen:check
+pnpm --filter server exec wrangler deploy --dry-run --minify
+
+# 6. Desplegar la fuente local verificada. Wrangler registra también la
+# migración v2 de RpcAdmissionController declarada en wrangler.jsonc.
+# Wrangler ejecuta `forge build` automáticamente para regenerar los ABIs que
+# consume `shared/index.ts`, incluso si `contracts/out` fue limpiado.
 $releaseSha = git rev-parse HEAD
 pnpm --filter server exec wrangler deploy --minify --keep-vars --strict `
   --message "manual $releaseSha"
 
-# 5. Exigir readiness saludable.
+# 7. Exigir readiness saludable.
 $health = Invoke-RestMethod -Uri "https://server.parmelia.workers.dev/health"
 if ($health.status -ne "ok" -or $health.issues.Count -ne 0) {
   throw "El Worker desplegado no está saludable"
@@ -386,20 +438,23 @@ Ese comando actualiza `app.parmelia.me`; no debe crear ni enlazar otro proyecto.
 ## 9. Smoke test (en orden)
 
 ```bash
-pnpm --filter server test:unit           # 129 tests Node
-pnpm --filter server test:worker-runtime # 10 tests workerd + D1 real
+pnpm --filter server test:unit           # 165 tests Node
+pnpm --filter server test:worker-runtime # 17 tests workerd + D1 real
 cd contracts && forge test       # 124 tests unitarios
-cd server && npx wrangler tail   # dejar abierto para ver logs
+pnpm --filter server exec wrangler tail server # dejar abierto para ver logs
 ```
 
 En la app:
 1. Login → Onboarding → crear cuenta (passkey). ✓ wallet creada + **5 USDC de bienvenida** (si falla, al relayer le falta USDC/ETH).
 2. Crear link de cobro → pagarlo desde una segunda cuenta. ✓ ambos lados aparecen en Actividad/Extractos (ledger).
 3. `/swap`: cotizar USDC/ETH. Nota: en Sepolia puede no haber liquidez v3/v4 ("sin ruta disponible" es esperado); el flujo completo se valida en One.
-4. En `wrangler tail`, esperar un log `indexer_run` (cron cada 2 min).
-   Debe incluir `finalitySource` (`safe` o `confirmations`) y un
+4. En `wrangler tail`, después de crear la wallet esperar
+   `event_jobs_dispatched`, seguido por `indexer_run` y `event_job_completed`.
+   `indexer_run` debe incluir `finalitySource` (`safe` o `confirmations`) y un
    `unconfirmedBlocks` acotado; un crecimiento sostenido indica RPC degradado.
-5. Enviar USDC a la wallet desde una EOA externa → en ≤2 min aparece "Depósito recibido".
+5. Enviar USDC a la wallet desde una EOA externa. Con Address Activity aparece
+   al llegar el webhook; sin él, abrir Home stale despierta el backfill y lo
+   recupera. Esperar dos minutos sin actividad ya no es una prueba válida.
 6. Contactos: copiar tu código, abrir `localhost:5173/?ref=CODIGO` en incógnito, crear cuenta → el contador sube.
 
 ## 10. Delta para Arbitrum One (cuando toque)

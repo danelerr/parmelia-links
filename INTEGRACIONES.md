@@ -84,7 +84,7 @@ cd server && npx wrangler secret put FCM_SERVICE_ACCOUNT
 ### Qué implemento yo después
 - **D1:** tabla `push_tokens` (migración 0004, una fila por dispositivo; `ON CONFLICT` mueve el token si el navegador inicia con otra cuenta). Multi-dispositivo real.
 - **Cliente:** prompt de opt-in ("Activar avisos de pagos" - el permiso del navegador exige gesto del usuario), `getToken()` con la VAPID key sobre nuestro service worker existente, y registro del token en el server. Handler de `push` en `sw.js` que muestra la notificación y abre la app al tocarla.
-- **Server:** `services/push.ts` - token OAuth2 firmado con el service account (con `jose`, ya en uso) → `POST fcm.googleapis.com/v1/.../messages:send`. `notifyUser` hace fan-out a todos los dispositivos del usuario y poda solo los tokens muertos (404). **Gatillos:** `/pay/submit` (pago/cobro interno), cron indexer (depósito externo) y `runRecoveryWatcher` (aviso de seguridad ante `RecoveryProposed`). Fallos de push = silenciosos, jamás bloquean un pago.
+- **Server:** `services/push.ts` - token OAuth2 firmado con el service account (con `jose`, ya en uso) → `POST fcm.googleapis.com/v1/.../messages:send`. `notifyUser` hace fan-out a todos los dispositivos del usuario y poda solo los tokens muertos (404). **Gatillos:** confirmación del pago/cobro interno, Address Activity o backfill bajo demanda (depósito externo) y el watcher dirigido por Custom Webhook ante `RecoveryProposed`. Fallos de push = silenciosos, jamás bloquean un pago.
 - Nota iOS: en iPhone el push web **solo funciona con la PWA instalada** (limitación de Apple, iOS 16.4+). Android/desktop: funciona en el navegador normal.
 
 ---

@@ -1,157 +1,188 @@
-# Runbook RPC e indexación
+# RPC e indexación: operación y escala
 
-## Decisión operativa
+## Decisión vigente
 
-Parmelia siempre necesita RPC para hablar con Arbitrum, pero ninguna vista de
-Home consulta RPC. La cadena se lee en procesos compartidos y los usuarios leen
-proyecciones D1.
+Parmelia necesita RPC para leer y escribir en Arbitrum, pero las vistas de la
+aplicación no reconstruyen estado desde la cadena. Home, historial y dashboard
+leen proyecciones D1. La cadena se procesa una vez mediante trabajos
+compartidos, particionados e idempotentes.
 
 ```text
-Alchemy Free ── lecturas puntuales / broadcast / webhook push
-                         │
-                         ▼
-                    Worker + D1
-                         ▲
-                         │
-RPC público Arbitrum ── journal, reconciliación y rangos eth_getLogs
+señal HTTP firmada ─┐
+acción del dominio ─┼─> scheduler por partición ─> Queue ─> RPC canónico
+fallback por Home ──┘                                  │
+                                                       v
+                                      journal/checkpoint + proyecciones D1
 ```
 
-No colocar Alchemy Free y el RPC público dentro de la misma lista del rol
-`INDEXER`. Viem reintenta la misma petición contra el siguiente endpoint; no
-reduce automáticamente un rango de 2.000 a 10 bloques.
+Una señal de proveedor sólo dice “hay algo que verificar”. Nunca crea por sí
+misma una transacción, saldo o asiento contable. El RPC y la evidencia de bloque
+son la fuente canónica.
 
-## Qué significan 10 y 2.000
+## Proveedores heterogéneos
+
+`RPC_INDEXER_URLS` admite varios endpoints. Sus límites se describen, por
+posición, en `RPC_PROVIDER_CAPABILITIES`; el código no reconoce planes por
+hostname ni contiene reglas especiales para un proveedor.
+
+Ejemplo:
+
+```dotenv
+RPC_INDEXER_URLS=https://managed.example/<SECRET>,https://public.example/rpc
+RPC_PROVIDER_CAPABILITIES={"indexer":[{"id":"managed","priority":0,"maxConcurrency":4,"maxLogRange":10},{"id":"public","priority":1,"maxConcurrency":2,"maxLogRange":2000}]}
+```
+
+Para un span de 2.000 bloques se elige únicamente un endpoint que declare
+capacidad suficiente. Para un span de 10 bloques se intenta por prioridad. Si
+un endpoint falla de forma transitoria, se prueba otro elegible; si sólo queda
+uno con rango menor, el scanner divide la ventana y continúa desde el mismo
+checkpoint.
+
+`RPC_INDEXER_MAX_BLOCK_RANGE` queda como compatibilidad cuando no existe el
+documento de capacidades. No debe usarse para expresar dos planes distintos.
 
 El rango es inclusivo:
 
 ```text
-fromBlock=100, toBlock=109   → 10 bloques
-fromBlock=100, toBlock=2099  → 2.000 bloques
+fromBlock=100, toBlock=109   -> 10 bloques
+fromBlock=100, toBlock=2099  -> 2.000 bloques
 ```
 
-No significa “leer 2.000 transacciones” ni “hacer 2.000 requests”. Es una sola
-consulta `eth_getLogs` que pide los logs allowlisted dentro de esa ventana.
-Parmelia usa un techo, no un tamaño rígido:
+Es una consulta `eth_getLogs`, no 2.000 requests ni 2.000 transacciones.
 
-1. Intenta hasta `RPC_INDEXER_MAX_BLOCK_RANGE`.
-2. Si el proveedor rechaza el volumen/rango, divide el span.
-3. Si la respuesta es pequeña y estable, vuelve a crecer gradualmente.
-4. Persiste eventos y el checkpoint antes de avanzar.
-5. Si el job muere, retoma desde el último checkpoint guardado.
+## Control de carga
 
-Configuración para Alchemy Free + Arbitrum Sepolia:
+Cada endpoint declara `maxConcurrency`. Parmelia aplica dos límites:
 
-```dotenv
-RPC_READ_URLS=https://arb-sepolia.g.alchemy.com/v2/<KEY_ROTADA>
-RPC_WRITE_URLS=https://arb-sepolia.g.alchemy.com/v2/<KEY_ROTADA>
-RPC_INDEXER_URLS=https://sepolia-rollup.arbitrum.io/rpc
-RPC_ARCHIVE_URLS=https://sepolia-rollup.arbitrum.io/rpc
-RPC_INDEXER_MIN_BLOCK_RANGE=10
-RPC_INDEXER_MAX_BLOCK_RANGE=2000
-```
+1. un semáforo local evita competencia innecesaria dentro de una instancia;
+2. `RpcAdmissionController`, un Durable Object por endpoint y lane, impone el
+   límite entre todas las instancias del Worker.
 
-Antes de promover un endpoint o cambiar el máximo, ejecutar una sonda real que
-no imprime URLs ni API keys:
+Los permisos son leases con vencimiento. Si un Worker muere, la capacidad se
+recupera sola. Las lanes separan broadcast crítico, ingestión canónica,
+reconciliación activa y backfill. Un `429` abre inmediatamente el circuit
+breaker de ese endpoint; timeouts/fallos de red requieren fallos consecutivos.
+
+Subir de plan no requiere modificar el indexador: se actualizan rango,
+concurrencia y prioridad, se ejecuta la sonda y se despliega la configuración.
+
+## Particiones y reposo
+
+- El registro incremental asigna sólo wallets nuevas o modificadas a shards
+  estables; ningún job carga la tabla completa de usuarios.
+- Transferencias se separan por token, dirección (`from`/`to`) y shard.
+- UserOperations y recovery tienen checkpoint por shard.
+- Router tiene un stream global porque es un único contrato.
+- Cada job tiene presupuesto de llamadas y bloques; si no alcanza el objetivo,
+  publica una continuación sobre la misma partición.
+- Una wallet nueva activa exclusivamente sus particiones.
+- Agenda vacía significa cero alarmas, mensajes Queue y lecturas RPC de
+  mantenimiento. Puede existir trabajo sin usuarios conectados sólo si hubo un
+  evento real pendiente: una transacción, webhook, retry o estado de dominio.
+
+`INDEXER_WALLET_SHARD_SIZE` está acotado a 500. Cada webhook Address Activity
+posee 200 shards, por lo que nunca supera 100.000 direcciones. Para más wallets
+se añade otra entrada a `ALCHEMY_ADDRESS_WEBHOOKS_JSON`; el algoritmo no cambia.
+La primera sincronización pagina como máximo cinco páginas remotas por job y
+persiste el cursor en D1. Después compara asignaciones contra un espejo local
+indexado y aplica como máximo 500 altas/bajas por PATCH; no vuelve a enumerar
+las 100.000 direcciones en cada cambio.
+
+## Webhooks y WebSocket
+
+Address Activity y el Custom Webhook son aceleradores HTTP firmados. El primero
+se convierte en señales exactas de token/dirección/shard y en una solicitud
+deduplicada de balance para la wallet afectada. Esa lectura puntual cubre ETH
+nativo, que no emite `Transfer`; la proyección ERC-20 continúa viniendo del
+journal canónico. El segundo inspecciona topics conocidos y despierta sólo
+router o los shards de recovery implicados; si el esquema del proveedor cambia,
+usa un fallback conservador sin aceptar el payload como verdad financiera.
+
+No se mantiene un WebSocket RPC saliente dentro del Worker:
+
+- una conexión saliente no usa la hibernación de WebSockets servidor de Durable
+  Objects y mantiene cómputo activo;
+- `newHeads` sólo reemplazaría la señal de despertar: todavía habría que ejecutar
+  `eth_getLogs` y reconciliar checkpoints;
+- una suscripción amplia a `Transfer` ingiere tráfico ajeno a Parmelia, mientras
+  que una suscripción por shard multiplica conexiones y filtros;
+- deja de cumplirse el reposo real cuando no hay trabajo.
+
+Si un proveedor futuro ofrece un stream que mejora costo o latencia, debe vivir
+en un colector de larga duración apropiado para conexiones salientes y publicar
+la misma señal particionada. Journal, checkpoints, Queue, RPC canónico, D1 y la
+API no cambian.
+
+## Sonda previa a promoción
+
+La sonda no imprime URLs ni API keys y prueba cada endpoint con su propio
+`maxLogRange` declarado:
 
 ```powershell
 $env:CHAIN_KEY = "arbitrum-sepolia"
-$env:RPC_INDEXER_URLS = "https://sepolia-rollup.arbitrum.io/rpc"
-$env:RPC_INDEXER_MAX_BLOCK_RANGE = "2000"
+$env:RPC_INDEXER_URLS = "<ENDPOINT_1>,<ENDPOINT_2>"
+$env:RPC_PROVIDER_CAPABILITIES = '{"indexer":[...]}'
 pnpm check:rpc-indexer
 ```
 
-La sonda exige que **cada** endpoint configurado acepte el rango inclusivo
-completo. Para probar Alchemy Free de forma aislada, usar máximo `10`; no
-colocarlo junto al endpoint público en la misma lista.
-
-Una URL con API key es secret. No se agrega a Git, `wrangler.jsonc`, logs,
-capturas ni tickets.
+No ejecutar una sonda de producción desde un shell que guarde secrets en
+historial. Una URL con API key se carga con `wrangler secret put`; si apareció
+en una captura, chat o log, se rota.
 
 ## Alchemy Address Activity
 
-Alchemy se usa como acelerador de eventos, no como garantía única:
+Credenciales distintas:
 
-1. Address Activity envía una entrega firmada a `/ingest/alchemy`.
-2. El Worker verifica HMAC sobre el body exacto, `webhookId`, red y allowlist.
-3. Un RPC `INDEXER` no-Alchemy verifica de forma independiente bloque y hash.
-4. El evento entra al journal canónico y a sus proyecciones idempotentes.
-5. El poller repara cualquier entrega perdida desde el checkpoint.
+- URL/API key Node: dentro de los secrets `RPC_*_URLS`;
+- signing key: valida `X-Alchemy-Signature`;
+- Notify auth token: sincroniza el conjunto de wallets;
+- `ALCHEMY_ADDRESS_WEBHOOKS_JSON`: IDs, network y signing keys de cada slot.
 
-Credenciales diferentes:
+La recepción es:
 
-- API key del Node RPC: vive dentro de `RPC_READ_URLS`/`RPC_WRITE_URLS`.
-- Webhook signing key: valida `X-Alchemy-Signature`.
-- Notify auth token: administra las direcciones del webhook con
-  `X-Alchemy-Token`.
+1. body acotado por el Worker;
+2. HMAC sobre los bytes exactos;
+3. validación de webhook ID, red y schema;
+4. dedupe de delivery;
+5. normalización a particiones y bloque objetivo;
+6. reconciliación de balances de las wallets registradas, no de contrapartes
+   ajenas, una vez que el head canónico alcanza el bloque señalado;
+7. lectura canónica por el pool RPC;
+8. journal/proyección idempotente y avance del checkpoint.
 
-Nunca reutilizar conceptualmente una como si fuera otra.
+## Despliegue
 
-## Promoción segura
+1. Rotar cualquier credencial expuesta.
+2. Aplicar migraciones D1, incluida `0026_indexer_work_partitions.sql`.
+3. Cargar URLs/capacidades y credenciales mediante secrets.
+4. Ejecutar `pnpm check:rpc-indexer`.
+5. Ejecutar `pnpm --filter server cf-typegen:check`, tests y dry-run de Wrangler.
+6. Desplegar el Worker.
+7. Habilitar webhooks sólo después de validar `/health` y sincronización.
+8. Probar depósito, duplicado de webhook y recuperación desde checkpoint.
 
-1. Rotar primero cualquier API key expuesta.
-2. Crear/configurar el webhook y obtener su signing key y Notify token.
-3. Cargar secrets con `wrangler secret put`.
-4. Aplicar todas las migraciones remotas antes del Worker compatible.
-5. Desplegar canary/preview desde un artefacto CI aprobado.
-6. Consultar `/health`; no debe exponer URLs ni keys.
-7. Ejecutar un depósito pequeño y confirmar journal, ledger y Home.
-8. Mantener `ALCHEMY_WEBHOOK_ENABLED=false` hasta verificar el endpoint y las
-   direcciones sincronizadas.
-9. Habilitarlo y comprobar doble entrega webhook + poller sin duplicados.
+## Observabilidad y respuesta
 
-## Logs esperados
+Logs esperados, sin URLs:
 
-Buscar eventos estructurados, no strings con URLs:
+- `rpc_request_completed` / `rpc_request_failed`;
+- `rpc_request_rejected_distributed_admission`;
+- `rpc_request_rejected_circuit_open`;
+- `indexer_run` y watchers por `partition`;
+- `alchemy_webhook_signal_processed`;
+- `alchemy_webhook_addresses_synced`.
 
-- `rpc_request_completed`: `provider`, `role`, `lane`, `method`, `durationMs`.
-- `rpc_request_failed`: error normalizado y rol, sin endpoint secreto.
-- `indexer_run`: calls, retries, rango usado, logs y lag.
-- `user_operation_watch_run`: UserOperations proyectadas y checkpoint.
-- `alchemy_webhook_processed`: eventos normalizados.
-- `rpc_request_rejected_circuit_open`: endpoint temporalmente enfriado.
-
-`GET /health` añade un resumen sin PII de colas y checkpoints. Los warnings
-`payment_reconcile_dead`, `user_event_outbox_dead`, `balance_refresh_failed`,
-`canonical_stream_missing:*` y `canonical_stream_stale:*` requieren revisar el
-job correspondiente; no se “resuelven” borrando filas sin reconstruir primero
-la evidencia on-chain.
-
-En Request Logs de Alchemy, la configuración correcta muestra lecturas
-puntuales (`eth_call`, receipts, gas, broadcast) y no ventanas históricas del
-indexador. Si aparece un `eth_getLogs`, su span nunca puede superar 10 mientras
-Alchemy Free sea parte de ese rol.
-
-Cloudflare no permite recuperar el valor de un secret ya cargado. Para saber qué
-endpoint está activo sin revelarlo:
-
-- `/health` expone sólo aliases (`alchemy`, `arbitrum-public-sepolia`, etc.).
-- Los logs RPC incluyen alias y rol.
-- `wrangler secret list` confirma nombres, no valores.
-- Si se necesita conocer la URL exacta, se rota y vuelve a cargar desde el
-  gestor de secretos; no se imprime el valor existente.
-
-## Respuesta ante fallos
-
-| Falla | Comportamiento |
+| Falla | Respuesta |
 |---|---|
-| Alchemy read cae | Circuit breaker y fallback de lecturas puntuales si existe |
-| RPC público indexer devuelve 429 | Se enfría el endpoint; el checkpoint no avanza y el cron repara |
-| Webhook Alchemy cae | El poller recupera los bloques faltantes |
-| Webhook duplica entrega | Delivery id + identidad canónica del log deduplican |
-| Ambos roles críticos caen | `/health` degrada/falla cerrado; Home conserva último snapshot, nunca muestra cero inventado |
-| Reorg | Se marca la rama no canónica, se revierten proyecciones y se reingiere |
+| endpoint gestionado cae | fallback elegible y circuit breaker |
+| endpoint de rango amplio cae | scanner reduce el span hasta otro proveedor elegible |
+| webhook cae | siguiente señal/Home o reparación dirigida retoma el checkpoint |
+| webhook se duplica | delivery ID y evento canónico deduplican |
+| Queue reintenta | lease D1 e idempotencia hacen inerte la duplicación |
+| Worker muere durante RPC | lease de admisión expira; checkpoint no confirmado no avanza |
+| reorg | se invalida la rama, se revierten proyecciones y se reproduce el journal |
 
-## Señal para cambiar de plan/proveedor
-
-Evaluar un endpoint dedicado de indexación/archive si se sostiene cualquiera de
-estas condiciones:
-
-- `429` > 1 %;
-- lag del journal > 5 minutos;
-- uso > 60 % de la cuota;
-- backfill amenaza la lane de pagos;
-- el endpoint público incumple el SLO o no ofrece soporte operativo.
-
-La migración consiste en cambiar sólo `RPC_INDEXER_URLS`/`RPC_ARCHIVE_URLS` por
-un proveedor cuyo plan documente el rango configurado. No se cambia Home ni la
-semántica del journal.
+Cambiar proveedor o plan es configuración. Cambiar de HTTP push a stream es
+cambiar solamente el adaptador de señales. Cambiar de D1 a una persistencia
+particionada, cuando las métricas lo exijan, conserva las identidades de
+partición, el journal y la semántica de los jobs.

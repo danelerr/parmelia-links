@@ -89,7 +89,8 @@ y eventos `RecoveryProposed` que se pueden vigilar.
 
 Recomendaciones:
 - ✅ **Implementado:** notificación push ante `RecoveryProposed` vía
-  `runRecoveryWatcher` (`server/src/services/indexer.ts`, en el cron). Es la defensa
+  `runRecoveryWatcher` (`server/src/services/indexer.ts`, despertado por un
+  Custom Webhook y verificado por RPC). Es la defensa
   práctica clave: el usuario se entera y puede cancelar dentro de la ventana de 48h.
 - Usar una clave de guardian **dedicada y en frío** (HSM/cold), distinta de las
   claves calientes que firman paymaster y router (que están en línea constantemente).

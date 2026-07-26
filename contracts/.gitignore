@@ -1,4 +1,6 @@
-# Compiler and build output
+# Compiler and build output. `contracts/out` is intentionally untracked, but
+# shared/index.ts consumes selected ABIs from it. Wrangler and the verification
+# scripts regenerate it with `forge build` before bundling or testing.
 cache/
 out/
 lcov.info
@@ -25,4 +27,4 @@ docs/
 .DS_Store
 *.DS_Store
 .vscode/
-.idea/
+.idea/

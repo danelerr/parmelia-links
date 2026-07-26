@@ -93,7 +93,7 @@ export default function Home({ user }: { user: User }) {
 	];
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
+		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+3rem)] w-full max-w-115 mx-auto animate-fade-up">
 			{/* Top bar */}
 			<header className="flex items-center justify-between mb-7">
 				<div className="flex items-center gap-2.5">
@@ -129,7 +129,7 @@ export default function Home({ user }: { user: User }) {
 							)}
 						</span>
 						{/* Affordance badge: the photo is a button, not decoration. */}
-						<span className="absolute -bottom-0.5 -right-0.5 w-[18px] h-[18px] rounded-full bg-surface-2 border border-border flex items-center justify-center text-text-muted">
+						<span className="absolute -bottom-0.5 -right-0.5 w-4.5 h-4.5 rounded-full bg-surface-2 border border-border flex items-center justify-center text-text-muted">
 							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
 								<path d="m6 9 6 6 6-6" />
 							</svg>
@@ -139,7 +139,7 @@ export default function Home({ user }: { user: User }) {
 			</header>
 
 			{/* Balance card */}
-			<div className="relative overflow-hidden bg-surface border border-border rounded-[22px] p-6 mb-4 shadow-e2">
+			<div className="relative overflow-hidden bg-surface border border-border rounded-lg p-6 mb-4 shadow-e2">
 				<div
 					className="pointer-events-none absolute -top-16 -right-10 w-48 h-48 rounded-full opacity-[0.18] blur-2xl"
 					style={{ background: "radial-gradient(circle, #9ce3f4, transparent 70%)" }}
@@ -177,7 +177,7 @@ export default function Home({ user }: { user: User }) {
 						{selectedCurrency === "USDC" ? t("home.digitalDollars") : t("home.balance")}
 					</p>
 					{balanceLoading ? (
-						<Skeleton className="h-[46px] w-44 rounded-[14px] my-0.5" />
+						<Skeleton className="h-11.5 w-44 rounded-[14px] my-0.5" />
 					) : balances[selectedCurrency] === undefined ? (
 						<p
 							className="font-display text-[46px] leading-none text-text-faint"
@@ -219,7 +219,7 @@ export default function Home({ user }: { user: User }) {
 							{isValidating ? " · …" : ""}
 						</span>
 					)}
-					<span className="text-[10px] uppercase tracking-[0.1em] text-text-faint">
+					<span className="text-[10px] uppercase tracking-widest text-text-faint">
 						{t("home.yourAddress")}
 					</span>
 					<button
@@ -308,7 +308,7 @@ export default function Home({ user }: { user: User }) {
 				<div className="flex flex-col items-center text-center py-14 px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
 					<p className="text-[15px] text-text mb-1">{t("home.noActivity")}</p>
-					<p className="text-[13px] text-text-muted mb-6 max-w-[240px] leading-relaxed">
+					<p className="text-[13px] text-text-muted mb-6 max-w-60 leading-relaxed">
 						{t("home.noActivityBody")}
 					</p>
 					<LinkButton to="/charge" className="btn btn-primary btn-sm">
@@ -332,9 +332,8 @@ export default function Home({ user }: { user: User }) {
 									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
 								>
 									<span
-										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-											received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
-										}`}
+										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
+											}`}
 									>
 										{received ? <IconReceive small /> : <IconSend small />}
 									</span>
@@ -343,9 +342,8 @@ export default function Home({ user }: { user: User }) {
 										<p className="text-[12px] text-text-faint">{formatShortDate(tx.createdAt)}</p>
 									</div>
 									<span
-										className={`text-[15px] font-medium tabular shrink-0 ${
-											hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
-										}`}
+										className={`text-[15px] font-medium tabular shrink-0 ${hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
+											}`}
 									>
 										{!hideBalance && (received ? "+" : "−")}
 										{hideBalance ? "••••" : `${formatAmount(tx.amount, tx.currency)} ${tx.currency}`}

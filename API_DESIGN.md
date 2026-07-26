@@ -56,7 +56,7 @@ No se parte de cero — buena parte del modelo ya está en el sistema actual:
 |---|---|
 | Payment Intent | Germen en `payment_links` (id, amount, currency, status, tx_hash, paid_at, paid_by). Se **generaliza**, no se inventa. |
 | Checkout alojado | Páginas `/pay?id=` y `/:username`. |
-| Confirmación on-chain | Cron indexer (ingiere USDC entrante al ledger) + `/pay/submit` (pago Parmelia-nativo atado al intent). |
+| Confirmación on-chain | Ingestión push/backfill bajo demanda + `/pay/submit` (pago Parmelia-nativo atado al intent). |
 | Dirección determinística por intent | `AccountFactoryV2.predictAddress` (CREATE2) ya permite derivar direcciones counterfactual. |
 | Ledger / conciliación interna | Tabla `ledger` (in/out, kind, tx_hash, token, amount, contraparte). |
 | Whitelist de activos | USDC / ETH / WBTC en `shared/networks.ts`. |
@@ -323,11 +323,10 @@ de FX/settlement.
 - **Idempotencia:** el receptor descarta `event.id` ya procesado.
 - **Reintentos** con backoff exponencial; **logs de entrega** + botón "reenviar".
 
-**Infra de entrega (decisión consciente, encaja con el stack):** webhooks
-confiables quieren cola con reintentos. Cloudflare Queues es de pago; el patrón
-**outbox (`webhook_deliveries`) + cron** (ya se usa cron para el indexer) entrega
-y reintenta gratis. Si más adelante se justifica Queues, se migra sin cambiar el
-contrato externo.
+**Infra de entrega (decisión consciente, encaja con el stack):** el outbox D1
+(`webhook_deliveries`) es la fuente durable y `SCHEDULED_JOBS_QUEUE` transporta
+trabajo. Una transición que crea una entrega despierta el scheduler; el job se
+reprograma sólo hasta entregar o agotar intentos. No existe polling vacío.
 
 ## 12. Idempotencia de requests
 
@@ -360,14 +359,14 @@ casuales pueden vivir fuera de intents; los cobros, nunca.
    (`ParmeliaPaymentRouter` + firma `services/paymentRouter.ts` + `GET .../onchain`
    + `runRouterWatcher` que escucha `InvoicePaid`). Pendiente: **desplegar** el
    router on-chain + `confirmation_policy` por tramo de monto.
-5. [x] Webhooks (outbox `webhook_deliveries` + cron + firma HMAC + reintentos con backoff + idempotencia) + event log. — `services/webhooks.ts`, migración `0002_api.sql`.
+5. [x] Webhooks (outbox `webhook_deliveries` + Queue dirigida por eventos + firma HMAC + reintentos con backoff + idempotencia) + event log. — `services/webhooks.ts`, migración `0002_api.sql`.
 6. [x] Sandbox con "simular pago": `POST /v1/payment_intents/:id/simulate_payment` (solo claves `test`) marca `paid` y dispara el webhook sin on-chain.
 7. [ ] Dashboard de integración (los endpoints `/merchant/keys` y `/merchant/webhooks` existen; falta la UI).
 
 **Implementado en este pase:** `POST /v1/payment_intents` (+ `GET`, `cancel`),
 `GET /v1/events`, gestión `/merchant/keys` y `/merchant/webhooks` (Firebase auth),
 eventos `payment.created` y `payment.paid`, entrega de webhooks firmados por
-outbox+cron. Migración `0002_api.sql` (merchants, api_keys, payment_intents,
+outbox+Queue. Migración `0002_api.sql` (merchants, api_keys, payment_intents,
 webhook_endpoints, events, webhook_deliveries).
 
 **Siguiente:**
@@ -387,7 +386,8 @@ webhook_endpoints, events, webhook_deliveries).
 - No "Connect"/multi-tenant marketplace todavía.
 - No máquina de 12 estados; la de §6 basta.
 - No metadata consultable arbitrariamente.
-- No infra propia de colas si outbox+cron alcanza.
+- D1 conserva el estado durable; Queue transporta y el Durable Object compacta
+  alarmas, sin convertir la cola en fuente de verdad.
 - No tokens arbitrarios — mantener whitelist (USDC primero).
 - No prometer finalidad instantánea: elegir y documentar `confirmation_policy`.
 - No SDKs en 5 lenguajes el día 1 — REST limpio + buenos docs + **un** SDK JS.
@@ -401,7 +401,7 @@ webhook_endpoints, events, webhook_deliveries).
   barre sin introducir un punto único de robo (relacionado con la separación de
   claves de `DEPLOY.md §11`).
 - **Auth máquina-a-máquina** — subsistema nuevo (keys, hashing, scopes, rotación).
-- **Entrega de webhooks** — outbox+cron ahora; evaluar Queues con volumen.
+- **Entrega de webhooks** — outbox D1 + Queue/alarma sólo mientras haya trabajo.
 
 ## 18. Modelo de negocio (cómo se monetiza)
 

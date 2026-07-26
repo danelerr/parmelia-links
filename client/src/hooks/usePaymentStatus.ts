@@ -1,7 +1,7 @@
 // Polls GET /pay/status/:userOpHash after a submit came back "in flight"
-// (202 accepted broadcast, or 409 duplicate). The server reconciler
-// cron runs every 2 minutes, so we poll for ~3 minutes and then hand off to
-// the push notification - the payment settles server-side either way.
+// (202 accepted broadcast, or 409 duplicate). Submission wakes the durable
+// server reconciler immediately; the client polls for ~3 minutes and then hands
+// off to push notification - settlement continues server-side either way.
 
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";

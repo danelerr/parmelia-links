@@ -41,18 +41,52 @@ function endpointAlias(raw, slot) {
 	return `indexer-endpoint-${slot + 1}`;
 }
 
-function isAlchemyEndpoint(raw) {
-	try {
-		const hostname = new URL(raw).hostname.toLowerCase();
-		return (
-			hostname === "alchemy.com" ||
-			hostname.endsWith(".alchemy.com") ||
-			hostname === "alchemyapi.io" ||
-			hostname.endsWith(".alchemyapi.io")
-		);
-	} catch {
-		return false;
-	}
+function providerCapabilities(endpointCount, fallbackSpan) {
+  const raw = process.env.RPC_PROVIDER_CAPABILITIES;
+  if (!raw?.trim()) {
+    return Array.from({ length: endpointCount }, (_, slot) => ({
+      id: null,
+      maxLogRange: fallbackSpan,
+      slot,
+    }));
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("RPC_PROVIDER_CAPABILITIES must be valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("RPC_PROVIDER_CAPABILITIES must be a JSON object");
+  }
+  if (!Array.isArray(parsed.indexer) || parsed.indexer.length !== endpointCount) {
+    throw new Error(
+      "RPC_PROVIDER_CAPABILITIES.indexer must match RPC_INDEXER_URLS",
+    );
+  }
+  const ids = new Set();
+  return parsed.indexer.map((entry, slot) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`Indexer capability ${slot + 1} must be an object`);
+    }
+    if (
+      typeof entry.id !== "string" ||
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(entry.id) ||
+      ids.has(entry.id)
+    ) {
+      throw new Error("Indexer provider ids must be unique and URL-safe");
+    }
+    ids.add(entry.id);
+    return {
+      id: entry.id,
+      maxLogRange: parsePositiveInteger(
+        entry.maxLogRange,
+        `${entry.id}.maxLogRange`,
+        10_000_000,
+      ),
+      slot,
+    };
+  });
 }
 
 async function rpc(endpoint, method, params) {
@@ -101,25 +135,23 @@ async function main() {
       `CHAIN_KEY must be one of: ${Object.keys(NETWORKS).join(", ")}`,
     );
   }
-  const span = parsePositiveInteger(
+  const fallbackSpan = parsePositiveInteger(
     process.env.RPC_INDEXER_MAX_BLOCK_RANGE ?? "2000",
     "RPC_INDEXER_MAX_BLOCK_RANGE",
-    2_000,
+    10_000_000,
   );
   const endpoints = (process.env.RPC_INDEXER_URLS ?? network.rpc)
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
   if (endpoints.length === 0) throw new Error("RPC_INDEXER_URLS is empty");
-  if (span > 10 && endpoints.some(isAlchemyEndpoint)) {
-    throw new Error(
-      "Alchemy Free cannot be probed above 10 blocks; use the independent Arbitrum indexer RPC",
-    );
-  }
+  const capabilities = providerCapabilities(endpoints.length, fallbackSpan);
 
   const results = [];
   for (const [slot, endpoint] of endpoints.entries()) {
-    const alias = endpointAlias(endpoint, slot);
+    const capability = capabilities[slot];
+    const alias = capability.id ?? endpointAlias(endpoint, slot);
+    const span = capability.maxLogRange;
     try {
       results.push(await probe(endpoint, alias, network, span));
     } catch (error) {
@@ -135,8 +167,7 @@ async function main() {
       {
         ok: true,
         chain: chainKey,
-        configuredSpan: span,
-        endpoints: results,
+        providers: results,
       },
       null,
       2,

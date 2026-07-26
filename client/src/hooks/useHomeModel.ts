@@ -13,14 +13,14 @@ import {
 } from "../lib/homeData";
 
 const INVALIDATION_EVENT = "parmelia:home-invalidate";
-const SAFETY_REFRESH_BASE_MS = 60_000;
+const SAFETY_REFRESH_BASE_MS = 5 * 60_000;
 
 function stableJitter(uid: string): number {
 	let hash = 0;
 	for (let index = 0; index < uid.length; index++) {
 		hash = (hash * 31 + uid.charCodeAt(index)) >>> 0;
 	}
-	return hash % 15_000;
+	return hash % 60_000;
 }
 
 export function invalidateHome(): void {

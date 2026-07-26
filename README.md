@@ -87,21 +87,25 @@ make stablecoin payments feel fast, affordable, and reliable.
 ## Tech stack
 
 React 19 · TypeScript · Vite · Tailwind v4 (client) · Hono on Cloudflare Workers
-+ D1 (backend) · viem · Solidity + Foundry + OpenZeppelin v5 (contracts) ·
++ D1 + Queues + Durable Objects (backend) · viem · Solidity + Foundry + OpenZeppelin v5 (contracts) ·
 Firebase Auth/Messaging · Arbitrum.
 
 ## Architecture
 
-Full write-up in [ARCHITECTURE.md](ARCHITECTURE.md). RPC roles, the Alchemy Free
-10-block limit and the 2.000-block adaptive indexer are covered in
+Full write-up in [ARCHITECTURE.md](ARCHITECTURE.md). Provider-neutral RPC
+capabilities, partitioned indexing and the WebSocket decision are covered in
 [docs/runbooks/rpc-operations.md](docs/runbooks/rpc-operations.md). In short:
 
 ```
-client (React PWA)  ──>  Cloudflare Worker (Hono + D1)  ──>  Arbitrum
-  passkeys/WebAuthn        builds & relays UserOps             ERC-4337
-  payment links/QR         paymaster sponsors gas              smart accounts
-  swaps, receipts          ledger + cron indexer               Uniswap
+client / Alchemy webhooks ──> Worker + D1 ──> event scheduler ──> Queue ──> Arbitrum
+  passkeys, Home stale         source of truth    alarm only       bounded    ERC-4337
+  payment/cross-chain state    idempotent rows    with work        jobs       contracts
 ```
+
+There is no static Cron Trigger. With no requests, pending state, or relevant
+webhooks, the scheduler has no alarm and the backend performs no background RPC
+reads. Equivalent events are coalesced per partition before they reach Queue;
+independent shards can scale horizontally.
 
 The zero-RPC Home invariant and bounded 1/100/1,000-identity load procedure are
 documented in
@@ -136,10 +140,10 @@ pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
   CrosschainRouter.
 - Arbitrum One deployment scripts reject missing/reused owner, treasury,
   broadcaster and signing roles before broadcast; testnet retains simple defaults.
-- Server: `pnpm --filter server test` — 129 Node tests plus 10 tests inside
+- Server: `pnpm --filter server test` — Node tests plus tests inside
   `workerd` with a real isolated D1 binding. Coverage includes OpenAPI drift,
   key rotation, production readiness, all eleven migrations, schema constraints,
-  authentication, body limits, Web Crypto and cron lease ownership, in addition to swap encoding,
+  authentication, body limits, Web Crypto, event coalescing and lease ownership, in addition to swap encoding,
   fee/slippage math, validation, UserOperation serialization, error contract,
   CCTP message validation, key policy, durable account operations and faucet/turnstile fail-closed).
 - Redocly validates the public API with the OpenAPI 3.1 `recommended-strict`
@@ -192,7 +196,7 @@ implementation plan in [CLAUDE_REVIEW_FABLE.md](CLAUDE_REVIEW_FABLE.md).
 
 ```
 client/      React PWA (deployed to Vercel → app.parmelia.me)
-server/      Cloudflare Worker API (Hono + D1 + cron indexer/relayer)
+server/      Cloudflare Worker API (Hono + D1 + event-driven indexer/relayer)
 dashboard/   Merchant dashboard (React; API keys, payments, webhooks, sandbox)
 contracts/   Foundry: AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
              ParmeliaPaymentRouter, ParmeliaCrosschainRouter, verifier
