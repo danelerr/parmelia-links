@@ -4,7 +4,10 @@ import { logError, logInfo, logWarn } from "./logger";
 
 export const EVENT_JOB_NAMES = [
 	"indexer_wallet_registry",
+	"reorg_replay",
+	"indexer_safety_sweep",
 	"indexer",
+	"balance_safety_refresh",
 	"user_operation_watcher",
 	"router_watcher",
 	"recovery_watcher",

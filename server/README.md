@@ -55,11 +55,14 @@ además su bootstrap de balance en una fila D1 y un job. El registro procesa só
 wallets nuevas/modificadas y los lectores trabajan por shards estables, no con
 un mensaje de Queue por wallet ni cargando todos los usuarios.
 
-**Invariante idle:** sin requests, sin estado pendiente y sin webhooks
-relevantes, no hay alarma, mensaje de Queue, invocación de background ni llamada
-RPC. El endpoint `/health` puede ejecutar una reparación única de agenda si
-encuentra trabajo preexistente; esa ejecución está causada por la propia
-solicitud de health.
+`indexer_safety_sweep` es el fallback de corrección: mientras haya al menos una
+wallet activa conserva una sola alarma global, consulta el head `safe` cada
+`INDEXER_SAFETY_SWEEP_SECONDS` y agenda exclusivamente checkpoints atrasados
+más una reconciliación de balances acotada por shard. No depende de Home ni de
+Alchemy. **Invariante idle:** con cero wallets activas y sin estado pendiente no
+hay alarma, Queue, invocación background ni RPC. `/health` puede reparar una
+agenda perdida si encuentra trabajo o shards activos; debe consultarse una vez
+después del primer deploy que incorpora el barrido para armar su alarma inicial.
 
 Mientras `ALCHEMY_CUSTOM_WEBHOOK_ENABLED=false`, sólo un invoice on-chain
 activo mantiene un fallback de `router_watcher` cada dos minutos; se detiene al
@@ -82,9 +85,9 @@ Toda la data de la app vive en D1 (binding `PARMELIA_DB`): usuarios/usernames, w
   payload sólo despierta los shards afectados; el pool RPC vuelve a leer la
   evidencia canónica antes de proyectarla. El mismo payload solicita una
   reconciliación Multicall acotada para cubrir también ETH nativo. Si el webhook
-  no llega, una lectura stale de Home despierta sólo las particiones y el balance
-  de esa wallet desde sus checkpoints. La snapshot stale se sirve honestamente:
-  nunca existe un refresh global de balances.
+  no llega, el barrido autónomo retoma los shards desde sus checkpoints aunque
+  nadie abra la app. Home sólo acelera datos faltantes. La snapshot stale se
+  sirve honestamente y nunca existe un refresh global sin particionar.
 
 No depende de Blockscout/Etherscan/BlockVision en cada request.
 
@@ -95,7 +98,7 @@ npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
-`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0026_indexer_work_partitions.sql` ANTES de desplegar el Worker que las usa.
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0027_indexer_consistency.sql` ANTES de desplegar el Worker que las usa.
 
 **Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente). El **watcher compartido** resuelve todos los `UserOperationEvent` mediante rangos acotados del indexador —no hace una búsqueda histórica por pago— y el reconciliador durable consulta esa proyección en D1. Sólo entonces liquida o marca `failed`, repara el hand-off CCTP y expira lo que ya no puede aterrizar. `GET /pay/status/:userOpHash` expone el estado para polling.
 

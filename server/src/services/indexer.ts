@@ -62,9 +62,12 @@ import { requestBalanceRefresh } from "./balanceReadModel";
 import { verifyAndRecoverStream } from "./reorg";
 import { listWalletsForIndexerShard } from "./indexerShards";
 import { getArbitrumBlockEvidence } from "./arbitrumFinality";
+import { getChainReorgEpoch } from "./chainEpoch";
 import {
 	recoveryAssignmentStream,
 	transferAssignmentStream,
+	transferJournalStream,
+	transferSyncCursorKey,
 	type TransferIndexerPartition,
 	userOperationAssignmentStream,
 } from "./indexerPartitions";
@@ -341,17 +344,22 @@ export async function runIndexer(
 		const providerPool = getIndexerProviderPool(env);
 		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
-		const partitionKey =
-			`${token.address.toLowerCase()}:${partition.direction}:shard:${partition.shardId}`;
-		const cursorKey = `transfers:${network.chainId}:${partitionKey}`;
-		const journalStream = `erc20_transfers:${network.chainId}:${partitionKey}`;
-		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
+		const cursorKey = transferSyncCursorKey(
+			network.chainId,
+			partition,
+		);
+		const journalStream = transferJournalStream(
+			network.chainId,
+			partition,
+		);
+		await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: journalStream,
 		});
-		if (reorgCheck.status === "recovered") {
-			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
-		}
+		const expectedReorgEpoch = await getChainReorgEpoch(
+			env,
+			network.chainId,
+		);
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
 			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
@@ -598,14 +606,17 @@ export async function runIndexer(
 				stream: journalStream,
 				block: journalBlock,
 				events: journalEvents,
+				expectedReorgEpoch,
 			});
 			const projection = await projectBalanceDeltas(env, {
 				block: journalBlock,
 				events: journalEvents,
+				expectedReorgEpoch,
 			});
 
 			if (entries.length > 0) {
 				await writeLedgerEntries(env, entries, {
+					expectedReorgEpoch,
 					userEvents: entries.map((entry) => ({
 						dedupeKey: `${chainEventId(
 							network.chainId,
@@ -680,8 +691,12 @@ export async function runIndexer(
 				l1Confirmations: scanEndEvidence.l1Confirmations,
 			},
 			events: [],
+			expectedReorgEpoch,
 		});
-		await setSyncCursor(env, cursorKey, committedScanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd, {
+			chainId: network.chainId,
+			expectedReorgEpoch,
+		});
 
 		logInfo("indexer_run", {
 			chainId: network.chainId,
@@ -746,13 +761,14 @@ export async function runRouterWatcher(
 		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `router:${network.chainId}`;
-		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
+		await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: cursorKey,
 		});
-		if (reorgCheck.status === "recovered") {
-			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
-		}
+		const expectedReorgEpoch = await getChainReorgEpoch(
+			env,
+			network.chainId,
+		);
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
 			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
@@ -890,6 +906,7 @@ export async function runRouterWatcher(
 					source: "rpc_log_poller",
 					observedAt,
 				})),
+				expectedReorgEpoch,
 			});
 		}
 
@@ -1002,8 +1019,12 @@ export async function runRouterWatcher(
 				l1Confirmations: checkpointEvidence.l1Confirmations,
 			},
 			events: [],
+			expectedReorgEpoch,
 		});
-		await setSyncCursor(env, cursorKey, committedScanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd, {
+			chainId: network.chainId,
+			expectedReorgEpoch,
+		});
 		logInfo("router_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
@@ -1057,13 +1078,14 @@ export async function runRecoveryWatcher(
 		const publicClient = providerPool.pointClient;
 		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
 		const cursorKey = `recovery:${network.chainId}:shard:${shardId}`;
-		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
+		await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: cursorKey,
 		});
-		if (reorgCheck.status === "recovered") {
-			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
-		}
+		const expectedReorgEpoch = await getChainReorgEpoch(
+			env,
+			network.chainId,
+		);
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
 			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
@@ -1244,6 +1266,7 @@ export async function runRecoveryWatcher(
 				},
 				events,
 				userEvents,
+				expectedReorgEpoch,
 			});
 			alerted += journalResult.enqueuedUserEvents;
 		}
@@ -1283,9 +1306,13 @@ export async function runRecoveryWatcher(
 				l1Confirmations: checkpointEvidence.l1Confirmations,
 			},
 			events: [],
+			expectedReorgEpoch,
 		});
 
-		await setSyncCursor(env, cursorKey, committedScanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd, {
+			chainId: network.chainId,
+			expectedReorgEpoch,
+		});
 		logInfo("recovery_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),
@@ -1344,13 +1371,14 @@ export async function runUserOperationWatcher(
 		const { latest, scanHead, finalitySource } =
 			await getIndexerScanHead(publicClient);
 		const cursorKey = `userops:${network.chainId}:shard:${shardId}`;
-		const reorgCheck = await verifyAndRecoverStream(env, publicClient, {
+		await verifyAndRecoverStream(env, publicClient, {
 			chainId: network.chainId,
 			stream: cursorKey,
 		});
-		if (reorgCheck.status === "recovered") {
-			await setSyncCursor(env, cursorKey, reorgCheck.checkpoint);
-		}
+		const expectedReorgEpoch = await getChainReorgEpoch(
+			env,
+			network.chainId,
+		);
 
 		const cursor = await getSyncCursor(env, cursorKey);
 		const fromBlock =
@@ -1562,6 +1590,7 @@ export async function runUserOperationWatcher(
 				},
 				events,
 				userOperationReceipts: receipts,
+				expectedReorgEpoch,
 			});
 			projected += result.projectedUserOperations;
 		}
@@ -1603,8 +1632,12 @@ export async function runUserOperationWatcher(
 				l1Confirmations: checkpointEvidence.l1Confirmations,
 			},
 			events: [],
+			expectedReorgEpoch,
 		});
-		await setSyncCursor(env, cursorKey, committedScanEnd);
+		await setSyncCursor(env, cursorKey, committedScanEnd, {
+			chainId: network.chainId,
+			expectedReorgEpoch,
+		});
 		logInfo("user_operation_watch_run", {
 			chainId: network.chainId,
 			fromBlock: fromBlock.toString(),

@@ -148,8 +148,15 @@ Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos
 - Los límites de rango, prioridad y concurrencia pertenecen a la configuración
   de cada endpoint. `RpcAdmissionController` aplica el límite entre todas las
   instancias; no existe lógica de negocio dependiente de un plan gratuito.
-- Invariante de reposo: agenda vacía implica cero alarmas, mensajes de Queue,
-  invocaciones background y lecturas RPC.
+- Address Activity es la vía rápida, no un punto único de fallo. Mientras
+  existan wallets activas, `indexer_safety_sweep` conserva una única alarma
+  global y, cada `INDEXER_SAFETY_SWEEP_SECONDS`, compara el head `safe` contra
+  los checkpoints exactos. Sólo agenda shards atrasados y una reconciliación
+  acotada de balances por shard; con cero wallets activas se desarma y no vuelve
+  a ejecutarse. `GET /health` rearma la agenda para shards preexistentes después
+  de un deploy, sin esperar a que un usuario abra Home.
+- Invariante de reposo: sin wallets activas ni trabajo durable pendiente hay
+  cero alarmas, mensajes de Queue, invocaciones background y lecturas RPC.
 - Persiste todo en D1.
 
 ### 3. Contratos y Account Abstraction (ERC-4337)
@@ -184,10 +191,12 @@ Parmelia **relaya** todas las operaciones de la app, así que las conoce al ocur
   entrantes. Con Alchemy Address Activity, el proveedor empuja sólo actividad
   de wallets registradas. El registro incremental asigna wallets a shards
   estables y el evento despierta sólo token, dirección y shard afectados. Sin
-  Notify —o si se perdió una entrega— un Home stale despierta esas mismas
-  particiones y la reconciliación puntual desde su checkpoint; si nadie abre la
-  app, no existe fallback. Los watchers usan evidencia
-  `safe`/confirmaciones y journal idempotente antes de mover cada cursor.
+  Notify —o si se perdió una entrega— el barrido autónomo despierta los shards
+  atrasados desde su checkpoint aunque nadie abra la app. Home puede acelerar
+  un bootstrap faltante, pero no es la garantía de descubrimiento. Los watchers
+  usan evidencia `safe`/confirmaciones y journal idempotente antes de mover cada
+  cursor. La cobertura de un token se calcula por wallet como el mínimo de sus
+  streams `from`/`to`; no existe un checkpoint global ficticio.
 - `/user/transactions` no toca RPC/explorer en cada request: lee solo D1.
 
 ### 6. Cross-chain (CCTP v2)
@@ -271,6 +280,8 @@ Migraciones en `server/migrations/` (aplicar SIEMPRE antes de desplegar el Worke
 - `0005_crosschain.sql` — crosschain_operations. `0006_hardening.sql` — rebuild STRICT/FK/CHECK de 0004-0005 + columnas de operabilidad del relayer + dedupe de burn tx + índices FK.
 - `0007_payment_lifecycle.sql` — máquina de estados de pending_payments + rate_limits.
 - `0008_earn.sql` — kind `'earn'` en el ledger (movimientos de Ahorro/Aave).
+- `0027_indexer_consistency.sql` — epoch chain-wide de reorg, guards atómicos y
+  outbox durable para reproducir todos los streams afectados.
 
 | Tabla              | Contenido                                                                                              |
 | ------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -373,6 +384,7 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | `EVENT_JOB_SCHEDULER`          | binding | Durable Object: agenda compactada y alarma sólo con trabajo |
 | `RPC_ADMISSION`                | binding | Durable Object: concurrencia global por endpoint/lane |
 | `SCHEDULED_JOBS_QUEUE`         | binding | Jobs de dominio; permanece vacía en reposo           |
+| `INDEXER_SAFETY_SWEEP_SECONDS` | var     | Intervalo 60–86400 s del fallback autónomo; sólo vive con wallets activas |
 | `ALCHEMY_WEBHOOK_*` / `ALCHEMY_ADDRESS_WEBHOOKS_JSON` | secret/var | Uno o varios slots Address Activity |
 | `ALCHEMY_CUSTOM_WEBHOOK_*`     | secret/var | Eventos filtrados de router/recovery              |
 

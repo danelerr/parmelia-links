@@ -165,6 +165,12 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 			"INDEXER_MAX_EVENT_BLOCKS_PER_JOB must be between 1 and 100",
 		));
 	}
+	if (!validOptionalInteger(env.INDEXER_SAFETY_SWEEP_SECONDS, 60, 86_400)) {
+		issues.push(issue(
+			"INDEXER_SAFETY_SWEEP_INVALID",
+			"INDEXER_SAFETY_SWEEP_SECONDS must be between 60 and 86400",
+		));
+	}
 	if (!validOptionalInteger(env.BALANCE_MAX_STALENESS_SECONDS, 15, 86_400)) {
 		issues.push(issue("BALANCE_STALENESS_INVALID", "BALANCE_MAX_STALENESS_SECONDS must be between 15 and 86400"));
 	}

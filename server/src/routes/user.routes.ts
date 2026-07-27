@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { getUserByUid, getUserByUsername, saveUser, addPushToken, updateProfileFields } from "../services/storage";
+import { getUserByUid, getUserByUsername, saveUser, addPushToken, updateProfileFields, rateLimitConsume } from "../services/storage";
 import {
 	readBalanceModel,
 } from "../services/homeReadModel";
+import { refreshWalletBalancesLatest } from "../services/balanceReconciler";
 import { requestBalanceRefresh } from "../services/balanceReadModel";
+import { logError } from "../services/logger";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -98,10 +100,47 @@ userRoutes.put("/username", requireAuth, async (c) => {
 // Get User Balance
 userRoutes.get("/balance", requireAuth, async (c) => {
 	const user = c.get("user")!;
-	const { walletAddress, balance, needsRefresh } = await readBalanceModel(
+	let model = await readBalanceModel(
 		c.env,
 		user.sub,
 	);
+	const freshRequested = c.req.query("fresh") === "1";
+	const observedAt = model.balance.observedAt
+		? Date.parse(model.balance.observedAt)
+		: Number.NaN;
+	const alreadyFresh =
+		Number.isFinite(observedAt) && Date.now() - observedAt < 5_000;
+
+	const freshAllowed =
+		!freshRequested ||
+		alreadyFresh ||
+		(await rateLimitConsume(
+			c.env,
+			"interactive-balance-refresh",
+			user.sub,
+			30,
+			60,
+		));
+
+	if (freshRequested && freshAllowed && model.walletAddress && !alreadyFresh) {
+		try {
+			const network = getNetworkConfig(c.env.CHAIN_KEY);
+			await refreshWalletBalancesLatest(c.env, {
+				uid: user.sub,
+				accountAddress: model.walletAddress,
+				chainId: network.chainId,
+			});
+			model = await readBalanceModel(c.env, user.sub);
+		} catch (error) {
+			// Preserve the last known snapshot. Transactional screens can remain
+			// usable during a transient RPC outage without inventing a zero.
+			logError("interactive_balance_refresh_failed", error, {
+				uid: user.sub,
+			});
+		}
+	}
+
+	const { walletAddress, balance, needsRefresh } = model;
 	if (!walletAddress) return c.json({ error: "No wallet", error_code: ERR.NO_WALLET }, 404);
 
 	if (needsRefresh) {

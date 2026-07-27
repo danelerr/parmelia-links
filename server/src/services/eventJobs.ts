@@ -24,6 +24,10 @@ import {
 	scheduleWalletIndexerPartitions,
 	userOperationAssignmentStream,
 } from "./indexerPartitions";
+import {
+	runBalanceSafetyRefresh,
+	runIndexerSafetySweep,
+} from "./indexerSafety";
 import { logError, logInfo, logWarn } from "./logger";
 import { runPaymentReconciler } from "./settlement";
 import {
@@ -42,6 +46,7 @@ import {
 	getAlchemyAddressWebhookConfigs,
 	parseAlchemyWebhookPartition,
 } from "./alchemyWebhookConfig";
+import { drainChainReorgReplayRequests } from "./reorg";
 
 export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 
@@ -49,7 +54,6 @@ export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 // makes duplicate at-least-once deliveries inert without a permanent poller.
 const JOB_LEASE_TTL_MS = 16 * 60_000;
 const FAST_RETRY_MS = 15_000;
-const POLL_RETRY_MS = 30_000;
 const ROUTER_FALLBACK_POLL_MS = 2 * 60_000;
 
 export type WorkerQueueMessage = unknown;
@@ -65,12 +69,27 @@ type EventJobExecutor = (
 
 const JOB_RUNNERS: Record<EventJobName, EventJobRunner> = {
 	indexer_wallet_registry: drainIndexerWalletRegistry,
+	reorg_replay: drainChainReorgReplayRequests,
+	indexer_safety_sweep: runIndexerSafetySweep,
 	indexer: (env, message) => {
 		const partition = parseTransferPartition(message.partition);
 		if (!partition) throw new Error("Invalid transfer indexer partition");
 		return runIndexer(
 			env,
 			partition,
+			message.targetBlock === undefined
+				? undefined
+				: BigInt(message.targetBlock),
+		);
+	},
+	balance_safety_refresh: (env, message) => {
+		const shardId = parseShardPartition(message.partition);
+		if (shardId === null) {
+			throw new Error("Invalid balance safety partition");
+		}
+		return runBalanceSafetyRefresh(
+			env,
+			shardId,
 			message.targetBlock === undefined
 				? undefined
 				: BigInt(message.targetBlock),
@@ -240,14 +259,46 @@ async function nextAccountOperationRun(env: Bindings): Promise<number | null> {
 	return row?.present === 1 ? Date.now() + FAST_RETRY_MS : null;
 }
 
+function crosschainPollDelayMs(
+	ageMs: number,
+	status: string,
+): number {
+	if (status === "recoverable") {
+		return ageMs < 60 * 60_000 ? 60_000 : 5 * 60_000;
+	}
+	if (status === "minting" && ageMs < 2 * 60_000) return 3_000;
+	if (ageMs < 2 * 60_000) return 5_000;
+	if (ageMs < 15 * 60_000) return 15_000;
+	if (ageMs < 2 * 60 * 60_000) return 60_000;
+	return 5 * 60_000;
+}
+
 async function nextCrosschainRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
-		`SELECT 1 AS present
+	const rows = await env.PARMELIA_DB.prepare(
+		`SELECT status, created_at, updated_at
 		 FROM crosschain_operations
 		 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable')
-		 LIMIT 1`,
-	).first<{ present: number }>();
-	return row?.present === 1 ? Date.now() + POLL_RETRY_MS : null;
+		 ORDER BY updated_at ASC
+		 LIMIT 1000`,
+	).all<{
+		status: string;
+		created_at: string;
+		updated_at: string;
+	}>();
+	if (rows.results.length === 0) return null;
+
+	const now = Date.now();
+	let earliest: number | null = null;
+	for (const row of rows.results) {
+		const createdAt = timestampMs(row.created_at);
+		const updatedAt = timestampMs(row.updated_at);
+		if (createdAt === null || updatedAt === null) continue;
+		const candidate =
+			updatedAt +
+			crosschainPollDelayMs(Math.max(0, now - createdAt), row.status);
+		if (earliest === null || candidate < earliest) earliest = candidate;
+	}
+	return earliest === null ? null : Math.max(now + 1_000, earliest);
 }
 
 async function nextWebhookDeliveryRun(env: Bindings): Promise<number | null> {
@@ -354,6 +405,40 @@ async function nextIndexerWalletRegistryRun(
 	return parsed === null ? null : Math.max(Date.now(), parsed);
 }
 
+async function nextReorgReplayRun(env: Bindings): Promise<number | null> {
+	const row = await env.PARMELIA_DB.prepare(
+		`SELECT MIN(next_attempt_at) AS next_run_at
+		 FROM chain_reorg_replay_requests
+		 WHERE status IN ('pending', 'failed')`,
+	).first<NextRunRow>();
+	const parsed = timestampMs(row?.next_run_at);
+	return parsed === null ? null : Math.max(Date.now(), parsed);
+}
+
+async function nextIndexerSafetySweepRun(
+	env: Bindings,
+): Promise<number | null> {
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	const active = await env.PARMELIA_DB.prepare(
+		`SELECT 1 AS present
+		 FROM indexer_shards s
+		 WHERE s.chain_id = ?
+		   AND s.status = 'active'
+		   AND EXISTS (
+		     SELECT 1
+		     FROM indexer_wallet_assignments a
+		     WHERE a.chain_id = s.chain_id
+		       AND a.stream = s.stream
+		       AND a.shard_id = s.shard_id
+		       AND a.active = 1
+		   )
+		 LIMIT 1`,
+	)
+		.bind(network.chainId)
+		.first<{ present: number }>();
+	return active?.present === 1 ? Date.now() : null;
+}
+
 async function scheduleJobContinuations(
 	env: Bindings,
 	message: EventJobMessage,
@@ -391,6 +476,40 @@ async function scheduleJobContinuations(
 			});
 			break;
 		}
+		case "reorg_replay": {
+			const replayResult =
+				runnerResult &&
+				typeof runnerResult === "object" &&
+				"nextRunAt" in runnerResult
+					? (runnerResult as { nextRunAt: number | null })
+					: null;
+			schedules.push({
+				job,
+				runAt:
+					replayResult?.nextRunAt ??
+					(await nextReorgReplayRun(env)),
+				reason: "chain_reorg_replay_remaining",
+			});
+			break;
+		}
+		case "indexer_safety_sweep": {
+			const safetyResult =
+				runnerResult &&
+				typeof runnerResult === "object" &&
+				"nextRunAt" in runnerResult
+					? (runnerResult as { nextRunAt: number | null })
+					: null;
+			schedules.push({
+				job,
+				runAt:
+					safetyResult?.nextRunAt ??
+					(await nextIndexerSafetySweepRun(env)),
+				reason: "autonomous_indexer_safety",
+			});
+			break;
+		}
+		case "balance_safety_refresh":
+			break;
 		case "payment_reconciler": {
 			const runAt = await nextPaymentReconcileRun(env);
 			schedules.push({
@@ -577,6 +696,8 @@ async function scheduleJobContinuations(
 export async function recoverEventJobs(env: Bindings): Promise<number> {
 	const recoveryMessages: EventJobMessage[] = [
 		"indexer_wallet_registry",
+		"reorg_replay",
+		"indexer_safety_sweep",
 		"payment_reconciler",
 		"router_watcher",
 		"balance_refresh",
@@ -722,5 +843,6 @@ export async function consumeWorkerQueue(
 }
 
 export const __test = {
+	crosschainPollDelayMs,
 	retryDelaySeconds,
 };

@@ -34,6 +34,9 @@
     "INDEXER_MAX_RPC_CALLS_PER_JOB": "16",
     "INDEXER_MAX_BLOCKS_PER_JOB": "20000",
     "INDEXER_MAX_EVENT_BLOCKS_PER_JOB": "8",
+    // Provider webhooks are the fast path. This adaptive alarm is the
+    // correctness fallback and stops completely when no wallets are active.
+    "INDEXER_SAFETY_SWEEP_SECONDS": "3600",
     "BALANCE_MAX_STALENESS_SECONDS": "300",
     "ARBITRUM_L1_CONFIRMATIONS_REQUIRED": "12",
     // Parmelia's EntryPoint is v0.9. Keep self-relay until a bundler proves that
@@ -96,7 +99,6 @@
       "binding": "PARMELIA_DB",
       "database_name": "parmeliadb",
       "database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
-      "preview_database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "migrations_dir": "migrations",
     },
   ],

@@ -58,6 +58,26 @@ export function transferPartitionKey(
 	return `transfer:${partition.token.toLowerCase()}:${partition.direction}:shard:${partition.shardId}`;
 }
 
+export function transferJournalStream(
+	chainId: number,
+	partition: TransferIndexerPartition,
+): string {
+	if (!Number.isSafeInteger(chainId) || chainId < 1) {
+		throw new Error("Indexer chain id is invalid");
+	}
+	return `erc20_transfers:${chainId}:${partition.token.toLowerCase()}:${partition.direction}:shard:${partition.shardId}`;
+}
+
+export function transferSyncCursorKey(
+	chainId: number,
+	partition: TransferIndexerPartition,
+): string {
+	if (!Number.isSafeInteger(chainId) || chainId < 1) {
+		throw new Error("Indexer chain id is invalid");
+	}
+	return `transfers:${chainId}:${partition.token.toLowerCase()}:${partition.direction}:shard:${partition.shardId}`;
+}
+
 export function shardPartitionKey(shardId: number): string {
 	if (!Number.isSafeInteger(shardId) || shardId < 0) {
 		throw new Error("Indexer shard id is invalid");
@@ -77,6 +97,34 @@ export function parseTransferPartition(
 		token: match[1].toLowerCase() as Address,
 		direction: match[2] as TransferDirection,
 		shardId,
+	};
+}
+
+export function parseTransferJournalStream(
+	value: string,
+): { chainId: number; partition: TransferIndexerPartition } | null {
+	const match =
+		/^erc20_transfers:(\d+):(0x[0-9a-fA-F]{40}):(from|to):shard:(\d+)$/u.exec(
+			value,
+		);
+	if (!match) return null;
+	const chainId = Number(match[1]);
+	const shardId = Number(match[4]);
+	if (
+		!Number.isSafeInteger(chainId) ||
+		chainId < 1 ||
+		!Number.isSafeInteger(shardId) ||
+		shardId < 0
+	) {
+		return null;
+	}
+	return {
+		chainId,
+		partition: {
+			token: match[2].toLowerCase() as Address,
+			direction: match[3] as TransferDirection,
+			shardId,
+		},
 	};
 }
 
@@ -553,6 +601,14 @@ export async function drainIndexerWalletRegistry(
 			});
 		}
 	}
+	if (processed > 0) {
+		await requireSchedule(
+			scheduleEventJob(env, "indexer_safety_sweep", {
+				reason: "wallet_registry_changed",
+			}),
+			"indexer_safety_sweep",
+		);
+	}
 	const next = await env.PARMELIA_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
 		 FROM indexer_wallet_registry_outbox
@@ -574,7 +630,10 @@ export async function drainIndexerWalletRegistry(
 
 export const __test = {
 	parseTransferPartition,
+	parseTransferJournalStream,
 	parseShardPartition,
 	transferPartitionKey,
+	transferJournalStream,
+	transferSyncCursorKey,
 	shardPartitionKey,
 };

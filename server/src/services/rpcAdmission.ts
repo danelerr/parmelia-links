@@ -43,6 +43,34 @@ function earliestExpiry(leases: LeaseRecord): number | null {
 	return values.length === 0 ? null : Math.min(...values);
 }
 
+function sameLeaseRecord(
+	left: LeaseRecord | undefined,
+	right: LeaseRecord,
+): boolean {
+	const leftEntries = Object.entries(left ?? {});
+	const rightEntries = Object.entries(right);
+	return (
+		leftEntries.length === rightEntries.length &&
+		leftEntries.every(([token, expiresAt]) => right[token] === expiresAt)
+	);
+}
+
+type AlarmChange =
+	| { kind: "none" }
+	| { kind: "set"; at: number }
+	| { kind: "delete" };
+
+async function applyAlarmChange(
+	storage: DurableObjectStorage,
+	change: AlarmChange,
+): Promise<void> {
+	if (change.kind === "set") {
+		await storage.setAlarm(change.at);
+	} else if (change.kind === "delete") {
+		await storage.deleteAlarm();
+	}
+}
+
 /**
  * Globally coordinates one provider/lane. The object name is a hash-backed
  * endpoint key, never a secret URL. Expiring leases make Worker termination
@@ -58,34 +86,48 @@ export class RpcAdmissionController extends DurableObject<Bindings> {
 	): Promise<RpcAdmissionResult> {
 		validateRequest(request);
 		const now = Date.now();
-		const result = await this.ctx.storage.transaction(
+		const mutation = await this.ctx.storage.transaction(
 			async (transaction) => {
-				const leases = liveLeases(
-					await transaction.get<LeaseRecord>(LEASES_KEY),
-					now,
-				);
+				const stored =
+					await transaction.get<LeaseRecord>(LEASES_KEY);
+				const leases = liveLeases(stored, now);
+				const pruned = !sameLeaseRecord(stored, leases);
 				if (Object.keys(leases).length >= request.maxConcurrency) {
 					const expiry = earliestExpiry(leases) ?? now + 100;
-					await transaction.put(LEASES_KEY, leases);
+					if (pruned) {
+						await transaction.put(LEASES_KEY, leases);
+					}
 					return {
-						granted: false as const,
-						retryAfterMs: Math.max(
-							25,
-							Math.min(250, expiry - now),
-						),
+						result: {
+							granted: false as const,
+							retryAfterMs: Math.max(
+								25,
+								Math.min(250, expiry - now),
+							),
+						},
+						alarm: pruned
+							? ({ kind: "set", at: expiry } as const)
+							: ({ kind: "none" } as const),
 					};
 				}
+				const previousExpiry = earliestExpiry(leases);
 				const token = crypto.randomUUID();
 				leases[token] = now + request.leaseTtlMs;
 				await transaction.put(LEASES_KEY, leases);
-				return { granted: true as const, token };
+				const expiry = earliestExpiry(leases)!;
+				return {
+					result: { granted: true as const, token },
+					alarm:
+						pruned ||
+						previousExpiry === null ||
+						expiry !== previousExpiry
+							? ({ kind: "set", at: expiry } as const)
+							: ({ kind: "none" } as const),
+				};
 			},
 		);
-		const leases =
-			await this.ctx.storage.get<LeaseRecord>(LEASES_KEY);
-		const expiry = earliestExpiry(leases ?? {});
-		if (expiry !== null) await this.ctx.storage.setAlarm(expiry);
-		return result;
+		await applyAlarmChange(this.ctx.storage, mutation.alarm);
+		return mutation.result;
 	}
 
 	async release(token: string): Promise<void> {
@@ -96,38 +138,54 @@ export class RpcAdmissionController extends DurableObject<Bindings> {
 			return;
 		}
 		const now = Date.now();
-		const leases = await this.ctx.storage.transaction(
+		const mutation = await this.ctx.storage.transaction(
 			async (transaction) => {
-				const current = liveLeases(
-					await transaction.get<LeaseRecord>(LEASES_KEY),
-					now,
-				);
-				delete current[token];
+				const stored =
+					await transaction.get<LeaseRecord>(LEASES_KEY);
+				const current = liveLeases(stored, now);
+				const previousExpiry = earliestExpiry(stored ?? {});
+				const removed = token in current;
+				if (removed) delete current[token];
+				const changed =
+					removed || !sameLeaseRecord(stored, current);
+				if (!changed) {
+					return {
+						alarm: { kind: "none" } as const,
+					};
+				}
 				if (Object.keys(current).length === 0) {
 					await transaction.delete(LEASES_KEY);
 				} else {
 					await transaction.put(LEASES_KEY, current);
 				}
-				return current;
+				const expiry = earliestExpiry(current);
+				return {
+					alarm:
+						expiry === null
+							? ({ kind: "delete" } as const)
+							: expiry !== previousExpiry
+								? ({ kind: "set", at: expiry } as const)
+								: ({ kind: "none" } as const),
+				};
 			},
 		);
-		const expiry = earliestExpiry(leases);
-		if (expiry === null) await this.ctx.storage.deleteAlarm();
-		else await this.ctx.storage.setAlarm(expiry);
+		await applyAlarmChange(this.ctx.storage, mutation.alarm);
 	}
 
 	async alarm(): Promise<void> {
 		const now = Date.now();
-		const leases = liveLeases(
-			await this.ctx.storage.get<LeaseRecord>(LEASES_KEY),
-			now,
-		);
+		const stored =
+			await this.ctx.storage.get<LeaseRecord>(LEASES_KEY);
+		const leases = liveLeases(stored, now);
 		if (Object.keys(leases).length === 0) {
-			await this.ctx.storage.delete(LEASES_KEY);
-			await this.ctx.storage.deleteAlarm();
+			if (stored !== undefined) {
+				await this.ctx.storage.delete(LEASES_KEY);
+			}
 			return;
 		}
-		await this.ctx.storage.put(LEASES_KEY, leases);
+		if (!sameLeaseRecord(stored, leases)) {
+			await this.ctx.storage.put(LEASES_KEY, leases);
+		}
 		await this.ctx.storage.setAlarm(earliestExpiry(leases)!);
 	}
 }
@@ -135,5 +193,6 @@ export class RpcAdmissionController extends DurableObject<Bindings> {
 export const __test = {
 	liveLeases,
 	earliestExpiry,
+	sameLeaseRecord,
 	validateRequest,
 };

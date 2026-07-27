@@ -185,9 +185,17 @@ export async function listIndexerShardIds(
 	input: { chainId: number; stream: string },
 ): Promise<number[]> {
 	const result = await env.PARMELIA_DB.prepare(
-		`SELECT shard_id
-		 FROM indexer_shards
-		 WHERE chain_id = ? AND stream = ? AND status = 'active'
+		`SELECT s.shard_id
+		 FROM indexer_shards s
+		 WHERE s.chain_id = ? AND s.stream = ? AND s.status = 'active'
+		   AND EXISTS (
+		     SELECT 1
+		     FROM indexer_wallet_assignments a
+		     WHERE a.chain_id = s.chain_id
+		       AND a.stream = s.stream
+		       AND a.shard_id = s.shard_id
+		       AND a.active = 1
+		   )
 		 ORDER BY shard_id`,
 	)
 		.bind(input.chainId, input.stream)

@@ -6,6 +6,12 @@ import {
 	type BalanceProjectionStrategy,
 } from "./balanceReadModel";
 import type { ChainConsistencyLevel } from "./chainJournal";
+import {
+	buildTransferCoverageByAsset,
+	prepareTransferCheckpointRowsForUid,
+	type TransferCheckpointEvidence,
+	type TransferCheckpointRow,
+} from "./transferCoverage";
 
 export type ReadModelStatus = "fresh" | "stale" | "unavailable";
 
@@ -30,13 +36,6 @@ type SnapshotRow = {
 	observed_at: string;
 	reconciled_at: string | null;
 	source: string;
-};
-
-type EventCheckpointRow = {
-	block_number: number | string;
-	block_hash: string;
-	consistency_level: ChainConsistencyLevel;
-	updated_at: string;
 };
 
 type LedgerHomeRow = {
@@ -192,7 +191,7 @@ function buildBalanceView(
 	rows: SnapshotRow[],
 	refresh: RefreshStateRow | null,
 	now: Date,
-	eventCheckpoint: EventCheckpointRow | null = null,
+	eventCoverage: ReadonlyMap<string, TransferCheckpointEvidence> = new Map(),
 ): HomeBalanceView {
 	const snapshots = new Map(rows.map((row) => [row.asset, row]));
 	const assets: Record<string, HomeBalanceAsset> = {};
@@ -226,21 +225,22 @@ function buildBalanceView(
 		const eventBacked =
 			row.projection_strategy === "events" ||
 			row.projection_strategy === "events_plus_rpc";
+		const eventCheckpoint = eventCoverage.get(expected.asset) ?? null;
 		const checkpointCoversSnapshot =
 			eventBacked &&
 			eventCheckpoint !== null &&
-			BigInt(eventCheckpoint.block_number) >= BigInt(row.block_number);
+			eventCheckpoint.blockNumber >= BigInt(row.block_number);
 		const evidenceObservedAt = checkpointCoversSnapshot
-			? eventCheckpoint.updated_at
+			? eventCheckpoint.updatedAt
 			: row.observed_at;
 		const evidenceBlockNumber = checkpointCoversSnapshot
-			? BigInt(eventCheckpoint.block_number)
+			? eventCheckpoint.blockNumber
 			: BigInt(row.block_number);
 		const evidenceBlockHash = checkpointCoversSnapshot
-			? eventCheckpoint.block_hash
+			? eventCheckpoint.blockHash
 			: row.block_hash;
 		const evidenceConsistency = checkpointCoversSnapshot
-			? eventCheckpoint.consistency_level
+			? eventCheckpoint.consistencyLevel
 			: row.consistency_level;
 		const age =
 			now.getTime() - new Date(evidenceObservedAt).getTime();
@@ -345,19 +345,34 @@ export async function isHomeBalanceFresh(
 	uid: string,
 ): Promise<boolean> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const expectedCount = expectedAssets(env).length;
-	const row = await env.PARMELIA_DB.prepare(
-		`SELECT COUNT(*) AS asset_count, MIN(observed_at) AS oldest_observed_at
-		 FROM balance_snapshots
-		 WHERE uid = ? AND chain_id = ? AND canonical = 1`,
-	)
-		.bind(uid, network.chainId)
-		.first<{ asset_count: number; oldest_observed_at: string | null }>();
-	if (!row || row.asset_count < expectedCount || !row.oldest_observed_at) {
-		return false;
-	}
-	const age = Date.now() - new Date(row.oldest_observed_at).getTime();
-	return Number.isFinite(age) && age <= maxStalenessMs(env);
+	const results = await env.PARMELIA_DB.batch([
+		env.PARMELIA_DB.prepare(
+			`SELECT asset, balance_raw, decimals, block_number, block_hash,
+			        consistency_level, projection_strategy, projection_version,
+			        observed_at, reconciled_at, source
+			 FROM balance_snapshots
+			 WHERE uid = ? AND chain_id = ? AND canonical = 1
+			 ORDER BY asset`,
+		).bind(uid, network.chainId),
+		prepareTransferCheckpointRowsForUid(
+			env,
+			network.chainId,
+			uid,
+		),
+	]);
+	const rows = resultRows<SnapshotRow>(results[0]);
+	if (rows.length < expectedAssets(env).length) return false;
+	const coverage = buildTransferCoverageByAsset(
+		env,
+		resultRows<TransferCheckpointRow>(results[1]),
+	);
+	return buildBalanceView(
+		env,
+		rows,
+		null,
+		new Date(),
+		coverage,
+	).status === "fresh";
 }
 
 export async function homeEtag(
@@ -420,11 +435,11 @@ export async function readHomeModel(
 		env.PARMELIA_DB.prepare(
 			`SELECT version, updated_at FROM home_state_versions WHERE uid = ?`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
-			`SELECT block_number, block_hash, consistency_level, updated_at
-			 FROM chain_stream_checkpoints
-			 WHERE chain_id = ? AND stream = ?`,
-		).bind(network.chainId, `erc20_transfers:${network.chainId}`),
+		prepareTransferCheckpointRowsForUid(
+			env,
+			network.chainId,
+			uid,
+		),
 	]);
 
 	const profile =
@@ -446,15 +461,17 @@ export async function readHomeModel(
 		version: 1,
 		updated_at: new Date(0).toISOString(),
 	};
-	const eventCheckpoint =
-		resultRows<EventCheckpointRow>(results[7])[0] ?? null;
+	const eventCoverage = buildTransferCoverageByAsset(
+		env,
+		resultRows<TransferCheckpointRow>(results[7]),
+	);
 	const now = new Date();
 	const balance = buildBalanceView(
 		env,
 		snapshotRows,
 		refresh,
 		now,
-		eventCheckpoint,
+		eventCoverage,
 	);
 	const activity = mapActivity(ledgerRows);
 	const alerts: HomeReadModel["alerts"] = [];
@@ -546,25 +563,27 @@ export async function readBalanceModel(
 			`SELECT status, updated_at FROM balance_refresh_requests
 			 WHERE uid = ? AND chain_id = ? ORDER BY updated_at DESC LIMIT 1`,
 		).bind(uid, network.chainId),
-		env.PARMELIA_DB.prepare(
-			`SELECT block_number, block_hash, consistency_level, updated_at
-			 FROM chain_stream_checkpoints
-			 WHERE chain_id = ? AND stream = ?`,
-		).bind(network.chainId, `erc20_transfers:${network.chainId}`),
+		prepareTransferCheckpointRowsForUid(
+			env,
+			network.chainId,
+			uid,
+		),
 	]);
 	const walletAddress =
 		(resultRows<{ wallet_address: string | null }>(results[0])[0]
 			?.wallet_address as Address | null | undefined) ?? null;
 	const rows = resultRows<SnapshotRow>(results[1]);
 	const refresh = resultRows<RefreshStateRow>(results[2])[0] ?? null;
-	const eventCheckpoint =
-		resultRows<EventCheckpointRow>(results[3])[0] ?? null;
+	const eventCoverage = buildTransferCoverageByAsset(
+		env,
+		resultRows<TransferCheckpointRow>(results[3]),
+	);
 	const balance = buildBalanceView(
 		env,
 		rows,
 		refresh,
 		new Date(),
-		eventCheckpoint,
+		eventCoverage,
 	);
 	return {
 		walletAddress,

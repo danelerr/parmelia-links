@@ -419,6 +419,11 @@ describe("runtime configuration", () => {
 		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
 			CCTP_RPC_URLS: '{"84532":"ftp://invalid"}',
 		})).map((entry) => entry.code)).toContain("CCTP_RPC_URLS_INVALID");
+		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			INDEXER_SAFETY_SWEEP_SECONDS: "10",
+		})).map((entry) => entry.code)).toContain(
+			"INDEXER_SAFETY_SWEEP_INVALID",
+		);
 	});
 
 	it("supports heterogeneous indexer plans through explicit capabilities", () => {
@@ -511,6 +516,21 @@ describe("runtime configuration", () => {
 		const blocked = await worker.fetch(new Request("https://worker.example/"), mainnetEnv, context);
 		expect(blocked.status).toBe(503);
 		expect(await blocked.json()).toMatchObject({ error_code: "SERVICE_UNAVAILABLE" });
+	});
+
+	it("allows CORS preflight with If-None-Match header", async () => {
+		const context = {} as ExecutionContext;
+		const req = new Request("https://worker.example/home", {
+			method: "OPTIONS",
+			headers: {
+				Origin: "https://app.parmelia.me",
+				"Access-Control-Request-Method": "GET",
+				"Access-Control-Request-Headers": "if-none-match, authorization, content-type",
+			},
+		});
+		const res = await worker.fetch(req, envFor("arbitrum-sepolia", { ALLOWED_ORIGINS: "https://app.parmelia.me" }), context);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://app.parmelia.me");
+		expect(res.headers.get("Access-Control-Allow-Headers")).toContain("If-None-Match");
 	});
 });
 

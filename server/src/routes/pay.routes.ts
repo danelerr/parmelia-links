@@ -55,6 +55,7 @@ import { getClients } from "../services/clients";
 import { extractErrorMessage, logError, logInfo, logWarn } from "../services/logger";
 import { SignerLeaseBusyError } from "../services/signerLease";
 import {
+	getUserOperationTransport,
 	selectUserOperationTransport,
 	sendUserOperation,
 	UserOperationTransportError,
@@ -726,6 +727,37 @@ payRoutes.get("/status/:userOpHash", requireAuth, async (c) => {
 	if (!row) return c.json({ status: "unknown" });
 	if (row.uid !== user.sub) {
 		return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT }, 403);
+	}
+	if (row.status === "submitted") {
+		try {
+			const receipt = await getUserOperationTransport(
+				c.env,
+				row.submissionTransport,
+			).receipt({
+				userOpHash: row.userOpHash as Hex,
+				transactionHash: row.submittedTxHash as Hex | null,
+			});
+			if (receipt) {
+				// "included" is a UX fast path backed by the exact transaction
+				// receipt + UserOperationEvent. Durable accounting still advances
+				// to "confirmed" only through the reorg-aware canonical journal.
+				return c.json({
+					status: receipt.success ? "included" : "failed",
+					txHash: receipt.transactionHash,
+					transport: row.submissionTransport,
+					currency: row.currency,
+					amount: row.amount,
+					consistency: "sequenced",
+				});
+			}
+		} catch (error) {
+			// A point-read outage is transient; return the durable D1 lifecycle
+			// below and let both the client and background reconciler retry.
+			logWarn("payment_status_receipt_lookup_failed", {
+				userOpHash,
+				error: extractErrorMessage(error),
+			});
+		}
 	}
 	return c.json({
 		status: row.status,

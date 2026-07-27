@@ -14,7 +14,7 @@
 // UserOperationEvent(success=false). Trusting receipt.status alone would record
 // a payment that never moved funds; the op's own event is the truth.
 
-import { formatUnits, parseAbiItem, parseEventLogs, type Hex, type Log } from "viem";
+import { formatUnits, parseAbiItem, parseEventLogs, type Address, type Hex, type Log } from "viem";
 import { getNetworkConfig, getTokenBySymbol } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getRpcUrls } from "./clients";
@@ -42,6 +42,7 @@ import { isStoredPaymentLink } from "./validation";
 import { prepareEventOutbox } from "./webhooks";
 import { logError, logInfo, logWarn } from "./logger";
 import { getUserOperationTransport } from "./userOperationTransport";
+import { requestBalanceRefresh } from "./balanceReadModel";
 
 // Pending ops that are account/DeFi actions rather than payments: they reuse
 // the same sign+submit pipeline but must not be recorded as transfers.
@@ -351,6 +352,30 @@ export async function settlePayment(
 		if (!flipped) {
 			logWarn("payment_settle_link_already_paid", { uid, linkId, txHash });
 		}
+	}
+
+	// Settlement is the earliest durable point that proves the user's wallet
+	// changed. Wake one coalesced Multicall refresh immediately instead of
+	// waiting for a later transfer-indexer sweep to notice the same receipt.
+	if (/^0x[0-9a-fA-F]{40}$/.test(pending.senderAddress)) {
+		const network = getNetworkConfig(env.CHAIN_KEY);
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: pending.senderAddress as Address,
+			chainId: network.chainId,
+			reason: "confirmed_user_operation",
+			priority: 0,
+			...(opts.chainEvidence
+				? { notBeforeBlock: opts.chainEvidence.blockNumber.toString() }
+				: {}),
+		}).catch((error) => {
+			// The canonical indexer remains a repair path. A Queue/provider outage
+			// must not roll back otherwise-complete financial settlement.
+			logError("settlement_balance_refresh_failed", error, {
+				uid,
+				userOpHash: pending.userOpHash,
+			});
+		});
 	}
 }
 

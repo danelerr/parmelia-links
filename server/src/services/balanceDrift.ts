@@ -1,6 +1,10 @@
 import type { Bindings } from "../middlewares/auth";
 import type { BalanceSnapshot } from "./balanceReadModel";
 import { logError, logInfo } from "./logger";
+import {
+	getTransferCoverageForAddress,
+	type TransferCheckpointEvidence,
+} from "./transferCoverage";
 
 type AssetPolicyRow = {
 	strategy: "events" | "events_plus_rpc" | "rpc_only" | "known_operations";
@@ -171,6 +175,10 @@ export async function auditBalanceProjectionDrift(
 	let checked = 0;
 	let drifted = 0;
 	let deferred = 0;
+	const coverageByAccount = new Map<
+		string,
+		Map<string, TransferCheckpointEvidence>
+	>();
 	for (const snapshot of snapshots) {
 		const policy = await env.PARMELIA_DB.prepare(
 			`SELECT strategy, projection_version, enabled, drift_tolerance_raw
@@ -211,21 +219,23 @@ export async function auditBalanceProjectionDrift(
 			continue;
 		}
 
-		const checkpoint = await env.PARMELIA_DB.prepare(
-			`SELECT block_number
-			 FROM chain_stream_checkpoints
-			 WHERE chain_id = ? AND stream = ?`,
-		)
-			.bind(
+		const coverageKey =
+			`${snapshot.chainId}:${snapshot.accountAddress.toLowerCase()}`;
+		let accountCoverage = coverageByAccount.get(coverageKey);
+		if (!accountCoverage) {
+			accountCoverage = await getTransferCoverageForAddress(
+				env,
 				snapshot.chainId,
-				`erc20_transfers:${snapshot.chainId}`,
-			)
-			.first<{ block_number: number | string }>();
+				snapshot.accountAddress,
+			);
+			coverageByAccount.set(coverageKey, accountCoverage);
+		}
+		const checkpoint = accountCoverage.get(snapshot.asset) ?? null;
 		const baselineBlock = BigInt(baseline.block_number);
 		if (
 			baselineBlock > snapshot.blockNumber ||
 			!checkpoint ||
-			BigInt(checkpoint.block_number) < snapshot.blockNumber
+			checkpoint.blockNumber < snapshot.blockNumber
 		) {
 			await writeBaselineAndAudit(env, snapshot, {
 				projectionVersion: policy.projection_version,

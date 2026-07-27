@@ -42,6 +42,9 @@ INDEXER_REGISTRY_BATCH_SIZE=25
 INDEXER_MAX_RPC_CALLS_PER_JOB=16
 INDEXER_MAX_BLOCKS_PER_JOB=20000
 INDEXER_MAX_EVENT_BLOCKS_PER_JOB=8
+# Webhook = vía rápida; este alarmado reconciliador es la garantía autónoma.
+# Se rearma sólo si hay shards con wallets activas y se apaga con cero wallets.
+INDEXER_SAFETY_SWEEP_SECONDS=3600
 BALANCE_MAX_STALENESS_SECONDS=300
 # Sólo activos rpc_only (ETH/aUSDC) se auditan por tiempo. Este trabajo es
 # global y acotado; abrir Home nunca crea un refresh por snapshot viejo.

@@ -5,6 +5,12 @@ import {
 	type JournalEvent,
 	type JournalBlock,
 } from "./chainJournal";
+import {
+	createChainEpochGuard,
+	getChainReorgEpoch,
+	prepareChainEpochGuardDelete,
+	prepareChainEpochGuardInsert,
+} from "./chainEpoch";
 import { logInfo, logWarn } from "./logger";
 
 export const BALANCE_PROJECTOR_NAME = "asset_balance_deltas";
@@ -284,12 +290,22 @@ export async function projectBalanceDeltas(
 	input: {
 		block: JournalBlock;
 		events: JournalEvent[];
+		expectedReorgEpoch?: number;
 	},
 ): Promise<{
 	updatedSnapshots: number;
 	eventOnlySatisfiedAccounts: Set<string>;
 }> {
-	const statements: D1PreparedStatement[] = [];
+	const expectedReorgEpoch =
+		input.expectedReorgEpoch ??
+		await getChainReorgEpoch(env, input.block.chainId);
+	const epochGuard = createChainEpochGuard(
+		input.block.chainId,
+		expectedReorgEpoch,
+	);
+	const statements: D1PreparedStatement[] = [
+		prepareChainEpochGuardInsert(env, epochGuard),
+	];
 	const appliedAt = new Date().toISOString();
 
 	for (const event of input.events) {
@@ -364,6 +380,7 @@ export async function projectBalanceDeltas(
 			appliedAt,
 		),
 	);
+	statements.push(prepareChainEpochGuardDelete(env, epochGuard));
 
 	await env.PARMELIA_DB.batch(statements);
 	const snapshotResult = await refreshProjectedSnapshots(env, input);

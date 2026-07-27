@@ -74,6 +74,18 @@ describe("RPC control plane", () => {
 		).toEqual({ live: 2_000 });
 		expect(admissionTest.earliestExpiry({ second: 3_000, first: 2_000 }))
 			.toBe(2_000);
+		expect(
+			admissionTest.sameLeaseRecord(
+				{ first: 2_000, second: 3_000 },
+				{ second: 3_000, first: 2_000 },
+			),
+		).toBe(true);
+		expect(
+			admissionTest.sameLeaseRecord(
+				{ first: 2_000 },
+				{ first: 2_001 },
+			),
+		).toBe(false);
 		expect(() =>
 			admissionTest.validateRequest({
 				maxConcurrency: 0,

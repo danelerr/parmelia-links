@@ -98,14 +98,15 @@ capabilities, partitioned indexing and the WebSocket decision are covered in
 
 ```
 client / Alchemy webhooks ──> Worker + D1 ──> event scheduler ──> Queue ──> Arbitrum
-  passkeys, Home stale         source of truth    alarm only       bounded    ERC-4337
-  payment/cross-chain state    idempotent rows    with work        jobs       contracts
+  passkeys, fast signal        source of truth    alarms only      bounded    ERC-4337
+  domain state + safety sweep  idempotent rows    with work        jobs       contracts
 ```
 
-There is no static Cron Trigger. With no requests, pending state, or relevant
-webhooks, the scheduler has no alarm and the backend performs no background RPC
-reads. Equivalent events are coalesced per partition before they reach Queue;
-independent shards can scale horizontally.
+There is no static Cron Trigger. Active wallets retain one configurable safety
+alarm so missed provider webhooks are reconciled even when nobody opens the app;
+it schedules only lagging shards and stops completely when there are no active
+wallets. Equivalent events are coalesced per partition before they reach Queue,
+and independent shards can scale horizontally.
 
 The zero-RPC Home invariant and bounded 1/100/1,000-identity load procedure are
 documented in

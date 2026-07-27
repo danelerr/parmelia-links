@@ -9,9 +9,11 @@ import {
 	finishAccountOperation,
 	getActiveAccountOperation,
 	getCrosschainOpById,
+	getSyncCursor,
 	listLedgerPageByUid,
 	releaseLease,
 	renewLease,
+	setSyncCursor,
 	updateCrosschainOp,
 	writeLedgerEntries,
 	type PendingPaymentRecord,
@@ -74,6 +76,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0024_payment_reconcile_queue.sql",
 			"0025_asset_projection_audits.sql",
 			"0026_indexer_work_partitions.sql",
+			"0027_indexer_consistency.sql",
 		]);
 	});
 
@@ -111,6 +114,10 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"indexer_wallet_registry_outbox",
 			"provider_subscription_items",
 			"provider_subscription_sync_state",
+			"chain_reorg_state",
+			"chain_reorg_epoch_guards",
+			"chain_reorg_replay_requests",
+			"indexer_safety_sweep_state",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -537,6 +544,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 
 		const chainId = 421614;
 		const stream = "runtime-reorg-stream";
+		const siblingStream = `userops:${chainId}:shard:77`;
 		const block100 = 8_800_100n;
 		const block101 = 8_800_101n;
 		const hash99 = `0x${"09".repeat(32)}` as const;
@@ -606,6 +614,38 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			},
 			events: [baseEvent],
 		});
+		await journalBlockEvents(env, {
+			stream: siblingStream,
+			block: {
+				chainId,
+				blockNumber: block101,
+				blockHash: oldHash101,
+				parentHash: hash100,
+				timestamp: 1_800_000_001n,
+				consistencyLevel: "safe",
+				source: "runtime_fixture",
+				observedAt: now,
+			},
+			events: [],
+		});
+		await env.PARMELIA_DB.batch([
+			env.PARMELIA_DB.prepare(
+				`INSERT INTO sync_state (key, last_block, updated_at)
+				 VALUES (?, ?, ?)`,
+			).bind(
+				`transfers:${chainId}:runtime:from:shard:77`,
+				block101.toString(),
+				now,
+			),
+			env.PARMELIA_DB.prepare(
+				`INSERT INTO sync_state (key, last_block, updated_at)
+				 VALUES (?, ?, ?)`,
+			).bind(
+				`userops:${chainId}:shard:77`,
+				block101.toString(),
+				now,
+			),
+		]);
 		expect(firstJournal.insertedEventIds.size).toBe(1);
 		expect(duplicateJournal.duplicateEventIds.size).toBe(1);
 		await projectBalanceDeltas(env, {
@@ -688,7 +728,117 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			depth: 1n,
 			affectedEvents: 1,
 			affectedAccounts: 1,
+			affectedStreams: 2,
+			reorgEpoch: 1,
 		});
+		const rewoundStreams = await env.PARMELIA_DB.prepare(
+			`SELECT stream, block_number, block_hash, reorg_epoch
+			 FROM chain_stream_checkpoints
+			 WHERE chain_id = ? AND stream IN (?, ?)
+			 ORDER BY stream`,
+		)
+			.bind(chainId, stream, siblingStream)
+			.all<{
+				stream: string;
+				block_number: number | string;
+				block_hash: string;
+				reorg_epoch: number;
+			}>();
+		expect(rewoundStreams.results).toEqual([
+			{
+				stream,
+				block_number: Number(block100),
+				block_hash: hash100,
+				reorg_epoch: 1,
+			},
+			{
+				stream: siblingStream,
+				block_number: Number(block100),
+				block_hash: hash100,
+				reorg_epoch: 1,
+			},
+		]);
+		const rewoundCursors = await env.PARMELIA_DB.prepare(
+			`SELECT key, last_block FROM sync_state
+			 WHERE key IN (?, ?) ORDER BY key`,
+		)
+			.bind(
+				`transfers:${chainId}:runtime:from:shard:77`,
+				`userops:${chainId}:shard:77`,
+			)
+			.all<{ key: string; last_block: string }>();
+		expect(
+			rewoundCursors.results.map((row) => ({
+				...row,
+				last_block: String(row.last_block),
+			})),
+		).toEqual([
+			{
+				key: `transfers:${chainId}:runtime:from:shard:77`,
+				last_block: block100.toString(),
+			},
+			{
+				key: `userops:${chainId}:shard:77`,
+				last_block: block100.toString(),
+			},
+		]);
+		const replayRequests = await env.PARMELIA_DB.prepare(
+			`SELECT stream, common_ancestor_number, reorg_epoch
+			 FROM chain_reorg_replay_requests
+			 WHERE chain_id = ? ORDER BY stream`,
+		)
+			.bind(chainId)
+			.all<{
+				stream: string;
+				common_ancestor_number: number | string;
+				reorg_epoch: number;
+			}>();
+		expect(replayRequests.results).toHaveLength(2);
+		expect(
+			replayRequests.results.map((row) => ({
+				...row,
+				common_ancestor_number: String(
+					row.common_ancestor_number,
+				),
+			})),
+		).toEqual([
+			{
+				stream,
+				common_ancestor_number: block100.toString(),
+				reorg_epoch: 1,
+			},
+			{
+				stream: siblingStream,
+				common_ancestor_number: block100.toString(),
+				reorg_epoch: 1,
+			},
+		]);
+		await expect(
+			journalBlockEvents(env, {
+				stream,
+				expectedReorgEpoch: 0,
+				block: {
+					chainId,
+					blockNumber: block101 + 1n,
+					blockHash: `0x${"31".repeat(32)}`,
+					parentHash: newHash101,
+					timestamp: 1_800_000_003n,
+					consistencyLevel: "safe",
+					source: "runtime_fixture",
+					observedAt: now,
+				},
+				events: [],
+			}),
+		).rejects.toThrow();
+		const transferCursorKey =
+			`transfers:${chainId}:runtime:from:shard:77`;
+		await expect(
+			setSyncCursor(env, transferCursorKey, block101 + 1n, {
+				chainId,
+				expectedReorgEpoch: 0,
+			}),
+		).rejects.toThrow();
+		expect(await getSyncCursor(env, transferCursorKey)).toBe(block100);
 		expect(await listBalanceSnapshots(env, uid, chainId)).toEqual([]);
 		const orphaned = await env.PARMELIA_DB.prepare(
 			`SELECT canonical FROM ledger
@@ -754,6 +904,11 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			canonical: 1,
 			block_hash: newHash101.toLowerCase(),
 		});
+		await env.PARMELIA_DB.prepare(
+			`DELETE FROM chain_reorg_replay_requests WHERE chain_id = ?`,
+		)
+			.bind(chainId)
+			.run();
 	});
 
 	it("retains UserOperation re-inclusions and queues canonical reconciliation", async () => {

@@ -58,6 +58,15 @@ function eventMessage(
 }
 
 describe("event-driven job orchestration", () => {
+	it("polls fresh CCTP operations quickly and backs off abandoned work", () => {
+		expect(__test.crosschainPollDelayMs(10_000, "waiting_attestation")).toBe(5_000);
+		expect(__test.crosschainPollDelayMs(10_000, "minting")).toBe(3_000);
+		expect(__test.crosschainPollDelayMs(5 * 60_000, "waiting_attestation")).toBe(15_000);
+		expect(__test.crosschainPollDelayMs(30 * 60_000, "waiting_attestation")).toBe(60_000);
+		expect(__test.crosschainPollDelayMs(3 * 60 * 60_000, "waiting_attestation")).toBe(5 * 60_000);
+		expect(__test.crosschainPollDelayMs(10_000, "recoverable")).toBe(60_000);
+	});
+
 	it("ships no static cron trigger or scheduled Worker handler", () => {
 		const wrangler = readFileSync(
 			new URL("../wrangler.jsonc", import.meta.url),
@@ -73,10 +82,13 @@ describe("event-driven job orchestration", () => {
 		expect(entrypoint).not.toMatch(/\bscheduled\s*\(/u);
 	});
 
-	it("contains no unconditional balance-maintenance fanout job", () => {
+	it("uses a conditional safety sweep instead of unconditional maintenance", () => {
 		expect(EVENT_JOB_NAMES).not.toContain("balance_refresh_maintenance");
 		expect(EVENT_JOB_NAMES).toEqual(
 			expect.arrayContaining([
+				"indexer_safety_sweep",
+				"balance_safety_refresh",
+				"reorg_replay",
 				"indexer",
 				"user_operation_watcher",
 				"router_watcher",

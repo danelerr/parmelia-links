@@ -43,10 +43,169 @@ type CallDescriptor = {
 	strategy: BalanceProjectionStrategy;
 };
 
+export type InteractiveBalanceRefreshInput = {
+	uid: string;
+	accountAddress: Address;
+	chainId: number;
+};
+
 function asBoundedBatchSize(raw: string | undefined): number {
 	const parsed = Number(raw);
 	if (!Number.isSafeInteger(parsed)) return 25;
 	return Math.min(100, Math.max(1, parsed));
+}
+
+/**
+ * User-triggered freshness path for transactional screens (Earn/Swap/Crosschain).
+ *
+ * The canonical reconciler intentionally reads a safe head. That is correct for
+ * accounting, but it made a just-mined operation look frozen for up to minutes.
+ * This path reads one coherent latest-block Multicall and publishes it as
+ * `sequenced`; the safe reconciler later supersedes it as the safe head catches
+ * up. Home never calls this function, so idle users still generate zero RPC work.
+ */
+export async function refreshWalletBalancesLatest(
+	env: Bindings,
+	input: InteractiveBalanceRefreshInput,
+): Promise<BalanceSnapshot[]> {
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	if (input.chainId !== network.chainId) {
+		throw new Error("Interactive balance refresh targets the wrong active chain");
+	}
+
+	const publicClient = getPublicClient(env);
+	const targetBlock = await publicClient.getBlock({
+		blockTag: "latest",
+		includeTransactions: false,
+	});
+	if (targetBlock.number === null || !targetBlock.hash) {
+		throw new Error("RPC returned a latest block without canonical coordinates");
+	}
+
+	const multicallAddress = publicClient.chain.contracts?.multicall3?.address;
+	const calls: ContractFunctionParameters[] = [];
+	const descriptors: Array<{
+		asset: string;
+		decimals: number;
+	}> = [];
+
+	if (multicallAddress) {
+		calls.push({
+			address: multicallAddress,
+			abi: MULTICALL3_BALANCE_ABI,
+			functionName: "getEthBalance",
+			args: [input.accountAddress],
+		});
+		descriptors.push({
+			asset: network.nativeTokenSymbol,
+			decimals: 18,
+		});
+	}
+
+	for (const token of network.tokens) {
+		if (!token.address) continue;
+		calls.push({
+			address: token.address,
+			abi: erc20Abi,
+			functionName: "balanceOf",
+			args: [input.accountAddress],
+		});
+		descriptors.push({
+			asset: token.symbol,
+			decimals: token.decimals,
+		});
+	}
+
+	if (network.aave) {
+		calls.push({
+			address: network.aave.aUsdc,
+			abi: erc20Abi,
+			functionName: "balanceOf",
+			args: [input.accountAddress],
+		});
+		descriptors.push({
+			asset: "aUSDC",
+			decimals: network.contracts.usdcDecimals,
+		});
+	}
+
+	const results =
+		calls.length === 0
+			? []
+			: await publicClient.multicall({
+					contracts: calls,
+					allowFailure: true,
+					blockNumber: targetBlock.number,
+				});
+	const now = new Date().toISOString();
+	const snapshots: BalanceSnapshot[] = [];
+
+	for (let index = 0; index < descriptors.length; index++) {
+		const descriptor = descriptors[index];
+		const result = results[index];
+		if (
+			!result ||
+			result.status !== "success" ||
+			typeof result.result !== "bigint"
+		) {
+			throw new Error(`Interactive balance read failed for ${descriptor.asset}`);
+		}
+		snapshots.push({
+			uid: input.uid,
+			accountAddress: input.accountAddress,
+			chainId: network.chainId,
+			asset: descriptor.asset,
+			balanceRaw: result.result,
+			decimals: descriptor.decimals,
+			blockNumber: targetBlock.number,
+			blockHash: targetBlock.hash,
+			consistencyLevel: "sequenced",
+			projectionStrategy: "rpc_only",
+			projectionVersion: PROJECTION_VERSION,
+			observedAt: now,
+			reconciledAt: now,
+			source: "rpc_interactive_latest",
+		});
+	}
+
+	if (!multicallAddress) {
+		const nativeBalance = await publicClient.getBalance({
+			address: input.accountAddress,
+			blockNumber: targetBlock.number,
+		});
+		snapshots.push({
+			uid: input.uid,
+			accountAddress: input.accountAddress,
+			chainId: network.chainId,
+			asset: network.nativeTokenSymbol,
+			balanceRaw: nativeBalance,
+			decimals: 18,
+			blockNumber: targetBlock.number,
+			blockHash: targetBlock.hash,
+			consistencyLevel: "sequenced",
+			projectionStrategy: "rpc_only",
+			projectionVersion: PROJECTION_VERSION,
+			observedAt: now,
+			reconciledAt: now,
+			source: "rpc_interactive_latest",
+		});
+	}
+
+	// A latest block can be replaced by a sequencer reorg while the Multicall is
+	// running. Verify the exact hash before exposing the snapshot.
+	const verifiedBlock = await publicClient.getBlock({
+		blockNumber: targetBlock.number,
+		includeTransactions: false,
+	});
+	if (
+		!verifiedBlock.hash ||
+		verifiedBlock.hash.toLowerCase() !== targetBlock.hash.toLowerCase()
+	) {
+		throw new Error("Latest block changed during interactive balance refresh");
+	}
+
+	await upsertBalanceSnapshots(env, snapshots);
+	return snapshots;
 }
 
 async function reconcileClaimed(

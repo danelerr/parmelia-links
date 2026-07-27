@@ -1,6 +1,12 @@
 import type { Address, Hex } from "viem";
 import type { Bindings } from "../middlewares/auth";
 import { scheduleEventJob } from "./eventScheduler";
+import {
+	createChainEpochGuard,
+	getChainReorgEpoch,
+	prepareChainEpochGuardDelete,
+	prepareChainEpochGuardInsert,
+} from "./chainEpoch";
 
 export type ChainConsistencyLevel =
 	| "sequenced"
@@ -117,6 +123,7 @@ export async function journalBlockEvents(
 		events: JournalEvent[];
 		userEvents?: JournalUserEvent[];
 		userOperationReceipts?: JournalUserOperationReceipt[];
+		expectedReorgEpoch?: number;
 	},
 ): Promise<JournalWriteResult> {
 	const { block } = input;
@@ -142,7 +149,16 @@ export async function journalBlockEvents(
 		);
 	}
 
-	const statements: D1PreparedStatement[] = [];
+	const expectedReorgEpoch =
+		input.expectedReorgEpoch ??
+		await getChainReorgEpoch(env, block.chainId);
+	const epochGuard = createChainEpochGuard(
+		block.chainId,
+		expectedReorgEpoch,
+	);
+	const statements: D1PreparedStatement[] = [
+		prepareChainEpochGuardInsert(env, epochGuard),
+	];
 	const insertResultIndexes: Array<{ index: number; eventId: string }> = [];
 	const userEventResultIndexes: number[] = [];
 	const userOperationResultIndexes: number[] = [];
@@ -388,13 +404,15 @@ export async function journalBlockEvents(
 	statements.push(
 		env.PARMELIA_DB.prepare(
 			`INSERT INTO chain_stream_checkpoints (
-				chain_id, stream, block_number, block_hash, consistency_level, updated_at
-			 ) VALUES (?, ?, ?, ?, ?, ?)
+				chain_id, stream, block_number, block_hash, consistency_level,
+				updated_at, reorg_epoch
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(chain_id, stream) DO UPDATE SET
-			 	block_number = excluded.block_number,
-			 	block_hash = excluded.block_hash,
-			 	consistency_level = excluded.consistency_level,
-			 	updated_at = excluded.updated_at
+			   block_number = excluded.block_number,
+			   block_hash = excluded.block_hash,
+			   consistency_level = excluded.consistency_level,
+			   updated_at = excluded.updated_at,
+			   reorg_epoch = excluded.reorg_epoch
 			 WHERE excluded.block_number > chain_stream_checkpoints.block_number
 			    OR (
 			    	excluded.block_number = chain_stream_checkpoints.block_number
@@ -407,8 +425,10 @@ export async function journalBlockEvents(
 			block.blockHash.toLowerCase(),
 			block.consistencyLevel,
 			now,
+			expectedReorgEpoch,
 		),
 	);
+	statements.push(prepareChainEpochGuardDelete(env, epochGuard));
 
 	const results = await env.PARMELIA_DB.batch(statements);
 	const insertedEventIds = new Set<string>();

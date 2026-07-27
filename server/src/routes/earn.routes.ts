@@ -19,13 +19,15 @@ import {
 	buildDepositCalls,
 	buildWithdrawCalls,
 	getEarnStatus,
-	getSavingsBalance,
 	isEarnConfigured,
 } from "../services/earn";
 import { createPendingPayment, getUserByUid } from "../services/storage";
 import { buildSponsoredUserOp, encodeExecuteBatch, serializeBigInts } from "../services/userOp";
 import { logError, logInfo } from "../services/logger";
 import { selectUserOperationTransport } from "../services/userOperationTransport";
+import { readBalanceModel } from "../services/homeReadModel";
+import { formatSnapshotBalances } from "../services/balanceReadModel";
+import { refreshWalletBalancesLatest } from "../services/balanceReconciler";
 
 const earnRoutes = new Hono<AppContext>();
 
@@ -35,33 +37,40 @@ const EARN_CALL_GAS_LIMIT = 600000n;
 earnRoutes.get("/config", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
-	const status = await getEarnStatus(c.env).catch(() => ({
-		enabled: false,
-		canDeposit: false,
-		canWithdraw: false,
-		apyPercent: 0,
-	}));
+	const [status, initialModel] = await Promise.all([
+		getEarnStatus(c.env).catch(() => ({
+			enabled: false,
+			canDeposit: false,
+			canWithdraw: false,
+			apyPercent: 0,
+		})),
+		readBalanceModel(c.env, user.sub),
+	]);
 
-	let savings = "0";
-	let available = "0";
-	const profile = await getUserByUid(c.env, user.sub);
-	if (profile?.walletAddress && network.aave) {
-		const account = profile.walletAddress as `0x${string}`;
+	let savings = initialModel.balance.savings;
+	let available = initialModel.balance.tokens.USDC ?? null;
+	let balanceStatus = initialModel.balance.status;
+	if (
+		c.req.query("fresh") === "1" &&
+		initialModel.walletAddress &&
+		network.aave
+	) {
 		try {
-			const publicClient = getPublicClient(c.env);
-			const [availableRaw, savingsValue] = await Promise.all([
-				publicClient.readContract({
-					address: network.contracts.usdc,
-					abi: erc20Abi,
-					functionName: "balanceOf",
-					args: [account],
-				}) as Promise<bigint>,
-				getSavingsBalance(c.env, account),
-			]);
-			available = formatUnits(availableRaw, network.contracts.usdcDecimals);
-			savings = savingsValue;
-		} catch {
-			/* balances stay "0"; the UI shows the error state on prepare */
+			const snapshots = await refreshWalletBalancesLatest(c.env, {
+				uid: user.sub,
+				accountAddress: initialModel.walletAddress,
+				chainId: network.chainId,
+			});
+			const balances = formatSnapshotBalances(snapshots);
+			available = balances.USDC ?? available;
+			savings = balances.aUSDC ?? savings;
+			balanceStatus = "fresh";
+		} catch (error) {
+			// Keep the last known D1 values. A transient provider failure must not
+			// turn a real position into a fake zero balance.
+			logError("earn_interactive_balance_refresh_failed", error, {
+				uid: user.sub,
+			});
 		}
 	}
 
@@ -73,6 +82,7 @@ earnRoutes.get("/config", requireAuth, async (c) => {
 		token: "USDC",
 		savings,
 		available,
+		balanceStatus,
 	});
 });
 

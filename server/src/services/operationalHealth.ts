@@ -17,6 +17,9 @@ type CountRow = {
 	indexer_registry_failed: number;
 	provider_subscription_active: number;
 	provider_subscription_failed: number;
+	reorg_replay_active: number;
+	reorg_replay_failed: number;
+	indexer_active_shards: number;
 };
 
 type StreamRow = {
@@ -42,6 +45,9 @@ export type OperationalHealthSummary = {
 		indexerRegistryFailed: number;
 		providerSubscriptionActive: number;
 		providerSubscriptionFailed: number;
+		reorgReplayActive: number;
+		reorgReplayFailed: number;
+		indexerActiveShards: number;
 	};
 	streams: Array<{
 		name: string;
@@ -100,9 +106,28 @@ export async function getOperationalHealth(
 				 AS provider_subscription_active,
 				(SELECT COUNT(*) FROM provider_subscription_state
 				 WHERE status = 'failed')
-				 AS provider_subscription_failed`,
+				 AS provider_subscription_failed,
+				(SELECT COUNT(*) FROM chain_reorg_replay_requests
+				 WHERE status IN ('pending', 'failed'))
+				 AS reorg_replay_active,
+				(SELECT COUNT(*) FROM chain_reorg_replay_requests
+				 WHERE status = 'failed')
+				 AS reorg_replay_failed,
+				(SELECT COUNT(*)
+				 FROM indexer_shards s
+				 WHERE s.chain_id = ?
+				   AND s.status = 'active'
+				   AND EXISTS (
+				     SELECT 1
+				     FROM indexer_wallet_assignments a
+				     WHERE a.chain_id = s.chain_id
+				       AND a.stream = s.stream
+				       AND a.shard_id = s.shard_id
+				       AND a.active = 1
+				   ))
+				 AS indexer_active_shards`,
 		)
-			.bind(new Date().toISOString())
+			.bind(new Date().toISOString(), network.chainId)
 			.first<CountRow>(),
 		env.PARMELIA_DB.prepare(
 			`SELECT stream, block_number, updated_at
@@ -155,6 +180,9 @@ export async function getOperationalHealth(
 	if (counts.provider_subscription_failed > 0) {
 		warnings.push("provider_subscription_failed");
 	}
+	if (counts.reorg_replay_failed > 0) {
+		warnings.push("chain_reorg_replay_failed");
+	}
 	// Stream age is informational in an event-driven indexer. With no relevant
 	// chain event a checkpoint is expected to stay unchanged indefinitely; age
 	// alone no longer means the Worker is unhealthy.
@@ -179,6 +207,9 @@ export async function getOperationalHealth(
 					counts.provider_subscription_active,
 				providerSubscriptionFailed:
 					counts.provider_subscription_failed,
+				reorgReplayActive: counts.reorg_replay_active,
+				reorgReplayFailed: counts.reorg_replay_failed,
+				indexerActiveShards: counts.indexer_active_shards,
 			},
 			streams: streamViews,
 		},

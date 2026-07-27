@@ -2,6 +2,11 @@ import type { Bindings } from "../middlewares/auth";
 import { logError } from "./logger";
 import { scheduleEventJob } from "./eventScheduler";
 import { scheduleWalletIndexerPartitions } from "./indexerPartitions";
+import {
+	createChainEpochGuard,
+	prepareChainEpochGuardDelete,
+	prepareChainEpochGuardInsert,
+} from "./chainEpoch";
 
 export type UserRecord = {
 	uid: string;
@@ -1309,9 +1314,35 @@ type LedgerRow = {
 export async function writeLedgerEntries(
 	env: Bindings,
 	entries: LedgerEntry[],
-	options: { userEvents?: LedgerUserEvent[] } = {},
+	options: {
+		userEvents?: LedgerUserEvent[];
+		expectedReorgEpoch?: number;
+	} = {},
 ): Promise<boolean[]> {
 	if (entries.length === 0) return [];
+	const chainIds = new Set(
+		entries.flatMap((entry) =>
+			entry.chainId === null || entry.chainId === undefined
+				? []
+				: [entry.chainId],
+		),
+	);
+	if (options.expectedReorgEpoch !== undefined && chainIds.size !== 1) {
+		throw new Error(
+			"Epoch-guarded ledger writes must belong to exactly one chain",
+		);
+	}
+	const guardedChainId =
+		options.expectedReorgEpoch === undefined
+			? null
+			: [...chainIds][0];
+	const epochGuard =
+		guardedChainId === null
+			? null
+			: createChainEpochGuard(
+					guardedChainId,
+					options.expectedReorgEpoch!,
+				);
 	const stmt = env.PARMELIA_DB.prepare(
 		`INSERT OR IGNORE INTO ledger (
 			id, uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
@@ -1386,12 +1417,20 @@ export async function writeLedgerEntries(
 			now,
 		),
 	);
-	const results = await env.PARMELIA_DB.batch([
+	const statements = [
+		...(epochGuard
+			? [prepareChainEpochGuardInsert(env, epochGuard)]
+			: []),
 		...entryStatements,
 		...userEventStatements,
-	]);
+		...(epochGuard
+			? [prepareChainEpochGuardDelete(env, epochGuard)]
+			: []),
+	];
+	const results = await env.PARMELIA_DB.batch(statements);
+	const entryResultOffset = epochGuard ? 1 : 0;
 	return results
-		.slice(0, entries.length)
+		.slice(entryResultOffset, entryResultOffset + entries.length)
 		.map((result) => (result.meta?.changes ?? 0) > 0);
 }
 
@@ -1559,13 +1598,44 @@ export async function getSyncCursor(env: Bindings, key: string): Promise<bigint 
 	return row ? BigInt(row.last_block) : null;
 }
 
-export async function setSyncCursor(env: Bindings, key: string, lastBlock: bigint) {
-	await d1Run(
-		env,
+export async function setSyncCursor(
+	env: Bindings,
+	key: string,
+	lastBlock: bigint,
+	options: {
+		chainId?: number;
+		expectedReorgEpoch?: number;
+	} = {},
+): Promise<void> {
+	if (
+		options.expectedReorgEpoch !== undefined &&
+		options.chainId === undefined
+	) {
+		throw new Error("Epoch-guarded cursors require a chain id");
+	}
+	const epochGuard =
+		options.expectedReorgEpoch === undefined ||
+		options.chainId === undefined
+			? null
+			: createChainEpochGuard(
+					options.chainId,
+					options.expectedReorgEpoch,
+				);
+	const cursorStatement = env.PARMELIA_DB.prepare(
 		`INSERT INTO sync_state (key, last_block, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT(key) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at`,
-		[key, lastBlock.toString(), nowIso()],
-	);
+		 ON CONFLICT(key) DO UPDATE SET
+		   last_block = excluded.last_block,
+		   updated_at = excluded.updated_at`,
+	).bind(key, lastBlock.toString(), nowIso());
+	if (!epochGuard) {
+		await cursorStatement.run();
+		return;
+	}
+	await env.PARMELIA_DB.batch([
+		prepareChainEpochGuardInsert(env, epochGuard),
+		cursorStatement,
+		prepareChainEpochGuardDelete(env, epochGuard),
+	]);
 }
 
 // ===== D1 leases =====
@@ -2982,7 +3052,10 @@ export async function updateCrosschainOp(
 		)
 	) {
 		await scheduleEventJob(env, "crosschain_relayer", {
-			delayMs: 30_000,
+			// Circle recommends 5-second attestation polling. A fixed 30-second
+			// delay here was paid once after burn and again after attestation,
+			// adding about a minute to every nominally Fast transfer.
+			delayMs: 5_000,
 			reason: "crosschain_operation_advanced",
 		});
 	}

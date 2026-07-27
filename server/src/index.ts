@@ -131,7 +131,14 @@ app.use(
 			return configured.includes(origin) ? origin : null;
 		},
 		allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-		allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
+		allowHeaders: [
+			"Content-Type",
+			"Authorization",
+			"Idempotency-Key",
+			"If-None-Match",
+			"If-Match",
+			"X-Request-Id",
+		],
 		exposeHeaders: ["X-Request-Id", "ETag", "X-State-Version"],
 	}),
 );
@@ -199,6 +206,8 @@ app.get("/health", async (c) => {
 				operational.summary.queues.routerIntentActive,
 				operational.summary.queues.indexerRegistryActive,
 				operational.summary.queues.providerSubscriptionActive,
+				operational.summary.queues.reorgReplayActive,
+				operational.summary.queues.indexerActiveShards,
 			].some((value) => value > 0)
 		) {
 			eventRecoveryLastAttemptAt = Date.now();
