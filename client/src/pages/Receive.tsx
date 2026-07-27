@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import type { User } from "../lib/firebase";
+import { QRCodeSVG } from "qrcode.react";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { notifySuccess } from "../lib/notify";
@@ -114,6 +115,20 @@ export default function Receive({ user }: { user: User }) {
 							</span>
 						</div>
 						<p className="text-[12px] text-text-muted leading-relaxed mb-4">{t("receive.advDesc")}</p>
+						<div
+							className="flex justify-center mb-4"
+							aria-label={t("receive.crosschainQr")}
+						>
+							<div className="bg-white rounded-[16px] p-3">
+								<QRCodeSVG
+									value={ccLink}
+									size={164}
+									bgColor="#ffffff"
+									fgColor="#0A0A0B"
+									level="M"
+								/>
+							</div>
+						</div>
 						<div className="flex gap-2">
 							<button onClick={() => copy(ccLink, t("receive.linkCopied"))} className="btn btn-ghost flex-1 text-[13px]">
 								{t("receive.copyLink")}

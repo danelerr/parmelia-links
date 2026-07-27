@@ -29,8 +29,9 @@ interface EarnConfig {
 	canDeposit: boolean;
 	canWithdraw: boolean;
 	apyPercent: number;
-	savings: string;
-	available: string;
+	savings: string | null;
+	available: string | null;
+	balanceStatus: "fresh" | "stale" | "unavailable";
 }
 
 type Action = "deposit" | "withdraw";
@@ -59,23 +60,32 @@ export default function Earn({ user }: { user: User }) {
 		result?.pending ? result.userOpHash : null,
 	);
 
-	const loadConfig = useCallback(async () => {
+	const loadConfig = useCallback(async (fresh = false) => {
 		try {
-			setLoadFailed(false);
-			const data = await apiFetch<EarnConfig>("/earn/config", { user });
+			if (!fresh) setLoadFailed(false);
+			const data = await apiFetch<EarnConfig>(
+				fresh ? "/earn/config?fresh=1" : "/earn/config",
+				{ user },
+			);
 			setConfig(data);
+			return true;
 		} catch {
-			setLoadFailed(true);
+			if (!fresh) setLoadFailed(true);
+			return false;
 		}
 	}, [user]);
 
 	useEffect(() => {
-		void loadConfig();
+		void loadConfig().then((loaded) => {
+			if (loaded) void loadConfig(true);
+		});
 	}, [loadConfig]);
 
 	// The savings/available split only reflects the operation once it settles.
 	useEffect(() => {
-		if (poll.status === "confirmed") void loadConfig();
+		if (poll.status === "included" || poll.status === "confirmed") {
+			void loadConfig(true);
+		}
 	}, [poll.status, loadConfig]);
 
 	const sourceBalance = action === "deposit" ? config?.available : config?.savings;
@@ -126,13 +136,15 @@ export default function Earn({ user }: { user: User }) {
 			track(action === "deposit" ? "earn_deposit" : "earn_withdraw", {});
 			setResult({
 				action,
-				amount: useMax ? config.savings : amount,
+				// useAll() already copied the exact source balance into `amount`;
+				// the prepare request alone swaps that value for the "max" sentinel.
+				amount,
 				pending: !submit.confirmed,
 				userOpHash: prep.userOpHash,
 			});
 			setAmount("");
 			setUseMax(false);
-			void loadConfig();
+			if (submit.confirmed) void loadConfig(true);
 		} catch (err) {
 			notifyError(err, t("earn.error"));
 		} finally {
@@ -150,7 +162,10 @@ export default function Earn({ user }: { user: User }) {
 	// ===== Result (success / in-flight / failed) =====
 	if (result) {
 		const opFailed = result.pending && poll.status === "failed";
-		const settled = !result.pending || poll.status === "confirmed";
+		const settled =
+			!result.pending ||
+			poll.status === "included" ||
+			poll.status === "confirmed";
 		return (
 			<Screen>
 				<BackHeader to="/" title={t("earn.title")} />
@@ -177,6 +192,14 @@ export default function Earn({ user }: { user: User }) {
 	}
 
 	const shownAmount = useMax && config ? config.savings : amount;
+	const shownSavings =
+		config?.savings === null || config?.savings === undefined
+			? "—"
+			: formatNumber(config.savings, 2);
+	const shownAvailable =
+		config?.available === null || config?.available === undefined
+			? "—"
+			: formatNumber(config.available, 2);
 
 	// ===== Main =====
 	return (
@@ -218,7 +241,7 @@ export default function Earn({ user }: { user: User }) {
 			{loadFailed && (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<p className="text-[15px] text-text mb-3">{t("earn.loadError")}</p>
-					<button onClick={() => void loadConfig()} className="btn btn-ghost btn-sm">
+					<button onClick={() => void loadConfig(true)} className="btn btn-ghost btn-sm">
 						{t("earn.retry")}
 					</button>
 				</div>
@@ -238,7 +261,7 @@ export default function Earn({ user }: { user: User }) {
 					<div className="bg-surface border border-border rounded-[18px] p-5 mb-4 shadow-e1">
 						<p className="text-[13px] text-text-muted mb-2">{t("earn.savingsLabel")}</p>
 						<p className="font-display text-[38px] leading-none text-text tabular mb-2">
-							{formatNumber(config.savings, 2)} <span className="text-[20px]">USDC</span>
+							{shownSavings} <span className="text-[20px]">USDC</span>
 						</p>
 						<p className="text-[12px] text-text-faint">{t("earn.apyLine", { apy: config.apyPercent })}</p>
 					</div>
@@ -261,11 +284,12 @@ export default function Earn({ user }: { user: User }) {
 						<div className="flex items-center justify-between mb-3">
 							<span className="text-[13px] text-text-muted">
 								{action === "deposit"
-									? t("earn.availableLabel", { balance: formatNumber(config.available, 2) })
-									: t("earn.savedLabel", { balance: formatNumber(config.savings, 2) })}
+									? t("earn.availableLabel", { balance: shownAvailable })
+									: t("earn.savedLabel", { balance: shownSavings })}
 							</span>
 							<button
 								onClick={useAll}
+								disabled={!sourceBalance}
 								className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
 							>
 								{t("earn.useAll")}
@@ -292,6 +316,11 @@ export default function Earn({ user }: { user: User }) {
 						{config && action === "deposit" && !config.canDeposit && (
 							<p role="status" aria-live="polite" className="text-[12px] text-text-muted mt-3 text-center">
 								{t("earn.depositsUnavailable")}
+							</p>
+						)}
+						{(config.available === null || config.savings === null) && (
+							<p role="status" aria-live="polite" className="text-[12px] text-text-muted mt-3 text-center">
+								{t("earn.balancesUnavailable")}
 							</p>
 						)}
 					</div>

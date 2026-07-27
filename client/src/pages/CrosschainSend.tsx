@@ -16,7 +16,7 @@ import { hexToBytes } from "../lib/hex";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
-import { formatNumber } from "../lib/format";
+import { formatAmount, formatNumber } from "../lib/format";
 import Logo from "../components/Logo";
 import AmountInput from "../components/AmountInput";
 import Screen from "../components/Screen";
@@ -84,9 +84,12 @@ export default function CrosschainSend({ user }: { user: User }) {
 	// amount/network/mode) are dropped so a stale quote can never enable Send.
 	const quoteSeqRef = useRef(0);
 
-	const loadBalance = useCallback(async () => {
+	const loadBalance = useCallback(async (fresh = false) => {
 		try {
-			const res = await fetchWithAuth(user, `${SERVER_URL}/user/balance`);
+			const res = await fetchWithAuth(
+				user,
+				`${SERVER_URL}/user/balance${fresh ? "?fresh=1" : ""}`,
+			);
 			if (!res.ok) return;
 			const data = await res.json();
 			setBalance((data.tokens && data.tokens.USDC) ?? data.usdc);
@@ -108,7 +111,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 				setEnabled(false);
 			}
 		})();
-		void loadBalance();
+		void loadBalance(true);
 	}, [user, loadBalance]);
 
 	// Debounced quoting.
@@ -149,7 +152,8 @@ export default function CrosschainSend({ user }: { user: User }) {
 		if (!result?.opId) return;
 		let polls = 0;
 		let stopped = false;
-		const timer = setInterval(async () => {
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const pollStatus = async () => {
 			if (stopped) return;
 			polls++;
 			try {
@@ -158,7 +162,6 @@ export default function CrosschainSend({ user }: { user: User }) {
 				setOpStatus(data);
 				if (!IN_FLIGHT_STATUSES.has(data.status)) {
 					stopped = true;
-					clearInterval(timer);
 					setTrackingEnded(true);
 				}
 			} catch {
@@ -166,13 +169,16 @@ export default function CrosschainSend({ user }: { user: User }) {
 			}
 			if (polls >= TRACK_MAX_POLLS && !stopped) {
 				stopped = true;
-				clearInterval(timer);
 				setTrackingEnded(true);
 			}
-		}, TRACK_INTERVAL_MS);
+			if (!stopped) {
+				timer = setTimeout(() => void pollStatus(), TRACK_INTERVAL_MS);
+			}
+		};
+		void pollStatus();
 		return () => {
 			stopped = true;
-			clearInterval(timer);
+			if (timer) clearTimeout(timer);
 		};
 	}, [result, user]);
 
@@ -217,7 +223,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 			setTrackingEnded(false);
 			setQuote(null);
 			setAmount("");
-			void loadBalance();
+			void loadBalance(true);
 		} catch (err) {
 			notifyError(err, t("crosschain.sendError"));
 		} finally {
@@ -384,7 +390,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 									onClick={() => setAmount(balance)}
 									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
 								>
-									{t("crosschain.balanceUseAll", { balance: formatNumber(balance, 6) })}
+									{t("crosschain.balanceUseAll", { balance: formatAmount(balance, "USDC") })}
 								</button>
 							)}
 						</div>

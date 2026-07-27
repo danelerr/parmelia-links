@@ -10,7 +10,7 @@ compartidos, particionados e idempotentes.
 ```text
 señal HTTP firmada ─┐
 acción del dominio ─┼─> scheduler por partición ─> Queue ─> RPC canónico
-fallback por Home ──┘                                  │
+barrido de seguridad ─┘                                │
                                                        v
                                       journal/checkpoint + proyecciones D1
 ```
@@ -76,9 +76,13 @@ concurrencia y prioridad, se ejecuta la sonda y se despliega la configuración.
 - Cada job tiene presupuesto de llamadas y bloques; si no alcanza el objetivo,
   publica una continuación sobre la misma partición.
 - Una wallet nueva activa exclusivamente sus particiones.
-- Agenda vacía significa cero alarmas, mensajes Queue y lecturas RPC de
-  mantenimiento. Puede existir trabajo sin usuarios conectados sólo si hubo un
-  evento real pendiente: una transacción, webhook, retry o estado de dominio.
+- Con wallets activas, una única alarma `indexer_safety_sweep` compara
+  periódicamente el head `safe` con los checkpoints y agenda sólo streams
+  atrasados. `INDEXER_SAFETY_SWEEP_SECONDS` admite 60–86400 segundos y vale
+  3600 por defecto.
+- Con cero wallets activas la alarma se elimina: no hay mensajes Queue ni
+  lecturas RPC de mantenimiento. Que no haya usuarios conectados no detiene la
+  detección de depósitos de wallets ya registradas.
 
 `INDEXER_WALLET_SHARD_SIZE` está acotado a 500. Cada webhook Address Activity
 posee 200 shards, por lo que nunca supera 100.000 direcciones. Para más wallets
@@ -153,13 +157,15 @@ La recepción es:
 ## Despliegue
 
 1. Rotar cualquier credencial expuesta.
-2. Aplicar migraciones D1, incluida `0026_indexer_work_partitions.sql`.
+2. Aplicar migraciones D1, incluida `0027_indexer_consistency.sql`.
 3. Cargar URLs/capacidades y credenciales mediante secrets.
 4. Ejecutar `pnpm check:rpc-indexer`.
 5. Ejecutar `pnpm --filter server cf-typegen:check`, tests y dry-run de Wrangler.
 6. Desplegar el Worker.
-7. Habilitar webhooks sólo después de validar `/health` y sincronización.
-8. Probar depósito, duplicado de webhook y recuperación desde checkpoint.
+7. Consultar `/health` una vez: además de validar D1/bindings, arma el primer
+   `indexer_safety_sweep` para wallets que ya existían antes del despliegue.
+8. Habilitar webhooks sólo después de validar health y sincronización.
+9. Probar depósito, duplicado de webhook y recuperación desde checkpoint.
 
 ## Observabilidad y respuesta
 
@@ -169,6 +175,8 @@ Logs esperados, sin URLs:
 - `rpc_request_rejected_distributed_admission`;
 - `rpc_request_rejected_circuit_open`;
 - `indexer_run` y watchers por `partition`;
+- `indexer_safety_sweep`;
+- `chain_reorg_recovered` / `chain_reorg_replay_schedule_failed`;
 - `alchemy_webhook_signal_processed`;
 - `alchemy_webhook_addresses_synced`.
 
@@ -176,11 +184,11 @@ Logs esperados, sin URLs:
 |---|---|
 | endpoint gestionado cae | fallback elegible y circuit breaker |
 | endpoint de rango amplio cae | scanner reduce el span hasta otro proveedor elegible |
-| webhook cae | siguiente señal/Home o reparación dirigida retoma el checkpoint |
+| webhook cae | el barrido autónomo retoma sólo checkpoints atrasados |
 | webhook se duplica | delivery ID y evento canónico deduplican |
 | Queue reintenta | lease D1 e idempotencia hacen inerte la duplicación |
 | Worker muere durante RPC | lease de admisión expira; checkpoint no confirmado no avanza |
-| reorg | se invalida la rama, se revierten proyecciones y se reproduce el journal |
+| reorg | el epoch chain-wide invalida la rama, retrocede todos los streams y un outbox durable los reproduce |
 
 Cambiar proveedor o plan es configuración. Cambiar de HTTP push a stream es
 cambiar solamente el adaptador de señales. Cambiar de D1 a una persistencia

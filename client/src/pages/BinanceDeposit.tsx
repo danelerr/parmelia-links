@@ -22,22 +22,6 @@ import { Spinner } from "../components/icons";
 // exposes no third-party deep link that pre-fills network/address/amount, so the
 // real low-friction win is the copy + QR + network lock below.
 const BINANCE_WITHDRAW_URL = "https://www.binance.com/en/my/wallet/account/main/withdrawal/crypto/USDC";
-// Android: open the Binance APP via intent:// with Binance's OWN scheme (bnc).
-// With scheme=https Chrome treats the target as browsable and opens the web
-// tab; bnc:// is resolvable ONLY by the app, so Chrome launches it (worst case
-// at its home screen) or uses the web fallback when it isn't installed.
-const BINANCE_ANDROID_INTENT =
-	"intent://app.binance.com/en/my/wallet/account/main/withdrawal/crypto/USDC#Intent;scheme=bnc;package=com.binance.dev;S.browser_fallback_url=" +
-	encodeURIComponent(BINANCE_WITHDRAW_URL) +
-	";end";
-
-function openBinance() {
-	if (/android/i.test(navigator.userAgent)) {
-		window.location.href = BINANCE_ANDROID_INTENT;
-		return;
-	}
-	window.open(BINANCE_WITHDRAW_URL, "_blank", "noopener");
-}
 
 export default function BinanceDeposit({ user }: { user: User }) {
 	const { t } = useTranslation();
@@ -124,9 +108,14 @@ export default function BinanceDeposit({ user }: { user: User }) {
 
 					<div className="flex-1" />
 
-					<button onClick={openBinance} className="btn btn-primary btn-block">
+					<a
+						href={BINANCE_WITHDRAW_URL}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="btn btn-primary btn-block"
+					>
 						{t("binanceDeposit.openBinance")}
-					</button>
+					</a>
 					<a
 					href={SUPPORT_URL}
 					target="_blank"

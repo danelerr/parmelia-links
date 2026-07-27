@@ -235,7 +235,7 @@ export default function CreateLink({ user }: { user: User }) {
 					placeholder="0"
 					value={amount}
 					onChange={setAmount}
-					className="w-full max-w-[260px] bg-transparent text-center font-display text-[60px] leading-none text-text placeholder:text-text-faint tabular"
+					className="w-full max-w-[260px] bg-transparent text-center font-display text-[60px] leading-none text-text placeholder:text-text-faint tabular focus-visible:outline-none"
 				/>
 				<div className="seg-track mt-4">
 					{activeNetwork.currencies.map((c) => (

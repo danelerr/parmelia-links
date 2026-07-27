@@ -11,7 +11,7 @@ import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { useTranslation } from "react-i18next";
-import { formatNumber } from "../lib/format";
+import { formatAmount, formatNumber } from "../lib/format";
 import Logo from "../components/Logo";
 import AmountInput from "../components/AmountInput";
 import Screen from "../components/Screen";
@@ -66,9 +66,12 @@ export default function Swap({ user }: { user: User }) {
 		result?.pending ? result.userOpHash : null,
 	);
 
-	const loadBalances = useCallback(async () => {
+	const loadBalances = useCallback(async (fresh = false) => {
 		try {
-			const res = await fetchWithAuth(user, `${SERVER_URL}/user/balance`);
+			const res = await fetchWithAuth(
+				user,
+				`${SERVER_URL}/user/balance${fresh ? "?fresh=1" : ""}`,
+			);
 			if (!res.ok) return;
 			const data = await res.json();
 			setBalances(data.tokens || { ETH: data.eth, USDC: data.usdc });
@@ -79,7 +82,9 @@ export default function Swap({ user }: { user: User }) {
 
 	// The balances only reflect the swap once it settles on-chain.
 	useEffect(() => {
-		if (poll.status === "confirmed") void loadBalances();
+		if (poll.status === "included" || poll.status === "confirmed") {
+			void loadBalances(true);
+		}
 	}, [poll.status, loadBalances]);
 
 	useEffect(() => {
@@ -94,7 +99,7 @@ export default function Swap({ user }: { user: User }) {
 				setSwapsEnabled(false);
 			}
 		})();
-		void loadBalances();
+		void loadBalances(true);
 	}, [user, loadBalances]);
 
 	// Debounced quoting whenever the inputs change.
@@ -158,7 +163,7 @@ export default function Swap({ user }: { user: User }) {
 			});
 			setQuote(null);
 			setAmount("");
-			void loadBalances();
+			if (submit.confirmed) void loadBalances(true);
 		} catch (err) {
 			notifyError(err, t("swap.swapError"));
 		} finally {
@@ -177,7 +182,10 @@ export default function Swap({ user }: { user: User }) {
 	// ===== Success screen (also hosts the in-flight and failed states) =====
 	if (result) {
 		const swapFailed = result.pending && poll.status === "failed";
-		const settled = !result.pending || poll.status === "confirmed";
+		const settled =
+			!result.pending ||
+			poll.status === "included" ||
+			poll.status === "confirmed";
 		const effectiveTx = result.txHash ?? poll.txHash;
 		return (
 			<Screen>
@@ -231,7 +239,7 @@ export default function Swap({ user }: { user: User }) {
 									onClick={() => setAmount(balanceIn)}
 									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
 								>
-									{t("swap.balanceUseAll", { balance: formatNumber(balanceIn, 6) })}
+									{t("swap.balanceUseAll", { balance: formatAmount(balanceIn, tokenIn) })}
 								</button>
 							)}
 						</div>

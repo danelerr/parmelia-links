@@ -11,12 +11,13 @@ export type PaymentLifecycleStatus =
 	| "prepared"
 	| "submitting"
 	| "submitted"
+	| "included"
 	| "confirmed"
 	| "failed"
 	| "unknown";
 
-const POLL_MS = 5000;
-const MAX_POLLS = 36;
+const POLL_MS = 3000;
+const MAX_POLLS = 60;
 
 /** Pass nulls to keep the hook idle when no submitted operation is being tracked. */
 export function usePaymentStatus(user: User | null, userOpHash: string | null) {
@@ -31,7 +32,8 @@ export function usePaymentStatus(user: User | null, userOpHash: string | null) {
 		setEnded(false);
 		let polls = 0;
 		let stopped = false;
-		const timer = setInterval(async () => {
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const poll = async () => {
 			if (stopped) return;
 			polls++;
 			try {
@@ -42,9 +44,12 @@ export function usePaymentStatus(user: User | null, userOpHash: string | null) {
 				if (stopped) return;
 				setStatus(data.status);
 				if (data.txHash) setTxHash(data.txHash);
-				if (data.status === "confirmed" || data.status === "failed") {
+				if (
+					data.status === "included" ||
+					data.status === "confirmed" ||
+					data.status === "failed"
+				) {
 					stopped = true;
-					clearInterval(timer);
 					setEnded(true);
 				}
 			} catch {
@@ -52,13 +57,15 @@ export function usePaymentStatus(user: User | null, userOpHash: string | null) {
 			}
 			if (polls >= MAX_POLLS && !stopped) {
 				stopped = true;
-				clearInterval(timer);
 				setEnded(true);
 			}
-		}, POLL_MS);
+			if (!stopped) timer = setTimeout(() => void poll(), POLL_MS);
+		};
+		// Do not impose a full polling interval before the first receipt check.
+		void poll();
 		return () => {
 			stopped = true;
-			clearInterval(timer);
+			if (timer) clearTimeout(timer);
 		};
 	}, [user, userOpHash]);
 

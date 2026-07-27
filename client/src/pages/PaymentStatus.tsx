@@ -28,7 +28,10 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 	const userOpHash = searchParams.get("uoh");
 	const poll = usePaymentStatus(pendingParam ? user : null, pendingParam ? userOpHash : null);
 	const failed = pendingParam && poll.status === "failed";
-	const confirmed = !pendingParam || poll.status === "confirmed";
+	const confirmed =
+		!pendingParam ||
+		poll.status === "included" ||
+		poll.status === "confirmed";
 	const pending = !confirmed && !failed;
 	const txHash = searchParams.get("tx") || poll.txHash;
 
