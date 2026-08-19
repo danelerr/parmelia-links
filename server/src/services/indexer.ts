@@ -1,6 +1,6 @@
 // Queue-driven mini-indexer (Cloudflare-native; no external hosting).
 //
-// Parmelia relays every in-app operation, so those are written to the ledger at
+// GatoPago relays every in-app operation, so those are written to the ledger at
 // submit time. The ONLY movements the app can't see are incoming transfers sent
 // from outside (bridge deliveries, external wallets). This job scans ERC-20
 // Transfer logs to our users' wallets since the last cursor and ingests them as
@@ -258,7 +258,6 @@ function transferLogKey(log: TransferLog): string | null {
 	return `${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`;
 }
 export { getIndexerScanHead };
-export type { IndexerScanHead };
 
 /**
  * End of this Queue delivery's scan window. More wallet filters reduce the
@@ -629,7 +628,7 @@ export async function runIndexer(
 						priority: 1,
 						payload: {
 						title: "Recibiste un depósito",
-						body: "Abre Parmelia para ver el movimiento confirmado.",
+						body: "Abre GatoPago para ver el movimiento confirmado.",
 						link: "/",
 						},
 					})),
@@ -729,7 +728,7 @@ export async function runIndexer(
 	}
 }
 
-/** Addresses whose transfers are finalized by Parmelia and must not be re-indexed. */
+/** Addresses whose transfers are finalized by GatoPago and must not be re-indexed. */
 export function internalTransferSenderAddresses(env: Bindings): Set<string> {
 	const addresses = new Set([getServerAccount(env).address.toLowerCase()]);
 	if (env.FAUCET_PRIVATE_KEY?.trim()) {
@@ -1244,7 +1243,7 @@ export async function runRecoveryWatcher(
 					payload: {
 						title: "Solicitud de recuperación iniciada",
 						body:
-							"Si no fuiste tú, entra a Parmelia y cancélala antes de 48 horas.",
+							"Si no fuiste tú, entra a GatoPago y cancélala antes de 48 horas.",
 						link: "/settings",
 					},
 				});
@@ -1340,7 +1339,7 @@ export async function runRecoveryWatcher(
 }
 
 /**
- * Canonical ERC-4337 receipt stream for Parmelia accounts. This replaces the
+ * Canonical ERC-4337 receipt stream for GatoPago accounts. This replaces the
  * old per-payment 300k-block `eth_getLogs` lookup with one bounded, adaptive
  * scan per wallet shard. Reconciliation then becomes a D1 lookup (or a point
  * bundler receipt call) regardless of how many users are waiting.

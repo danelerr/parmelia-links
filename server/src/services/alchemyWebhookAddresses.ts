@@ -136,7 +136,7 @@ async function writeProviderState(
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const mirrorVersion = `incremental-v1:${input.itemCount}`;
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`INSERT INTO provider_subscription_state (
 			provider, subscription_id, desired_hash, remote_hash, item_count,
 			status, last_attempt_at, last_success_at, last_error_code
@@ -172,7 +172,7 @@ async function getOrCreateSyncState(
 	webhookId: string,
 ): Promise<SubscriptionSyncState> {
 	const now = new Date().toISOString();
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`INSERT OR IGNORE INTO provider_subscription_sync_state (
 			provider, subscription_id, phase, next_cursor, scanned_count,
 			created_at, updated_at
@@ -180,7 +180,7 @@ async function getOrCreateSyncState(
 	)
 		.bind(PROVIDER, webhookId, now, now)
 		.run();
-	const state = await env.PARMELIA_DB.prepare(
+	const state = await env.GATOPAGO_DB.prepare(
 		`SELECT phase, next_cursor, scanned_count
 		 FROM provider_subscription_sync_state
 		 WHERE provider = ? AND subscription_id = ?`,
@@ -217,7 +217,7 @@ async function bootstrapRemoteMirror(
 		const now = new Date().toISOString();
 		const phase = page.nextCursor === null ? "ready" : "scanning";
 		const statements = page.addresses.map((address) =>
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO provider_subscription_items (
 					provider, subscription_id, item, synced_at
 				 ) VALUES (?, ?, ?, ?)
@@ -226,7 +226,7 @@ async function bootstrapRemoteMirror(
 			).bind(PROVIDER, input.webhookId, address, now),
 		);
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE provider_subscription_sync_state
 				 SET phase = ?, next_cursor = ?, scanned_count = ?, updated_at = ?
 				 WHERE provider = ? AND subscription_id = ?`,
@@ -239,7 +239,7 @@ async function bootstrapRemoteMirror(
 				input.webhookId,
 			),
 		);
-		await env.PARMELIA_DB.batch(statements);
+		await env.GATOPAGO_DB.batch(statements);
 		state = {
 			phase,
 			next_cursor: page.nextCursor,
@@ -260,7 +260,7 @@ async function listAddressMutations(
 	},
 ): Promise<{ add: string[]; remove: string[] }> {
 	const [additions, removals] = await Promise.all([
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT DISTINCT a.account_address AS address
 			 FROM indexer_wallet_assignments a
 			 LEFT JOIN provider_subscription_items i
@@ -282,7 +282,7 @@ async function listAddressMutations(
 				PATCH_CHUNK_SIZE,
 			)
 			.all<{ address: string }>(),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT i.item AS address
 			 FROM provider_subscription_items i
 			 WHERE i.provider = ? AND i.subscription_id = ?
@@ -325,7 +325,7 @@ async function updateLocalMirror(
 	const now = new Date().toISOString();
 	const statements = [
 		...changes.add.map((address) =>
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO provider_subscription_items (
 					provider, subscription_id, item, synced_at
 				 ) VALUES (?, ?, ?, ?)
@@ -334,20 +334,20 @@ async function updateLocalMirror(
 			).bind(PROVIDER, webhookId, address, now),
 		),
 		...changes.remove.map((address) =>
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`DELETE FROM provider_subscription_items
 				 WHERE provider = ? AND subscription_id = ? AND item = ?`,
 			).bind(PROVIDER, webhookId, address),
 		),
 	];
-	if (statements.length > 0) await env.PARMELIA_DB.batch(statements);
+	if (statements.length > 0) await env.GATOPAGO_DB.batch(statements);
 }
 
 async function countMirrorItems(
 	env: Bindings,
 	webhookId: string,
 ): Promise<number> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT COUNT(*) AS count
 		 FROM provider_subscription_items
 		 WHERE provider = ? AND subscription_id = ?`,

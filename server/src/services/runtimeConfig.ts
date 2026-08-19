@@ -290,8 +290,8 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	if (env.APP_URL && !validHttpUrl(env.APP_URL, mainnet)) {
 		issues.push(issue("APP_URL_INVALID", `APP_URL must be a valid ${mainnet ? "HTTPS" : "HTTP(S)"} URL`));
 	}
-	if (env.PARMELIA_FEES_ENABLED === "true" && !isAddress(env.PARMELIA_TREASURY_ADDRESS ?? "")) {
-		issues.push(issue("TREASURY_INVALID", "A valid PARMELIA_TREASURY_ADDRESS is required when fees are enabled"));
+	if (env.GATOPAGO_FEES_ENABLED === "true" && !isAddress(env.GATOPAGO_TREASURY_ADDRESS ?? "")) {
+		issues.push(issue("TREASURY_INVALID", "A valid GATOPAGO_TREASURY_ADDRESS is required when fees are enabled"));
 	}
 
 	try {

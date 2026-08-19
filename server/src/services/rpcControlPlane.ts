@@ -127,14 +127,14 @@ class LocalSemaphore {
 	}
 }
 
-export class RpcAdmissionTimeoutError extends Error {
+class RpcAdmissionTimeoutError extends Error {
 	constructor() {
 		super("RPC lane admission deadline exceeded");
 		this.name = "RpcAdmissionTimeoutError";
 	}
 }
 
-export class RpcCircuitOpenError extends Error {
+class RpcCircuitOpenError extends Error {
 	constructor(
 		readonly providerAlias: string,
 		readonly lane: RpcLane,
@@ -233,7 +233,7 @@ async function readCircuit(
 	endpointKey: string,
 ): Promise<CircuitSnapshot> {
 	try {
-		const row = await env.PARMELIA_DB.prepare(
+		const row = await env.GATOPAGO_DB.prepare(
 			`SELECT circuit_state, consecutive_failures, opened_until
 			 FROM rpc_endpoint_health WHERE endpoint_key = ?`,
 		)
@@ -277,7 +277,7 @@ async function recordFailure(
 	).toISOString();
 	const opensImmediately = threshold <= 1;
 	try {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO rpc_endpoint_health (
 				endpoint_key, role, provider_alias, circuit_state,
 				consecutive_failures, opened_until, last_success_at,
@@ -336,7 +336,7 @@ async function claimHalfOpenProbe(
 		now.getTime() + CIRCUIT_PROBE_LEASE_MS,
 	).toISOString();
 	try {
-		const result = await env.PARMELIA_DB.prepare(
+		const result = await env.GATOPAGO_DB.prepare(
 			`UPDATE rpc_endpoint_health
 			 SET circuit_state = 'half_open', opened_until = ?, updated_at = ?
 			 WHERE endpoint_key = ?
@@ -365,7 +365,7 @@ async function recordRecovery(
 ): Promise<void> {
 	const now = new Date().toISOString();
 	try {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO rpc_endpoint_health (
 				endpoint_key, role, provider_alias, circuit_state,
 				consecutive_failures, opened_until, last_success_at,
@@ -660,7 +660,7 @@ export async function getRpcHealthSummary(
 	lastLatencyMs: number | null;
 }>> {
 	try {
-		const result = await env.PARMELIA_DB.prepare(
+		const result = await env.GATOPAGO_DB.prepare(
 			`SELECT role, provider_alias, circuit_state, consecutive_failures,
 			        opened_until, last_error_code, last_latency_ms
 			 FROM rpc_endpoint_health ORDER BY role, provider_alias`,

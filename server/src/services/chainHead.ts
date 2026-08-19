@@ -1,5 +1,5 @@
-export const SAFE_HEAD_FALLBACK_BLOCKS = 64n;
-export const MAX_SAFE_HEAD_LAG_BLOCKS = 512n;
+const SAFE_HEAD_FALLBACK_BLOCKS = 64n;
+const MAX_SAFE_HEAD_LAG_BLOCKS = 512n;
 
 export type ScanHeadClient = {
 	getBlockNumber(): Promise<bigint>;
@@ -53,4 +53,3 @@ export async function getIndexerScanHead(
 		};
 	}
 }
-

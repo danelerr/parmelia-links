@@ -3,7 +3,7 @@
 // Scope by design:
 //   - USDC only (the core LatAm asset; deepest Across support).
 //   - Deposits: quote here, execution happens on Across's own UI prefilled with
-//     the user's smart account as recipient → funds land directly in Parmelia,
+//     the user's smart account as recipient → funds land directly in GatoPago,
 //     we never custody anything and there is no new fund-moving code to audit.
 //   - Withdrawals: quoted (origin = Arbitrum); execution from the smart account
 //     (SpokePool depositV3 batched like a swap) is the documented next step -
@@ -39,7 +39,7 @@ export type BridgeQuote = {
 	token: "USDC";
 	amountIn: string;
 	bridgeFee: string;
-	parmeliaFee: string;
+	gatoPagoFee: string;
 	amountOutEstimated: string;
 	estimatedMinutes: number;
 	/** Across UI prefilled with the recipient (deposits only). */
@@ -53,7 +53,7 @@ type AcrossSuggestedFees = {
 	isAmountTooLow?: boolean;
 };
 
-export function getBridgeChain(chainId: number) {
+function getBridgeChain(chainId: number) {
 	return BRIDGE_CHAINS.find((chain) => chain.id === chainId) ?? null;
 }
 
@@ -101,8 +101,8 @@ export async function quoteBridge(params: {
 	const bridgeFeeRaw = BigInt(data.totalRelayFee?.total ?? "0");
 	// Service spread only applies to withdrawals (we build that tx); deposits go
 	// straight to the user's account through Across, so they are free on our side.
-	const parmeliaFeeRaw = isDeposit ? 0n : (amountRaw * params.crosschainFeeBps) / 10_000n;
-	const outRaw = amountRaw - bridgeFeeRaw - parmeliaFeeRaw;
+	const gatoPagoFeeRaw = isDeposit ? 0n : (amountRaw * params.crosschainFeeBps) / 10_000n;
+	const outRaw = amountRaw - bridgeFeeRaw - gatoPagoFeeRaw;
 	if (outRaw <= 0n) throw new BridgeError("El monto no cubre el costo del puente.");
 
 	const acrossUrl = isDeposit
@@ -117,7 +117,7 @@ export async function quoteBridge(params: {
 		token: "USDC",
 		amountIn: params.amount,
 		bridgeFee: formatUnits(bridgeFeeRaw, USDC_DECIMALS),
-		parmeliaFee: formatUnits(parmeliaFeeRaw, USDC_DECIMALS),
+		gatoPagoFee: formatUnits(gatoPagoFeeRaw, USDC_DECIMALS),
 		amountOutEstimated: formatUnits(outRaw, USDC_DECIMALS),
 		estimatedMinutes: Math.max(1, Math.ceil((data.estimatedFillTimeSec ?? 120) / 60)),
 		acrossUrl,

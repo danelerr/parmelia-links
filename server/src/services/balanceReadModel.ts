@@ -1,4 +1,4 @@
-import { formatUnits, type Address, type Hex } from "viem";
+import { type Address, type Hex } from "viem";
 import type { Bindings } from "../middlewares/auth";
 import type { ChainConsistencyLevel } from "./chainJournal";
 import { logWarn } from "./logger";
@@ -91,7 +91,7 @@ export async function listBalanceSnapshots(
 	uid: string,
 	chainId: number,
 ): Promise<BalanceSnapshot[]> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT ${SNAPSHOT_COLUMNS}
 		 FROM balance_snapshots
 		 WHERE uid = ? AND chain_id = ? AND canonical = 1
@@ -102,23 +102,12 @@ export async function listBalanceSnapshots(
 	return result.results.map(mapSnapshot);
 }
 
-export function formatSnapshotBalances(
-	snapshots: BalanceSnapshot[],
-): Record<string, string> {
-	return Object.fromEntries(
-		snapshots.map((snapshot) => [
-			snapshot.asset,
-			formatUnits(snapshot.balanceRaw, snapshot.decimals),
-		]),
-	);
-}
-
 export async function upsertBalanceSnapshots(
 	env: Bindings,
 	snapshots: BalanceSnapshot[],
 ): Promise<{ written: number; rejected: number }> {
 	if (snapshots.length === 0) return { written: 0, rejected: 0 };
-	const prepared = env.PARMELIA_DB.prepare(
+	const prepared = env.GATOPAGO_DB.prepare(
 		`INSERT INTO balance_snapshots (
 			uid, account_address, chain_id, asset, balance_raw, decimals,
 			block_number, block_hash, consistency_level, projection_strategy,
@@ -144,7 +133,7 @@ export async function upsertBalanceSnapshots(
 		    	AND excluded.block_hash = balance_snapshots.block_hash
 		    )`,
 	);
-	const results = await env.PARMELIA_DB.batch(
+	const results = await env.GATOPAGO_DB.batch(
 		snapshots.map((snapshot) =>
 			prepared.bind(
 				snapshot.uid,
@@ -175,7 +164,7 @@ export async function upsertBalanceSnapshots(
 	return { written, rejected };
 }
 
-export function balanceRefreshKey(chainId: number, accountAddress: string): string {
+function balanceRefreshKey(chainId: number, accountAddress: string): string {
 	return `${chainId}:${accountAddress.toLowerCase()}`;
 }
 
@@ -191,15 +180,39 @@ const BALANCE_REFRESH_UPSERT = `INSERT INTO balance_refresh_requests (
 	 ) VALUES (?, ?, ?, 1, ?, ?, 'pending', ?, 0, ?, ?, NULL, NULL, NULL)
 	 ON CONFLICT(chain_id, account_address) DO UPDATE SET
 	   uid = excluded.uid,
-	   reason = excluded.reason,
+	   reason = CASE
+	     WHEN balance_refresh_requests.status IN ('completed', 'failed')
+	       OR excluded.priority <= balance_refresh_requests.priority
+	     THEN excluded.reason
+	     ELSE balance_refresh_requests.reason
+	   END,
 	   priority = MIN(balance_refresh_requests.priority, excluded.priority),
 	   status = 'pending',
 	   required_block = CASE
-	     WHEN excluded.required_block IS NULL THEN balance_refresh_requests.required_block
-	     WHEN balance_refresh_requests.required_block IS NULL THEN excluded.required_block
+	     WHEN balance_refresh_requests.status IN ('completed', 'failed')
+	     THEN excluded.required_block
+	     WHEN excluded.priority < balance_refresh_requests.priority
+	     THEN excluded.required_block
+	     WHEN excluded.priority > balance_refresh_requests.priority
+	     THEN balance_refresh_requests.required_block
+	     WHEN excluded.required_block IS NULL
+	     THEN balance_refresh_requests.required_block
+	     WHEN balance_refresh_requests.required_block IS NULL
+	     THEN excluded.required_block
 	     ELSE MAX(balance_refresh_requests.required_block, excluded.required_block)
 	   END,
-	   requested_at = excluded.requested_at,
+	   attempt_count = CASE
+	     WHEN balance_refresh_requests.status IN ('completed', 'failed')
+	       OR excluded.priority < balance_refresh_requests.priority
+	     THEN 0
+	     ELSE balance_refresh_requests.attempt_count
+	   END,
+	   requested_at = CASE
+	     WHEN balance_refresh_requests.status IN ('completed', 'failed')
+	       OR excluded.priority <= balance_refresh_requests.priority
+	     THEN excluded.requested_at
+	     ELSE balance_refresh_requests.requested_at
+	   END,
 	   updated_at = excluded.updated_at,
 	   lease_owner = NULL,
 	   lease_expires_at = NULL,
@@ -211,7 +224,8 @@ const BALANCE_REFRESH_UPSERT = `INSERT INTO balance_refresh_requests (
 	    )
 	    OR excluded.priority < balance_refresh_requests.priority
 	    OR (
-	      excluded.required_block IS NOT NULL
+	      excluded.priority = balance_refresh_requests.priority
+	      AND excluded.required_block IS NOT NULL
 	      AND (
 	        balance_refresh_requests.required_block IS NULL
 	        OR excluded.required_block > balance_refresh_requests.required_block
@@ -229,12 +243,33 @@ function buildBalanceRefreshMessage(
 	};
 }
 
+function coalesceBalanceRefreshMessages(
+	prior: BalanceRefreshMessage,
+	next: BalanceRefreshMessage,
+): BalanceRefreshMessage {
+	if (next.priority < prior.priority) return next;
+	if (next.priority > prior.priority) return prior;
+
+	const priorBlock =
+		prior.notBeforeBlock === undefined
+			? null
+			: BigInt(prior.notBeforeBlock);
+	const nextBlock =
+		next.notBeforeBlock === undefined
+			? null
+			: BigInt(next.notBeforeBlock);
+	if (nextBlock === null || (priorBlock !== null && priorBlock >= nextBlock)) {
+		return prior;
+	}
+	return next;
+}
+
 function prepareBalanceRefreshUpsert(
 	env: Bindings,
 	message: BalanceRefreshMessage,
 	now: string,
 ) {
-	return env.PARMELIA_DB.prepare(BALANCE_REFRESH_UPSERT).bind(
+	return env.GATOPAGO_DB.prepare(BALANCE_REFRESH_UPSERT).bind(
 		message.chainId,
 		message.accountAddress,
 		message.uid,
@@ -292,25 +327,10 @@ export async function requestBalanceRefreshBatch(
 			byKey.set(message.idempotencyKey, message);
 			continue;
 		}
-		const priorBlock =
-			prior.notBeforeBlock === undefined
-				? null
-				: BigInt(prior.notBeforeBlock);
-		const nextBlock =
-			message.notBeforeBlock === undefined
-				? null
-				: BigInt(message.notBeforeBlock);
-		byKey.set(message.idempotencyKey, {
-			...(message.priority < prior.priority ? message : prior),
-			priority: Math.min(prior.priority, message.priority) as
-				BalanceRefreshMessage["priority"],
-			notBeforeBlock:
-				priorBlock === null
-					? message.notBeforeBlock
-					: nextBlock === null || priorBlock >= nextBlock
-						? prior.notBeforeBlock
-						: message.notBeforeBlock,
-		});
+		byKey.set(
+			message.idempotencyKey,
+			coalesceBalanceRefreshMessages(prior, message),
+		);
 	}
 
 	const messages = [...byKey.values()];
@@ -319,7 +339,7 @@ export async function requestBalanceRefreshBatch(
 	let shouldDispatch = false;
 	for (let offset = 0; offset < messages.length; offset += 100) {
 		const chunk = messages.slice(offset, offset + 100);
-		const results = await env.PARMELIA_DB.batch(
+		const results = await env.GATOPAGO_DB.batch(
 			chunk.map((message) =>
 				prepareBalanceRefreshUpsert(env, message, now),
 			),
@@ -364,7 +384,7 @@ export async function listDueBalanceRefreshes(
 	limit = 25,
 ): Promise<BalanceRefreshRequest[]> {
 	const now = new Date().toISOString();
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT chain_id, account_address, uid, reason, priority, required_block,
 		        attempt_count, requested_at
 		 FROM balance_refresh_requests
@@ -396,7 +416,7 @@ export async function claimBalanceRefreshBatch(
 		request,
 		owner: crypto.randomUUID(),
 	}));
-	const prepared = env.PARMELIA_DB.prepare(
+	const prepared = env.GATOPAGO_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'processing',
 		     lease_owner = ?,
@@ -409,7 +429,7 @@ export async function claimBalanceRefreshBatch(
 		   	OR (status = 'processing' AND lease_expires_at <= ?)
 		   )`,
 	);
-	const results = await env.PARMELIA_DB.batch(
+	const results = await env.GATOPAGO_DB.batch(
 		claims.map(({ request, owner }) =>
 			prepared.bind(
 				owner,
@@ -437,21 +457,21 @@ export async function finishBalanceRefreshBatch(
 ): Promise<void> {
 	if (outcomes.length === 0) return;
 	const now = new Date().toISOString();
-	const completed = env.PARMELIA_DB.prepare(
+	const completed = env.GATOPAGO_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'completed', updated_at = ?, lease_owner = NULL,
 		     lease_expires_at = NULL, last_error_code = NULL
 		 WHERE chain_id = ? AND account_address = ?
 		   AND status = 'processing' AND lease_owner = ?`,
 	);
-	const failed = env.PARMELIA_DB.prepare(
+	const failed = env.GATOPAGO_DB.prepare(
 		`UPDATE balance_refresh_requests
 		 SET status = 'failed', updated_at = ?, lease_owner = NULL,
 		     lease_expires_at = NULL, last_error_code = ?
 		 WHERE chain_id = ? AND account_address = ?
 		   AND status = 'processing' AND lease_owner = ?`,
 	);
-	await env.PARMELIA_DB.batch(
+	await env.GATOPAGO_DB.batch(
 		outcomes.map(({ request, owner, status, errorCode }) =>
 			status === "completed"
 				? completed.bind(
@@ -470,3 +490,7 @@ export async function finishBalanceRefreshBatch(
 		),
 	);
 }
+
+export const __test = {
+	coalesceBalanceRefreshMessages,
+};

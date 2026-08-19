@@ -1,4 +1,3 @@
-import type { Hex } from "viem";
 import type { Bindings } from "../middlewares/auth";
 import {
 	chainEventId,
@@ -13,8 +12,8 @@ import {
 } from "./chainEpoch";
 import { logInfo, logWarn } from "./logger";
 
-export const BALANCE_PROJECTOR_NAME = "asset_balance_deltas";
-export const BALANCE_PROJECTOR_VERSION = 1;
+const BALANCE_PROJECTOR_NAME = "asset_balance_deltas";
+const BALANCE_PROJECTOR_VERSION = 1;
 
 export function balanceProjectionAccountKey(
 	uid: string,
@@ -107,7 +106,7 @@ async function refreshProjectedSnapshots(
 	let updated = 0;
 	const eventOnlySatisfiedAccounts = new Set<string>();
 	for (const account of affectedEventAccounts(input.events)) {
-		let state = await env.PARMELIA_DB.prepare(
+		let state = await env.GATOPAGO_DB.prepare(
 			`SELECT bs.uid, bs.balance_raw, bs.block_number, bs.block_hash,
 			        bs.source, aip.strategy, aip.projection_version AS policy_version,
 			        aip.enabled, bpb.balance_raw AS baseline_raw,
@@ -144,7 +143,7 @@ async function refreshProjectedSnapshots(
 			state.baseline_block_number === null ||
 			state.baseline_block_hash === null
 		) {
-			await env.PARMELIA_DB.prepare(
+			await env.GATOPAGO_DB.prepare(
 				`INSERT OR IGNORE INTO balance_projection_baselines (
 					chain_id, account_address, asset, projection_version,
 					balance_raw, block_number, block_hash, observed_at
@@ -187,7 +186,7 @@ async function refreshProjectedSnapshots(
 			}
 			continue;
 		}
-		const deltas = await env.PARMELIA_DB.prepare(
+		const deltas = await env.GATOPAGO_DB.prepare(
 			`SELECT bpd.delta_raw
 			 FROM balance_projection_deltas bpd
 			 JOIN chain_events ce
@@ -226,7 +225,7 @@ async function refreshProjectedSnapshots(
 			continue;
 		}
 
-		const result = await env.PARMELIA_DB.prepare(
+		const result = await env.GATOPAGO_DB.prepare(
 			`UPDATE balance_snapshots
 			 SET balance_raw = ?, block_number = ?, block_hash = ?,
 			     consistency_level = ?, projection_strategy = ?,
@@ -316,7 +315,7 @@ export async function projectBalanceDeltas(
 			event.eventKind,
 		);
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT OR IGNORE INTO projection_applied_events (
 					chain_id, projector, projection_version, event_id, block_hash,
 					applied_at
@@ -333,7 +332,7 @@ export async function projectBalanceDeltas(
 
 		for (const account of aggregateEventDeltas(event.accounts)) {
 			statements.push(
-				env.PARMELIA_DB.prepare(
+				env.GATOPAGO_DB.prepare(
 					`INSERT OR IGNORE INTO balance_projection_deltas (
 						chain_id, projector, projection_version, event_id, block_hash,
 						uid, account_address, asset, delta_raw, canonical, applied_at,
@@ -357,7 +356,7 @@ export async function projectBalanceDeltas(
 	}
 
 	statements.push(
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO projection_watermarks (
 				chain_id, projector, projection_version, block_number, block_hash,
 				checkpoint_json, updated_at
@@ -382,7 +381,7 @@ export async function projectBalanceDeltas(
 	);
 	statements.push(prepareChainEpochGuardDelete(env, epochGuard));
 
-	await env.PARMELIA_DB.batch(statements);
+	await env.GATOPAGO_DB.batch(statements);
 	const snapshotResult = await refreshProjectedSnapshots(env, input);
 	return {
 		updatedSnapshots: snapshotResult.updated,
@@ -391,25 +390,6 @@ export async function projectBalanceDeltas(
 	};
 }
 
-export async function markProjectionOccurrenceNoncanonical(
-	env: Bindings,
-	eventId: string,
-	blockHash: Hex,
-): Promise<void> {
-	const now = new Date().toISOString();
-	await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
-			`UPDATE balance_projection_deltas
-			 SET canonical = 0, reverted_at = ?
-			 WHERE event_id = ? AND block_hash = ? AND canonical = 1`,
-		).bind(now, eventId, blockHash.toLowerCase()),
-		env.PARMELIA_DB.prepare(
-			`UPDATE chain_events
-			 SET canonical = 0
-			 WHERE event_id = ? AND block_hash = ?`,
-		).bind(eventId, blockHash.toLowerCase()),
-	]);
-}
 
 export const __test = {
 	aggregateEventDeltas,

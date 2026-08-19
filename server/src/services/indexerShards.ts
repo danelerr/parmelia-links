@@ -43,7 +43,7 @@ export async function assignWalletToStableShard(
 			? null
 			: normalizeWalletAddress(input.walletAddress);
 	const now = new Date().toISOString();
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`UPDATE indexer_wallet_assignments
 		 SET active = 0, updated_at = ?
 		 WHERE chain_id = ? AND stream = ? AND uid = ? AND active = 1
@@ -60,7 +60,7 @@ export async function assignWalletToStableShard(
 		.run();
 	if (walletAddress === null) return null;
 
-	const current = await env.PARMELIA_DB.prepare(
+	const current = await env.GATOPAGO_DB.prepare(
 		`SELECT shard_id
 		 FROM indexer_wallet_assignments
 		 WHERE chain_id = ? AND stream = ? AND account_address = ?
@@ -79,7 +79,7 @@ export async function assignWalletToStableShard(
 	}
 
 	// Wallet ownership changes create a new append-only assignment version.
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`UPDATE indexer_wallet_assignments
 		 SET active = 0, updated_at = ?
 		 WHERE chain_id = ? AND stream = ? AND account_address = ?
@@ -88,7 +88,7 @@ export async function assignWalletToStableShard(
 		.bind(now, input.chainId, input.stream, walletAddress)
 		.run();
 
-	let shard = await env.PARMELIA_DB.prepare(
+	let shard = await env.GATOPAGO_DB.prepare(
 		`SELECT s.shard_id
 		 FROM indexer_shards s
 		 LEFT JOIN indexer_wallet_assignments a
@@ -105,7 +105,7 @@ export async function assignWalletToStableShard(
 		.bind(input.chainId, input.stream)
 		.first<{ shard_id: number }>();
 	if (!shard) {
-		const next = await env.PARMELIA_DB.prepare(
+		const next = await env.GATOPAGO_DB.prepare(
 			`SELECT COALESCE(MAX(shard_id), -1) + 1 AS shard_id
 			 FROM indexer_shards
 			 WHERE chain_id = ? AND stream = ?`,
@@ -113,7 +113,7 @@ export async function assignWalletToStableShard(
 			.bind(input.chainId, input.stream)
 			.first<{ shard_id: number }>();
 		const shardId = next?.shard_id ?? 0;
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO indexer_shards (
 				chain_id, stream, shard_id, generation, max_wallets, status,
 				created_at, updated_at
@@ -130,14 +130,14 @@ export async function assignWalletToStableShard(
 			.run();
 		shard = { shard_id: shardId };
 	}
-	const latestVersion = await env.PARMELIA_DB.prepare(
+	const latestVersion = await env.GATOPAGO_DB.prepare(
 		`SELECT COALESCE(MAX(assignment_version), 0) AS version
 		 FROM indexer_wallet_assignments
 		 WHERE chain_id = ? AND stream = ? AND account_address = ?`,
 	)
 		.bind(input.chainId, input.stream, walletAddress)
 		.first<{ version: number }>();
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`INSERT INTO indexer_wallet_assignments (
 			chain_id, stream, account_address, uid, shard_id,
 			assignment_version, active, assigned_at, updated_at
@@ -166,7 +166,7 @@ export async function listWalletsForIndexerShard(
 	env: Bindings,
 	input: { chainId: number; stream: string; shardId: number },
 ): Promise<IndexerWallet[]> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT uid, account_address
 		 FROM indexer_wallet_assignments
 		 WHERE chain_id = ? AND stream = ? AND shard_id = ? AND active = 1
@@ -184,7 +184,7 @@ export async function listIndexerShardIds(
 	env: Bindings,
 	input: { chainId: number; stream: string },
 ): Promise<number[]> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT s.shard_id
 		 FROM indexer_shards s
 		 WHERE s.chain_id = ? AND s.stream = ? AND s.status = 'active'
@@ -217,7 +217,7 @@ export async function listWalletShardAssignments(
 	if (input.streams.length === 0 || addresses.length === 0) return [];
 	const streamPlaceholders = input.streams.map(() => "?").join(", ");
 	const addressPlaceholders = addresses.map(() => "?").join(", ");
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT stream, shard_id, uid, account_address
 		 FROM indexer_wallet_assignments
 		 WHERE chain_id = ? AND active = 1

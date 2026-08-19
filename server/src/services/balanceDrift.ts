@@ -29,7 +29,7 @@ async function projectionDeltaSince(
 	projectionVersion: number,
 	fromExclusive: bigint,
 ): Promise<bigint> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT bpd.delta_raw
 		 FROM balance_projection_deltas bpd
 		 JOIN chain_events ce
@@ -82,7 +82,7 @@ async function writeBaselineAndAudit(
 		snapshot.blockHash.toLowerCase(),
 	].join(":");
 	const statements = [
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT OR IGNORE INTO balance_reconciliation_audits (
 				id, chain_id, account_address, uid, asset, projection_version,
 				projected_raw, onchain_raw, drift_raw, tolerance_raw,
@@ -108,7 +108,7 @@ async function writeBaselineAndAudit(
 	];
 	if (input.advanceBaseline) {
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO balance_projection_baselines (
 					chain_id, account_address, asset, projection_version,
 					balance_raw, block_number, block_hash, observed_at
@@ -140,7 +140,7 @@ async function writeBaselineAndAudit(
 	}
 	if (input.outcome === "drift") {
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE asset_indexing_policies
 				 SET strategy = 'rpc_only',
 				     config_json = ?,
@@ -160,7 +160,7 @@ async function writeBaselineAndAudit(
 			),
 		);
 	}
-	await env.PARMELIA_DB.batch(statements);
+	await env.GATOPAGO_DB.batch(statements);
 }
 
 /**
@@ -180,7 +180,7 @@ export async function auditBalanceProjectionDrift(
 		Map<string, TransferCheckpointEvidence>
 	>();
 	for (const snapshot of snapshots) {
-		const policy = await env.PARMELIA_DB.prepare(
+		const policy = await env.GATOPAGO_DB.prepare(
 			`SELECT strategy, projection_version, enabled, drift_tolerance_raw
 			 FROM asset_indexing_policies
 			 WHERE chain_id = ? AND asset = ?`,
@@ -194,7 +194,7 @@ export async function auditBalanceProjectionDrift(
 		) continue;
 
 		const tolerance = BigInt(policy.drift_tolerance_raw);
-		const baseline = await env.PARMELIA_DB.prepare(
+		const baseline = await env.GATOPAGO_DB.prepare(
 			`SELECT balance_raw, block_number, block_hash
 			 FROM balance_projection_baselines
 			 WHERE chain_id = ? AND account_address = ? AND asset = ?

@@ -1,4 +1,4 @@
-// Flow B: build the Parmelia-signed authorization a payer needs to call
+// Flow B: build the GatoPago-signed authorization a payer needs to call
 // PaymentRouter.payInvoice from any external wallet. The signed digest MUST match
 // ParmeliaPaymentRouter.invoiceDigest exactly, or the on-chain ECDSA.recover fails.
 
@@ -85,7 +85,7 @@ export async function buildRouterAuthorization(
 	const token = network.contracts.usdc;
 	const amount = parseUnits(intent.amount, network.contracts.usdcDecimals);
 
-	let feeBps = BigInt(env.PARMELIA_PAYMENT_FEE_BPS || "0");
+	let feeBps = BigInt(env.GATOPAGO_PAYMENT_FEE_BPS || "0");
 	if (feeBps < 0n) feeBps = 0n;
 	if (feeBps > MAX_FEE_BPS) feeBps = MAX_FEE_BPS;
 

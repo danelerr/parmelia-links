@@ -138,7 +138,7 @@ export const v4QuoterAbi = [
 
 // ===== Route model =====
 
-export type SwapProtocol = "v3" | "v4";
+type SwapProtocol = "v3" | "v4";
 
 export type SwapRoute = {
 	protocol: SwapProtocol;
@@ -206,11 +206,11 @@ export type BuildSwapParams = {
 	/** WETH for the active chain (needed by v3 when a side is native). */
 	weth: `0x${string}`;
 	amountIn: bigint;
-	/** Net minimum the user must receive (post Parmelia fee). */
+	/** Net minimum the user must receive (post GatoPago fee). */
 	minAmountOutNet: bigint;
 	/** Final recipient - MUST be the user's smart account. */
 	account: `0x${string}`;
-	/** Parmelia service fee (0 = disabled). */
+	/** GatoPago service fee (0 = disabled). */
 	feeBps: bigint;
 	treasury: `0x${string}` | null;
 	deadline: bigint;

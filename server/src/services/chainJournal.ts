@@ -29,7 +29,7 @@ export type JournalBlock = {
 	l1Confirmations?: bigint | null;
 };
 
-export type JournalEventAccount = {
+type JournalEventAccount = {
 	uid: string;
 	accountAddress: Address;
 	asset: string;
@@ -167,14 +167,14 @@ export async function journalBlockEvents(
 	// A height can have several observed hashes for audit, but only one canonical
 	// row. Marking the previous row first satisfies the partial unique index.
 	statements.push(
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE chain_blocks
 			 SET canonical = 0
 			 WHERE chain_id = ? AND block_number = ? AND block_hash <> ? AND canonical = 1`,
 		).bind(block.chainId, block.blockNumber.toString(), block.blockHash.toLowerCase()),
 	);
 	statements.push(
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT OR IGNORE INTO chain_blocks (
 				chain_id, block_number, block_hash, parent_hash, block_timestamp,
 				consistency_level, canonical, source, observed_at, l1_batch_number,
@@ -194,7 +194,7 @@ export async function journalBlockEvents(
 		),
 	);
 	statements.push(
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE chain_blocks
 			 SET parent_hash = COALESCE(?, parent_hash),
 			     block_timestamp = COALESCE(?, block_timestamp),
@@ -230,7 +230,7 @@ export async function journalBlockEvents(
 
 		if (canonical === 1) {
 			statements.push(
-				env.PARMELIA_DB.prepare(
+				env.GATOPAGO_DB.prepare(
 					`UPDATE chain_events
 					 SET canonical = 0
 					 WHERE chain_id = ? AND tx_hash = ? AND log_index = ?
@@ -247,7 +247,7 @@ export async function journalBlockEvents(
 
 		const insertIndex = statements.length;
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT OR IGNORE INTO chain_events (
 					event_id, chain_id, tx_hash, log_index, event_kind, block_number,
 					block_hash, transaction_index, contract_address, topic0,
@@ -275,7 +275,7 @@ export async function journalBlockEvents(
 		// A duplicate delivery may upgrade an occurrence from noncanonical to
 		// canonical, but never creates a second journal row.
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE chain_events
 				 SET canonical = ?, source = ?, observed_at = ?
 				 WHERE event_id = ? AND block_hash = ?`,
@@ -290,7 +290,7 @@ export async function journalBlockEvents(
 
 		for (const account of event.accounts ?? []) {
 			statements.push(
-				env.PARMELIA_DB.prepare(
+				env.GATOPAGO_DB.prepare(
 					`INSERT OR IGNORE INTO chain_event_accounts (
 						event_id, block_hash, uid, account_address, asset, role, delta_raw
 					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -310,7 +310,7 @@ export async function journalBlockEvents(
 	for (const effect of input.userEvents ?? []) {
 		userEventResultIndexes.push(statements.length);
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT OR IGNORE INTO user_event_outbox (
 					id, dedupe_key, uid, event_type, payload_json, priority,
 					status, attempt_count, next_attempt_at, lease_owner,
@@ -343,7 +343,7 @@ export async function journalBlockEvents(
 		// occurrence for a (chain, userOpHash). A re-inclusion after a reorg
 		// therefore remains fully auditable.
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE user_operation_receipts
 				 SET canonical = 0
 				 WHERE chain_id = ? AND user_op_hash = ?
@@ -356,7 +356,7 @@ export async function journalBlockEvents(
 		);
 		userOperationResultIndexes.push(statements.length);
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO user_operation_receipts (
 					chain_id, user_op_hash, event_id, tx_hash, block_number,
 					block_hash, log_index, transaction_index, sender, nonce,
@@ -402,7 +402,7 @@ export async function journalBlockEvents(
 
 	const checkpointIndex = statements.length;
 	statements.push(
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO chain_stream_checkpoints (
 				chain_id, stream, block_number, block_hash, consistency_level,
 				updated_at, reorg_epoch
@@ -430,7 +430,7 @@ export async function journalBlockEvents(
 	);
 	statements.push(prepareChainEpochGuardDelete(env, epochGuard));
 
-	const results = await env.PARMELIA_DB.batch(statements);
+	const results = await env.GATOPAGO_DB.batch(statements);
 	const insertedEventIds = new Set<string>();
 	const duplicateEventIds = new Set<string>();
 	for (const { index, eventId } of insertResultIndexes) {
@@ -472,7 +472,7 @@ export async function recordSourceDelivery(
 	},
 ): Promise<boolean> {
 	const now = new Date().toISOString();
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`INSERT OR IGNORE INTO chain_source_deliveries (
 			provider, delivery_id, webhook_id, status, event_count,
 			first_seen_at, processed_at, last_error_code
@@ -502,7 +502,7 @@ export async function getSourceDelivery(
 	provider: string,
 	deliveryId: string,
 ): Promise<SourceDeliveryRecord | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT status, event_count
 		 FROM chain_source_deliveries
 		 WHERE provider = ? AND delivery_id = ?`,
@@ -523,7 +523,7 @@ export async function finishSourceDelivery(
 	eventCount: number,
 	errorCode: string | null = null,
 ): Promise<void> {
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`UPDATE chain_source_deliveries
 		 SET status = ?, event_count = ?, processed_at = ?, last_error_code = ?
 		 WHERE provider = ? AND delivery_id = ?`,

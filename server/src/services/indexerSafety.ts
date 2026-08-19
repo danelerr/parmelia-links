@@ -150,7 +150,7 @@ export async function runIndexerSafetySweep(
 	nextRunAt: number | null;
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const active = await env.PARMELIA_DB.prepare(
+	const active = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM indexer_shards s
 		 WHERE s.chain_id = ? AND s.status = 'active'
@@ -167,7 +167,7 @@ export async function runIndexerSafetySweep(
 		.bind(network.chainId)
 		.first<{ present: number }>();
 	if (active?.present !== 1) {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`DELETE FROM indexer_safety_sweep_state WHERE chain_id = ?`,
 		)
 			.bind(network.chainId)
@@ -178,7 +178,7 @@ export async function runIndexerSafetySweep(
 		throw new Error("Indexer safety sweep requires an indexer RPC pool");
 	}
 
-	let state = await env.PARMELIA_DB.prepare(
+	let state = await env.GATOPAGO_DB.prepare(
 		`SELECT target_block, cursor_stream, cursor_shard_id
 		 FROM indexer_safety_sweep_state WHERE chain_id = ?`,
 	)
@@ -190,7 +190,7 @@ export async function runIndexerSafetySweep(
 			providerPool.pointClient,
 		);
 		const now = new Date().toISOString();
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO indexer_safety_sweep_state (
 				chain_id, target_block, cursor_stream, cursor_shard_id,
 				cycle_started_at, updated_at
@@ -199,7 +199,7 @@ export async function runIndexerSafetySweep(
 		)
 			.bind(network.chainId, scanHead.toString(), now, now)
 			.run();
-		state = await env.PARMELIA_DB.prepare(
+		state = await env.GATOPAGO_DB.prepare(
 			`SELECT target_block, cursor_stream, cursor_shard_id
 			 FROM indexer_safety_sweep_state WHERE chain_id = ?`,
 		)
@@ -210,7 +210,7 @@ export async function runIndexerSafetySweep(
 		throw new Error("Unable to establish indexer safety sweep state");
 	}
 	const scanHead = BigInt(state.target_block);
-	const shardRows = await env.PARMELIA_DB.prepare(
+	const shardRows = await env.GATOPAGO_DB.prepare(
 		`SELECT s.stream, s.shard_id
 		 FROM indexer_shards s
 		 WHERE s.chain_id = ? AND s.status = 'active'
@@ -239,7 +239,7 @@ export async function runIndexerSafetySweep(
 		.all<ActiveShardRow>();
 	const page = shardRows.results.slice(0, SHARDS_PER_SWEEP_JOB);
 	if (page.length === 0) {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`DELETE FROM indexer_safety_sweep_state WHERE chain_id = ?`,
 		)
 			.bind(network.chainId)
@@ -263,7 +263,7 @@ export async function runIndexerSafetySweep(
 	const userOperationShardIds = page
 		.filter((row) => row.stream === userOperationStream)
 		.map((row) => row.shard_id);
-	const checkpointRows = await env.PARMELIA_DB.prepare(
+	const checkpointRows = await env.GATOPAGO_DB.prepare(
 		`SELECT stream, block_number
 		 FROM chain_stream_checkpoints
 		 WHERE chain_id = ?`,
@@ -304,7 +304,7 @@ export async function runIndexerSafetySweep(
 	const last = page[page.length - 1];
 	const hasMore = shardRows.results.length > SHARDS_PER_SWEEP_JOB;
 	if (hasMore) {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`UPDATE indexer_safety_sweep_state
 			 SET cursor_stream = ?, cursor_shard_id = ?, updated_at = ?
 			 WHERE chain_id = ? AND target_block = ?`,
@@ -318,7 +318,7 @@ export async function runIndexerSafetySweep(
 			)
 			.run();
 	} else {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`DELETE FROM indexer_safety_sweep_state
 			 WHERE chain_id = ? AND target_block = ?`,
 		)

@@ -4,6 +4,7 @@
 // first-class currency there, which avoids WRAP/UNWRAP gas on ETH pairs).
 
 import type { NetworkConfig, TokenConfig } from "../../../shared/networks";
+import { parseUnits } from "viem";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
 import {
@@ -17,7 +18,7 @@ import {
 	v4QuoterAbi,
 } from "./uniswap";
 
-/** Hard cap on Parmelia's service fee - env can never push it above 1%. */
+/** Hard cap on GatoPago's service fee - env can never push it above 1%. */
 export const MAX_FEE_BPS_HARD_CAP = 100n;
 /** Default slippage when the client doesn't send one: 0.50%. */
 export const DEFAULT_SLIPPAGE_BPS = 50;
@@ -26,6 +27,24 @@ export const MAX_SLIPPAGE_BPS = 500;
 /** Quotes are only executable for this long. */
 export const QUOTE_TTL_SECONDS = 60;
 
+/**
+ * Resolve an exact-input amount. `max` is intentionally resolved from the
+ * live on-chain balance read by the quote route: the client never guesses a
+ * gas reserve and a stale cached decimal can never leave accidental dust.
+ */
+export function resolveSwapAmountInput(
+	raw: string,
+	decimals: number,
+	liveBalance: bigint,
+	useMax = false,
+): { amountIn: bigint; isMax: boolean } {
+	const normalized = raw.trim();
+	if (useMax || normalized.toLowerCase() === "max") {
+		return { amountIn: liveBalance, isMax: true };
+	}
+	return { amountIn: parseUnits(normalized, decimals), isMax: false };
+}
+
 export type FeePolicy = {
 	feeBps: bigint;
 	treasury: `0x${string}` | null;
@@ -33,18 +52,18 @@ export type FeePolicy = {
 
 /**
  * Resolve the service-fee policy from env. Fees are OFF unless explicitly
- * enabled, capped by both PARMELIA_MAX_FEE_BPS and the hard cap, and require a
+ * enabled, capped by both GATOPAGO_MAX_FEE_BPS and the hard cap, and require a
  * treasury address to be active.
  */
 export function resolveFeePolicy(env: Bindings): FeePolicy {
-	if (env.PARMELIA_FEES_ENABLED !== "true") return { feeBps: 0n, treasury: null };
+	if (env.GATOPAGO_FEES_ENABLED !== "true") return { feeBps: 0n, treasury: null };
 
-	const configured = BigInt(env.PARMELIA_SWAP_FEE_BPS || "0");
-	const envCap = BigInt(env.PARMELIA_MAX_FEE_BPS || String(MAX_FEE_BPS_HARD_CAP));
+	const configured = BigInt(env.GATOPAGO_SWAP_FEE_BPS || "0");
+	const envCap = BigInt(env.GATOPAGO_MAX_FEE_BPS || String(MAX_FEE_BPS_HARD_CAP));
 	const cap = envCap < MAX_FEE_BPS_HARD_CAP ? envCap : MAX_FEE_BPS_HARD_CAP;
 	const feeBps = configured < cap ? configured : cap;
 
-	const treasury = env.PARMELIA_TREASURY_ADDRESS;
+	const treasury = env.GATOPAGO_TREASURY_ADDRESS;
 	if (feeBps <= 0n || !treasury || !/^0x[a-fA-F0-9]{40}$/.test(treasury)) {
 		return { feeBps: 0n, treasury: null };
 	}

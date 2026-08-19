@@ -123,8 +123,8 @@ async function sendToToken(
 			payload.kind === "notification"
 				? {
 						notification: {
-							icon: "/parmelia.svg",
-							badge: "/parmelia.svg",
+							icon: "/gatopago.svg",
+							badge: "/badge-96.png",
 						},
 						fcm_options: { link: payload.link ?? "/" },
 					}
@@ -165,7 +165,7 @@ async function sendToToken(
 }
 
 /**
- * Notify a Parmelia user by uid across ALL their registered devices. Best-effort:
+ * Notify a GatoPago user by uid across ALL their registered devices. Best-effort:
  * sends to every token in parallel and prunes any token FCM reports as dead. Safe
  * to await-or-ignore inside a payment flow - it swallows all errors.
  */

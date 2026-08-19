@@ -127,7 +127,7 @@ function getRpcTimeout(env: Bindings): number {
 }
 
 /** Read-only client for a declared workload role. */
-export function getPublicClientForRole(env: Bindings, role: RpcRole) {
+function getPublicClientForRole(env: Bindings, role: RpcRole) {
 	const urls = getRpcUrls(env, role);
 	const endpointCapabilities = getRpcEndpointCapabilities(
 		env,
@@ -157,11 +157,11 @@ export function getPublicClient(env: Bindings) {
 }
 
 /** Point reads for indexer evidence, with deterministic endpoint failover. */
-export function getIndexerClient(env: Bindings) {
+function getIndexerClient(env: Bindings) {
 	return getPublicClientForRole(env, "indexer");
 }
 
-export class RpcIndexerRangeFallbackError extends Error {
+class RpcIndexerRangeFallbackError extends Error {
 	constructor(cause?: unknown) {
 		super("No healthy indexer provider can serve the requested block range", {
 			cause,
@@ -257,11 +257,6 @@ export function getIndexerProviderPool(env: Bindings) {
 			throw lastError;
 		},
 	};
-}
-
-/** Historical/backfill traffic isolated from critical point reads. */
-export function getArchivePublicClient(env: Bindings) {
-	return getPublicClientForRole(env, "archive");
 }
 
 /** The server EOA used to deploy accounts and relay handleOps/CCTP. */
@@ -368,28 +363,4 @@ export function waitForTx(
 		pollingInterval: RECEIPT_POLL_INTERVAL_MS,
 		timeout: RECEIPT_TIMEOUT_MS,
 	});
-}
-
-/** Thrown when a mined transaction reverted (waitForTx does NOT throw for these). */
-export class TxRevertedError extends Error {
-	readonly txHash: `0x${string}`;
-	constructor(label: string, txHash: `0x${string}`) {
-		super(`${label} transaction reverted (${txHash})`);
-		this.name = "TxRevertedError";
-		this.txHash = txHash;
-	}
-}
-
-/**
- * waitForTx returns the receipt even when the tx mined-but-reverted; callers that
- * treat "mined" as "succeeded" report false successes. Use this after every
- * waitForTx whose effects are assumed by the code that follows.
- */
-export function assertTxSuccess(
-	receipt: { status: string | number },
-	label: string,
-	txHash: `0x${string}`,
-): void {
-	// viem receipts use "success" | "reverted".
-	if (receipt.status !== "success") throw new TxRevertedError(label, txHash);
 }

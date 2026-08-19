@@ -42,7 +42,8 @@ import { isStoredPaymentLink } from "./validation";
 import { prepareEventOutbox } from "./webhooks";
 import { logError, logInfo, logWarn } from "./logger";
 import { getUserOperationTransport } from "./userOperationTransport";
-import { requestBalanceRefresh } from "./balanceReadModel";
+import { requestBalanceRefreshBatch } from "./balanceReadModel";
+import { refreshWalletBalancesLatestBatch } from "./balanceReconciler";
 
 // Pending ops that are account/DeFi actions rather than payments: they reuse
 // the same sign+submit pipeline but must not be recorded as transfers.
@@ -53,6 +54,35 @@ export const NON_PAYMENT_CURRENCIES = new Set([
 	"EARN_DEPOSIT",
 	"EARN_WITHDRAW",
 ]);
+
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+type ConfirmedBalanceRefreshContext = Pick<
+	PendingPaymentRecord,
+	"uid" | "senderAddress" | "wallet" | "currency"
+>;
+
+function confirmedBalanceRefreshTargets(
+	pending: ConfirmedBalanceRefreshContext,
+	recipientUid: string | null,
+): Array<{ uid: string; accountAddress: Address }> {
+	const targets = new Map<string, { uid: string; accountAddress: Address }>();
+	const add = (uid: string | null, value: string | null | undefined) => {
+		if (!uid || !value || !EVM_ADDRESS_RE.test(value)) return;
+		const accountAddress = value.toLowerCase() as Address;
+		targets.set(accountAddress, { uid, accountAddress });
+	};
+
+	add(pending.uid, pending.senderAddress);
+	if (
+		recipientUid &&
+		recipientUid !== pending.uid &&
+		!NON_PAYMENT_CURRENCIES.has(pending.currency)
+	) {
+		add(recipientUid, pending.wallet);
+	}
+	return [...targets.values()];
+}
 
 const USER_OPERATION_EVENT = parseAbiItem(
 	"event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)",
@@ -142,6 +172,7 @@ export async function settlePayment(
 	const linkId = pending.linkId;
 	const storedLink = !isAccountAction && isStoredPaymentLink(linkId) ? await getPaymentLinkById(env, linkId) : null;
 	const linkReference = storedLink?.reference || null;
+	let recipientUidForBalanceRefresh: string | null = null;
 
 	// 1. Ledger (atomic batch; the dedup index absorbs re-runs).
 	if (pending.currency === "SWAP") {
@@ -260,6 +291,7 @@ export async function settlePayment(
 		);
 	} else if (!isAccountAction) {
 		const recipient = await getUserByWallet(env, pending.wallet || "");
+		recipientUidForBalanceRefresh = recipient?.uid ?? null;
 		const entries: LedgerEntry[] = [
 			{
 				uid,
@@ -305,7 +337,7 @@ export async function settlePayment(
 								// monetary details inside the authenticated app.
 								payload: {
 									title: "Te pagaron",
-									body: "Recibiste un pago en Parmelia.",
+									body: "Recibiste un pago en GatoPago.",
 									link: "/",
 								},
 								priority: 1,
@@ -354,30 +386,61 @@ export async function settlePayment(
 		}
 	}
 
-	// Settlement is the earliest durable point that proves the user's wallet
-	// changed. Wake one coalesced Multicall refresh immediately instead of
-	// waiting for a later transfer-indexer sweep to notice the same receipt.
-	if (/^0x[0-9a-fA-F]{40}$/.test(pending.senderAddress)) {
-		const network = getNetworkConfig(env.CHAIN_KEY);
-		await requestBalanceRefresh(env, {
-			uid,
-			accountAddress: pending.senderAddress as Address,
-			chainId: network.chainId,
-			reason: "confirmed_user_operation",
-			priority: 0,
-			...(opts.chainEvidence
-				? { notBeforeBlock: opts.chainEvidence.blockNumber.toString() }
-				: {}),
-		}).catch((error) => {
-			// The canonical indexer remains a repair path. A Queue/provider outage
-			// must not roll back otherwise-complete financial settlement.
-			logError("settlement_balance_refresh_failed", error, {
-				uid,
-				userOpHash: pending.userOpHash,
+	// Settlement is the earliest durable proof that balances changed. Read the
+	// sender and in-app recipient together at the latest sequenced block so the
+	// UI does not wait for the safe-head indexer or a Queue retry. If that fast
+	// path fails, persist one coalesced repair request without rolling settlement
+	// back.
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	const refreshTargets = confirmedBalanceRefreshTargets(
+		pending,
+		recipientUidForBalanceRefresh,
+	);
+	const notBeforeBlock = opts.chainEvidence?.blockNumber.toString();
+	if (refreshTargets.length > 0) {
+		try {
+			await refreshWalletBalancesLatestBatch(
+				env,
+				refreshTargets.map((target) => ({
+					...target,
+					chainId: network.chainId,
+					...(notBeforeBlock ? { notBeforeBlock } : {}),
+				})),
+			);
+		} catch (fastRefreshError) {
+			logError(
+				"settlement_balance_fast_refresh_failed",
+				fastRefreshError,
+				{
+					uid,
+					userOpHash: pending.userOpHash,
+					wallets: refreshTargets.length,
+				},
+			);
+			await requestBalanceRefreshBatch(
+				env,
+				refreshTargets.map((target) => ({
+					...target,
+					chainId: network.chainId,
+					reason: "confirmed_user_operation",
+					priority: 0 as const,
+					...(notBeforeBlock ? { notBeforeBlock } : {}),
+				})),
+			).catch((repairError) => {
+				// The canonical transfer indexer remains the last repair path.
+				logError("settlement_balance_refresh_failed", repairError, {
+					uid,
+					userOpHash: pending.userOpHash,
+					wallets: refreshTargets.length,
+				});
 			});
-		});
+		}
 	}
 }
+
+export const __test = {
+	confirmedBalanceRefreshTargets,
+};
 
 // ===== Event-driven reconciler =====
 //
@@ -409,7 +472,7 @@ async function getCanonicalUserOperation(
 	env: Bindings,
 	userOpHash: string,
 ): Promise<CanonicalUserOperationRow | null> {
-	return env.PARMELIA_DB.prepare(
+	return env.GATOPAGO_DB.prepare(
 		`SELECT uor.chain_id, uor.tx_hash, uor.block_number, uor.block_hash,
 		        uor.transaction_index, uor.success, uor.consistency_level,
 		        cb.block_timestamp
@@ -431,7 +494,7 @@ async function userOperationStreamCoveredPast(
 	chainId: number,
 	timestampMs: number,
 ): Promise<boolean> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT cb.block_timestamp
 		 FROM chain_stream_checkpoints cp
 		 JOIN chain_blocks cb
@@ -450,7 +513,7 @@ async function userOperationStreamCoveredPast(
 
 async function enqueueMissingReconcileRequests(env: Bindings): Promise<void> {
 	const now = new Date().toISOString();
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`INSERT OR IGNORE INTO payment_reconcile_requests (
 			user_op_hash, status, priority, attempt_count, next_attempt_at,
 			lease_owner, lease_expires_at, last_error_code, created_at,
@@ -556,7 +619,7 @@ async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<b
 	let receiptLogs: Log[] | undefined;
 
 	// Canonical journal projection: the shared watcher scans one bounded window
-	// for every Parmelia account. Reconciliation is therefore O(pending rows) in
+	// for every GatoPago account. Reconciliation is therefore O(pending rows) in
 	// D1, not one enormous eth_getLogs query per payment.
 	const canonical = await getCanonicalUserOperation(env, row.userOpHash);
 	if (canonical) {

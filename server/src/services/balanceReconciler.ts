@@ -47,6 +47,7 @@ export type InteractiveBalanceRefreshInput = {
 	uid: string;
 	accountAddress: Address;
 	chainId: number;
+	notBeforeBlock?: string;
 };
 
 function asBoundedBatchSize(raw: string | undefined): number {
@@ -64,14 +65,26 @@ function asBoundedBatchSize(raw: string | undefined): number {
  * `sequenced`; the safe reconciler later supersedes it as the safe head catches
  * up. Home never calls this function, so idle users still generate zero RPC work.
  */
-export async function refreshWalletBalancesLatest(
+export async function refreshWalletBalancesLatestBatch(
 	env: Bindings,
-	input: InteractiveBalanceRefreshInput,
+	inputs: readonly InteractiveBalanceRefreshInput[],
 ): Promise<BalanceSnapshot[]> {
+	if (inputs.length === 0) return [];
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	if (input.chainId !== network.chainId) {
-		throw new Error("Interactive balance refresh targets the wrong active chain");
+	const byAddress = new Map<string, InteractiveBalanceRefreshInput>();
+	for (const input of inputs) {
+		if (input.chainId !== network.chainId) {
+			throw new Error(
+				"Interactive balance refresh targets the wrong active chain",
+			);
+		}
+		const accountAddress = input.accountAddress.toLowerCase() as Address;
+		byAddress.set(`${input.chainId}:${accountAddress}`, {
+			...input,
+			accountAddress,
+		});
 	}
+	const wallets = [...byAddress.values()];
 
 	const publicClient = getPublicClient(env);
 	const targetBlock = await publicClient.getBlock({
@@ -81,52 +94,72 @@ export async function refreshWalletBalancesLatest(
 	if (targetBlock.number === null || !targetBlock.hash) {
 		throw new Error("RPC returned a latest block without canonical coordinates");
 	}
+	for (const input of wallets) {
+		if (
+			input.notBeforeBlock !== undefined &&
+			targetBlock.number < BigInt(input.notBeforeBlock)
+		) {
+			throw new Error("Latest head has not reached notBeforeBlock");
+		}
+	}
 
 	const multicallAddress = publicClient.chain.contracts?.multicall3?.address;
 	const calls: ContractFunctionParameters[] = [];
-	const descriptors: Array<{
-		asset: string;
-		decimals: number;
-	}> = [];
+	const descriptors: CallDescriptor[] = [];
 
-	if (multicallAddress) {
-		calls.push({
-			address: multicallAddress,
-			abi: MULTICALL3_BALANCE_ABI,
-			functionName: "getEthBalance",
-			args: [input.accountAddress],
-		});
-		descriptors.push({
-			asset: network.nativeTokenSymbol,
-			decimals: 18,
-		});
-	}
+	for (const input of wallets) {
+		const requestKey = `${input.chainId}:${input.accountAddress}`;
+		if (multicallAddress) {
+			calls.push({
+				address: multicallAddress,
+				abi: MULTICALL3_BALANCE_ABI,
+				functionName: "getEthBalance",
+				args: [input.accountAddress],
+			});
+			descriptors.push({
+				requestKey,
+				uid: input.uid,
+				accountAddress: input.accountAddress,
+				asset: network.nativeTokenSymbol,
+				decimals: 18,
+				strategy: "rpc_only",
+			});
+		}
 
-	for (const token of network.tokens) {
-		if (!token.address) continue;
-		calls.push({
-			address: token.address,
-			abi: erc20Abi,
-			functionName: "balanceOf",
-			args: [input.accountAddress],
-		});
-		descriptors.push({
-			asset: token.symbol,
-			decimals: token.decimals,
-		});
-	}
+		for (const token of network.tokens) {
+			if (!token.address) continue;
+			calls.push({
+				address: token.address,
+				abi: erc20Abi,
+				functionName: "balanceOf",
+				args: [input.accountAddress],
+			});
+			descriptors.push({
+				requestKey,
+				uid: input.uid,
+				accountAddress: input.accountAddress,
+				asset: token.symbol,
+				decimals: token.decimals,
+				strategy: "rpc_only",
+			});
+		}
 
-	if (network.aave) {
-		calls.push({
-			address: network.aave.aUsdc,
-			abi: erc20Abi,
-			functionName: "balanceOf",
-			args: [input.accountAddress],
-		});
-		descriptors.push({
-			asset: "aUSDC",
-			decimals: network.contracts.usdcDecimals,
-		});
+		if (network.aave) {
+			calls.push({
+				address: network.aave.aUsdc,
+				abi: erc20Abi,
+				functionName: "balanceOf",
+				args: [input.accountAddress],
+			});
+			descriptors.push({
+				requestKey,
+				uid: input.uid,
+				accountAddress: input.accountAddress,
+				asset: "aUSDC",
+				decimals: network.contracts.usdcDecimals,
+				strategy: "rpc_only",
+			});
+		}
 	}
 
 	const results =
@@ -151,8 +184,8 @@ export async function refreshWalletBalancesLatest(
 			throw new Error(`Interactive balance read failed for ${descriptor.asset}`);
 		}
 		snapshots.push({
-			uid: input.uid,
-			accountAddress: input.accountAddress,
+			uid: descriptor.uid,
+			accountAddress: descriptor.accountAddress,
 			chainId: network.chainId,
 			asset: descriptor.asset,
 			balanceRaw: result.result,
@@ -169,26 +202,33 @@ export async function refreshWalletBalancesLatest(
 	}
 
 	if (!multicallAddress) {
-		const nativeBalance = await publicClient.getBalance({
-			address: input.accountAddress,
-			blockNumber: targetBlock.number,
-		});
-		snapshots.push({
-			uid: input.uid,
-			accountAddress: input.accountAddress,
-			chainId: network.chainId,
-			asset: network.nativeTokenSymbol,
-			balanceRaw: nativeBalance,
-			decimals: 18,
-			blockNumber: targetBlock.number,
-			blockHash: targetBlock.hash,
-			consistencyLevel: "sequenced",
-			projectionStrategy: "rpc_only",
-			projectionVersion: PROJECTION_VERSION,
-			observedAt: now,
-			reconciledAt: now,
-			source: "rpc_interactive_latest",
-		});
+		const nativeBalances = await Promise.all(
+			wallets.map(async (input) => ({
+				input,
+				balance: await publicClient.getBalance({
+					address: input.accountAddress,
+					blockNumber: targetBlock.number,
+				}),
+			})),
+		);
+		for (const { input, balance } of nativeBalances) {
+			snapshots.push({
+				uid: input.uid,
+				accountAddress: input.accountAddress,
+				chainId: network.chainId,
+				asset: network.nativeTokenSymbol,
+				balanceRaw: balance,
+				decimals: 18,
+				blockNumber: targetBlock.number,
+				blockHash: targetBlock.hash,
+				consistencyLevel: "sequenced",
+				projectionStrategy: "rpc_only",
+				projectionVersion: PROJECTION_VERSION,
+				observedAt: now,
+				reconciledAt: now,
+				source: "rpc_interactive_latest",
+			});
+		}
 	}
 
 	// A latest block can be replaced by a sequencer reorg while the Multicall is
@@ -208,13 +248,20 @@ export async function refreshWalletBalancesLatest(
 	return snapshots;
 }
 
+export async function refreshWalletBalancesLatest(
+	env: Bindings,
+	input: InteractiveBalanceRefreshInput,
+): Promise<BalanceSnapshot[]> {
+	return refreshWalletBalancesLatestBatch(env, [input]);
+}
+
 async function reconcileClaimed(
 	env: Bindings,
 	claimed: ClaimedBalanceRefresh[],
 ): Promise<Set<string>> {
 	if (claimed.length === 0) return new Set();
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const policyRows = await env.PARMELIA_DB.prepare(
+	const policyRows = await env.GATOPAGO_DB.prepare(
 		`SELECT asset, strategy, enabled
 		 FROM asset_indexing_policies
 		 WHERE chain_id = ?`,
@@ -529,7 +576,3 @@ export async function drainBalanceRefreshRequests(env: Bindings): Promise<void> 
 		});
 	});
 }
-
-export const __test = {
-	reconcileClaimed,
-};

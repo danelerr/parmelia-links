@@ -64,7 +64,7 @@ export async function getOperationalHealth(
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
 	const [counts, streams] = await Promise.all([
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT
 				(SELECT COUNT(*) FROM payment_reconcile_requests
 				 WHERE status = 'dead') AS payment_reconcile_dead,
@@ -129,7 +129,7 @@ export async function getOperationalHealth(
 		)
 			.bind(new Date().toISOString(), network.chainId)
 			.first<CountRow>(),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT stream, block_number, updated_at
 			 FROM chain_stream_checkpoints
 			 WHERE chain_id = ?

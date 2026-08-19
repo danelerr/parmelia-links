@@ -69,7 +69,7 @@ export const DEFAULT_MIN_RELAYER_GAS_WEI = 500_000_000_000_000n;
 const MAX_MINT_ATTEMPTS = 20;
 const MINT_PENDING_GRACE_MS = 10 * 60_000;
 
-export function rpcForChain(env: Bindings, chainId: number): string {
+function rpcForChain(env: Bindings, chainId: number): string {
 	const active = getNetworkConfig(env.CHAIN_KEY).chainId;
 	if (chainId === active && env.RPC_URL) return env.RPC_URL.split(",")[0].trim();
 	if (env.CCTP_RPC_URLS) {
@@ -218,7 +218,7 @@ function addressBytes32(address: string): string {
 }
 
 /** CCTP v2 nonce is the bytes32 header field, not Iris' presentation metadata. */
-export function messageNonce(message: Hex): Hex {
+function messageNonce(message: Hex): Hex {
 	return `0x${hexBytes(message, 12, 44)}` as Hex;
 }
 
@@ -280,16 +280,16 @@ export function validateCctpMessage(op: CrosschainOpRecord, message: Hex): strin
 	if (mintRecipient !== addressBytes32(op.recipient)) return "mintRecipient does not match the operation";
 
 	const amount = hexUint(hex, MESSAGE_BODY_OFFSET + 68, MESSAGE_BODY_OFFSET + 100);
-	// Outbound burns net-of-Parmelia-fee (the router skims first); inbound burns the full amount.
+	// Outbound burns net-of-GatoPago-fee (the router skims first); inbound burns the full amount.
 	const expected =
-		op.direction === "outbound" ? BigInt(op.amountIn) - BigInt(op.parmeliaFee || "0") : BigInt(op.amountIn);
+		op.direction === "outbound" ? BigInt(op.amountIn) - BigInt(op.gatoPagoFee || "0") : BigInt(op.amountIn);
 	if (amount !== expected) return `amount ${amount} != expected ${expected}`;
 
 	const messageSender = hexBytes(hex, MESSAGE_BODY_OFFSET + 100, MESSAGE_BODY_OFFSET + 132);
 	if (op.direction === "outbound") {
 		const sourceNetwork = Object.values(NETWORKS).find((network) => network.chainId === op.sourceChainId);
 		if (!sourceNetwork || messageSender !== addressBytes32(sourceNetwork.contracts.crosschainRouter)) {
-			return "messageSender is not the Parmelia cross-chain router";
+			return "messageSender is not the GatoPago cross-chain router";
 		}
 	} else if (messageSender === ZERO_BYTES32) {
 		return "inbound messageSender is zero";

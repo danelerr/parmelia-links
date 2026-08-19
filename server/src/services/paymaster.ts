@@ -13,7 +13,7 @@ export const PAYMASTER_POST_OP_GAS_LIMIT = 50000n;
 
 // Default sponsorship window: matches the pending-payment TTL (~10 min) so a
 // signed-but-unsubmitted UserOp expires and cannot be replayed against the paymaster.
-export const DEFAULT_SPONSOR_TTL_SECONDS = 600;
+const DEFAULT_SPONSOR_TTL_SECONDS = 600;
 
 type SponsorableUserOp = {
 	sender: `0x${string}`;
@@ -25,7 +25,7 @@ type SponsorableUserOp = {
 	gasFees: Hex;
 };
 
-export function buildPaymasterHeader(
+function buildPaymasterHeader(
 	paymasterAddress: `0x${string}`,
 	gasLimits: {
 		verificationGasLimit?: bigint;
@@ -43,7 +43,7 @@ export function buildPaymasterHeader(
 	);
 }
 
-export function getPaymasterSponsorHash(params: {
+function getPaymasterSponsorHash(params: {
 	chainId: number;
 	paymasterAddress: `0x${string}`;
 	userOp: SponsorableUserOp;

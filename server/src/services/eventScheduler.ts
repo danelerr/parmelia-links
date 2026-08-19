@@ -61,7 +61,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function isEventJobName(value: unknown): value is EventJobName {
+function isEventJobName(value: unknown): value is EventJobName {
 	return typeof value === "string" && JOB_NAME_SET.has(value);
 }
 
@@ -98,7 +98,7 @@ function normalizedTargetBlock(value: unknown): string | undefined | null {
 	}
 }
 
-export function parseScheduleRequest(value: unknown): ScheduleRequest | null {
+function parseScheduleRequest(value: unknown): ScheduleRequest | null {
 	if (!isRecord(value) || !isEventJobName(value.job)) return null;
 	if (
 		typeof value.runAt !== "number" ||

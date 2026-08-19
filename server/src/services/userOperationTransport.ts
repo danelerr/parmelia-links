@@ -34,7 +34,7 @@ import type { PackedUserOp } from "./userOp";
 
 export type UserOperationTransportMode = "self" | "bundler";
 
-export type UserOperationGasEstimate = {
+type UserOperationGasEstimate = {
 	verificationGasLimit: bigint;
 	callGasLimit: bigint;
 	preVerificationGas: bigint;
@@ -48,7 +48,7 @@ export type UserOperationSendResult = {
 	transactionHash: Hex | null;
 };
 
-export type UserOperationReceipt = {
+type UserOperationReceipt = {
 	userOpHash: Hex;
 	transactionHash: Hex;
 	blockNumber: bigint;
@@ -139,7 +139,7 @@ type RpcUserOperation = {
 	paymasterPostOpGasLimit?: Hex;
 };
 
-type ParmeliaBundlerRpcSchema = [
+type GatoPagoBundlerRpcSchema = [
 	{
 		Method: "eth_chainId";
 		Parameters: [];
@@ -167,7 +167,7 @@ type ParmeliaBundlerRpcSchema = [
 	},
 ];
 
-type BundlerRpcRequest = EIP1193RequestFn<ParmeliaBundlerRpcSchema>;
+type BundlerRpcRequest = EIP1193RequestFn<GatoPagoBundlerRpcSchema>;
 
 function packedPair(value: Hex, label: string): [bigint, bigint] {
 	if (!/^0x[0-9a-fA-F]{64}$/u.test(value)) {
@@ -261,7 +261,7 @@ export function packedUserOperationToRpc(
 	};
 }
 
-export function parseUserOperationReceiptFromLogs(
+function parseUserOperationReceiptFromLogs(
 	logs: Log[],
 	userOpHash: Hex,
 ): Pick<
@@ -427,7 +427,7 @@ function endpointRequest(
 ): BundlerRpcRequest {
 	const client = createClient({
 		chain: getActiveChain(env.CHAIN_KEY),
-		rpcSchema: rpcSchema<ParmeliaBundlerRpcSchema>(),
+		rpcSchema: rpcSchema<GatoPagoBundlerRpcSchema>(),
 		transport: buildRpcTransport(url, {
 			timeoutMs: requestTimeoutMs(env),
 			env,
@@ -511,7 +511,7 @@ async function endpointSupports(
 	const key = await opaqueBundlerEndpointKey(url, slot);
 	const normalizedEntryPoint = entryPoint.toLowerCase();
 	try {
-		const cached = await env.PARMELIA_DB.prepare(
+		const cached = await env.GATOPAGO_DB.prepare(
 			`SELECT supported, checked_at
 			 FROM bundler_capabilities
 			 WHERE endpoint_key = ? AND chain_id = ? AND entry_point = ?`,
@@ -547,7 +547,7 @@ async function endpointSupports(
 				value.toLowerCase() === normalizedEntryPoint,
 		);
 	try {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO bundler_capabilities (
 				endpoint_key, chain_id, entry_point, supported, checked_at
 			 ) VALUES (?, ?, ?, ?, ?)
@@ -674,7 +674,7 @@ class BundlerTransport implements UserOperationTransport {
 		}
 		if (!compatible && !transient) {
 			throw new UserOperationTransportError(
-				"Configured bundlers do not support Parmelia EntryPoint v0.9",
+				"Configured bundlers do not support GatoPago EntryPoint v0.9",
 				ERR.BUNDLER_ENTRYPOINT_UNSUPPORTED,
 				false,
 			);
@@ -762,7 +762,7 @@ class BundlerTransport implements UserOperationTransport {
 		}
 		if (!compatible && !transient) {
 			throw new UserOperationTransportError(
-				"Configured bundlers do not support Parmelia EntryPoint v0.9",
+				"Configured bundlers do not support GatoPago EntryPoint v0.9",
 				ERR.BUNDLER_ENTRYPOINT_UNSUPPORTED,
 				false,
 			);

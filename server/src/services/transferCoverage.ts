@@ -135,7 +135,7 @@ export function prepareTransferCheckpointRowsForUid(
 	chainId: number,
 	uid: string,
 ): D1PreparedStatement {
-	return env.PARMELIA_DB.prepare(
+	return env.GATOPAGO_DB.prepare(
 		`${transferCheckpointRowsSql()} AND a.uid = ? ORDER BY cp.stream`,
 	).bind(chainId, transferAssignmentStream(chainId), uid);
 }
@@ -145,7 +145,7 @@ export async function getTransferCoverageForAddress(
 	chainId: number,
 	accountAddress: string,
 ): Promise<Map<string, TransferCheckpointEvidence>> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`${transferCheckpointRowsSql()}
 		   AND a.account_address = lower(?)
 		 ORDER BY cp.stream`,

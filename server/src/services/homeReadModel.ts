@@ -13,7 +13,7 @@ import {
 	type TransferCheckpointRow,
 } from "./transferCoverage";
 
-export type ReadModelStatus = "fresh" | "stale" | "unavailable";
+type ReadModelStatus = "fresh" | "stale" | "unavailable";
 
 type ProfileRow = {
 	uid: string;
@@ -47,6 +47,8 @@ type LedgerHomeRow = {
 	amount: string;
 	amount_source: "executed" | "estimated";
 	counterparty: string | null;
+	counterparty_username: string | null;
+	counterparty_display_name: string | null;
 	reference: string | null;
 	created_at: string;
 };
@@ -78,7 +80,7 @@ type VersionRow = {
 	updated_at: string;
 };
 
-export type HomeBalanceAsset = {
+type HomeBalanceAsset = {
 	value: string | null;
 	raw: string | null;
 	decimals: number;
@@ -314,6 +316,8 @@ function mapActivity(rows: LedgerHomeRow[]) {
 			reference: row.reference ?? "",
 			createdAt: row.created_at,
 			kind: row.kind,
+			counterpartyUsername: row.counterparty_username,
+			counterpartyDisplayName: row.counterparty_display_name,
 		};
 		if (row.direction === "out") {
 			sent.push({ ...common, to: row.counterparty ?? "" });
@@ -332,7 +336,7 @@ export async function getHomeVersion(
 	env: Bindings,
 	uid: string,
 ): Promise<VersionRow> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT version, updated_at FROM home_state_versions WHERE uid = ?`,
 	)
 		.bind(uid)
@@ -345,8 +349,8 @@ export async function isHomeBalanceFresh(
 	uid: string,
 ): Promise<boolean> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const results = await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	const results = await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`SELECT asset, balance_raw, decimals, block_number, block_hash,
 			        consistency_level, projection_strategy, projection_version,
 			        observed_at, reconciled_at, source
@@ -396,13 +400,13 @@ export async function readHomeModel(
 	uid: string,
 ): Promise<{ model: HomeReadModel; needsRefresh: boolean }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const results = await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	const results = await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`SELECT uid, wallet_address, username, display_name, social_url,
 			        credential_id
 			 FROM users WHERE uid = ? LIMIT 1`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT asset, balance_raw, decimals, block_number, block_hash,
 			        consistency_level, projection_strategy, projection_version,
 			        observed_at, reconciled_at, source
@@ -410,29 +414,34 @@ export async function readHomeModel(
 			 WHERE uid = ? AND chain_id = ? AND canonical = 1
 			 ORDER BY asset`,
 		).bind(uid, network.chainId),
-		env.PARMELIA_DB.prepare(
-			`SELECT id, direction, kind, tx_hash, token, amount, amount_source,
-			        counterparty, reference, created_at
-			 FROM ledger WHERE uid = ? AND canonical = 1
-			 ORDER BY created_at DESC LIMIT 10`,
+		env.GATOPAGO_DB.prepare(
+			`SELECT l.id, l.direction, l.kind, l.tx_hash, l.token, l.amount,
+			        l.amount_source, l.counterparty, l.reference, l.created_at,
+			        counterparty_user.username AS counterparty_username,
+			        counterparty_user.display_name AS counterparty_display_name
+			 FROM ledger AS l
+			 LEFT JOIN users AS counterparty_user
+			   ON counterparty_user.uid = l.counterparty_uid
+			 WHERE l.uid = ? AND l.canonical = 1
+			 ORDER BY l.created_at DESC LIMIT 10`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT user_op_hash, status, currency, amount, created_at
 			 FROM pending_payments
 			 WHERE uid = ? AND status IN ('prepared', 'submitting', 'submitted')
 			 ORDER BY created_at DESC LIMIT 10`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT id, kind, status, tx_hash, created_at, updated_at
 			 FROM account_operations
 			 WHERE uid = ? AND status IN ('prepared', 'submitted', 'needs_review')
 			 ORDER BY updated_at DESC LIMIT 10`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT status, updated_at FROM balance_refresh_requests
 			 WHERE uid = ? AND chain_id = ? ORDER BY updated_at DESC LIMIT 1`,
 		).bind(uid, network.chainId),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT version, updated_at FROM home_state_versions WHERE uid = ?`,
 		).bind(uid),
 		prepareTransferCheckpointRowsForUid(
@@ -547,11 +556,11 @@ export async function readBalanceModel(
 	needsRefresh: boolean;
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const results = await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	const results = await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`SELECT wallet_address FROM users WHERE uid = ? LIMIT 1`,
 		).bind(uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT asset, balance_raw, decimals, block_number, block_hash,
 			        consistency_level, projection_strategy, projection_version,
 			        observed_at, reconciled_at, source
@@ -559,7 +568,7 @@ export async function readBalanceModel(
 			 WHERE uid = ? AND chain_id = ? AND canonical = 1
 			 ORDER BY asset`,
 		).bind(uid, network.chainId),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`SELECT status, updated_at FROM balance_refresh_requests
 			 WHERE uid = ? AND chain_id = ? ORDER BY updated_at DESC LIMIT 1`,
 		).bind(uid, network.chainId),

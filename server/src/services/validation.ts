@@ -2,7 +2,7 @@
 // Kept free of Cloudflare/viem bindings so they are trivially unit-testable.
 
 /** Pseudo link ids the client uses for non-stored payments (not real DB rows). */
-export const CLIENT_SIDE_PAYMENT_IDS = new Set(["direct", "username", "manual"]);
+const CLIENT_SIDE_PAYMENT_IDS = new Set(["direct", "username", "manual"]);
 
 /** Strict positive amount: returns the trimmed string or null if not a finite > 0 number. */
 export function normalizePositiveAmount(amount: unknown): string | null {

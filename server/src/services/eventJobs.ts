@@ -161,7 +161,7 @@ function noEarlierThan(candidate: number | null, delayMs: number): number | null
 }
 
 async function nextPaymentReconcileRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(
 			CASE
 				WHEN status = 'processing' THEN lease_expires_at
@@ -175,7 +175,7 @@ async function nextPaymentReconcileRun(env: Bindings): Promise<number | null> {
 }
 
 async function hasPendingPayments(env: Bindings): Promise<boolean> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM pending_payments
 		 WHERE status IN ('submitting', 'submitted')
@@ -191,7 +191,7 @@ async function hasPendingUserOperationsForPartition(
 	const shardId = parseShardPartition(partition);
 	if (shardId === null) return false;
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM pending_payments p
 		 JOIN indexer_wallet_assignments a
@@ -212,7 +212,7 @@ async function hasPendingUserOperationsForPartition(
 }
 
 async function nextBalanceRepairRun(env: Bindings): Promise<number | null> {
-	const rows = await env.PARMELIA_DB.prepare(
+	const rows = await env.GATOPAGO_DB.prepare(
 		`SELECT status, attempt_count, updated_at, lease_expires_at
 		 FROM balance_refresh_requests
 		 WHERE status IN ('pending', 'processing', 'failed')
@@ -250,7 +250,7 @@ async function nextBalanceRepairRun(env: Bindings): Promise<number | null> {
 }
 
 async function nextAccountOperationRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM account_operations
 		 WHERE status IN ('prepared', 'submitted')
@@ -274,7 +274,7 @@ function crosschainPollDelayMs(
 }
 
 async function nextCrosschainRun(env: Bindings): Promise<number | null> {
-	const rows = await env.PARMELIA_DB.prepare(
+	const rows = await env.GATOPAGO_DB.prepare(
 		`SELECT status, created_at, updated_at
 		 FROM crosschain_operations
 		 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable')
@@ -302,7 +302,7 @@ async function nextCrosschainRun(env: Bindings): Promise<number | null> {
 }
 
 async function nextWebhookDeliveryRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(
 			CASE
 				WHEN status = 'processing' THEN next_retry_at
@@ -316,7 +316,7 @@ async function nextWebhookDeliveryRun(env: Bindings): Promise<number | null> {
 }
 
 async function nextUserEventRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(
 			CASE
 				WHEN status = 'processing' THEN lease_expires_at
@@ -344,7 +344,7 @@ async function nextRouterFallbackRun(env: Bindings): Promise<number | null> {
 	// least one (max-24h) intent can still be paid.
 	if (env.ALCHEMY_CUSTOM_WEBHOOK_ENABLED === "true") return null;
 	const now = new Date().toISOString();
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(expires_at) AS next_run_at
 		 FROM payment_intents
 		 WHERE status = 'awaiting_payment'
@@ -371,7 +371,7 @@ async function nextAlchemyAddressSyncRun(
 					(candidate) => candidate.slot === slot,
 				);
 	if (!webhook) return null;
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM provider_subscription_state
 		 WHERE provider = 'alchemy' AND subscription_id = ? AND status = 'failed'
@@ -396,7 +396,7 @@ async function nextWebhookKeyRotationRun(env: Bindings): Promise<number | null> 
 async function nextIndexerWalletRegistryRun(
 	env: Bindings,
 ): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
 		 FROM indexer_wallet_registry_outbox
 		 WHERE status IN ('pending', 'failed')`,
@@ -406,7 +406,7 @@ async function nextIndexerWalletRegistryRun(
 }
 
 async function nextReorgReplayRun(env: Bindings): Promise<number | null> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
 		 FROM chain_reorg_replay_requests
 		 WHERE status IN ('pending', 'failed')`,
@@ -419,7 +419,7 @@ async function nextIndexerSafetySweepRun(
 	env: Bindings,
 ): Promise<number | null> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
-	const active = await env.PARMELIA_DB.prepare(
+	const active = await env.GATOPAGO_DB.prepare(
 		`SELECT 1 AS present
 		 FROM indexer_shards s
 		 WHERE s.chain_id = ?
@@ -724,7 +724,7 @@ export async function recoverEventJobs(env: Bindings): Promise<number> {
 		);
 	}
 	if (await hasPendingPayments(env)) {
-		const pending = await env.PARMELIA_DB.prepare(
+		const pending = await env.GATOPAGO_DB.prepare(
 			`SELECT DISTINCT sender_address
 			 FROM pending_payments
 			 WHERE status IN ('submitting', 'submitted')`,
@@ -751,7 +751,7 @@ export async function recoverEventJobs(env: Bindings): Promise<number> {
 	return scheduled;
 }
 
-export async function executeEventJob(
+async function executeEventJob(
 	env: Bindings,
 	message: EventJobMessage,
 ): Promise<"completed" | "already_running"> {

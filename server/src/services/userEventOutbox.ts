@@ -52,7 +52,7 @@ function parseSecurityNotification(value: string): SecurityNotificationPayload |
 }
 
 async function listDue(env: Bindings, limit: number): Promise<OutboxRow[]> {
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`SELECT id, uid, event_type, payload_json, attempt_count
 		 FROM user_event_outbox
 		 WHERE (
@@ -71,7 +71,7 @@ async function listDue(env: Bindings, limit: number): Promise<OutboxRow[]> {
 async function claim(env: Bindings, row: OutboxRow): Promise<string | null> {
 	const owner = crypto.randomUUID();
 	const now = new Date();
-	const result = await env.PARMELIA_DB.prepare(
+	const result = await env.GATOPAGO_DB.prepare(
 		`UPDATE user_event_outbox
 		 SET status = 'processing', lease_owner = ?, lease_expires_at = ?,
 		     attempt_count = attempt_count + 1, updated_at = ?
@@ -98,7 +98,7 @@ async function complete(
 	owner: string,
 ): Promise<void> {
 	const now = new Date().toISOString();
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`UPDATE user_event_outbox
 		 SET status = 'delivered', delivered_at = ?, updated_at = ?,
 		     lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL
@@ -114,8 +114,8 @@ async function completeHomeInvalidations(
 	owner: string,
 ): Promise<void> {
 	const now = new Date().toISOString();
-	await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`UPDATE user_event_outbox
 			 SET status = 'delivered', delivered_at = ?, updated_at = ?,
 			     lease_owner = NULL, lease_expires_at = NULL,
@@ -123,7 +123,7 @@ async function completeHomeInvalidations(
 			 WHERE uid = ? AND event_type = 'home.invalidate'
 			   AND status IN ('pending', 'failed')`,
 		).bind(now, now, row.uid),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE user_event_outbox
 			 SET status = 'delivered', delivered_at = ?, updated_at = ?,
 			     lease_owner = NULL, lease_expires_at = NULL,
@@ -141,7 +141,7 @@ async function fail(
 ): Promise<void> {
 	const now = new Date();
 	const terminal = row.attempt_count + 1 >= MAX_ATTEMPTS;
-	await env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.prepare(
 		`UPDATE user_event_outbox
 		 SET status = ?, next_attempt_at = ?, updated_at = ?,
 		     lease_owner = NULL, lease_expires_at = NULL, last_error_code = ?
@@ -180,7 +180,7 @@ export async function drainUserEventOutbox(
 		if (!owner) continue;
 		try {
 			if (row.event_type === "home.invalidate") {
-				const version = await env.PARMELIA_DB.prepare(
+				const version = await env.GATOPAGO_DB.prepare(
 					`SELECT version FROM home_state_versions WHERE uid = ?`,
 				)
 					.bind(row.uid)

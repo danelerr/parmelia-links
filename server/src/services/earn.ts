@@ -1,6 +1,6 @@
 // Earn (Modo Ahorro): Aave v3 USDC supply, direct from the user's smart account.
 //
-// Design: DEFI_DESIGN.md v2.0. No Parmelia contracts, no custody — the batch is
+// Design: DEFI_DESIGN.md v2.0. No GatoPago contracts, no custody — the batch is
 // [approve(Pool, exact), Pool.supply(USDC, amount, account, 0)] (deposit) or
 // [Pool.withdraw(USDC, amount | max, account)] (withdraw), signed with the
 // passkey and relayed through the standard /pay/submit lifecycle. The aToken
@@ -11,7 +11,7 @@
 // 2026-07-03). The APY shown is the live on-chain rate; it is VARIABLE and the
 // UI copy must never promise it.
 
-import { encodeFunctionData, formatUnits, maxUint256, type Hex } from "viem";
+import { encodeFunctionData, maxUint256, type Hex } from "viem";
 import { getNetworkConfig, erc20Abi, type NetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
@@ -117,6 +117,19 @@ export type EarnStatus = {
 	apyPercent: number;
 };
 
+/**
+ * Accept the legacy `amount: "max"` contract and the current explicit flag.
+ * The client also sends the exact decimal balance so older Workers can still
+ * prepare a valid withdrawal while deployments roll forward independently.
+ */
+export function isWithdrawAllRequest(
+	action: string,
+	amount: unknown,
+	withdrawAll: unknown,
+): boolean {
+	return action === "withdraw" && (amount === "max" || withdrawAll === true);
+}
+
 // The reserve rate/flags move slowly; cache per isolate to keep /earn/config at
 // ~zero marginal RPC cost.
 let statusCache: { at: number; value: EarnStatus } | null = null;
@@ -145,20 +158,6 @@ export async function getEarnStatus(env: Bindings): Promise<EarnStatus> {
 	};
 	statusCache = { at: Date.now(), value };
 	return value;
-}
-
-/** The user's saved balance (aToken, rebasing 1:1 with USDC). Human string. */
-export async function getSavingsBalance(env: Bindings, account: `0x${string}`): Promise<string> {
-	const network = getNetworkConfig(env.CHAIN_KEY);
-	if (!network.aave) return "0";
-	const publicClient = getPublicClient(env);
-	const raw = (await publicClient.readContract({
-		address: network.aave.aUsdc,
-		abi: erc20Abi,
-		functionName: "balanceOf",
-		args: [account],
-	})) as bigint;
-	return formatUnits(raw, network.contracts.usdcDecimals);
 }
 
 /** Batch for a deposit: exact approve + supply, atomic in one UserOp. */

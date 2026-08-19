@@ -213,16 +213,16 @@ function nowIso() {
 }
 
 async function d1First<Row>(env: Bindings, query: string, params: unknown[] = []): Promise<Row | null> {
-	return (await env.PARMELIA_DB.prepare(query).bind(...params).first<Row>()) ?? null;
+	return (await env.GATOPAGO_DB.prepare(query).bind(...params).first<Row>()) ?? null;
 }
 
 async function d1All<Row>(env: Bindings, query: string, params: unknown[] = []): Promise<Row[]> {
-	const result = await env.PARMELIA_DB.prepare(query).bind(...params).all<Row>();
+	const result = await env.GATOPAGO_DB.prepare(query).bind(...params).all<Row>();
 	return (result.results ?? []) as Row[];
 }
 
 async function d1Run(env: Bindings, query: string, params: unknown[] = []) {
-	return await env.PARMELIA_DB.prepare(query).bind(...params).run();
+	return await env.GATOPAGO_DB.prepare(query).bind(...params).run();
 }
 
 /** True when the statement actually wrote a row (atomic claim / guarded update). */
@@ -419,7 +419,7 @@ export async function getUserByUsername(env: Bindings, username: string): Promis
 	return row ? mapUserRow(row) : null;
 }
 
-/** Reverse lookup: which Parmelia user owns this (lowercase) address? */
+/** Reverse lookup: which GatoPago user owns this (lowercase) address? */
 export async function getUserByWallet(env: Bindings, walletAddress: string): Promise<UserRecord | null> {
 	const row = await d1First<UserRow>(
 		env,
@@ -552,27 +552,6 @@ export async function listPaymentLinksByOwner(env: Bindings, ownerUid: string, l
 		[ownerUid, limit],
 	);
 	return rows.map(mapPaymentLinkRow);
-}
-
-/**
- * Flip a link to paid — only from 'pending' (atomic guard). Returns false when
- * the link was already paid, so a second concurrent payment can never overwrite
- * the first payer's tx_hash/paid_by/amount.
- */
-export async function markPaymentLinkPaid(
-	env: Bindings,
-	params: { id: string; amount: string; txHash: string; paidAt: string; paidBy: string; claimOwner?: string | null },
-): Promise<boolean> {
-	const result = await d1Run(
-		env,
-		`UPDATE payment_links
-		 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?,
-			 payment_claim = NULL, payment_claim_expires_at = NULL, payment_claim_tx_hash = NULL
-		 WHERE id = ? AND status = 'pending'
-			 AND (payment_claim IS NULL OR payment_claim = ?)`,
-		[params.amount, params.txHash, params.paidAt, params.paidBy, params.id, params.claimOwner ?? null],
-	);
-	return didWrite(result);
 }
 
 /** Reserve a pending link for one UserOperation before any funds are broadcast. */
@@ -779,8 +758,8 @@ export async function claimPendingForSubmit(env: Bindings, userOpHash: string): 
 			reason: "payment_submission_claimed",
 		}),
 	]);
-	const results = await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	const results = await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`UPDATE pending_payments
 			 SET status = 'submitting',
 			     submission_attempt_count = submission_attempt_count + 1,
@@ -790,7 +769,7 @@ export async function claimPendingForSubmit(env: Bindings, userOpHash: string): 
 		// D1 batch is transactional: a Worker cannot die after taking the claim
 		// while leaving no durable work capable of discovering an ambiguous
 		// broadcast. The existing submitted trigger can later raise priority.
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO payment_reconcile_requests (
 				user_op_hash, status, priority, attempt_count, next_attempt_at,
 				lease_owner, lease_expires_at, last_error_code, created_at,
@@ -868,22 +847,6 @@ export async function setPendingPaymentStatus(
 	} else {
 		await d1Run(env, `UPDATE pending_payments SET status = ? WHERE user_op_hash = ?`, [status, userOpHash]);
 	}
-}
-
-/** In-flight rows the reconciler must resolve (oldest first). */
-export async function listPendingPaymentsByStatus(
-	env: Bindings,
-	statuses: PendingPaymentStatus[],
-	limit = 25,
-): Promise<PendingPaymentRecord[]> {
-	if (statuses.length === 0) return [];
-	const placeholders = statuses.map(() => "?").join(", ");
-	const rows = await d1All<PendingPaymentRow>(
-		env,
-		`SELECT ${PENDING_COLS} FROM pending_payments WHERE status IN (${placeholders}) ORDER BY created_at ASC LIMIT ?`,
-		[...statuses, limit],
-	);
-	return rows.map(mapPendingRow);
 }
 
 /**
@@ -998,7 +961,7 @@ export async function sweepTerminalPendingPayments(env: Bindings): Promise<void>
 	);
 }
 
-export async function deletePendingPayment(env: Bindings, userOpHash: string) {
+async function deletePendingPayment(env: Bindings, userOpHash: string) {
 	await d1Run(env, `DELETE FROM pending_payments WHERE user_op_hash = ?`, [userOpHash]);
 }
 
@@ -1242,7 +1205,7 @@ export async function sweepRateLimits(env: Bindings): Promise<void> {
 
 // ===== Ledger (unified movements) =====
 
-export type LedgerKind = "payment" | "link" | "swap" | "fund" | "external" | "earn";
+type LedgerKind = "payment" | "link" | "swap" | "fund" | "external" | "earn";
 
 export type LedgerEntry = {
 	/** Present on read models; writers leave it unset and D1 generates the id. */
@@ -1266,6 +1229,8 @@ export type LedgerEntry = {
 	projectionVersion?: number | null;
 	counterparty?: string | null;
 	counterpartyUid?: string | null;
+	counterpartyUsername?: string | null;
+	counterpartyDisplayName?: string | null;
 	reference?: string | null;
 	linkId?: string | null;
 	createdAt: string;
@@ -1299,6 +1264,8 @@ type LedgerRow = {
 	projection_version: number | null;
 	counterparty: string | null;
 	counterparty_uid: string | null;
+	counterparty_username?: string | null;
+	counterparty_display_name?: string | null;
 	reference: string | null;
 	link_id: string | null;
 	created_at: string;
@@ -1343,7 +1310,7 @@ export async function writeLedgerEntries(
 					guardedChainId,
 					options.expectedReorgEpoch!,
 				);
-	const stmt = env.PARMELIA_DB.prepare(
+	const stmt = env.GATOPAGO_DB.prepare(
 		`INSERT OR IGNORE INTO ledger (
 			id, uid, direction, kind, tx_hash, log_index, token, amount, amount_source,
 			amount_raw, decimals, chain_id, block_number, block_hash, transaction_index,
@@ -1397,7 +1364,7 @@ export async function writeLedgerEntries(
 	);
 	const now = nowIso();
 	const userEventStatements = (options.userEvents ?? []).map((effect) =>
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT OR IGNORE INTO user_event_outbox (
 				id, dedupe_key, uid, event_type, payload_json, priority,
 				status, attempt_count, next_attempt_at, lease_owner,
@@ -1427,7 +1394,7 @@ export async function writeLedgerEntries(
 			? [prepareChainEpochGuardDelete(env, epochGuard)]
 			: []),
 	];
-	const results = await env.PARMELIA_DB.batch(statements);
+	const results = await env.GATOPAGO_DB.batch(statements);
 	const entryResultOffset = epochGuard ? 1 : 0;
 	return results
 		.slice(entryResultOffset, entryResultOffset + entries.length)
@@ -1450,14 +1417,14 @@ export class InvalidLedgerCursorError extends Error {
 	}
 }
 
-export function encodeLedgerCursor(cursor: Omit<LedgerPageCursor, "v">): string {
+function encodeLedgerCursor(cursor: Omit<LedgerPageCursor, "v">): string {
 	return btoa(JSON.stringify({ v: 1, ...cursor } satisfies LedgerPageCursor))
 		.replaceAll("+", "-")
 		.replaceAll("/", "_")
 		.replace(/=+$/u, "");
 }
 
-export function decodeLedgerCursor(value: string): LedgerPageCursor {
+function decodeLedgerCursor(value: string): LedgerPageCursor {
 	try {
 		if (
 			value.length < 1 ||
@@ -1513,6 +1480,8 @@ function ledgerEntryFromRow(row: LedgerRow): LedgerEntry {
 		projectionVersion: row.projection_version,
 		counterparty: row.counterparty,
 		counterpartyUid: row.counterparty_uid,
+		counterpartyUsername: row.counterparty_username ?? null,
+		counterpartyDisplayName: row.counterparty_display_name ?? null,
 		reference: row.reference,
 		linkId: row.link_id,
 		createdAt: row.created_at,
@@ -1532,28 +1501,33 @@ export async function listLedgerPageByUid(
 	// created_at is always an ISO-8601 string for ledger writers. Keyset
 	// pagination plus id is stable under concurrent inserts and uses the
 	// idx_ledger_uid_canonical_created_id covering order.
-	const selection = `SELECT id, uid, direction, kind, tx_hash, log_index, token,
-			amount, amount_source, amount_raw, decimals, chain_id, block_number,
-			block_hash, transaction_index, consistency_level, projection_version,
-			counterparty, counterparty_uid, reference, link_id, created_at
-		 FROM ledger
-		 WHERE uid = ? AND canonical = 1`;
+	const selection = `SELECT l.id, l.uid, l.direction, l.kind, l.tx_hash,
+			l.log_index, l.token, l.amount, l.amount_source, l.amount_raw,
+			l.decimals, l.chain_id, l.block_number, l.block_hash,
+			l.transaction_index, l.consistency_level, l.projection_version,
+			l.counterparty, l.counterparty_uid, l.reference, l.link_id,
+			l.created_at, counterparty_user.username AS counterparty_username,
+			counterparty_user.display_name AS counterparty_display_name
+		 FROM ledger AS l
+		 LEFT JOIN users AS counterparty_user
+		   ON counterparty_user.uid = l.counterparty_uid
+		 WHERE l.uid = ? AND l.canonical = 1`;
 	const rows = before
 		? await d1All<LedgerRow>(
 				env,
 				`${selection}
 				 AND (
-					created_at < ?
-					OR (created_at = ? AND id < ?)
+					l.created_at < ?
+					OR (l.created_at = ? AND l.id < ?)
 				 )
-				 ORDER BY created_at DESC, id DESC
+				 ORDER BY l.created_at DESC, l.id DESC
 				 LIMIT ?`,
 				[uid, before.createdAt, before.createdAt, before.id, limit + 1],
 			)
 		: await d1All<LedgerRow>(
 				env,
 				`${selection}
-				 ORDER BY created_at DESC, id DESC
+				 ORDER BY l.created_at DESC, l.id DESC
 				 LIMIT ?`,
 				[uid, limit + 1],
 			);
@@ -1567,24 +1541,6 @@ export async function listLedgerPageByUid(
 				? encodeLedgerCursor({ createdAt: tail.created_at, id: tail.id })
 				: null,
 	};
-}
-
-/** Compatibility helper for callers that do not need a cursor. */
-export async function listLedgerByUid(
-	env: Bindings,
-	uid: string,
-	limit = LEDGER_PAGE_DEFAULT,
-): Promise<LedgerEntry[]> {
-	return (await listLedgerPageByUid(env, uid, { limit })).entries;
-}
-
-/** All wallets the shared event-driven indexer must watch. */
-export async function listUserWallets(env: Bindings): Promise<{ uid: string; walletAddress: string }[]> {
-	const rows = await d1All<{ uid: string; wallet_address: string }>(
-		env,
-		`SELECT uid, wallet_address FROM users WHERE wallet_address IS NOT NULL`,
-	);
-	return rows.map((r) => ({ uid: r.uid, walletAddress: r.wallet_address }));
 }
 
 // ===== Indexer cursor =====
@@ -1621,7 +1577,7 @@ export async function setSyncCursor(
 					options.chainId,
 					options.expectedReorgEpoch,
 				);
-	const cursorStatement = env.PARMELIA_DB.prepare(
+	const cursorStatement = env.GATOPAGO_DB.prepare(
 		`INSERT INTO sync_state (key, last_block, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET
 		   last_block = excluded.last_block,
@@ -1631,7 +1587,7 @@ export async function setSyncCursor(
 		await cursorStatement.run();
 		return;
 	}
-	await env.PARMELIA_DB.batch([
+	await env.GATOPAGO_DB.batch([
 		prepareChainEpochGuardInsert(env, epochGuard),
 		cursorStatement,
 		prepareChainEpochGuardDelete(env, epochGuard),
@@ -2072,7 +2028,7 @@ export async function getMerchantById(env: Bindings, id: string): Promise<Mercha
 	return row ? { id: row.id, ownerUid: row.owner_uid, name: row.name, createdAt: row.created_at } : null;
 }
 
-export async function getMerchantByOwner(env: Bindings, ownerUid: string): Promise<MerchantRecord | null> {
+async function getMerchantByOwner(env: Bindings, ownerUid: string): Promise<MerchantRecord | null> {
 	const row = await d1First<{ id: string; owner_uid: string; name: string | null; created_at: string }>(
 		env,
 		`SELECT id, owner_uid, name, created_at FROM merchants WHERE owner_uid = ?`,
@@ -2181,26 +2137,6 @@ function mapIntent(row: PaymentIntentRow): PaymentIntentRecord {
 	};
 }
 
-export async function createPaymentIntent(env: Bindings, rec: PaymentIntentRecord) {
-	if (rec.status === "awaiting_payment" && rec.onchainId) {
-		await scheduleEventJob(env, "router_watcher", {
-			delayMs: 2_000,
-			reason: "payment_intent_created",
-		});
-	}
-	await d1Run(
-		env,
-		`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
-			checkout_url, tx_hash, mode, idempotency_key, expires_at, created_at, updated_at, onchain_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		[
-			rec.id, rec.merchantId, rec.linkId, rec.amount, rec.currency, rec.status,
-			rec.metadata ? JSON.stringify(rec.metadata) : null, rec.reference, rec.checkoutUrl, rec.txHash,
-			rec.mode, rec.idempotencyKey, rec.expiresAt, rec.createdAt, rec.updatedAt, rec.onchainId,
-		],
-	);
-}
-
 export async function createPaymentIntentWithOutbox(
 	env: Bindings,
 	rec: PaymentIntentRecord,
@@ -2212,8 +2148,8 @@ export async function createPaymentIntentWithOutbox(
 			reason: "payment_intent_created",
 		});
 	}
-	await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
 				checkout_url, tx_hash, mode, idempotency_key, expires_at, created_at, updated_at, onchain_id)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2248,7 +2184,7 @@ export async function createPaymentIntentTransaction(
 		});
 	}
 	const statements = [
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO payment_links (
 				id, owner_uid, wallet_address, amount, currency, reference, status,
 				tx_hash, paid_at, paid_by, created_at
@@ -2257,7 +2193,7 @@ export async function createPaymentIntentTransaction(
 			link.id, link.ownerUid, link.wallet, link.amount, link.currency, link.reference,
 			link.status, link.txHash, link.paidAt, link.paidBy, link.createdAt,
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO payment_intents (id, merchant_id, link_id, amount, currency, status, metadata, reference,
 				checkout_url, tx_hash, mode, idempotency_key, expires_at, created_at, updated_at, onchain_id)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2268,7 +2204,7 @@ export async function createPaymentIntentTransaction(
 		),
 		...eventOutboxStatements(env, outbox),
 	];
-	await env.PARMELIA_DB.batch(statements);
+	await env.GATOPAGO_DB.batch(statements);
 	if (outbox.deliveries.length > 0) {
 		await scheduleEventJob(env, "webhook_delivery", {
 			reason: "payment_intent_event_created",
@@ -2366,15 +2302,6 @@ export function isIntentPayable(intent: Pick<PaymentIntentRecord, "status" | "ex
 	return true;
 }
 
-export async function markPaymentIntentPaid(env: Bindings, id: string, txHash: string, paidAt: string): Promise<boolean> {
-	const result = await d1Run(
-		env,
-		`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ? WHERE id = ? AND status = 'awaiting_payment'`,
-		[txHash, paidAt, id],
-	);
-	return didWrite(result);
-}
-
 /** Atomically settle a sandbox/indexed intent and persist its paid outbox. */
 export async function markPaymentIntentPaidWithOutbox(
 	env: Bindings,
@@ -2383,8 +2310,8 @@ export async function markPaymentIntentPaidWithOutbox(
 	paidAt: string,
 	outbox: EventOutboxPlan,
 ): Promise<boolean> {
-	const results = await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	const results = await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ?
 			 WHERE id = ? AND status = 'awaiting_payment'`,
 		).bind(txHash, paidAt, id),
@@ -2417,7 +2344,7 @@ export async function settlePaymentLinkWithOutbox(
 	},
 ): Promise<boolean> {
 	const statements = [
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE payment_links
 			 SET status = 'paid', amount = ?, tx_hash = ?, paid_at = ?, paid_by = ?,
 				payment_claim = NULL, payment_claim_expires_at = NULL, payment_claim_tx_hash = NULL
@@ -2428,7 +2355,7 @@ export async function settlePaymentLinkWithOutbox(
 
 	if (params.intentId) {
 		statements.push(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE payment_intents SET status = 'paid', tx_hash = ?, updated_at = ?
 				 WHERE id = ? AND status = 'awaiting_payment'
 					AND EXISTS (
@@ -2445,7 +2372,7 @@ export async function settlePaymentLinkWithOutbox(
 		}
 	}
 
-	const results = await env.PARMELIA_DB.batch(statements);
+	const results = await env.GATOPAGO_DB.batch(statements);
 	const written = didWrite(results[0]);
 	if (written && params.outbox && params.outbox.deliveries.length > 0) {
 		await scheduleEventJob(env, "webhook_delivery", {
@@ -2563,7 +2490,7 @@ function eventOutboxStatements(
 ) {
 	const event = plan.event;
 	const eventStatement = guard
-		? env.PARMELIA_DB.prepare(
+		? env.GATOPAGO_DB.prepare(
 			`INSERT OR IGNORE INTO events (id, merchant_id, type, object_id, payload, mode, created_at)
 			 SELECT ?, ?, ?, ?, ?, ?, ?
 			 WHERE EXISTS (
@@ -2573,7 +2500,7 @@ function eventOutboxStatements(
 			event.id, event.merchantId, event.type, event.objectId, JSON.stringify(event.payload),
 			event.mode, event.createdAt, guard.intentId, guard.txHash,
 		)
-		: env.PARMELIA_DB.prepare(
+		: env.GATOPAGO_DB.prepare(
 			`INSERT OR IGNORE INTO events (id, merchant_id, type, object_id, payload, mode, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		).bind(
@@ -2584,7 +2511,7 @@ function eventOutboxStatements(
 	return [
 		eventStatement,
 		...plan.deliveries.map((delivery) =>
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT OR IGNORE INTO webhook_deliveries
 					(id, event_id, endpoint_id, attempt, status, next_retry_at, created_at)
 				 SELECT ?, ?, ?, 0, 'pending', ?, ?
@@ -2595,24 +2522,6 @@ function eventOutboxStatements(
 			),
 		),
 	];
-}
-
-/** Persist an immutable event and all endpoint deliveries atomically. */
-export async function enqueueEventOutbox(env: Bindings, plan: EventOutboxPlan): Promise<void> {
-	await env.PARMELIA_DB.batch(eventOutboxStatements(env, plan));
-	if (plan.deliveries.length > 0) {
-		await scheduleEventJob(env, "webhook_delivery", {
-			reason: "merchant_event_enqueued",
-		});
-	}
-}
-
-export async function createEvent(env: Bindings, rec: EventRecord) {
-	await d1Run(
-		env,
-		`INSERT INTO events (id, merchant_id, type, object_id, payload, mode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		[rec.id, rec.merchantId, rec.type, rec.objectId, JSON.stringify(rec.payload), rec.mode, rec.createdAt],
-	);
 }
 
 type EventRow = { id: string; merchant_id: string; type: string; object_id: string | null; payload: string; mode: ApiMode; created_at: string };
@@ -2668,18 +2577,6 @@ export async function getEvent(env: Bindings, merchantId: string, id: string): P
 		[id, merchantId],
 	);
 	return row ? mapEvent(row) : null;
-}
-
-export async function createWebhookDelivery(
-	env: Bindings,
-	rec: { id: string; eventId: string; endpointId: string; attempt: number; status: string; nextRetryAt: string | null; createdAt: string },
-) {
-	await d1Run(
-		env,
-		`INSERT INTO webhook_deliveries (id, event_id, endpoint_id, attempt, status, next_retry_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		[rec.id, rec.eventId, rec.endpointId, rec.attempt, rec.status, rec.nextRetryAt, rec.createdAt],
-	);
 }
 
 export async function listDueWebhookDeliveries(env: Bindings, limit = 25): Promise<WebhookDeliveryDue[]> {
@@ -2792,8 +2689,8 @@ export async function requeueWebhookDelivery(env: Bindings, merchantId: string, 
 
 // ===== Cross-chain operations (CCTP v2) =====
 
-export type CrosschainDirection = "inbound" | "outbound";
-export type CrosschainMode = "standard" | "fast";
+type CrosschainDirection = "inbound" | "outbound";
+type CrosschainMode = "standard" | "fast";
 export type CrosschainStatus =
 	| "quoted"
 	| "pending_signature"
@@ -2824,7 +2721,7 @@ export type CrosschainOpRecord = {
 	attestation: string | null;
 	token: string;
 	amountIn: string;
-	parmeliaFee: string;
+	gatoPagoFee: string;
 	maxFee: string | null;
 	minFinalityThreshold: number | null;
 	cctpFeeEstimated: string | null;
@@ -2858,7 +2755,7 @@ type CrosschainOpRow = {
 	attestation: string | null;
 	token: string;
 	amount_in: string;
-	parmelia_fee: string;
+	gatopago_fee: string;
 	max_fee: string | null;
 	min_finality_threshold: number | null;
 	cctp_fee_estimated: string | null;
@@ -2875,7 +2772,7 @@ type CrosschainOpRow = {
 
 // attempt_count/last_error land with migration 0006 — apply it before deploying.
 const CROSSCHAIN_COLS =
-	"op_id, uid, direction, provider, cctp_mode, source_chain_id, destination_chain_id, source_domain, destination_domain, destination_caller, source_tx_hash, destination_tx_hash, message_nonce, message_bytes, attestation, token, amount_in, parmelia_fee, max_fee, min_finality_threshold, cctp_fee_estimated, amount_out_expected, recipient, status, status_detail, attempt_count, last_error, created_at, updated_at, completed_at";
+	"op_id, uid, direction, provider, cctp_mode, source_chain_id, destination_chain_id, source_domain, destination_domain, destination_caller, source_tx_hash, destination_tx_hash, message_nonce, message_bytes, attestation, token, amount_in, gatopago_fee, max_fee, min_finality_threshold, cctp_fee_estimated, amount_out_expected, recipient, status, status_detail, attempt_count, last_error, created_at, updated_at, completed_at";
 
 function mapCrosschainOp(row: CrosschainOpRow): CrosschainOpRecord {
 	return {
@@ -2896,7 +2793,7 @@ function mapCrosschainOp(row: CrosschainOpRow): CrosschainOpRecord {
 		attestation: row.attestation,
 		token: row.token,
 		amountIn: row.amount_in,
-		parmeliaFee: row.parmelia_fee,
+		gatoPagoFee: row.gatopago_fee,
 		maxFee: row.max_fee,
 		minFinalityThreshold: row.min_finality_threshold,
 		cctpFeeEstimated: row.cctp_fee_estimated,
@@ -2932,14 +2829,14 @@ export async function createCrosschainOp(
 		`INSERT INTO crosschain_operations
 			(op_id, uid, direction, provider, cctp_mode, source_chain_id, destination_chain_id,
 			 source_domain, destination_domain, destination_caller, source_tx_hash, destination_tx_hash,
-			 message_nonce, message_bytes, attestation, token, amount_in, parmelia_fee, max_fee,
+			 message_nonce, message_bytes, attestation, token, amount_in, gatopago_fee, max_fee,
 			 min_finality_threshold, cctp_fee_estimated, amount_out_expected, recipient, status,
 			 status_detail, attempt_count, last_error, created_at, updated_at, completed_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		[
 			op.opId, op.uid, op.direction, op.provider, op.cctpMode, op.sourceChainId, op.destinationChainId,
 			op.sourceDomain, op.destinationDomain, op.destinationCaller, op.sourceTxHash, op.destinationTxHash,
-			op.messageNonce, op.messageBytes, op.attestation, op.token, op.amountIn, op.parmeliaFee, op.maxFee,
+			op.messageNonce, op.messageBytes, op.attestation, op.token, op.amountIn, op.gatoPagoFee, op.maxFee,
 			op.minFinalityThreshold, op.cctpFeeEstimated, op.amountOutExpected, op.recipient, op.status,
 			op.statusDetail, op.attemptCount ?? 0, op.lastError ?? null, op.createdAt, op.updatedAt, op.completedAt,
 		],
@@ -3103,13 +3000,13 @@ export async function recordCrosschainMintBroadcast(
 	txHash: string,
 ): Promise<void> {
 	const now = nowIso();
-	await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO crosschain_mint_attempts (id, op_id, tx_hash, status, created_at, updated_at)
 			 VALUES (?, ?, ?, 'broadcast', ?, ?)
 			 ON CONFLICT(tx_hash) DO UPDATE SET status = 'broadcast', updated_at = excluded.updated_at`,
 		).bind(`cma_${crypto.randomUUID().replace(/-/g, "")}`, opId, txHash.toLowerCase(), now, now),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE crosschain_operations
 			 SET destination_tx_hash = ?, updated_at = ?
 			 WHERE op_id = ? AND status != 'completed'`,

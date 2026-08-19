@@ -1,7 +1,8 @@
 // Webhook delivery: signed, retried, outbox-backed (Cloudflare-native, no Queues).
 //
-// emitEvent() writes an immutable `events` row and one `webhook_deliveries` row
-// per matching enabled endpoint. An event job runs deliverPendingWebhooks(),
+// The outbox builders persist an immutable `events` row and one
+// `webhook_deliveries` row per matching enabled endpoint. An event job runs
+// deliverPendingWebhooks(),
 // which signs and POSTs each due delivery,
 // retrying with exponential backoff. Payloads are HMAC-SHA256 signed so the
 // merchant can verify authenticity and reject replays.
@@ -10,7 +11,6 @@ import type { Bindings } from "../middlewares/auth";
 import type { ApiKeyMode } from "./apiKeys";
 import {
 	claimWebhookDelivery,
-	enqueueEventOutbox,
 	listDueWebhookDeliveries,
 	listEnabledEndpoints,
 	listWebhookSecretsNeedingEncryption,
@@ -100,16 +100,6 @@ export async function prepareEventOutbox(
 	};
 }
 
-/** Atomically persist an event and every subscribed endpoint delivery. */
-export async function emitEvent(
-	env: Bindings,
-	params: Parameters<typeof prepareEventOutbox>[1],
-): Promise<string> {
-	const plan = await prepareEventOutbox(env, params);
-	await enqueueEventOutbox(env, plan);
-	return plan.event.id;
-}
-
 /** Sign + POST one claimed delivery and persist its final state. */
 async function deliverOne(
 	env: Bindings,
@@ -125,13 +115,17 @@ async function deliverOne(
 	});
 	const signature = await hmacSha256Hex(await decryptWebhookSecret(env, d.secret), `${timestamp}.${body}`);
 
-	let ok = false;
+	let ok: boolean;
 	let responseCode: number | null = null;
 	try {
 		const res = await fetch(d.url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				"GatoPago-Signature": signature,
+				"GatoPago-Timestamp": timestamp,
+				"GatoPago-Event-Id": d.eventId,
+				// Temporary aliases for integrations created before the brand cutover.
 				"Parmelia-Signature": signature,
 				"Parmelia-Timestamp": timestamp,
 				"Parmelia-Event-Id": d.eventId,

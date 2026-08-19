@@ -226,9 +226,3 @@ export function validateRpcProviderCapabilities(
 	}
 	return issues;
 }
-
-export const __test = {
-	MAX_CONFIGURED_LOG_RANGE,
-	parseDocument,
-	normalizeCapability,
-};

@@ -1,8 +1,10 @@
 import {
+	type Address,
 	type Hex,
 	concat,
 	encodeAbiParameters,
 	encodeFunctionData,
+	hashTypedData,
 	pad,
 	parseAbiParameters,
 	toHex,
@@ -111,6 +113,90 @@ export type PackedUserOp = {
 	signature: Hex;
 };
 
+/**
+ * EntryPoint v0.9 signs PackedUserOperation as EIP-712 typed data. Keep the
+ * canonical field order here: changing it changes the digest and must fail the
+ * comparison with EntryPoint.getUserOpHash below.
+ */
+export const PACKED_USER_OPERATION_EIP712_TYPES = {
+	PackedUserOperation: [
+		{ name: "sender", type: "address" },
+		{ name: "nonce", type: "uint256" },
+		{ name: "initCode", type: "bytes" },
+		{ name: "callData", type: "bytes" },
+		{ name: "accountGasLimits", type: "bytes32" },
+		{ name: "preVerificationGas", type: "uint256" },
+		{ name: "gasFees", type: "bytes32" },
+		{ name: "paymasterAndData", type: "bytes" },
+	],
+} as const;
+
+export type UserOperationSigningPayload = {
+	standard: "EIP-712";
+	domain: {
+		name: "ERC4337";
+		version: "1";
+		chainId: number;
+		verifyingContract: Address;
+	};
+	types: typeof PACKED_USER_OPERATION_EIP712_TYPES;
+	primaryType: "PackedUserOperation";
+	message: {
+		sender: Address;
+		nonce: string;
+		initCode: Hex;
+		callData: Hex;
+		accountGasLimits: Hex;
+		preVerificationGas: string;
+		gasFees: Hex;
+		paymasterAndData: Hex;
+	};
+	digest: Hex;
+};
+
+/** Build the exact EIP-712 document authenticated by EntryPoint v0.9. */
+export function buildUserOperationSigningPayload(
+	userOp: PackedUserOp,
+	chainId: number,
+	entryPoint: Address,
+): UserOperationSigningPayload {
+	const domain = {
+		name: "ERC4337" as const,
+		version: "1" as const,
+		chainId,
+		verifyingContract: entryPoint,
+	};
+	const message = {
+		sender: userOp.sender,
+		nonce: userOp.nonce.toString(),
+		initCode: userOp.initCode,
+		callData: userOp.callData,
+		accountGasLimits: userOp.accountGasLimits,
+		preVerificationGas: userOp.preVerificationGas.toString(),
+		gasFees: userOp.gasFees,
+		paymasterAndData: userOp.paymasterAndData,
+	};
+	const digest = hashTypedData({
+		domain,
+		types: PACKED_USER_OPERATION_EIP712_TYPES,
+		primaryType: "PackedUserOperation",
+		message: {
+			...message,
+			nonce: BigInt(message.nonce),
+			preVerificationGas: BigInt(message.preVerificationGas),
+		},
+	});
+
+	return {
+		standard: "EIP-712",
+		domain,
+		types: PACKED_USER_OPERATION_EIP712_TYPES,
+		primaryType: "PackedUserOperation",
+		message,
+		digest,
+	};
+}
+
 type BuildSponsoredUserOpParams = {
 	sender: `0x${string}`;
 	callData: Hex;
@@ -120,9 +206,9 @@ type BuildSponsoredUserOpParams = {
 	transportMode?: UserOperationTransportMode;
 };
 
-export const DEFAULT_VERIFICATION_GAS_LIMIT = 500000n;
-export const DEFAULT_CALL_GAS_LIMIT = 300000n;
-export const DEFAULT_PRE_VERIFICATION_GAS = 100000n;
+const DEFAULT_VERIFICATION_GAS_LIMIT = 500000n;
+const DEFAULT_CALL_GAS_LIMIT = 300000n;
+const DEFAULT_PRE_VERIFICATION_GAS = 100000n;
 
 function bufferedEstimate(
 	value: bigint,
@@ -157,7 +243,12 @@ function packGasLimits(
 export async function buildSponsoredUserOp(
 	env: Bindings,
 	params: BuildSponsoredUserOpParams,
-): Promise<{ userOp: PackedUserOp; userOpHash: Hex; chainId: number }> {
+): Promise<{
+	userOp: PackedUserOp;
+	userOpHash: Hex;
+	chainId: number;
+	signingPayload: UserOperationSigningPayload;
+}> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
 	// Fail closed on half-configured networks (TODO_DEPLOY placeholders).
 	assertContractsDeployed(network, ["entryPoint", "paymaster"]);
@@ -248,7 +339,7 @@ export async function buildSponsoredUserOp(
 			12_000n,
 			1_000_000n,
 		);
-		// Gas fields are part of Parmelia's paymaster authorization. Re-sign only
+		// Gas fields are part of GatoPago's paymaster authorization. Re-sign only
 		// after the bundler estimate is final.
 		userOp.paymasterAndData = await buildSignedPaymasterAndData({
 			chainId,
@@ -266,6 +357,16 @@ export async function buildSponsoredUserOp(
 		functionName: "getUserOpHash",
 		args: [userOp],
 	})) as Hex;
+	const signingPayload = buildUserOperationSigningPayload(
+		userOp,
+		chainId,
+		contracts.entryPoint,
+	);
+	if (signingPayload.digest.toLowerCase() !== userOpHash.toLowerCase()) {
+		throw new Error(
+			"EntryPoint returned a UserOperation hash that does not match its EIP-712 payload",
+		);
+	}
 
-	return { userOp, userOpHash, chainId };
+	return { userOp, userOpHash, chainId, signingPayload };
 }

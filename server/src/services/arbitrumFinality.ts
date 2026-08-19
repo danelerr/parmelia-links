@@ -30,7 +30,7 @@ export type ArbitrumBlockEvidence = {
 	rpcCalls: number;
 };
 
-export function requiredL1Confirmations(env: Bindings): bigint {
+function requiredL1Confirmations(env: Bindings): bigint {
 	const parsed = Number(env.ARBITRUM_L1_CONFIRMATIONS_REQUIRED);
 	return BigInt(
 		Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 256
@@ -113,7 +113,3 @@ export async function getArbitrumBlockEvidence(
 		};
 	}
 }
-
-export const __test = {
-	NODE_INTERFACE_ABI,
-};

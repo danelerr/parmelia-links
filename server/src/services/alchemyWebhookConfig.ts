@@ -145,7 +145,3 @@ export function validateAlchemyAddressWebhookConfigs(
 	}
 	return issues;
 }
-
-export const __test = {
-	parseConfiguredWebhooks,
-};

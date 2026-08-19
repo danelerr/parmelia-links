@@ -38,7 +38,7 @@ type ReorgReplayRow = {
 	attempt_count: number;
 };
 
-export class ReorgOutsideWindowError extends Error {
+class ReorgOutsideWindowError extends Error {
 	constructor(
 		readonly chainId: number,
 		readonly stream: string,
@@ -79,7 +79,7 @@ async function scheduleReplayStream(
 	row: Pick<ReorgReplayRow, "chain_id" | "stream">,
 ): Promise<void> {
 	const transfer = parseTransferJournalStream(row.stream);
-	let accepted = false;
+	let accepted: boolean;
 	if (transfer && transfer.chainId === row.chain_id) {
 		accepted = await scheduleEventJob(env, "indexer", {
 			partition: transferPartitionKey(transfer.partition),
@@ -138,7 +138,7 @@ export async function drainChainReorgReplayRequests(
 	env: Bindings,
 ): Promise<{ processed: number; nextRunAt: number | null }> {
 	const now = new Date().toISOString();
-	const rows = await env.PARMELIA_DB.prepare(
+	const rows = await env.GATOPAGO_DB.prepare(
 		`SELECT chain_id, stream, common_ancestor_number, reorg_epoch,
 		        attempt_count
 		 FROM chain_reorg_replay_requests
@@ -152,7 +152,7 @@ export async function drainChainReorgReplayRequests(
 	for (const row of rows.results) {
 		try {
 			await scheduleReplayStream(env, row);
-			await env.PARMELIA_DB.prepare(
+			await env.GATOPAGO_DB.prepare(
 				`DELETE FROM chain_reorg_replay_requests
 				 WHERE chain_id = ? AND stream = ? AND reorg_epoch = ?`,
 			)
@@ -165,7 +165,7 @@ export async function drainChainReorgReplayRequests(
 				15 * 60_000,
 				15_000 * 2 ** Math.min(6, attempt - 1),
 			);
-			await env.PARMELIA_DB.prepare(
+			await env.GATOPAGO_DB.prepare(
 				`UPDATE chain_reorg_replay_requests
 				 SET status = 'failed', attempt_count = ?, next_attempt_at = ?,
 				     last_error_code = 'REORG_REPLAY_SCHEDULE_FAILED',
@@ -188,7 +188,7 @@ export async function drainChainReorgReplayRequests(
 			});
 		}
 	}
-	const next = await env.PARMELIA_DB.prepare(
+	const next = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
 		 FROM chain_reorg_replay_requests
 		 WHERE status IN ('pending', 'failed')`,
@@ -218,7 +218,7 @@ export async function verifyAndRecoverStream(
 		maxWindowBlocks?: bigint;
 	},
 ): Promise<ReorgCheckResult> {
-	const checkpoint = await env.PARMELIA_DB.prepare(
+	const checkpoint = await env.GATOPAGO_DB.prepare(
 		`SELECT block_number, block_hash
 		 FROM chain_stream_checkpoints
 		 WHERE chain_id = ? AND stream = ?`,
@@ -242,7 +242,7 @@ export async function verifyAndRecoverStream(
 	const maxWindow = input.maxWindowBlocks ?? 4_096n;
 	const floor =
 		checkpointNumber > maxWindow ? checkpointNumber - maxWindow : 0n;
-	const known = await env.PARMELIA_DB.prepare(
+	const known = await env.GATOPAGO_DB.prepare(
 		`SELECT block_number, block_hash
 		 FROM chain_blocks
 		 WHERE chain_id = ? AND canonical = 1
@@ -275,7 +275,7 @@ export async function verifyAndRecoverStream(
 	const detectedAt = new Date().toISOString();
 	const incidentId = crypto.randomUUID();
 	if (!ancestor) {
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO chain_reorg_incidents (
 				id, chain_id, stream, detected_at, previous_block_number,
 				previous_block_hash, observed_block_hash, common_ancestor_number,
@@ -306,7 +306,7 @@ export async function verifyAndRecoverStream(
 		throw new ReorgOutsideWindowError(input.chainId, input.stream);
 	}
 
-	const affectedRows = await env.PARMELIA_DB.prepare(
+	const affectedRows = await env.GATOPAGO_DB.prepare(
 		`SELECT DISTINCT uid, account_address
 		 FROM (
 		   SELECT cea.uid AS uid, cea.account_address AS account_address
@@ -330,14 +330,14 @@ export async function verifyAndRecoverStream(
 			ancestor.blockNumber.toString(),
 		)
 		.all<{ uid: string; account_address: string }>();
-	const eventCountRow = await env.PARMELIA_DB.prepare(
+	const eventCountRow = await env.GATOPAGO_DB.prepare(
 		`SELECT COUNT(*) AS count
 		 FROM chain_events
 		 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 	)
 		.bind(input.chainId, ancestor.blockNumber.toString())
 		.first<{ count: number }>();
-	const affectedStreams = await env.PARMELIA_DB.prepare(
+	const affectedStreams = await env.GATOPAGO_DB.prepare(
 		`SELECT stream
 		 FROM chain_stream_checkpoints
 		 WHERE chain_id = ? AND block_number > ?
@@ -347,8 +347,8 @@ export async function verifyAndRecoverStream(
 		.all<AffectedStreamRow>();
 	const depth = checkpointNumber - ancestor.blockNumber;
 
-	await env.PARMELIA_DB.batch([
-		env.PARMELIA_DB.prepare(
+	await env.GATOPAGO_DB.batch([
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO chain_reorg_state (
 				chain_id, epoch, common_ancestor_number,
 				common_ancestor_hash, updated_at
@@ -364,7 +364,7 @@ export async function verifyAndRecoverStream(
 			ancestor.blockHash.toLowerCase(),
 			detectedAt,
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO chain_reorg_replay_requests (
 				chain_id, stream, common_ancestor_number, reorg_epoch, status,
 				attempt_count, next_attempt_at, last_error_code, created_at,
@@ -391,7 +391,7 @@ export async function verifyAndRecoverStream(
 			input.chainId,
 			ancestor.blockNumber.toString(),
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE balance_projection_deltas
 			 SET canonical = 0, reverted_at = ?
 			 WHERE chain_id = ? AND canonical = 1
@@ -405,31 +405,31 @@ export async function verifyAndRecoverStream(
 			input.chainId,
 			ancestor.blockNumber.toString(),
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE chain_events SET canonical = 0
 			 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE chain_blocks SET canonical = 0
 			 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE ledger SET canonical = 0
 			 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE user_operation_receipts SET canonical = 0
 			 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE balance_snapshots SET canonical = 0
 			 WHERE chain_id = ? AND canonical = 1 AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`DELETE FROM balance_projection_baselines
 			 WHERE chain_id = ? AND block_number > ?`,
 		).bind(input.chainId, ancestor.blockNumber.toString()),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE chain_stream_checkpoints
 			 SET block_number = ?, block_hash = ?, consistency_level = 'sequenced',
 			     updated_at = ?,
@@ -445,7 +445,7 @@ export async function verifyAndRecoverStream(
 			input.chainId,
 			ancestor.blockNumber.toString(),
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE sync_state
 			 SET last_block = ?, updated_at = ?
 			 WHERE last_block > ?
@@ -464,7 +464,7 @@ export async function verifyAndRecoverStream(
 			`recovery:${input.chainId}:%`,
 			`userops:${input.chainId}:%`,
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`UPDATE projection_watermarks
 			 SET block_number = ?, block_hash = ?, updated_at = ?
 			 WHERE chain_id = ? AND block_number > ?`,
@@ -475,7 +475,7 @@ export async function verifyAndRecoverStream(
 			input.chainId,
 			ancestor.blockNumber.toString(),
 		),
-		env.PARMELIA_DB.prepare(
+		env.GATOPAGO_DB.prepare(
 			`INSERT INTO chain_reorg_incidents (
 				id, chain_id, stream, detected_at, previous_block_number,
 				previous_block_hash, observed_block_hash, common_ancestor_number,
@@ -498,7 +498,7 @@ export async function verifyAndRecoverStream(
 		),
 	]);
 
-	const reorgState = await env.PARMELIA_DB.prepare(
+	const reorgState = await env.GATOPAGO_DB.prepare(
 		`SELECT epoch FROM chain_reorg_state WHERE chain_id = ?`,
 	)
 		.bind(input.chainId)
@@ -549,8 +549,3 @@ export async function verifyAndRecoverStream(
 		reorgEpoch,
 	};
 }
-
-export const __test = {
-	watcherShardId,
-	scheduleReplayStream,
-};

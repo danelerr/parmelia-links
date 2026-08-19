@@ -11,7 +11,7 @@ export async function getChainReorgEpoch(
 	env: Bindings,
 	chainId: number,
 ): Promise<number> {
-	const row = await env.PARMELIA_DB.prepare(
+	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT epoch FROM chain_reorg_state WHERE chain_id = ?`,
 	)
 		.bind(chainId)
@@ -43,7 +43,7 @@ export function prepareChainEpochGuardInsert(
 	env: Bindings,
 	guard: ChainEpochGuard,
 ): D1PreparedStatement {
-	return env.PARMELIA_DB.prepare(
+	return env.GATOPAGO_DB.prepare(
 		`INSERT INTO chain_reorg_epoch_guards (
 			id, chain_id, expected_epoch, created_at
 		 ) VALUES (?, ?, ?, ?)`,
@@ -59,7 +59,7 @@ export function prepareChainEpochGuardDelete(
 	env: Bindings,
 	guard: ChainEpochGuard,
 ): D1PreparedStatement {
-	return env.PARMELIA_DB.prepare(
+	return env.GATOPAGO_DB.prepare(
 		`DELETE FROM chain_reorg_epoch_guards WHERE id = ?`,
 	).bind(guard.id);
 }

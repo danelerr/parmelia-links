@@ -469,7 +469,7 @@ export async function drainIndexerWalletRegistry(
 	env: Bindings,
 ): Promise<{ processed: number; nextRunAt: number | null }> {
 	const now = new Date().toISOString();
-	const rows = await env.PARMELIA_DB.prepare(
+	const rows = await env.GATOPAGO_DB.prepare(
 		`SELECT uid, wallet_address, attempt_count
 		 FROM indexer_wallet_registry_outbox
 		 WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
@@ -479,7 +479,7 @@ export async function drainIndexerWalletRegistry(
 		.bind(now, registryBatchSize(env))
 		.all<RegistryRow>();
 	if (rows.results.length === 0) {
-		const next = await env.PARMELIA_DB.prepare(
+		const next = await env.GATOPAGO_DB.prepare(
 			`SELECT MIN(next_attempt_at) AS next_run_at
 			 FROM indexer_wallet_registry_outbox
 			 WHERE status IN ('pending', 'failed')`,
@@ -503,7 +503,7 @@ export async function drainIndexerWalletRegistry(
 	for (const row of rows.results) {
 		try {
 			const priorTransferAssignment =
-				await env.PARMELIA_DB.prepare(
+				await env.GATOPAGO_DB.prepare(
 					`SELECT shard_id
 					 FROM indexer_wallet_assignments
 					 WHERE chain_id = ? AND stream = ? AND uid = ? AND active = 1
@@ -567,7 +567,7 @@ export async function drainIndexerWalletRegistry(
 					"wallet_registry_assigned",
 				);
 			}
-			await env.PARMELIA_DB.prepare(
+			await env.GATOPAGO_DB.prepare(
 				`DELETE FROM indexer_wallet_registry_outbox
 				 WHERE uid = ? AND wallet_address IS ?`,
 			)
@@ -580,7 +580,7 @@ export async function drainIndexerWalletRegistry(
 				15 * 60_000,
 				15_000 * 2 ** Math.min(6, attempt - 1),
 			);
-			await env.PARMELIA_DB.prepare(
+			await env.GATOPAGO_DB.prepare(
 				`UPDATE indexer_wallet_registry_outbox
 				 SET status = 'failed', attempt_count = ?, next_attempt_at = ?,
 				     last_error_code = 'INDEXER_WALLET_ASSIGNMENT_FAILED',
@@ -609,7 +609,7 @@ export async function drainIndexerWalletRegistry(
 			"indexer_safety_sweep",
 		);
 	}
-	const next = await env.PARMELIA_DB.prepare(
+	const next = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
 		 FROM indexer_wallet_registry_outbox
 		 WHERE status IN ('pending', 'failed')`,
@@ -627,13 +627,3 @@ export async function drainIndexerWalletRegistry(
 	});
 	return { processed, nextRunAt };
 }
-
-export const __test = {
-	parseTransferPartition,
-	parseTransferJournalStream,
-	parseShardPartition,
-	transferPartitionKey,
-	transferJournalStream,
-	transferSyncCursorKey,
-	shardPartitionKey,
-};
