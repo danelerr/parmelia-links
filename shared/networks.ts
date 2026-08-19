@@ -10,7 +10,7 @@
 
 export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
 
-/** On-chain addresses for one deployment of the Parmelia contracts. */
+/** On-chain addresses for one deployment of the GatoPago contracts. */
 export type ContractAddresses = {
 	/** Canonical ERC-4337 EntryPoint v0.9 - same address on every chain. */
 	entryPoint: `0x${string}`;
@@ -26,7 +26,7 @@ export type ContractAddresses = {
 	usdcDecimals: number;
 };
 
-/** A whitelisted asset Parmelia supports on a given chain. */
+/** A whitelisted asset GatoPago supports on a given chain. */
 export type TokenConfig = {
 	symbol: string;
 	name: string;
@@ -60,7 +60,7 @@ export type UniswapConfig = {
 /**
  * Aave v3 integration for the Earn module (savings). Addresses verified against
  * the BGD Labs aave-address-book (github.com/bgd-labs/aave-address-book) on
- * 2026-07-03. NOTE: unlike Parmelia's own CREATE2 contracts, Aave addresses are
+ * 2026-07-03. NOTE: unlike GatoPago's own CREATE2 contracts, Aave addresses are
  * NOT deterministic across networks — always take them from the address book.
  */
 export type AaveConfig = {
@@ -71,10 +71,10 @@ export type AaveConfig = {
 };
 
 /**
- * Circle CCTP v2 facts for a chain (protocol-level, NOT Parmelia contracts).
+ * Circle CCTP v2 facts for a chain (protocol-level, NOT GatoPago contracts).
  * Needed for both the source (depositForBurn via TokenMessenger) and any
  * destination (receiveMessage via MessageTransmitter). Keyed by EVM chainId in
- * CCTP_CHAINS because destinations may be chains Parmelia doesn't run on.
+ * CCTP_CHAINS because destinations may be chains GatoPago doesn't run on.
  * IMPORTANT: `domain` is Circle's own chain id, distinct from the EVM chainId.
  */
 export type CctpChain = {
@@ -216,7 +216,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			v4PoolManager: "0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317",
 		},
 		// Aave v3 testnet market. Its USDC reserve underlying IS Circle's testnet
-		// USDC (0x75fa...AA4d) — the same token Parmelia users hold, so Earn is
+		// USDC (0x75fa...AA4d) — the same token GatoPago users hold, so Earn is
 		// fully testable here. Verified vs aave-address-book 2026-07-03.
 		aave: {
 			pool: "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
@@ -281,7 +281,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			v4PoolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
 		},
 		// Aave v3 Arbitrum market (native USDC reserve "USDCn": underlying
-		// 0xaf88...5831 = Parmelia's USDC). Verified vs aave-address-book 2026-07-03.
+		// 0xaf88...5831 = GatoPago's USDC). Verified vs aave-address-book 2026-07-03.
 		aave: {
 			pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
 			aUsdc: "0x724dc807b04555b71ed48a6896b6F41593b8C637",
