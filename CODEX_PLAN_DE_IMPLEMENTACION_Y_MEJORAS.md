@@ -8,7 +8,7 @@
 > verdad.
 
 Fecha de auditoría: 2026-06-30  
-Repositorio: `parmelia-links`
+Repositorio: `gatopago`
 
 ## 1. Resumen ejecutivo
 

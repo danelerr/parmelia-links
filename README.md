@@ -1,8 +1,10 @@
-# Parmelia
+# GatoPago
 
-**Non-custodial stablecoin payments on Arbitrum — as simple as sending a message.**
+**Tus dólares ya saben moverse.**
 
-Parmelia lets anyone receive, request, and swap USDC through payment links, QR
+Non-custodial stablecoin payments on Arbitrum — as simple as sending a message.
+
+GatoPago lets anyone receive, request, and swap USDC through payment links, QR
 codes, usernames, and a mobile PWA — secured by **WebAuthn passkeys** and
 **ERC-4337 smart accounts**. No seed phrases. No gas for the user.
 
@@ -11,7 +13,7 @@ codes, usernames, and a mobile PWA — secured by **WebAuthn passkeys** and
 - **Landing repo:** https://github.com/danelerr/parmelia-landing
 - **Chain:** Arbitrum Sepolia (configuration ready for Arbitrum One)
 
-> Submitted to the **Arbitrum Open House London Buildathon**. Parmelia existed
+> Submitted to the **Arbitrum Open House London Buildathon**. GatoPago existed
 > before the event as a portable payment-link prototype; during the buildathon it
 > became an Arbitrum-native payments product (V2 smart-account stack deployed and
 > verified on Arbitrum Sepolia, sponsored gas, swaps, full rebrand, PWA). See
@@ -26,7 +28,7 @@ markets save and get paid. But the payment experience is still built for crypto
 natives: wallet addresses, seed phrases, gas, networks, transaction hashes, and
 signing flows. That friction is the adoption barrier.
 
-Parmelia turns that into a familiar payment flow — create a profile, share a
+GatoPago turns that into a familiar payment flow — create a profile, share a
 link, scan a QR, pay a username, confirm with your fingerprint — without taking
 custody of user funds.
 
@@ -78,7 +80,7 @@ off until then. See [contracts/AUDIT.md](contracts/AUDIT.md).
 
 ## Why Arbitrum
 
-Consumer payments need the chain to disappear. Arbitrum gives Parmelia true
+Consumer payments need the chain to disappear. Arbitrum gives GatoPago true
 pay-for-what-you-use gas (no reserved-gas overcharge), low and predictable fees,
 EIP-712 support, a **canonical and verified ERC-4337 EntryPoint**, mature EVM
 tooling, and deep DeFi liquidity for swaps. It is the practical foundation to
@@ -162,7 +164,7 @@ pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
   explicit Wrangler operation; D1 is never rolled back automatically.
 - Lint is blocking (`--max-warnings 0`) on `client`, `dashboard` and `server`;
   server lint is type-aware and rejects floating or misused promises.
-- `pnpm test:fork` runs three live integration tests for deployed Parmelia,
+- `pnpm test:fork` runs three live integration tests for deployed GatoPago,
   EntryPoint, CCTP, Uniswap and Aave contracts, including Aave supply/withdraw
   and CCTP burn state changes.
 - Manual release verification scans Git history and the checked-out worktree
@@ -185,7 +187,7 @@ Private reporting, secret handling and incident response are documented in
 
 Shipped since the buildathon: the **Stripe-like payments API** (test mode, with
 merchant dashboard and signed webhooks) and **cross-chain USDC via CCTP v2**
-(code complete, pending deploy). Designed as the next phases: a **Parmelia
+(code complete, pending deploy). Designed as the next phases: a **GatoPago
 card** and **local bank-QR settlement** so people can spend their stablecoin
 balance in the real world, and **Earn** on idle balances. The DeFi direction is
 written up in [DEFI_DESIGN.md](DEFI_DESIGN.md), the API direction in

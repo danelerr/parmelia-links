@@ -1,4 +1,4 @@
-# Plan rector V3 de Parmelia
+# Plan rector V3 de GatoPago
 
 > Fecha de corte: 2026-07-26
 >
@@ -9,7 +9,7 @@
 
 ## 1. Decisión final
 
-Parmelia usa una arquitectura dirigida por eventos, particionada y
+GatoPago usa una arquitectura dirigida por eventos, particionada y
 provider-neutral:
 
 ```text
@@ -179,7 +179,7 @@ Razones:
 
 1. Los WebSockets salientes no usan la hibernación de conexiones servidor de
    Durable Objects; mantienen el proceso activo y generan costo en reposo.
-2. `newHeads` sólo reemplaza el wakeup. Parmelia todavía necesita
+2. `newHeads` sólo reemplaza el wakeup. GatoPago todavía necesita
    `eth_getLogs`, evidencia de bloque, checkpoint y reparación de huecos.
 3. Suscribirse a todos los `Transfer` de un token procesa tráfico ajeno.
 4. Suscribirse por shard multiplica sockets y filtros al crecer.

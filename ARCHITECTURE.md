@@ -1,4 +1,4 @@
-# Parmelia - Arquitectura del Proyecto
+# GatoPago - Arquitectura del Proyecto
 
 > Actualizado: julio 2026. Complementos: `CLAUDE_REVIEW_FABLE.md` (auditoría y
 > estado), `CROSSCHAIN_DESIGN.md` (cross-chain), `docs/api.md` (API pública `/v1`),
@@ -6,7 +6,7 @@
 
 ## Resumen
 
-**Parmelia** es una web app de pagos cripto sobre **Account Abstraction (ERC-4337, EntryPoint v0.9)**. La red activa es **Arbitrum** (Sepolia para testnet, One para producción), elegida por su soporte de **RIP-7212** (verificación P256/passkey barata, ~3,450 gas) y su gas bajo. El código es **portable**: cambiar de cadena es agregar una entrada de configuración y desplegar los contratos.
+**GatoPago** es una web app de pagos cripto sobre **Account Abstraction (ERC-4337, EntryPoint v0.9)**. La red activa es **Arbitrum** (Sepolia para testnet, One para producción), elegida por su soporte de **RIP-7212** (verificación P256/passkey barata, ~3,450 gas) y su gas bajo. El código es **portable**: cambiar de cadena es agregar una entrada de configuración y desplegar los contratos.
 
 El producto combina:
 
@@ -38,7 +38,7 @@ El backend prepara y transmite UserOperations, pero **no custodia la clave de fi
 ## Estructura del Monorepo
 
 ```text
-parmelia-links/
+gatopago/
 ├── ARCHITECTURE.md / DEPLOY.md / CROSSCHAIN_DESIGN.md / DEFI_DESIGN.md / API_DESIGN.md
 ├── MEJORAS_PENDIENTES.md / CLAUDE_REVIEW_FABLE.md / ERROR_CODES.md / INTEGRACIONES.md
 ├── docs/                    # referencia pública de la API /v1 (api.md + openapi.yaml)
@@ -185,7 +185,7 @@ El relayer es el EOA del servidor: paga el gas de `handleOps`. No puede mover fo
   /pay/status/:userOpHash` expone el estado para polling.
 
 ### 5. Ledger e Indexer (historial)
-Parmelia **relaya** todas las operaciones de la app, así que las conoce al ocurrir. La tabla **`ledger`** es la única fuente de `/user/transactions`:
+GatoPago **relaya** todas las operaciones de la app, así que las conoce al ocurrir. La tabla **`ledger`** es la única fuente de `/user/transactions`:
 - Cada pago/swap/faucet escribe sus filas al confirmar (batch atómico); para transferencias internas se escriben **ambos lados** al instante.
 - Lo único que la app no conoce al escribir son **depósitos externos**
   entrantes. Con Alchemy Address Activity, el proveedor empuja sólo actividad
@@ -377,10 +377,10 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | `TURNSTILE_SECRET_KEY`         | secret  | Anti-abuso (testnet: opcional; mainnet: fail-closed) |
 | `FCM_SERVICE_ACCOUNT`          | secret  | Service account JSON (1 línea); sin definir = sin push |
 | `CCTP_RPC_URLS`                | secret  | Opcional: JSON chainId→RPC para destinos cross-chain |
-| `PARMELIA_FEES_ENABLED` / `PARMELIA_SWAP_FEE_BPS` / `PARMELIA_MAX_FEE_BPS` / `PARMELIA_TREASURY_ADDRESS` / `PARMELIA_PAYMENT_FEE_BPS` / `PARMELIA_CROSSCHAIN_FEE_BPS` | var | Fees (OFF por defecto; hard cap 1% en código y contratos) |
+| `GATOPAGO_FEES_ENABLED` / `GATOPAGO_SWAP_FEE_BPS` / `GATOPAGO_MAX_FEE_BPS` / `GATOPAGO_TREASURY_ADDRESS` / `GATOPAGO_PAYMENT_FEE_BPS` / `GATOPAGO_CROSSCHAIN_FEE_BPS` | var | Fees (OFF por defecto; hard cap 1% en código y contratos) |
 | `CROSSCHAIN_PAUSED` / `CROSSCHAIN_DISABLED_CHAINS` / `CROSSCHAIN_MIN_RELAYER_GAS_WEI` | var | Kill switch y flags cross-chain |
 | `EARN_PAUSED`                  | var     | Kill switch del Ahorro (Aave)                        |
-| `PARMELIA_DB`                  | binding | Base D1 principal                                    |
+| `GATOPAGO_DB`                  | binding | Base D1 principal                                    |
 | `EVENT_JOB_SCHEDULER`          | binding | Durable Object: agenda compactada y alarma sólo con trabajo |
 | `RPC_ADMISSION`                | binding | Durable Object: concurrencia global por endpoint/lane |
 | `SCHEDULED_JOBS_QUEUE`         | binding | Jobs de dominio; permanece vacía en reposo           |

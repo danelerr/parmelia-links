@@ -18,7 +18,7 @@
 ### Parte A - Consola de Cloudflare (~5 min)
 1. Entra a https://dash.cloudflare.com → menú lateral **Turnstile** → **Add widget**.
 2. Configura:
-   - **Widget name:** `Parmelia`
+   - **Widget name:** `GatoPago`
    - **Hostnames:** `parmelia.me`, `www.parmelia.me` y `localhost` (para dev local).
    - **Widget mode:** **Managed** (invisible para humanos; desafía solo si sospecha - la mejor UX).
 3. **Create** → te muestra dos valores:
@@ -52,7 +52,7 @@ Me avisas "Turnstile listo" + me pasas la **site key** (la secret no - esa ya qu
 2. **Authentication → Sign-in method → Add new provider → Email/Password** → habilítalo **y activa el toggle "Email link (passwordless sign-in)"** → Save.
 3. **Authentication → Settings → Authorized domains:** verifica que estén `parmelia.me` y `localhost`.
 4. **Authentication → Settings → User account linking:** selecciona **"Link accounts that use the same email"** (así Google y magic link del mismo correo = misma cuenta = misma wallet).
-5. (Opcional, recomendado) **Authentication → Templates →** edita la plantilla del email: idioma **español**, nombre del remitente **Parmelia**.
+5. (Opcional, recomendado) **Authentication → Templates →** edita la plantilla del email: idioma **español**, nombre del remitente **GatoPago**.
 
 ### Parte B - Qué entregar
 Solo el aviso: "Email link habilitado". No hay keys que pasarme - el cliente ya tiene la config de Firebase.

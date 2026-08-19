@@ -1,4 +1,4 @@
-# Runbook - Poner Parmelia a funcionar en Arbitrum
+# Runbook - Poner GatoPago a funcionar en Arbitrum
 
 > Orden exacto para activar todo lo implementado (contratos V2, ledger D1,
 > indexación dirigida por eventos, swaps, referidos) en **Arbitrum Sepolia**. Al final, el delta
@@ -40,7 +40,7 @@ forge script script/Deploy.s.sol:DeployV2 \
 
 **`--sender` es obligatorio** (la dirección de `wallet-0x75`). Sin él,
 `msg.sender` es el DefaultSender de Foundry y la política compartida aborta antes
-de emitir transacciones. En testnet, si no defines variables `PARMELIA_*`, el
+de emitir transacciones. En testnet, si no defines variables `GATOPAGO_*`, el
 deployer queda como owner/sponsor por simplicidad.
 
 El summary imprime `verifier / factory / paymaster`. **Anótalos.**
@@ -56,7 +56,7 @@ patrocinado por op `setMaxSponsoredGasCost(0.005 ether)` del paymaster.)
 > re-correr `setTokenSupported`. Detalle en `contracts/AUDIT.md`.
 
 En **testnet no necesitas** `setSponsorSigner`: el constructor deja al deployer
-como signer. En mainnet el script exige `PARMELIA_PAYMASTER_SIGNER`, lo configura
+como signer. En mainnet el script exige `GATOPAGO_PAYMASTER_SIGNER`, lo configura
 antes de terminar y emite `SponsorSignerSet` (ver §11).
 
 ## 3. Verificar contratos (Sourcify - sin API key)
@@ -174,11 +174,11 @@ locales desechables para ensayar todo el formato cifrado y la restauración.
 
 ```bash
 cd server
-npx wrangler d1 migrations apply PARMELIA_DB --remote
+npx wrangler d1 migrations apply GATOPAGO_DB --remote
 ```
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
-`npx wrangler d1 migrations list PARMELIA_DB --remote` y aplica, en orden, todo
+`npx wrangler d1 migrations list GATOPAGO_DB --remote` y aplica, en orden, todo
 lo que falte hasta `0026_indexer_work_partitions.sql`. El Worker actual requiere
 la cadena completa: además del hardening y los ciclos durables originales,
 `0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
@@ -262,7 +262,7 @@ Ya configurado en `wrangler.jsonc`: `CHAIN_KEY=arbitrum-sepolia`,
 Durable Object conserva una alarma sólo mientras exista trabajo y la elimina al
 vaciarse. El consumidor usa `max_batch_size=1`, de modo que cada
 indexador/reconciliador recibe una invocación y un presupuesto de subrequests
-independiente. Configura `APP_URL`, flags cross-chain y fees (`PARMELIA_*`)
+independiente. Configura `APP_URL`, flags cross-chain y fees (`GATOPAGO_*`)
 explícitamente para cada entorno; mainnet no acepta el fallback de `APP_URL`.
 
 ### RPC: capacidades por endpoint
@@ -326,7 +326,7 @@ los dos flags en `false` es el modo seguro mientras falten esas credenciales.
    Guarda su ID, network, signing key y el token de administración Notify en los
    secrets `ALCHEMY_WEBHOOK_*`/`ALCHEMY_NOTIFY_AUTH_TOKEN`, o usa
    `ALCHEMY_ADDRESS_WEBHOOKS_JSON` para varios slots. Luego cambia
-   `ALCHEMY_WEBHOOK_ENABLED` a `true`. Parmelia sincroniza las wallets nuevas en
+   `ALCHEMY_WEBHOOK_ENABLED` a `true`. GatoPago sincroniza las wallets nuevas en
    ese webhook y vuelve a leer cada bloque con el pool `RPC_INDEXER_URLS`. El
    primer inventario remoto se pagina y persiste; después sólo se envían diffs
    de hasta 500 direcciones contra un espejo D1. Las señales de actividad
@@ -364,8 +364,8 @@ $env:D1_BACKUP_ENCRYPTION_KEY_ID = "archivo-2026-07"
 pnpm d1:backup
 
 # 3. Revisar y aplicar migraciones antes del Worker.
-pnpm --filter server exec wrangler d1 migrations list PARMELIA_DB --remote
-pnpm --filter server exec wrangler d1 migrations apply PARMELIA_DB --remote
+pnpm --filter server exec wrangler d1 migrations list GATOPAGO_DB --remote
+pnpm --filter server exec wrangler d1 migrations apply GATOPAGO_DB --remote
 
 # 4. Sólo en la primera instalación: comprobar y crear las Queues declaradas.
 pnpm --filter server exec wrangler queues list
@@ -465,7 +465,7 @@ En la app:
    cambió; routers con argumentos de rol distintos tendrán direcciones distintas.
 2. `CHAIN_KEY=arbitrum-one` en `wrangler.jsonc` + secrets de mainnet (RPC, claves fondeadas con ETH real).
 3. El faucet queda apagado por defecto. Para activarlo deliberadamente configura `FAUCET_ENABLED=true` y `FAUCET_DAILY_BUDGET_USDC`; sin ambos no mueve USDC real.
-4. Activar fees si quieres: `PARMELIA_FEES_ENABLED=true`, `PARMELIA_SWAP_FEE_BPS`, `PARMELIA_TREASURY_ADDRESS`.
+4. Activar fees si quieres: `GATOPAGO_FEES_ENABLED=true`, `GATOPAGO_SWAP_FEE_BPS`, `GATOPAGO_TREASURY_ADDRESS`.
 5. El bridge (`/depositar`) se activa solo en One; re-verificar las USDC externas contra Circle docs.
 6. **Separar las claves de infra** - ver sección 11. Es el cambio más importante para mainnet.
 7. Otros pendientes P1 antes de público real: rate limiting de zona, bundler gestionado (#13).
@@ -508,10 +508,10 @@ Pasos:
 1. Prepara direcciones distintas y expórtalas antes de simular/broadcast:
 
    ```bash
-   export PARMELIA_CONTRACT_OWNER=<SAFE_O_ADMIN_FRIO>
-   export PARMELIA_TREASURY=<TESORERIA>
-   export PARMELIA_PAYMASTER_SIGNER=<SIGNER_PAYMASTER>
-   export PARMELIA_PAYMENT_ROUTER_SIGNER=<SIGNER_INVOICES>
+   export GATOPAGO_CONTRACT_OWNER=<SAFE_O_ADMIN_FRIO>
+   export GATOPAGO_TREASURY=<TESORERIA>
+   export GATOPAGO_PAYMASTER_SIGNER=<SIGNER_PAYMASTER>
+   export GATOPAGO_PAYMENT_ROUTER_SIGNER=<SIGNER_INVOICES>
    ```
 
 2. Ejecuta los scripts con `--sender <DEPLOYER>`. Omitir una variable o reutilizar
@@ -550,10 +550,10 @@ forge script script/Deploy.s.sol:DeployPaymentRouter \
 ```
 
 En testnet el deployer queda como `owner = treasury = invoiceSigner`. En mainnet
-define las cuatro variables `PARMELIA_*` de §11 antes de ejecutar. Después:
+define las cuatro variables `GATOPAGO_*` de §11 antes de ejecutar. Después:
 1. `cast send <PAYMENT_ROUTER> "setTokenSupported(address,bool,uint256)" <USDC> true <MIN> --account wallet-0x75` (p. ej. `MIN = 1000000` = 1 USDC).
 2. Rellenar `contracts.paymentRouter` en `shared/networks.ts` (arbitrum-sepolia).
-3. Secrets del worker: `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` (= la EOA del `invoiceSigner`) y `PARMELIA_PAYMENT_FEE_BPS`.
+3. Secrets del worker: `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` (= la EOA del `invoiceSigner`) y `GATOPAGO_PAYMENT_FEE_BPS`.
 
 ### 12.2 CrosschainRouter (cross-chain Flow B outbound - CCTP v2)
 
@@ -574,10 +574,10 @@ forge script script/Deploy.s.sol:DeployCrosschainRouter \
 > En PowerShell, en vez de `export`: `$env:USDC_ADDRESS="0x75fa..."; $env:CCTP_TOKEN_MESSENGER="0x8FE6..."`.
 
 En testnet el deployer queda como `owner = treasury`. En mainnet define al menos
-`PARMELIA_CONTRACT_OWNER` y `PARMELIA_TREASURY`, distintas del broadcaster y
+`GATOPAGO_CONTRACT_OWNER` y `GATOPAGO_TREASURY`, distintas del broadcaster y
 entre sí. Después:
 1. Rellenar `contracts.crosschainRouter` en `shared/networks.ts` (arbitrum-sepolia).
-2. Secret del worker: `PARMELIA_CROSSCHAIN_FEE_BPS` (ya existe en `auth.ts`).
+2. Secret del worker: `GATOPAGO_CROSSCHAIN_FEE_BPS` (ya existe en `auth.ts`).
 3. No hay whitelist de tokens: la USDC es inmutable en el constructor.
 
 > CCTP v2 (verificado): TokenMessengerV2 `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`,
@@ -601,4 +601,4 @@ forge verify-contract <CROSSCHAIN_ROUTER> src/ParmeliaCrosschainRouter.sol:Parme
 
 En testnet, `<OWNER>`, `<TREASURY>` e `<INVOICE_SIGNER>` son el deployer salvo
 que hayas definido las variables opcionales. En mainnet deben coincidir con los
-valores `PARMELIA_*` usados durante el broadcast.
+valores `GATOPAGO_*` usados durante el broadcast.

@@ -53,7 +53,7 @@ must be confirmed in GCP/Firebase before relying on deletion as containment.
 
 `GHSA-qwww-vcr4-c8h2` is ignored narrowly in `pnpm-workspace.yaml` as of
 2026-07-25. The advisory affects only React Router's unstable RSC code paths;
-Parmelia is a client-side Vite application and does not use them. The announced
+GatoPago is a client-side Vite application and does not use them. The announced
 fixed release (`8.3.0`) was not available in npm when this exception was added,
 while downgrading below `7.18.0` reintroduced multiple older advisories.
 

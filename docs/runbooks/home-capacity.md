@@ -27,7 +27,7 @@ calienta cada identidad, conserva su ETag y luego mide respuestas `304`/`200`.
 
 ```powershell
 pnpm dev:server
-pnpm load:home -- --token-file C:\secure\parmelia-staging-tokens.txt `
+pnpm load:home -- --token-file C:\secure\gatopago-staging-tokens.txt `
   --requests 1000 --concurrency 100 --assert-p95 200
 ```
 
@@ -37,7 +37,7 @@ pnpm load:home -- --token-file C:\secure\parmelia-staging-tokens.txt `
 pnpm load:home -- `
   --url https://<worker-staging>/home `
   --allow-remote `
-  --token-file C:\secure\parmelia-staging-tokens.txt `
+  --token-file C:\secure\gatopago-staging-tokens.txt `
   --requests 10000 `
   --concurrency 250 `
   --assert-p95 200

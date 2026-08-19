@@ -1,6 +1,6 @@
-# Client (Parmelia web app)
+# Client (GatoPago web app)
 
-SPA de Parmelia: React 19 + TypeScript + Vite 7 + Tailwind v4. Es una PWA instalable. Ver `../ARCHITECTURE.md` para la arquitectura completa.
+SPA de GatoPago: React 19 + TypeScript + Vite 7 + Tailwind v4. Es una PWA instalable. Ver `../ARCHITECTURE.md` para la arquitectura completa.
 
 ## Desarrollo
 
@@ -28,4 +28,5 @@ Copia `client/.env.example` a `client/.env` y complétalo (gitignored):
 - Las páginas usan `React.lazy`; todo va envuelto en `ErrorBoundary`.
 - Capas transversales en `src/lib/`: `api` (fetch tipado), `notify` (avisos), `firebase` (auth), `push`, `analytics`.
 - Deploy: desde la raíz del repositorio, `vercel --prod` construye esta carpeta
-  y despliega el proyecto existente `parmelia` (`app.parmelia.me`).
+  y despliega el proyecto de GatoPago. El host `app.parmelia.me` continúa como
+  dominio operativo de transición hasta completar el cambio de dominio.

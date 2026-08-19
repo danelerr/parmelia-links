@@ -1,6 +1,6 @@
-# Parmelia Contracts
+# GatoPago Contracts
 
-ERC-4337 smart-account stack for Parmelia, built with Foundry + OpenZeppelin v5.
+ERC-4337 smart-account stack for GatoPago, built with Foundry + OpenZeppelin v5.
 See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the system overview and
 [`../DEPLOY.md`](../DEPLOY.md) for the deployment runbook.
 

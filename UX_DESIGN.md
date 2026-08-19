@@ -2,7 +2,7 @@
 
 > Versión 1.0 — julio 2026. Documento de decisión, como CROSSCHAIN_DESIGN.md y
 > DEFI_DESIGN.md: diagnóstico, reglas cerradas y plan por fases. La pregunta que
-> responde: **¿cómo muestra Parmelia muchas funcionalidades (pagos, links,
+> responde: **¿cómo muestra GatoPago muchas funcionalidades (pagos, links,
 > swap, ahorro, crosschain, depósitos, y pronto tarjeta y rampas) sin dejar de
 > sentirse simple?**
 
@@ -15,12 +15,12 @@
 Las apps de pago que escalaron features sin degradarse (Nubank, Revolut, Cash
 App, Mercado Pago) comparten una regla: el número de acciones visibles en la
 pantalla principal es *constante*. Las funcionalidades nuevas no agregan
-botones a Home; entran dentro de **hubs por intención**. Parmelia ya tiene la
+botones a Home; entran dentro de **hubs por intención**. GatoPago ya tiene la
 mitad de esta disciplina (2 primarias + 2 secundarias); este documento la
 convierte en regla explícita antes de que lleguen tarjeta, Daimo, QR boliviano
 y Gnosis Pay.
 
-Las cuatro intenciones del usuario de Parmelia:
+Las cuatro intenciones del usuario de GatoPago:
 
 | Intención | Verbo del usuario | Superficie |
 |---|---|---|
@@ -163,7 +163,7 @@ rompe.
 **Gate G-UX1 (medible): se introduce navegación inferior (tab bar) cuando la
 tarjeta esté en producción**, no antes. Candidato: `Inicio · Extracto ·
 Tarjeta · Ajustes` (4 tabs; Cobrar/Pagar siguen siendo las primarias *dentro*
-de Inicio — el dinero P2P es la identidad de Parmelia y no se relega a un
+de Inicio — el dinero P2P es la identidad de GatoPago y no se relega a un
 tab). Mientras no haya tarjeta, agregar tab bar sería estructura sin
 contenido.
 
@@ -223,14 +223,14 @@ Además: Earn migra a `.btn*` y a `ConfirmSheet`; backs según regla única.
 
 ## 6bis. Extracción del análisis UX externo (jul-2026)
 
-Un análisis externo (26 capturas Parmelia vs 43 de Peanut, sin acceso al repo)
+Un análisis externo (26 capturas GatoPago vs 43 de Peanut, sin acceso al repo)
 propuso un rediseño amplio. Decisión del fundador: **NO al rediseño de Home y
 NO a la barra inferior** (coherente con R-1 y R-7). Lo que se extrae:
 
 **ADOPTADO (nuevo, valioso):**
-1. **Microcopy de confianza en el momento de la firma**: "Parmelia no puede
+1. **Microcopy de confianza en el momento de la firma**: "GatoPago no puede
    mover tu dinero sin ti." — va en el ConfirmSheet compartido (todos los
-   flujos lo heredan). Y para Seguridad: "Parmelia no puede congelar, mover ni
+   flujos lo heredan). Y para Seguridad: "GatoPago no puede congelar, mover ni
    gastar tu dinero."
 2. **El cobro como objeto vivo**: lista "Mis cobros" en la app con estado
    (pendiente/pagado/expirado), compartir directo a WhatsApp, "ver como
@@ -238,7 +238,7 @@ NO a la barra inferior** (coherente con R-1 y R-7). Lo que se extrae:
    crear-y-olvidar; el estado ya existe en el server.
 3. **Checkout externo /cc métodos-primero**: hoy lidera con redes (chips) y
    "conectar wallet" — demasiado crypto. Reordenar como checkout de pagos:
-   destinatario + monto → métodos (Pagar con Parmelia / desde Binance / con
+   destinatario + monto → métodos (Pagar con GatoPago / desde Binance / con
    wallet / desde otra red) → redes dentro de "avanzado". El usuario piensa
    "con qué plata pago", no "desde qué chain".
 4. **Centro de seguridad**: subir la seguridad de Ajustes a narrativa — estado
@@ -260,7 +260,7 @@ como firma en momentos de dinero, "no copiar" de Peanut (bench §4).
 R-7); botón QR flotante central (variante de tab bar); renombrar Depositar →
 "Entrar dinero" (Depositar es lenguaje bancario natural es-LA); hub "Sacar
 dinero" (prematuro sin rieles bancarios — revisitar con Mesa de Pagos);
-ejercicio de branding "Parmelia Layers" (los patrones ya existen; nombrarlos
+ejercicio de branding "GatoPago Layers" (los patrones ya existen; nombrarlos
 no agrega); tarjeta "próximamente" en Home (tile para feature inexistente
 viola R-1).
 

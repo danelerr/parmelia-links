@@ -1,4 +1,4 @@
-# Reauditoría técnica integral - Parmelia
+# Reauditoría técnica integral - GatoPago
 
 **Fecha de corte:** 2026-07-13
 
@@ -27,7 +27,7 @@ varios límites que entonces seguían abiertos:
 - Gitleaks 8.30.1 escaneó los 31 commits. Ocho falsos positivos comprobados
   (direcciones públicas, ejemplos, Firebase web config y la clave pública de
   Anvil) quedaron allowlisted por fingerprint; el resultado final fue cero.
-- Se añadieron tres fork smoke tests reales de Arbitrum Sepolia para Parmelia,
+- Se añadieron tres fork smoke tests reales de Arbitrum Sepolia para GatoPago,
   EntryPoint, CCTP, Universal Router y Aave, incluyendo supply/withdraw y burn
   CCTP state-changing. Los tres pasaron contra el RPC público.
 - Playwright ejecuta cliente/dashboard en desktop y Pixel 7: 12/12 pruebas pasan;

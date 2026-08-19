@@ -2,7 +2,7 @@
 
 ## Decisión vigente
 
-Parmelia necesita RPC para leer y escribir en Arbitrum, pero las vistas de la
+GatoPago necesita RPC para leer y escribir en Arbitrum, pero las vistas de la
 aplicación no reconstruyen estado desde la cadena. Home, historial y dashboard
 leen proyecciones D1. La cadena se procesa una vez mediante trabajos
 compartidos, particionados e idempotentes.
@@ -52,7 +52,7 @@ Es una consulta `eth_getLogs`, no 2.000 requests ni 2.000 transacciones.
 
 ## Control de carga
 
-Cada endpoint declara `maxConcurrency`. Parmelia aplica dos límites:
+Cada endpoint declara `maxConcurrency`. GatoPago aplica dos límites:
 
 1. un semáforo local evita competencia innecesaria dentro de una instancia;
 2. `RpcAdmissionController`, un Durable Object por endpoint y lane, impone el
@@ -108,7 +108,7 @@ No se mantiene un WebSocket RPC saliente dentro del Worker:
   Objects y mantiene cómputo activo;
 - `newHeads` sólo reemplazaría la señal de despertar: todavía habría que ejecutar
   `eth_getLogs` y reconciliar checkpoints;
-- una suscripción amplia a `Transfer` ingiere tráfico ajeno a Parmelia, mientras
+- una suscripción amplia a `Transfer` ingiere tráfico ajeno a GatoPago, mientras
   que una suscripción por shard multiplica conexiones y filtros;
 - deja de cumplirse el reposo real cuando no hay trabajo.
 

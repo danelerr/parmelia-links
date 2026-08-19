@@ -6,7 +6,7 @@
 `warnings=["balance_projection_drift"]`, o aparece el evento estructurado
 `balance_projection_drift`.
 
-Parmelia compara valores raw, no strings redondeados de UI. Para USDC la
+GatoPago compara valores raw, no strings redondeados de UI. Para USDC la
 tolerancia inicial es cero.
 
 ## Comportamiento automático

@@ -1,10 +1,10 @@
-# Parmelia API — Diseño de la infraestructura de cobros
+# GatoPago API — Diseño de la infraestructura de cobros
 
-> Diseño (no implementación) de la API de Parmelia como **infraestructura de
+> Diseño (no implementación) de la API de GatoPago como **infraestructura de
 > cobros stablecoin con liquidación local**: "Stripe/MercadoPago para dólares
 > digitales on-chain". El objeto central es el **Payment Intent**.
 >
-> Parmelia ya está en producción sobre Arbitrum (no es un MVP): esta es una
+> GatoPago ya está en producción sobre Arbitrum (no es un MVP): esta es una
 > evolución del producto existente, no un arranque de cero. El doc marca fases
 > **Ahora / Siguiente / Horizonte**, no "MVP vs después".
 > Fecha: junio 2026. Relacionado: `ARCHITECTURE.md`, `DEFI_DESIGN.md`.
@@ -56,7 +56,7 @@ No se parte de cero — buena parte del modelo ya está en el sistema actual:
 |---|---|
 | Payment Intent | Germen en `payment_links` (id, amount, currency, status, tx_hash, paid_at, paid_by). Se **generaliza**, no se inventa. |
 | Checkout alojado | Páginas `/pay?id=` y `/:username`. |
-| Confirmación on-chain | Ingestión push/backfill bajo demanda + `/pay/submit` (pago Parmelia-nativo atado al intent). |
+| Confirmación on-chain | Ingestión push/backfill bajo demanda + `/pay/submit` (pago GatoPago-nativo atado al intent). |
 | Dirección determinística por intent | `AccountFactoryV2.predictAddress` (CREATE2) ya permite derivar direcciones counterfactual. |
 | Ledger / conciliación interna | Tabla `ledger` (in/out, kind, tx_hash, token, amount, contraparte). |
 | Whitelist de activos | USDC / ETH / WBTC en `shared/networks.ts`. |
@@ -74,7 +74,7 @@ Es el objeto estable alrededor del cual gira todo. Propiedades:
 - Idempotencia: `idempotency_key` con el que se creó.
 
 Regla de oro: **todo cobro de comercio crea un Payment Intent**, incluso si el
-pagador usa saldo Parmelia. Esa es la única forma de garantizar orden y
+pagador usa saldo GatoPago. Esa es la única forma de garantizar orden y
 conciliación. Los envíos P2P casuales pueden seguir fuera del sistema de intents.
 
 ## 5. La decisión núcleo: cómo se atribuye un pago a un intent
@@ -84,35 +84,35 @@ flujos**, ambos soportados. **Flujo A está construido**; **Flujo B** es el plan
 para que pague cualquiera. En EVM no hay campo "memo", así que cada flujo resuelve
 de forma distinta el atar un pago a su intent.
 
-### Flujo A (= Modelo A) — el pagador es usuario Parmelia
+### Flujo A (= Modelo A) — el pagador es usuario GatoPago
 
-El cobrador genera un QR/Link; el pagador lo abre **con la app Parmelia** y paga
-con su passkey. Parmelia arma la transacción, así que **sabe** a qué intent
+El cobrador genera un QR/Link; el pagador lo abre **con la app GatoPago** y paga
+con su passkey. GatoPago arma la transacción, así que **sabe** a qué intent
 pertenece (atribución perfecta) y el paymaster patrocina el gas. El pagador
-**tiene que ser usuario Parmelia** (o crear su cuenta en el momento).
+**tiene que ser usuario GatoPago** (o crear su cuenta en el momento).
 
 ```
 [Cobrador] crea cobro pi_123  →  comparte QR / Link
        │
-[Pagador Parmelia] abre el link en la app  →  confirma con passkey
-       │  (el backend arma el UserOp; Parmelia ya sabe que es pi_123)
+[Pagador GatoPago] abre el link en la app  →  confirma con passkey
+       │  (el backend arma el UserOp; GatoPago ya sabe que es pi_123)
        ▼
 EntryPoint v0.9 ─► AccountWebAuthnV2 (pagador) ─► USDC.transfer ─► AccountWebAuthnV2 (cobrador)
-       ▲                                                              (− fee ─► Tesorería Parmelia)
+       ▲                                                              (− fee ─► Tesorería GatoPago)
 ParmeliaPaymaster patrocina el gas
        │
 backend marca pi_123 = paid  →  webhook payment.paid (firmado)
 ```
 Contratos: `EntryPoint v0.9`, `AccountWebAuthnV2` (pagador y cobrador), `USDC`,
-`ParmeliaPaymaster`. No hace falta router (Parmelia arma la tx). **Ya implementado:**
+`ParmeliaPaymaster`. No hace falta router (GatoPago arma la tx). **Ya implementado:**
 el cobro se respalda en un `payment_links` y el gancho vive en `/pay/submit`.
 
 ### Flujo B (= Modelo B) — paga cualquier wallet externa
 
-Para que pague **alguien sin cuenta Parmelia** (Metamask, un exchange, otra dapp).
+Para que pague **alguien sin cuenta GatoPago** (Metamask, un exchange, otra dapp).
 La atribución se resuelve con el contrato **PaymentRouter** (§5.1): el pagador
 llama `payInvoice(pi_123, ...)` y el USDC va **directo a la cuenta del cobrador**,
-con un evento que ata el pago al intent. Parmelia nunca toca los fondos.
+con un evento que ata el pago al intent. GatoPago nunca toca los fondos.
 
 ```
 [Cobrador] crea cobro pi_123  →  comparte QR / Link
@@ -123,7 +123,7 @@ con un evento que ata el pago al intent. Parmelia nunca toca los fondos.
        │
        ▼
 PaymentRouter:  transferFrom(pagador →)   X − fee ─► AccountWebAuthnV2 (cobrador)
-                                          fee     ─► Tesorería Parmelia
+                                          fee     ─► Tesorería GatoPago
                 emite InvoicePaid(pi_123, payer, token, amount, merchant, fee)
        │
 indexer escucha InvoicePaid  →  marca pi_123 = paid  →  webhook payment.paid
@@ -133,11 +133,11 @@ tesorería. El pagador **paga su propio gas**. **No-custodial.** Contrato, firma
 autorización (`GET /v1/payment_intents/:id/onchain`) e indexer (escucha
 `InvoicePaid`) **ya implementados**; falta **desplegar** `ParmeliaPaymentRouter`.
 
-### 5.1 Contrato PaymentRouter (Parmelia, no-custodial)
+### 5.1 Contrato PaymentRouter (GatoPago, no-custodial)
 
 Patrón **ya validado en AvaSettle** (proyecto hermano sobre Avalanche), con UN
 cambio clave: AvaSettle envía a una **tesorería de la plataforma** (custodial);
-Parmelia envía **directo a la smart account del comercio** (no-custodial).
+GatoPago envía **directo a la smart account del comercio** (no-custodial).
 
 ```solidity
 payInvoice(bytes32 intentId, IERC20 token, uint256 amount, address merchant, bytes metadata)
@@ -146,19 +146,19 @@ payInvoice(bytes32 intentId, IERC20 token, uint256 amount, address merchant, byt
 - guard `invoicePaid[intentId]` → un intent no se paga dos veces.
 - `transferFrom(payer → merchant, amount − fee)` y, si `feeBps > 0`,
   `transferFrom(payer → treasury, fee)`. El destino `merchant` es la cuenta del
-  **cobrador**, no una caja de Parmelia.
+  **cobrador**, no una caja de GatoPago.
 - emite `InvoicePaid(intentId, payer, token, amount, merchant, fee, metadata)`.
 - `Ownable2Step` + `Pausable` + `ReentrancyGuard`; `emergencyWithdraw` solo dueño.
 
 **Seguridad del destino:** `merchant` no puede venir libre del pagador (podría
 redirigir el cobro). Opciones: (a) registrar on-chain el `merchant` esperado por
 `intentId` antes de cobrar; (b) que el contrato lea un registro firmado por
-Parmelia. A definir al implementar — es la decisión central del contrato.
+GatoPago. A definir al implementar — es la decisión central del contrato.
 
 **Alternativa (sin contrato):** dirección de depósito única por intent (forwarder
 CREATE2, o EOA HD con barrido como hace AvaSettle). Más simple para el pagador
 (una transferencia normal), pero reintroduce barrido + gas + custodia. El router
-es la opción **no-custodial** preferida para Parmelia.
+es la opción **no-custodial** preferida para GatoPago.
 
 ### 5.2 Finalidad y montos (Flujo B)
 - **Política de finalidad:** ¿cuándo es `paid`? En Arbitrum el sequencer confirma
@@ -170,9 +170,9 @@ es la opción **no-custodial** preferida para Parmelia.
   depósito hay que manejar under/overpayment explícitamente.)
 
 ### Quién paga el gas
-- Flujo A (pagador Parmelia): gas **patrocinado** por el paymaster.
+- Flujo A (pagador GatoPago): gas **patrocinado** por el paymaster.
 - Flujo B (wallet externa): el pagador paga su propio gas (ya es usuario crypto)
-  — por eso el Flujo B es **más barato de operar** para Parmelia.
+  — por eso el Flujo B es **más barato de operar** para GatoPago.
 
 ## 6. Máquina de estados (mínima, accionable)
 
@@ -342,10 +342,10 @@ Cae natural por la config de dos cadenas:
 - **Producción** = Arbitrum One + claves `*_live`.
 - Aislamiento total de datos por `mode`.
 
-## 14. Integración con la Wallet/Cuenta Parmelia
+## 14. Integración con la Wallet/Cuenta GatoPago
 
 `parmelia_balance` es solo otro `payment_method`. Pagar a un comercio desde saldo
-Parmelia **igual crea un Payment Intent** (no se salta el sistema). Así la wallet
+GatoPago **igual crea un Payment Intent** (no se salta el sistema). Así la wallet
 suma fricción cero sin que se pierda orden ni conciliación. Los envíos P2P
 casuales pueden vivir fuera de intents; los cobros, nunca.
 
@@ -414,7 +414,7 @@ redes de tarjetas). Eso permite cobrar mucho menos y aun así tener gran margen.
 - **Flujo B:** el `PaymentRouter` manda `monto − fee` al comercio y `fee` a la
   tesorería (visible on-chain).
 - **Flujo A:** el fee va en el batch del UserOp. Infra ya existente:
-  `PARMELIA_FEES_ENABLED`, `PARMELIA_SWAP_FEE_BPS`, `PARMELIA_TREASURY_ADDRESS`,
+  `GATOPAGO_FEES_ENABLED`, `GATOPAGO_SWAP_FEE_BPS`, `GATOPAGO_TREASURY_ADDRESS`,
   hard cap 1% en código.
 - Referencia: Stripe ~2.9% + $0.30; MercadoPago más. A **0.5%–1%** eres mucho más
   barato y rentable. Ej.: un comercio con $10.000/mes a 1% = $100/mes. El negocio
@@ -428,11 +428,11 @@ real está en la **rampa fiat**, no en el movimiento on-chain.
 depósitos cross-chain, fee de payout, y planes/SaaS (límites más altos,
 sub-cuentas, reporting) más adelante.
 
-**Sin float:** Parmelia es **no-custodial** (los fondos quedan en la cuenta del
+**Sin float:** GatoPago es **no-custodial** (los fondos quedan en la cuenta del
 usuario), así que no se gana reteniendo saldos como un banco. El análogo legítimo
 es el **performance fee** del Earn (sobre el rendimiento, no el principal).
 
-**Costo:** el gas. Flujo A lo patrocina Parmelia (centavos en Arbitrum, cubierto
+**Costo:** el gas. Flujo A lo patrocina GatoPago (centavos en Arbitrum, cubierto
 de sobra por el fee); Flujo B lo paga el pagador (costo cero). Las fees se muestran
 **antes de confirmar** (ya se hace en swaps) y tienen hard cap en código.
 
@@ -440,7 +440,7 @@ de sobra por el fee); Flujo B lo paga el pagador (costo cero). Las fees se muest
 
 ### Lectura de fondo
 
-Parmelia ya tiene ~60-70% del modelo (payment_links, checkout, indexer, factory,
+GatoPago ya tiene ~60-70% del modelo (payment_links, checkout, indexer, factory,
 ledger). El trabajo no es inventar la API, es **generalizar el intent + agregar la
 capa de integración** (API keys, webhooks, eventos, sandbox) y **resolver la
 atribución on-chain** (dirección única por intent + política de finalidad). El

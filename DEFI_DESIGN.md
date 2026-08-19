@@ -1,6 +1,6 @@
-# Parmelia DeFi — Diseño definitivo (v2.0)
+# GatoPago DeFi — Diseño definitivo (v2.0)
 
-> Arquitectura DeFi de Parmelia sobre Arbitrum. **Swaps (§5) y fees de swap (§6)
+> Arquitectura DeFi de GatoPago sobre Arbitrum. **Swaps (§5) y fees de swap (§6)
 > están implementados**; este documento CIERRA el debate del módulo Earn (§0-§4,
 > §7-§13) y mantiene el veredicto por fases de Corridors (§14). Cross-chain vive
 > en `CROSSCHAIN_DESIGN.md`. Fecha: julio 2026. Changelog en §16.
@@ -33,7 +33,7 @@ La resolución fría:
 Por qué esto cierra el debate:
 
 1. **La promesa del producto define el instrumento, no al revés.** El usuario de
-   Parmelia (LatAm, ahorra en dólares digitales, cero cultura DeFi) espera de un
+   GatoPago (LatAm, ahorra en dólares digitales, cero cultura DeFi) espera de un
    "Modo Ahorro" exactamente tres cosas: el principal se mantiene en USDC, se
    puede retirar cuando quiera, y crece. Aave v3 supply cumple las tres. Una LP
    USDC/WETH viola la primera (el "ahorro" queda expuesto a ETH y puede BAJAR en
@@ -62,7 +62,7 @@ Por qué esto cierra el debate:
 
 **Objetivo de Earn v1:** que un usuario mueva USDC entre su "saldo disponible" y
 su "ahorro" (Aave v3) con una confirmación biométrica, viendo una tasa variable
-honesta, y pueda salir cuando quiera — incluso si Parmelia desaparece (§4, E2).
+honesta, y pueda salir cuando quiera — incluso si GatoPago desaparece (§4, E2).
 
 **No-objetivos permanentes de esta versión** (cambiarlos exige nuevo diseño):
 niveles de riesgo; LP como "ahorro"; multi-protocolo dinámico (routing de yield);
@@ -89,7 +89,7 @@ sin esperar mainnet.
 |---|---|
 | Pool v3 Arbitrum One | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` · aToken USDCn `0x724d…C637` |
 | Pool v3 Arbitrum Sepolia | `0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff` · aToken `0x460b…1216` — OJO: las direcciones de Aave NO son deterministas entre redes (a diferencia de los contratos propios); siempre tomarlas del address book |
-| Activo | USDC nativo (`0xaf88…5831` en One; en Sepolia el reserve usa **el mismo Circle USDC** `0x75fa…AA4d` de Parmelia — Earn es 100% probable en testnet) |
+| Activo | USDC nativo (`0xaf88…5831` en One; en Sepolia el reserve usa **el mismo Circle USDC** `0x75fa…AA4d` de GatoPago — Earn es 100% probable en testnet) |
 | Recibo | aToken rebasing (1:1); `balanceOf` crece solo — es el saldo ahorrado |
 | Tasa | `getReserveData(usdc).currentLiquidityRate` (RAY, APR anualizado) → APY on-chain, sin APIs |
 | APY observado | ~2.5% hoy; rango típico 2026: 3-7% según red/demanda. **Variable, jamás prometida** |
@@ -101,7 +101,7 @@ sin esperar mainnet.
 | ¿El APY de Aave cae a ~0 sostenido? | No rotar automáticamente. Evaluar UN protocolo alternativo pre-aprobado (§3, Compound v3) como cambio de versión deliberado, comunicado, con su propia revisión. |
 | ¿Agregar otro activo al Ahorro? | No. USDC es el producto. ETH/WBTC → swap interno primero. |
 | ¿Otro protocolo "paga más"? | Solo se evalúa si supera a Aave en LAS TRES: madurez/track-record, liquidez del mercado USDC en Arbitrum, y simplicidad de integración sin contratos propios. El yield marginal NO es criterio suficiente. |
-| ¿Fee de Parmelia? | Cerrado para v1 (= 0). Se reabre únicamente cuando el gate de §8.2 se cumpla. |
+| ¿Fee de GatoPago? | Cerrado para v1 (= 0). Se reabre únicamente cuando el gate de §8.2 se cumpla. |
 
 ---
 
@@ -112,7 +112,7 @@ sin esperar mainnet.
 | **LP Uniswap v3 (USDC/WETH), "3 niveles de riesgo"** | No es ahorro: expone el principal a ETH (IL); ~50% de LPs pasivos pierden vs HODL (§0.2); exige rebalanceo activo (gas + swaps + IL realizado) y un cron de monitoreo; multiplica operaciones → dependía del bundler #13. Queda como producto "Inversión" separado, Fase 3, quizá nunca (§12). |
 | **LP estable (USDC/USDT 0.01%)** | IL casi nulo pero yield fino (<1-2%), gestión de rango igual, y agrega exposición USDT/depeg. Más piezas que Aave para peor resultado neto. |
 | **Compound v3 (Comet, USDC nativo en Arbitrum)** | Alternativa legítima y verificada (mercado nativo vivo desde la proposal 178; cUSDCv3 también rebasing). Pierde con Aave solo por profundidad/track-record en Arbitrum. **Queda como runner-up pre-aprobado** si Aave falla el procedimiento §2.1. |
-| **Agregadores / vaults ERC-4626 de terceros (Yearn, Beefy)** | Capa extra de contrato + fee apilada + estrategias que rotan (inexplicables al usuario). Nada que Parmelia necesite para "USDC gana interés". |
+| **Agregadores / vaults ERC-4626 de terceros (Yearn, Beefy)** | Capa extra de contrato + fee apilada + estrategias que rotan (inexplicables al usuario). Nada que GatoPago necesite para "USDC gana interés". |
 | **RWA / T-bills tokenizados (USDY, etc.)** | KYC, listas de permitidos, restricciones de transferencia — incompatible con una smart account permissionless y con el público objetivo. |
 | **CeFi / custodial yield** | Viola la tesis entera del producto (no custodial). Nunca. |
 | **Auto-enrolar el saldo de pagos** | El saldo de pagos necesita liquidez instantánea garantizada y cero sorpresas; el ahorro es opt-in con "bolsillo" separado. Mezclar ambos añade riesgo al core por conveniencia marginal. |
@@ -123,8 +123,8 @@ sin esperar mainnet.
 
 | # | Invariante | Dónde se garantiza |
 |---|---|---|
-| E1 | **Cero custodia.** El USDC va smart account ↔ Pool de Aave directo; el aToken vive en la cuenta del usuario. Parmelia nunca toca los fondos. | UserOp batch `[approve(Pool), supply(onBehalfOf=cuenta)]` / `[withdraw(to=cuenta)]`. |
-| E2 | **Salida sin Parmelia.** Si Parmelia desaparece, el usuario sigue siendo dueño del aToken y puede retirar interactuando con Aave por cualquier medio. | Consecuencia de E1; documentarlo en el copy de la UI. |
+| E1 | **Cero custodia.** El USDC va smart account ↔ Pool de Aave directo; el aToken vive en la cuenta del usuario. GatoPago nunca toca los fondos. | UserOp batch `[approve(Pool), supply(onBehalfOf=cuenta)]` / `[withdraw(to=cuenta)]`. |
+| E2 | **Salida sin GatoPago.** Si GatoPago desaparece, el usuario sigue siendo dueño del aToken y puede retirar interactuando con Aave por cualquier medio. | Consecuencia de E1; documentarlo en el copy de la UI. |
 | E3 | **La tasa jamás se promete.** Se muestra la tasa viva on-chain con la palabra "variable"; sin proyecciones, sin "hasta X%". | `/earn/config` lee `currentLiquidityRate` on-chain; copy fijo. |
 | E4 | **El principal no se expone a precio en v1.** USDC entra, USDC sale. Sin IL, sin pares, sin apalancamiento. | Alcance §1; whitelist de un solo mercado. |
 | E5 | **Un protocolo por producto, fijado en config.** Sin routing dinámico de yield. | `shared/networks.ts` → `aave: { pool, aUsdc } | null` (null = Earn apagado en esa red). |
@@ -155,7 +155,7 @@ decodificación).
 
 `TAKE_PORTION`/`PAY_PORTION` nativos del router (sin contrato wrapper), fee
 visible pre-confirmación, `minimumAmountOut` post-fee, hard cap 1% en código,
-OFF por defecto (`PARMELIA_FEES_ENABLED`). Cada cobro es un Transfer on-chain al
+OFF por defecto (`GATOPAGO_FEES_ENABLED`). Cada cobro es un Transfer on-chain al
 treasury en la misma tx.
 
 ---
@@ -196,7 +196,7 @@ hoja de confirmación), movimientos en el extracto, y el copy honesto fijo:
 "Tasa variable, no garantizada" · "Fondos prestados a través de Aave, un
 protocolo público; existe riesgo de contrato inteligente" · "Retiras cuando
 quieras (sujeto a liquidez del protocolo, históricamente inmediata)" ·
-"Tus fondos siguen siendo tuyos: Parmelia nunca los custodia".
+"Tus fondos siguen siendo tuyos: GatoPago nunca los custodia".
 
 ### 7.5 Operación
 Mínima por diseño: sin cron nuevo, sin claves nuevas, sin gas nuevo (el
@@ -222,7 +222,7 @@ aUSDC) — contrato nuevo + auditoría externa (~$30-80k) + operación. La
 matemática: 10% de fee sobre un yield del 3% = 30 bps del TVL al año. Para que
 el fee PAGUE solo la auditoría se necesitan **$10-25M de TVL sostenido**. A la
 escala actual y previsible, Earn es **retención** (razón para dejar los dólares
-en Parmelia), no ingreso. El wrapper con fee (Fase 2) se reabre solo cuando
+en GatoPago), no ingreso. El wrapper con fee (Fase 2) se reabre solo cuando
 TVL × yield × fee > costo de auditoría + operación, con margen.
 
 ---
@@ -236,7 +236,7 @@ TVL × yield × fee > costo de auditoría + operación, con margen.
   ejecutable (§10). Riesgo de governance de Aave (cambios de parámetros):
   aceptado, mismo perfil que cualquier integración DeFi seria.
 - Depeg de USDC: fuera del alcance de Earn — es idéntico a tener USDC en la
-  wallet (riesgo base de todo el producto Parmelia).
+  wallet (riesgo base de todo el producto GatoPago).
 - Server-side siempre: montos validados/recomputados, mercado fijado por config
   (el cliente jamás envía direcciones), calldata construida en el server, y el
   pipeline de submit endurecido (E6) da claim atómico + verdad por evento +
@@ -339,7 +339,7 @@ TVL × yield × fee > costo de auditoría + operación, con margen.
 | ¿Aave v4 en vez de v3? | No por ahora. | v4 salió el 30-mar-2026 SOLO en Ethereum mainnet (hub-and-spoke, caps conservadores, foco fixed-rate/RWA); no existe en Arbitrum y el gas de mainnet mata al ahorrista chico. Cuando llegue a Arbitrum Y tenga track record, se evalúa por el procedimiento §2.1 como cambio de versión deliberado. v3 sigue siendo el deployment activo y probado de Arbitrum. |
 | ¿Octant v2 en Earn? | No en v1; sí como blueprint de Fase 2. | Es infraestructura de "yield redirigido" (ERC-4626), no una fuente de yield: agregarlo en v1 sería la capa de vault de terceros que E5/§3 excluye. Su código abierto es el mejor candidato para el vault con performance fee de Fase 2, y "donar tu rendimiento" queda como feature opcional futura. |
 | ¿Se usa ERC-4626 en v1? | No. El aToken es un ERC-20 rebasing, no un vault 4626; la integración llama al Pool directo sin contratos intermedios (E1/E2). | ERC-4626 entra recién en Fase 2, donde el performance fee EXIGE contabilidad shares-vs-assets — que es lo que ese estándar resuelve. Candidatos base: YDS de Octant v2 (4626) y el stataToken oficial de Aave (wrapper 4626 no-rebasing del aToken, sin mecanismo de fee). |
-| ¿Hooks de Uniswap v4? | Solo en Corridors Fase C (§14), con su gate de volumen. | Parmelia consume liquidez, no la vende: swaps rutean a pools públicos, Earn no toca AMMs, pagos tampoco. El único caso donde un hook crea valor propio es el netting de flujos recurrentes con pools propios — y eso exige ≥$100k/mes de volumen interno probado en las Fases A/B primero. |
+| ¿Hooks de Uniswap v4? | Solo en Corridors Fase C (§14), con su gate de volumen. | GatoPago consume liquidez, no la vende: swaps rutean a pools públicos, Earn no toca AMMs, pagos tampoco. El único caso donde un hook crea valor propio es el netting de flujos recurrentes con pools propios — y eso exige ≥$100k/mes de volumen interno probado en las Fases A/B primero. |
 
 ## 14. Corridors / recorr-hook (evaluación — sin cambios)
 

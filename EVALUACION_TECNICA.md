@@ -1,4 +1,4 @@
-# Evaluación Técnica de Parmelia
+# Evaluación Técnica de GatoPago
 
 > Documento de evaluación de ingeniería: stack, arquitectura, escalabilidad,
 > seguridad y estrategia de plataforma (web / PWA / app nativa).
@@ -22,7 +22,7 @@
 
 ## 1. Resumen ejecutivo
 
-**Parmelia está construido sobre las tecnologías correctas y con decisiones de arquitectura por encima del promedio.** La combinación Account Abstraction (ERC-4337) + passkeys WebAuthn + gas patrocinado resuelve, de verdad, el mayor problema de UX de cripto: nada de seed phrases ni de pagar gas. Eso encaja muy bien con el producto que quiere ser (links de cobro / pagos cripto tipo "Stripe links" cripto-nativo).
+**GatoPago está construido sobre las tecnologías correctas y con decisiones de arquitectura por encima del promedio.** La combinación Account Abstraction (ERC-4337) + passkeys WebAuthn + gas patrocinado resuelve, de verdad, el mayor problema de UX de cripto: nada de seed phrases ni de pagar gas. Eso encaja muy bien con el producto que quiere ser (links de cobro / pagos cripto tipo "Stripe links" cripto-nativo).
 
 **Pero como está hoy no es escalable a producto.** Hay un cuello de botella dominante: **el servidor actúa como relayer/bundler con un único EOA (`PRIVATE_KEY`)** que firma todas las transacciones on-chain de todos los usuarios. Eso impone un límite duro de throughput (los nonces de un EOA son secuenciales) y es un punto único de falla y de seguridad. Lo bueno: arreglarlo es un cambio acotado y bien entendido, no una reescritura.
 
@@ -38,7 +38,7 @@
 
 ---
 
-## 2. ¿Qué quiere ser Parmelia?
+## 2. ¿Qué quiere ser GatoPago?
 
 Una app de **links de cobro y pagos cripto** donde:
 
@@ -197,7 +197,7 @@ compare-and-set e índices únicos hacen idempotente la liquidación.
 
 ### El principio que decide todo
 
-**El corazón de Parmelia es el link de cobro.** Un pagador recibe una URL/QR y debe poder pagar con **fricción mínima**. Ese flujo es **inherentemente web**: clic en el link → pagar. Obligar a instalar (PWA o nativa) **antes** de pagar destruiría la conversión, que es justo el punto del producto.
+**El corazón de GatoPago es el link de cobro.** Un pagador recibe una URL/QR y debe poder pagar con **fricción mínima**. Ese flujo es **inherentemente web**: clic en el link → pagar. Obligar a instalar (PWA o nativa) **antes** de pagar destruiría la conversión, que es justo el punto del producto.
 
 De ahí se separan dos lados con necesidades distintas:
 
@@ -276,7 +276,7 @@ De ahí se separan dos lados con necesidades distintas:
 
 ## 10. Veredicto final
 
-Parmelia está **bien construido y bien apostado**: el stack es correcto, el diseño de wallet (AA + passkeys + gas patrocinado + recovery) es sofisticado y encaja con el producto, y la portabilidad reciente lo libera del lock-in de red. **Sí sirve para el producto que quiere ser.**
+GatoPago está **bien construido y bien apostado**: el stack es correcto, el diseño de wallet (AA + passkeys + gas patrocinado + recovery) es sofisticado y encaja con el producto, y la portabilidad reciente lo libera del lock-in de red. **Sí sirve para el producto que quiere ser.**
 
 Lo que lo separa de "demo" a "producto" no es rehacerlo, sino desplegar y
 operar con disciplina la capa ya endurecida, y escalar el **relaying on-chain**

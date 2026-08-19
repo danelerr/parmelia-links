@@ -1,4 +1,4 @@
-# Auditoría de smart contracts — Parmelia
+# Auditoría de smart contracts — GatoPago
 
 Revisión interna de seguridad del conjunto de contratos en `contracts/src`.
 Enfoque principal: **seguridad de fondos** y **actualizabilidad** (la preocupación

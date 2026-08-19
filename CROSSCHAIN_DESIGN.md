@@ -1,6 +1,6 @@
-# Parmelia Cross-Chain — Diseño definitivo (v2.0)
+# GatoPago Cross-Chain — Diseño definitivo (v2.0)
 
-> Diseño autoritativo del módulo cross-chain de Parmelia (USDC). Estado del
+> Diseño autoritativo del módulo cross-chain de GatoPago (USDC). Estado del
 > código: **implementado y endurecido** (contrato desplegado en Sepolia, server
 > completo, checkout público, relayer con reconciliación); pendiente de
 > activación operativa — ver §11. Fecha: julio 2026. Historia de versiones al
@@ -46,14 +46,14 @@ es activación operativa (§11) y tres mejoras de producto por fases (§12).
 
 ## 1. Alcance y no-objetivos
 
-Cross-chain **no es el core** de Parmelia; es una capa de flexibilidad sobre una
+Cross-chain **no es el core** de GatoPago; es una capa de flexibilidad sobre una
 base Arbitrum-first. Tres objetivos:
 
-1. **Outbound (Flow B):** un usuario Parmelia envía USDC desde Arbitrum hacia
-   otra chain CCTP. Aquí Parmelia monetiza (fee con cap duro 1%).
-2. **Inbound (Flow A):** una wallet externa paga a un usuario Parmelia desde
+1. **Outbound (Flow B):** un usuario GatoPago envía USDC desde Arbitrum hacia
+   otra chain CCTP. Aquí GatoPago monetiza (fee con cap duro 1%).
+2. **Inbound (Flow A):** una wallet externa paga a un usuario GatoPago desde
    otra chain; el receptor recibe USDC nativo en su smart account de Arbitrum.
-   Checkout público `/cc/:username`. Sin fee de Parmelia en v1.
+   Checkout público `/cc/:username`. Sin fee de GatoPago en v1.
 3. **Confiabilidad:** ninguna operación puede perder fondos ni requerir
    confianza en el relayer.
 
@@ -83,7 +83,7 @@ Concretamente:
 - **USDC nativo, no wrapped.** El receptor nunca recibe USDC.e/axlUSDC.
 - **El más barato posible:** Standard es gratis; Fast cuesta 1.3 bps desde
   Arbitrum/Base. No hay fee de liquidez ni de relayer de terceros, así que el
-  margen del producto lo captura Parmelia completo.
+  margen del producto lo captura GatoPago completo.
 - **Sin API keys** (Iris es REST público, ~35 req/s) ni contratos de terceros
   que auditar: las direcciones de TokenMessenger/MessageTransmitter v2 son
   deterministas y auditadas por Circle.
@@ -110,13 +110,13 @@ Para que nadie re-litigue el rail:
 |---|---|---|
 | **Across** | ~6 bps dinámico + requiere API key/`integratorId` | Rail de intents sobre liquidez de terceros. Su única ventaja (fill en ~2s vs ~8-20s de Fast) es inmaterial para un checkout de pagos. Fee apilada sobre la nuestra. **Se retira** (§12, Fase 1): el endpoint legacy `/bridge` y la ruta de depósito vía UI de Across quedan obsoletos frente al checkout `/cc` propio. |
 | **LI.FI** | 0.25% + fee de integrador encima | Apila 25 bps sobre el 1.3 bps de CCTP: ~20x más caro. Solo tendría sentido para no-USDC/no-CCTP, que es no-objetivo. |
-| **Circle Forwarding Service** | $0.20 fijo + gas, además del fee de protocolo | $0.20 sobre un pago de $10 = 2%. Mata el ticket típico de Parmelia. Solo se reevaluaría si el costo operativo del relayer propio superara con claridad su costo (§10). |
+| **Circle Forwarding Service** | $0.20 fijo + gas, además del fee de protocolo | $0.20 sobre un pago de $10 = 2%. Mata el ticket típico de GatoPago. Solo se reevaluaría si el costo operativo del relayer propio superara con claridad su costo (§10). |
 | **"Uniswap cross-chain"** | Across + routing | No es un rail: es Across por debajo. Irrelevante para USDC→USDC. |
 | **Sin relayer (el usuario mintea)** | 0 | Requiere que el usuario tenga gas en la red destino: destruye la UX que el módulo existe para dar. Queda como *fallback* natural gracias al permissionless (§7). |
 | **`destinationCaller` restringido + red de relayers de terceros** | variable | Rompe el permissionless de `receiveMessage` → rompe el invariante I1 (un burn nunca se pierde). Inaceptable. |
 
 **El relayer propio, bien entendido:** gracias a que `receiveMessage` es
-permissionless y la atestación no expira, el relayer de Parmelia **no es un
+permissionless y la atestación no expira, el relayer de GatoPago **no es un
 componente de confianza ni de liveness crítica — es un acelerador best-effort**.
 Si muere, el peor caso es demora hasta que se recupere, otro relayer mintee, o
 el propio usuario complete el mint. Su costo marginal es el gas del mint en
@@ -134,7 +134,7 @@ preservar. Cada uno tiene su enforcement señalado.
 | # | Invariante | Dónde se garantiza |
 |---|---|---|
 | I1 | **Un burn nunca se pierde.** Toda quema atestada es completable por cualquiera, para siempre. | `destinationCaller = bytes32(0)` en todo `depositForBurn`; atestación de Iris sin expiración. |
-| I2 | **La fee de Parmelia solo se cobra si el burn ocurre.** | Atomicidad de `ParmeliaCrosschainRouter.bridgeUSDC` (fee-skim + burn en una tx); cap 1% on-chain. |
+| I2 | **La fee de GatoPago solo se cobra si el burn ocurre.** | Atomicidad de `ParmeliaCrosschainRouter.bridgeUSDC` (fee-skim + burn en una tx); cap 1% on-chain. |
 | I3 | **El relayer no puede robar ni desviar.** | `mintRecipient` queda fijado dentro del burn firmado en origen; `receiveMessage` solo acuña a ese destinatario. |
 | I4 | **Toda operación existe en D1 antes de que exista el burn.** | Outbound: `/crosschain/prepare` crea la fila `quoted` antes de devolver la UserOp; `/pay/submit` registra el tx ANTES de esperar el receipt. Inbound: `/inbound/prepare` crea `pending_signature` antes de devolver las txs. |
 | I5 | **Un burn tx ↔ una operación.** | Índice único de `source_tx_hash` (migración 0006) + dedupe en `/inbound/register`. |
@@ -249,7 +249,7 @@ nunca devolver. Estados monótonos, `completed` terminal (I7).
 
 Costo total de una operación = fee CCTP (si Fast) + gas en origen (paymaster en
 outbound; el pagador externo en inbound) + gas del mint en destino (el relayer)
-+ fee de Parmelia (outbound; cap duro 1% on-chain y en server). El `maxFee` de
++ fee de GatoPago (outbound; cap duro 1% on-chain y en server). El `maxFee` de
 Fast sale de la quote viva con buffer pequeño (I9). Para montos pequeños el
 componente fijo de gas domina sobre el porcentaje en cualquier rail — otra razón
 por la que apilar fees de terceros es inaceptable.
@@ -338,7 +338,7 @@ la disponibilidad si el RPC es público y flaky.
    (implementado 2026-07-03: tracking en vivo burn → atestación → entrega →
    "llegó", con link al explorer del destino y copy de reaseguro si demora —
    el push deja de ser el único canal).
-5. Config: `PARMELIA_CROSSCHAIN_FEE_BPS` (decidir 0 vs 30-50 bps), flags.
+5. Config: `GATOPAGO_CROSSCHAIN_FEE_BPS` (decidir 0 vs 30-50 bps), flags.
 
 Con el punto 4 hecho, **todo el flujo cross-chain está implementado en código**
 (server + relayer + checkout inbound + UI outbound con tracking); los puntos

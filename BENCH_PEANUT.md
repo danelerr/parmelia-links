@@ -1,7 +1,7 @@
-# BENCH_PEANUT.md — Benchmark Peanut vs Parmelia
+# BENCH_PEANUT.md — Benchmark Peanut vs GatoPago
 
 > Versión 1.0 — julio 2026. Fuente: 40 capturas de la app de Peanut (beta,
-> Android) tomadas por Daniel + peanut.me + producto Parmelia actual.
+> Android) tomadas por Daniel + peanut.me + producto GatoPago actual.
 > Formato de decisión: qué copiar, qué adaptar al corredor boliviano, qué
 > ignorar deliberadamente. No es un ejercicio de vanidad: cada fila termina
 > en una acción o en un "no, y por qué".
@@ -40,19 +40,19 @@
 
 ## 2. Dónde Peanut es objetivamente mejor (y qué hacemos)
 
-| # | Ventaja Peanut | Acción Parmelia |
+| # | Ventaja Peanut | Acción GatoPago |
 |---|---|---|
 | B-1 | Depósito universal multichain (1 dirección, 9 redes, auto-bridge) | **Confirma la prioridad de Daimo Pay** en el hub Depositar: es el mismo primitivo, integrable sin partnership con cada exchange. |
 | B-2 | Educación de respaldo/recuperación (la mejor educación passkey vista) | Añadir a Ajustes→Seguridad la sección "¿Qué pasa si pierdo mi teléfono?" con estados honestos. **Ventaja nuestra a gritar: tenemos guardian recovery on-chain — Peanut dice "tu dinero se pierde para siempre", nosotros PODEMOS recuperar.** Hoy no lo comunicamos. |
 | B-3 | Multi-riel QR (Mercado Pago/PIX) — pagar el mundo fiat | Nuestro equivalente es **QR Simple vía Mesa de Pagos**. Peanut lo validó en AR/BR y **no tiene Bolivia** (banco "Soon!"). La ventana existe pero cierra: acelerar la conversación con Mesa de Pagos. |
 | B-4 | Pantalla de tarifas transparente | Añadir "Tarifas" simple (app y landing): sin comisiones de red, swap X bps, crosschain Y. Barato, alta confianza. |
 | B-5 | Soporte omnipresente (tab fijo, caras humanas) | Entrada de soporte visible (Ajustes + Home): WhatsApp/Telegram. En Bolivia, soporte por WhatsApp = confianza. Nuestra historia de origen ES un soporte que no respondió. |
-| B-6 | Balance unificado en $ | **Decisión cerrada (jul-2026): NO copiar.** El saldo principal de Parmelia es USDC y solo USDC — nunca se suma un activo volátil al número principal ("mi plata no cambia sola" es la promesa central). Si algún día hay 3+ activos, viven en una sección aparte con valuación marcada como estimada. El "$" unificado de Peanut es correcto para su embudo multi-activo; el nuestro converge a USDC en la puerta de entrada (dirección universal v1 = solo USDC), lo que hace innecesaria la abstracción. |
+| B-6 | Balance unificado en $ | **Decisión cerrada (jul-2026): NO copiar.** El saldo principal de GatoPago es USDC y solo USDC — nunca se suma un activo volátil al número principal ("mi plata no cambia sola" es la promesa central). Si algún día hay 3+ activos, viven en una sección aparte con valuación marcada como estimada. El "$" unificado de Peanut es correcto para su embudo multi-activo; el nuestro converge a USDC en la puerta de entrada (dirección universal v1 = solo USDC), lo que hace innecesaria la abstracción. |
 | B-7 | Growth loops (puntos, tiers, revshare, waitlist gamificada) | **No copiar el casino de puntos ahora** (requiere ingresos que lo fondeen). Sí: waitlist con prioridad cuando llegue la tarjeta Gnosis; referidos ya los tenemos — subirles visibilidad llegado el momento. |
 
-## 3. Dónde Parmelia es mejor (amplificar, no regalar)
+## 3. Dónde GatoPago es mejor (amplificar, no regalar)
 
-| # | Ventaja Parmelia | Peanut |
+| # | Ventaja GatoPago | Peanut |
 |---|---|---|
 | P-1 | **API de cobros + dashboard comerciante** (payment intents, webhooks firmados, sandbox, QR de mostrador) | No tiene historia B2B visible. Es nuestro foso. |
 | P-2 | **Español primero** (527 keys es/en) | App inglés-only. Para el normie boliviano es barrera real. |
@@ -65,7 +65,7 @@
 ## 4. Qué NO copiar (decisión cerrada)
 
 1. **La estética neo-brutalista/meme**: es SU marca; copiarla nos hace la
-   copia. La identidad Parmelia (dark elegante, glow, sobriedad fintech) es
+   copia. La identidad GatoPago (dark elegante, glow, sobriedad fintech) es
    mejor para "confianza con dinero" en nuestro mercado.
 2. **KYC + límites por región**: consecuencia de sus rieles bancarios propios;
    nuestro modelo delega el fiat a partners licenciados.
@@ -79,7 +79,7 @@
 No en conjunto — tiene **mejor sistema de marca dentro del producto** (cada
 pantalla hace marketing: mascota, badges, tarjeta compartible), **mejor
 cobertura de rampas** (su núcleo de negocio) y **mejor educación contextual**.
-Parmelia tiene mejor arquitectura de flujos de dinero (confirmación uniforme,
+GatoPago tiene mejor arquitectura de flujos de dinero (confirmación uniforme,
 estados pendiente/fallo honestos, resultado único), mejor historia B2B, y un
 lenguaje visual más apropiado para el posicionamiento "tu dinero, en serio" en
 LatAm. El gap real no es de estética: es B-1..B-5 de la tabla — rampas,
@@ -133,7 +133,7 @@ lanzamiento. Lo que se adopta, se corrige y se rechaza:
 
 - **ADOPTADO — wording de recovery**: no prometer "perder tu teléfono no es
   perder tu dinero" (el guardian hoy es la llave del server; la promesa
-  absoluta expone). Frase oficial: **"Recuperación segura: Parmelia te ayuda a
+  absoluta expone). Frase oficial: **"Recuperación segura: GatoPago te ayuda a
   recuperar el acceso sin custodiar tu dinero."**
 - **ADOPTADO — estándar "verdad ganada"**: un diferenciador cuenta cuando un
   cliente lo usa, no cuando está en el repo. El stack merchant está
@@ -148,7 +148,7 @@ lanzamiento. Lo que se adopta, se corrige y se rechaza:
   demanda de la red de cobros — Yape ganó así. Síntesis oficial: **el pitch
   lidera con cobros; el producto mantiene los dos lados.**
 - **Posicionamiento (frase de trabajo)**: "Peanut construye la red global de
-  consumo. Parmelia construye la red de dinero de un país — los dos lados:
+  consumo. GatoPago construye la red de dinero de un país — los dos lados:
   la gente que paga y los negocios que cobran."
 
 ## 7. Backlog accionable derivado (orden sugerido)

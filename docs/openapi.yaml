@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Parmelia Payments API
+  title: GatoPago Payments API
   version: "1.0.0"
   description: >
     Accept stablecoin payments (USDC on Arbitrum) with a Stripe-style flow:
@@ -114,7 +114,7 @@ paths:
       tags: [Payment Intents]
       summary: Get an on-chain authorization (Flow B)
       description: >
-        Returns a Parmelia-signed authorization for the payer's wallet to call
+        Returns a GatoPago-signed authorization for the payer's wallet to call
         PaymentRouter.payInvoice. Funds go directly to the merchant.
       parameters: [{ $ref: "#/components/parameters/IntentId" }]
       responses:
@@ -290,7 +290,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: Firebase ID token
-      description: Firebase ID token issued to the Parmelia PWA user.
+      description: Firebase ID token issued to the GatoPago PWA user.
 
   parameters:
     IntentId:

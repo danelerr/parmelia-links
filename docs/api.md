@@ -1,4 +1,4 @@
-# Parmelia Payments API
+# GatoPago Payments API
 
 Accept stablecoin payments (USDC on Arbitrum) with a Stripe-style flow: create a
 **Payment Intent**, share a **checkout link or QR**, and receive a signed
@@ -71,7 +71,7 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
 ```
 
 2. Show the `checkout_url` to your customer (render it as a QR, or link to it).
-3. When the customer pays, Parmelia sends a signed `payment.paid` webhook to your
+3. When the customer pays, GatoPago sends a signed `payment.paid` webhook to your
    registered endpoint, with your `metadata` echoed back. Deliver the product.
 
 ---
@@ -81,18 +81,18 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
 A payment intent can be paid two ways. You create the intent the same way for
 both; the difference is who pays and how.
 
-### Flow A — pay with a Parmelia account (default)
+### Flow A — pay with a GatoPago account (default)
 
-The customer opens `checkout_url` in Parmelia and pays with their passkey. Gas is
+The customer opens `checkout_url` in GatoPago and pays with their passkey. Gas is
 sponsored; nothing is needed from you beyond the `checkout_url`. Best when your
-customers are (or will become) Parmelia users.
+customers are (or will become) GatoPago users.
 
 ### Flow B — pay from any external wallet (on-chain)
 
 Lets anyone pay from any wallet (MetaMask, an exchange withdrawal, another dapp)
-without a Parmelia account, via the on-chain **PaymentRouter**. You request a
+without a GatoPago account, via the on-chain **PaymentRouter**. You request a
 signed authorization and the payer's wallet calls the router. Funds go **directly
-to the merchant**; Parmelia never custodies them. See
+to the merchant**; GatoPago never custodies them. See
 [On-chain authorization](#get-an-on-chain-authorization-flow-b).
 
 ---
@@ -175,7 +175,7 @@ Only valid while `awaiting_payment`; otherwise returns `409 INTENT_NOT_PAYABLE`.
 
 `GET /v1/payment_intents/{id}/onchain`
 
-Returns a Parmelia-signed authorization the payer's wallet uses to call the
+Returns a GatoPago-signed authorization the payer's wallet uses to call the
 PaymentRouter. The signature binds the chain, router, invoice, token, amount,
 merchant and fee — the payer cannot change any of them.
 
@@ -280,16 +280,16 @@ _(Roadmap: `payment.expired`, `payment.failed`, `payment.refunded`.)_
 ## Webhooks
 
 Register your endpoint URL in the dashboard; you receive a **signing secret**
-(`whsec_…`) once. Parmelia POSTs each event to your URL.
+(`whsec_…`) once. GatoPago POSTs each event to your URL.
 
 ### Request
 
 ```
 POST <your endpoint>
 Content-Type: application/json
-Parmelia-Signature: <hmac-sha256 hex>
-Parmelia-Timestamp: <unix seconds>
-Parmelia-Event-Id: evt_…
+GatoPago-Signature: <hmac-sha256 hex>
+GatoPago-Timestamp: <unix seconds>
+GatoPago-Event-Id: evt_…
 ```
 
 Body:
@@ -316,15 +316,15 @@ Body:
 ### Verifying the signature
 
 Compute `HMAC-SHA256(secret, "<timestamp>.<raw body>")` and compare, in constant
-time, to the `Parmelia-Signature` header. Reject stale timestamps to prevent
+time, to the `GatoPago-Signature` header. Reject stale timestamps to prevent
 replay.
 
 ```js
 import crypto from "node:crypto";
 
-export function verifyParmeliaWebhook(rawBody, headers, secret) {
-  const ts = headers["parmelia-timestamp"];
-  const signature = headers["parmelia-signature"];
+export function verifyGatoPagoWebhook(rawBody, headers, secret) {
+  const ts = headers["gatopago-timestamp"];
+  const signature = headers["gatopago-signature"];
   const expected = crypto
     .createHmac("sha256", secret)
     .update(`${ts}.${rawBody}`)
@@ -343,12 +343,15 @@ export function verifyParmeliaWebhook(rawBody, headers, secret) {
 > Verify against the **raw request body**, byte-for-byte. Re-serializing the JSON
 > will change the bytes and break the signature.
 
+> During the brand transition, the same values are also sent through the
+> legacy `Parmelia-*` header aliases. New integrations should use `GatoPago-*`.
+
 ### Idempotency & retries
 
-- **Deduplicate** by `id` (or the `Parmelia-Event-Id` header): the same event may
+- **Deduplicate** by `id` (or the `GatoPago-Event-Id` header): the same event may
   be delivered more than once.
 - **Respond `2xx` quickly** (under ~10s). Do slow work asynchronously.
-- On any non-`2xx` (or timeout), Parmelia retries with backoff:
+- On any non-`2xx` (or timeout), GatoPago retries with backoff:
   ~1m → 5m → 30m → 2h → 6h → 24h (up to 6 attempts), then marks the delivery
   failed. Deliveries survive restarts.
 

@@ -1,6 +1,6 @@
 # Server (Cloudflare Worker)
 
-API de Parmelia: Hono sobre Cloudflare Workers + D1. Ver `../ARCHITECTURE.md` para el detalle y `../DEPLOY.md` para el runbook de despliegue.
+API de GatoPago: Hono sobre Cloudflare Workers + D1. Ver `../ARCHITECTURE.md` para el detalle y `../DEPLOY.md` para el runbook de despliegue.
 
 ## Desarrollo local
 
@@ -71,7 +71,7 @@ obligatorio y ese polling desaparece.
 
 ## Almacenamiento (D1)
 
-Toda la data de la app vive en D1 (binding `PARMELIA_DB`): usuarios/usernames, wallet del usuario, `credential_id` (pista de UX), `referral_code`, estado del faucet, links de cobro, pagos pendientes (`prepare`↔`submit`), operaciones on-chain durables de cuenta/faucet/recovery, cotizaciones de swap, contactos y el **ledger** unificado de movimientos.
+Toda la data de la app vive en D1 (binding `GATOPAGO_DB`): usuarios/usernames, wallet del usuario, `credential_id` (pista de UX), `referral_code`, estado del faucet, links de cobro, pagos pendientes (`prepare`↔`submit`), operaciones on-chain durables de cuenta/faucet/recovery, cotizaciones de swap, contactos y el **ledger** unificado de movimientos.
 
 ### Historial = journal + proyecciones D1
 
@@ -117,7 +117,7 @@ hasta reconciliar, evitando reemplazos silenciosos de nonce. `/health` devuelve
 
 ## Secrets y variables
 
-`vars` (en `wrangler.jsonc`) para config no sensible: `FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`, las de fees (`PARMELIA_*`) y los flags cross-chain (`CROSSCHAIN_PAUSED`, `CROSSCHAIN_DISABLED_CHAINS`, `CROSSCHAIN_MIN_RELAYER_GAS_WEI`).
+`vars` (en `wrangler.jsonc`) para config no sensible: `FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`, las de fees (`GATOPAGO_*`) y los flags cross-chain (`CROSSCHAIN_PAUSED`, `CROSSCHAIN_DISABLED_CHAINS`, `CROSSCHAIN_MIN_RELAYER_GAS_WEI`).
 
 `wrangler secret put` (o `.dev.vars` local, gitignored) para lo sensible:
 
