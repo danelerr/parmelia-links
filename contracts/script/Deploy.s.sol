@@ -9,11 +9,11 @@ import {ParmeliaPaymaster} from "../src/ParmeliaPaymaster.sol";
 import {ParmeliaPaymentRouter} from "../src/ParmeliaPaymentRouter.sol";
 import {ParmeliaCrosschainRouter, ITokenMessengerV2} from "../src/ParmeliaCrosschainRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {IEntryPoint} from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import {DeploymentRoles} from "./DeploymentRoles.sol";
 
 /**
- * @notice Deterministic (CREATE2) deployment of the Parmelia V2 contracts.
+ * @notice Deterministic (CREATE2) deployment of the GatoPago V2 contracts.
  *
  * Why CREATE2: deploying with a fixed salt through the standard CREATE2 deployer
  * (0x4e59b44847b379578588920cA78FbF26c0B4956C, present on Arbitrum and most EVM
@@ -37,8 +37,9 @@ contract DeployV2 is Script {
 
     function run() external {
         address deployer = msg.sender;
-        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
-        address sponsorSigner = vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer);
+        address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
+        address sponsorSigner =
+            vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
         DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
 
         vm.startBroadcast();
@@ -71,7 +72,7 @@ contract DeployV2 is Script {
 
         vm.stopBroadcast();
 
-        console.log("\n=== Parmelia V2 Deployment Summary ===");
+        console.log("\n=== GatoPago V2 Deployment Summary ===");
         console.log("EntryPoint (v0.9):       ", address(ENTRY_POINT));
         console.log("\nFill these into shared/networks.ts -> NETWORKS[chain].contracts:");
         console.log("  verifier: ", address(verifier));
@@ -90,8 +91,9 @@ contract DeployPaymasterV2 is Script {
 
     function run() external {
         address deployer = msg.sender;
-        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
-        address sponsorSigner = vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer);
+        address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
+        address sponsorSigner =
+            vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
         DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
 
         vm.startBroadcast();
@@ -115,17 +117,20 @@ contract DeployPaymasterV2 is Script {
 }
 
 /// @notice Deterministic PaymentRouter deployment (Flow B: open payments to any wallet).
-/// @dev Reads PARMELIA_CONTRACT_OWNER, PARMELIA_TREASURY and
-///      PARMELIA_PAYMENT_ROUTER_SIGNER. Testnet defaults to the deployer; Arbitrum
+/// @dev Reads GATOPAGO_CONTRACT_OWNER, GATOPAGO_TREASURY and
+///      GATOPAGO_PAYMENT_ROUTER_SIGNER. Legacy PARMELIA_* aliases remain accepted.
+///      Testnet defaults to the deployer; Arbitrum
 ///      One requires all roles and the broadcaster to be distinct.
 contract DeployPaymentRouter is Script {
     bytes32 internal constant SALT = keccak256("parmelia.v2.paymentRouter");
 
     function run() external {
         address deployer = msg.sender;
-        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
-        address treasury = vm.envOr("PARMELIA_TREASURY", deployer);
-        address invoiceSigner = vm.envOr("PARMELIA_PAYMENT_ROUTER_SIGNER", deployer);
+        address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
+        address treasury = vm.envOr("GATOPAGO_TREASURY", vm.envOr("PARMELIA_TREASURY", deployer));
+        address invoiceSigner = vm.envOr(
+            "GATOPAGO_PAYMENT_ROUTER_SIGNER", vm.envOr("PARMELIA_PAYMENT_ROUTER_SIGNER", deployer)
+        );
         DeploymentRoles.validatePaymentRouter(block.chainid, deployer, finalOwner, treasury, invoiceSigner);
 
         vm.startBroadcast();
@@ -142,8 +147,9 @@ contract DeployPaymentRouter is Script {
 }
 
 /// @notice Deterministic CrosschainRouter deployment (Flow B outbound: USDC via CCTP v2).
-/// @dev Reads USDC_ADDRESS, CCTP_TOKEN_MESSENGER, PARMELIA_CONTRACT_OWNER and
-///      PARMELIA_TREASURY. Testnet defaults roles to the deployer; Arbitrum One
+/// @dev Reads USDC_ADDRESS, CCTP_TOKEN_MESSENGER, GATOPAGO_CONTRACT_OWNER and
+///      GATOPAGO_TREASURY. Legacy PARMELIA_* aliases remain accepted. Testnet
+///      defaults roles to the deployer; Arbitrum One
 ///      requires broadcaster, owner and treasury to be distinct.
 contract DeployCrosschainRouter is Script {
     bytes32 internal constant SALT = keccak256("parmelia.v2.crosschainRouter");
@@ -152,8 +158,8 @@ contract DeployCrosschainRouter is Script {
         address usdc = vm.envAddress("USDC_ADDRESS");
         address messenger = vm.envAddress("CCTP_TOKEN_MESSENGER");
         address deployer = msg.sender;
-        address finalOwner = vm.envOr("PARMELIA_CONTRACT_OWNER", deployer);
-        address treasury = vm.envOr("PARMELIA_TREASURY", deployer);
+        address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
+        address treasury = vm.envOr("GATOPAGO_TREASURY", vm.envOr("PARMELIA_TREASURY", deployer));
         DeploymentRoles.validateCrosschainRouter(block.chainid, deployer, finalOwner, treasury);
 
         vm.startBroadcast();

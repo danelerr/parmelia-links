@@ -22,15 +22,15 @@ interface ITokenMessengerV2 {
 
 /**
  * @title ParmeliaCrosschainRouter
- * @notice Flow B (outbound) of Parmelia cross-chain: a Parmelia smart account sends
+ * @notice Flow B (outbound) of GatoPago cross-chain: a GatoPago smart account sends
  *         USDC from Arbitrum to another CCTP chain in a single atomic call. The
- *         router skims the Parmelia fee to the treasury and burns the net via CCTP
+ *         router skims the GatoPago fee to the treasury and burns the net via CCTP
  *         v2 (`depositForBurn`). It never custodies funds across transactions.
  *
  *         Why a router (vs. the account batching the calls itself): it enforces a
  *         hard fee cap on-chain (protects the user from a backend bug overcharging)
  *         and emits one `opId`-indexed event so the relayer can reconcile the burn
- *         to a Parmelia operation deterministically. See CROSSCHAIN_DESIGN.md.
+ *         to a GatoPago operation deterministically. See CROSSCHAIN_DESIGN.md.
  *
  *         v1 is USDC-only and always passes `destinationCaller = bytes32(0)` so
  *         `receiveMessage` on the destination stays permissionless (anyone, incl.
@@ -39,7 +39,7 @@ interface ITokenMessengerV2 {
 contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @notice Hard cap on the Parmelia fee, enforced regardless of the input.
+    /// @notice Hard cap on the GatoPago fee, enforced regardless of the input.
     uint256 public constant MAX_FEE_BPS = 100; // 1%
     uint256 private constant BPS_DENOMINATOR = 10_000;
     /// @dev v1: keep receiveMessage permissionless (enables manual_complete).
@@ -65,7 +65,7 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         uint32 indexed destinationDomain,
         bytes32 mintRecipient,
         uint256 amountIn,
-        uint256 parmeliaFee,
+        uint256 gatoPagoFee,
         uint256 amountBurned,
         uint256 maxFee,
         uint32 minFinalityThreshold
@@ -110,12 +110,12 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     // ─── Core ─────────────────────────────────────────────────────────────────
 
     /**
-     * @notice Skim the Parmelia fee and burn the net USDC to `mintRecipient` on
+     * @notice Skim the GatoPago fee and burn the net USDC to `mintRecipient` on
      *         `destinationDomain` via CCTP v2. The caller (the user's smart account)
      *         must have approved this router for `amount` of USDC.
-     * @param opId Parmelia operation id, echoed in the event for reconciliation.
+     * @param opId GatoPago operation id, echoed in the event for reconciliation.
      * @param amount Gross USDC pulled from the caller (atomic units).
-     * @param fee Parmelia fee (<= amount * MAX_FEE_BPS); sent to the treasury.
+     * @param fee GatoPago fee (<= amount * MAX_FEE_BPS); sent to the treasury.
      * @param destinationDomain CCTP domain of the destination chain.
      * @param mintRecipient Recipient on the destination (bytes32-encoded address).
      * @param maxFee Max CCTP fee accepted for a Fast transfer (atomic units).

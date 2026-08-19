@@ -6,7 +6,7 @@ import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
 /**
  * @title AccountFactoryV2
- * @author Parmelia
+ * @author Daniel Cueto @danelerr
  * @notice Factory for deploying UUPS-upgradeable smart accounts (AccountWebAuthnV2).
  *
  * @dev Uses CREATE2 with ERC1967Proxy instead of ERC-1167 Clones.
@@ -34,7 +34,9 @@ contract AccountFactoryV2 {
         IMPLEMENTATION = implementation_;
     }
 
-    function _calldataKeccak256(bytes calldata data) private pure returns (bytes32 digest) {
+    function _calldataKeccak256(
+        bytes calldata data
+    ) private pure returns (bytes32 digest) {
         assembly ("memory-safe") {
             let ptr := mload(0x40)
             calldatacopy(ptr, data.offset, data.length)
@@ -47,10 +49,14 @@ contract AccountFactoryV2 {
      * @param initData ABI-encoded call to AccountWebAuthnV2.initialize(signers, threshold, guardian).
      * @return The predicted address of the proxy.
      */
-    function predictAddress(bytes calldata initData) public view returns (address) {
+    function predictAddress(
+        bytes calldata initData
+    ) public view returns (address) {
         bytes32 salt = _calldataKeccak256(initData);
-        bytes memory proxyBytecode =
-            abi.encodePacked(type(ERC1967Proxy).creationCode, abi.encode(IMPLEMENTATION, initData));
+        bytes memory proxyBytecode = abi.encodePacked(
+            type(ERC1967Proxy).creationCode,
+            abi.encode(IMPLEMENTATION, initData)
+        );
         return Create2.computeAddress(salt, keccak256(proxyBytecode));
     }
 
@@ -59,7 +65,9 @@ contract AccountFactoryV2 {
      * @param initData ABI-encoded call to AccountWebAuthnV2.initialize(signers, threshold, guardian).
      * @return account The address of the deployed (or existing) proxy.
      */
-    function createAccount(bytes calldata initData) public returns (address account) {
+    function createAccount(
+        bytes calldata initData
+    ) public returns (address account) {
         address predicted = predictAddress(initData);
 
         // If already deployed, just return the existing address
@@ -68,7 +76,9 @@ contract AccountFactoryV2 {
         }
 
         bytes32 salt = _calldataKeccak256(initData);
-        account = address(new ERC1967Proxy{salt: salt}(IMPLEMENTATION, initData));
+        account = address(
+            new ERC1967Proxy{salt: salt}(IMPLEMENTATION, initData)
+        );
 
         emit AccountCreated(account, salt);
     }

@@ -59,7 +59,7 @@ contract ParmeliaCrosschainRouterTest is Test {
 
     address owner = address(0xA11CE);
     address treasury = address(0x7EE);
-    address user = address(0xCAFE); // a Parmelia smart account
+    address user = address(0xCAFE); // a GatoPago smart account
     bytes32 recipient = bytes32(uint256(uint160(0xBEEF)));
 
     uint256 constant ONE = 1e6; // 1 USDC (6 decimals)

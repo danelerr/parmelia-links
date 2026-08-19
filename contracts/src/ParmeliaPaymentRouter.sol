@@ -12,15 +12,15 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
 
 /**
  * @title ParmeliaPaymentRouter
- * @notice Open-payment rail for Parmelia (Flow B): lets ANY external wallet pay a
- *         Parmelia payment intent. Funds go straight to the merchant's account;
- *         Parmelia never custodies them. A small platform fee is split to the
+ * @notice Open-payment rail for GatoPago (Flow B): lets ANY external wallet pay a
+ *         GatoPago payment intent. Funds go straight to the merchant's account;
+ *         GatoPago never custodies them. A small platform fee is split to the
  *         treasury in the same transaction.
  *
  *         Derived from the AvaSettle PaymentRouter, with one key change: AvaSettle
  *         sends funds to a single platform treasury (custodial); here the funds go
  *         to the per-invoice `merchant` address (non-custodial). The merchant,
- *         amount, fee and deadline are authorized by a Parmelia backend signature,
+ *         amount, fee and deadline are authorized by a GatoPago backend signature,
  *         so a payer cannot redirect the destination, change the amount/fee, or
  *         replay the invoice. `invoicePaid` guards against double payment.
  */
@@ -33,7 +33,7 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Receives the platform fee.
     address public treasury;
-    /// @notice Parmelia backend EOA that authorizes invoices.
+    /// @notice GatoPago backend EOA that authorizes invoices.
     address public invoiceSigner;
 
     mapping(address token => bool supported) public supportedTokens;
@@ -118,7 +118,7 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ─── Authorization digest ──────────────────────────────────────────────────
 
-    /// @dev The message the Parmelia backend signs. Binds chain + router + all
+    /// @dev The message the GatoPago backend signs. Binds chain + router + all
     ///      economic terms so none can be tampered with and it can't be replayed
     ///      across chains or routers.
     function invoiceDigest(
@@ -140,7 +140,7 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
     // ─── Core ───────────────────────────────────────────────────────────────────
 
     /**
-     * @notice Pay a Parmelia invoice. The payer must have approved this router for
+     * @notice Pay a GatoPago invoice. The payer must have approved this router for
      *         `amount` of `token`. Funds split: `amount - fee` to `merchant`,
      *         `fee` to the treasury. All terms are authorized by `signature`.
      */
