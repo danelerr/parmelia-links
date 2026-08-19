@@ -1,11 +1,11 @@
--- Parmelia schema - single source of truth (consolidated; the incremental
+-- GatoPago schema - single source of truth (consolidated; the incremental
 -- migration history was squashed while testnet data was disposable).
 --
 -- Design notes:
 --   * users: wallet_address is UNIQUE + stored lowercase → reverse lookup
 --     (address → user) powers the ledger and internal-transfer detection.
 --     referral_code: short shareable invite code (besides ?ref=username).
---   * ledger: ONE unified movements table. Parmelia relays every UserOp, so
+--   * ledger: ONE unified movements table. GatoPago relays every UserOp, so
 --     each payment/swap/faucet is written here at submit time - both sides for
 --     internal transfers. External incoming transfers are ingested by the cron
 --     indexer. /user/transactions reads ONLY this table.

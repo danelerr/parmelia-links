@@ -1,4 +1,4 @@
--- Parmelia payments API (closed-loop core): merchants, API keys, payment
+-- GatoPago payments API (closed-loop core): merchants, API keys, payment
 -- intents, webhook endpoints, an immutable event log, and a webhook outbox.
 -- A payment_intent is backed by a payment_links row (reuses the existing,
 -- working pay flow); when that link is paid, the intent settles and a
