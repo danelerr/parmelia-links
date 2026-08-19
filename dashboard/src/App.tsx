@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { Toaster } from "sileo";
 import { onAuthChange, type User } from "./lib/firebase";
 import Logo from "./components/Logo";

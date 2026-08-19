@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import { logOut, type User } from "../lib/firebase";
 import { DOCS_URL } from "../lib/docs";
 import Logo from "./Logo";
@@ -46,7 +46,7 @@ export default function Layout({ user, children }: { user: User; children: React
 				<div className="flex items-center gap-2.5 px-2 mb-6">
 					<Logo className="w-7" />
 					<div className="leading-tight">
-						<p className="font-display text-[15px]">Parmelia</p>
+						<p className="font-display text-[15px]">GatoPago</p>
 						<p className="text-[12px] text-text-faint">Negocios</p>
 					</div>
 				</div>

@@ -1,5 +1,5 @@
 import useSWR from "swr";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { apiFetch, SERVER_URL } from "../lib/api";
 import { docsUrl } from "../lib/docs";
 import type { User } from "../lib/firebase";
@@ -9,7 +9,7 @@ export default function Overview({ user }: { user: User }) {
 	const fetcher = (p: string) => apiFetch<{ data: unknown[] }>(p, { user });
 	const { data: keys, error: keysError, mutate: mutateKeys } = useSWR("/merchant/keys", fetcher);
 	const { data: hooks, error: hooksError, mutate: mutateHooks } = useSWR("/merchant/webhooks", fetcher);
-	// Settlement identity: merchant charges land in the SAME user's Parmelia
+	// Settlement identity: merchant charges land in the SAME user's GatoPago
 	// account (non-custodial) - said out loud because it is THE trust question.
 	const { data: profile } = useSWR("/user/profile", (p: string) =>
 		apiFetch<{ username?: string | null; walletAddress?: string | null }>(p, { user }),
@@ -60,7 +60,7 @@ export default function Overview({ user }: { user: User }) {
 			{profile?.walletAddress && (
 				<div className="card p-4 mb-6 max-w-xl">
 					<p className="text-[14px] text-text">
-						Tus cobros llegan directo a tu cuenta Parmelia
+						Tus cobros llegan directo a tu cuenta GatoPago
 						{profile.username ? <span className="text-glow-sky"> @{profile.username}</span> : null}.
 					</p>
 					<p className="text-[12px] text-text-faint mt-1">

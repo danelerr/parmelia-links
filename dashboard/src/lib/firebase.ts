@@ -27,8 +27,8 @@ const firebaseConfig = {
 	appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-export const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
 
 void setPersistence(auth, browserLocalPersistence).catch(() => {});
 void getRedirectResult(auth).catch(() => {});
@@ -48,7 +48,16 @@ export async function signInWithGoogle() {
 	}
 }
 
-const EMAIL_KEY = "parmelia:dash:emailForSignIn";
+const EMAIL_KEY = "gatopago:dash:emailForSignIn";
+const LEGACY_EMAIL_KEY = "parmelia:dash:emailForSignIn";
+
+function readEmail(): string | null {
+	const current = window.localStorage.getItem(EMAIL_KEY);
+	if (current) return current;
+	const legacy = window.localStorage.getItem(LEGACY_EMAIL_KEY);
+	if (legacy) window.localStorage.setItem(EMAIL_KEY, legacy);
+	return legacy;
+}
 
 export async function sendEmailLink(email: string) {
 	await sendSignInLinkToEmail(auth, email, {
@@ -63,10 +72,11 @@ export function isEmailSignInLink(url: string) {
 }
 
 export async function completeEmailLink(url: string, fallbackEmail?: string) {
-	const email = window.localStorage.getItem(EMAIL_KEY) || fallbackEmail;
+	const email = readEmail() || fallbackEmail;
 	if (!email) throw new Error("NEED_EMAIL");
 	const result = await signInWithEmailLink(auth, email, url);
 	window.localStorage.removeItem(EMAIL_KEY);
+	window.localStorage.removeItem(LEGACY_EMAIL_KEY);
 	return result;
 }
 

@@ -8,16 +8,16 @@ import ErrorState from "../components/ErrorState";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 // Contextual copy of the verification snippet from the canonical docs
-// (parmelia.me/docs#verifying-the-signature) - shown next to the secret on
+// (the GatoPago docs, #verifying-the-signature) - shown next to the secret on
 // purpose: it appears at the exact moment the developer needs it. The signing
-// scheme is HMAC-SHA256(secret, "<Parmelia-Timestamp>.<raw body>").
+// scheme is HMAC-SHA256(secret, "<GatoPago-Timestamp>.<raw body>").
 const VERIFY_SNIPPET = `import crypto from "node:crypto";
 
 // Express: monta la ruta con express.raw({ type: "application/json" })
 // para tener el cuerpo CRUDO (la firma es sobre los bytes exactos).
-function verifyParmelia(req, secret) {
-  const timestamp = req.header("Parmelia-Timestamp");
-  const signature = req.header("Parmelia-Signature");
+function verifyGatoPago(req, secret) {
+  const timestamp = req.header("GatoPago-Timestamp");
+  const signature = req.header("GatoPago-Signature");
   if (!timestamp || !signature) return false;
 
   // Rechaza timestamps viejos (anti-replay, tolerancia 5 min).
@@ -121,7 +121,7 @@ export default function Webhooks({ user }: { user: User }) {
 				<h1 className="text-[26px] mb-1">Webhooks</h1>
 				<p className="text-[14px] text-text-muted">
 					Te avisamos cuando un cobro cambia de estado. Verifica la firma{" "}
-					<span className="mono">Parmelia-Signature</span> con tu secreto.
+					<span className="mono">GatoPago-Signature</span> con tu secreto.
 				</p>
 			</header>
 
@@ -140,7 +140,7 @@ export default function Webhooks({ user }: { user: User }) {
 						name="endpoint_url"
 						value={url}
 						onChange={(e) => setUrl(e.target.value)}
-						placeholder="https://tu-servidor.com/webhooks/parmelia"
+						placeholder="https://tu-servidor.com/webhooks/gatopago"
 						autoComplete="url"
 						spellCheck={false}
 						required
@@ -180,9 +180,9 @@ export default function Webhooks({ user }: { user: User }) {
 				</summary>
 				<div className="px-5 pb-5">
 					<p className="text-[13px] text-text-muted mb-3 leading-relaxed">
-						Cada entrega llega con <span className="mono">Parmelia-Signature</span> (HMAC-SHA256 en hex),{" "}
-						<span className="mono">Parmelia-Timestamp</span> (unix, segundos) y{" "}
-						<span className="mono">Parmelia-Event-Id</span>. La firma se calcula sobre{" "}
+						Cada entrega llega con <span className="mono">GatoPago-Signature</span> (HMAC-SHA256 en hex),{" "}
+						<span className="mono">GatoPago-Timestamp</span> (unix, segundos) y{" "}
+						<span className="mono">GatoPago-Event-Id</span>. La firma se calcula sobre{" "}
 						<span className="mono">{"<timestamp>.<cuerpo crudo>"}</span> con tu secreto{" "}
 						<span className="mono">whsec_</span>. Verifica SIEMPRE antes de procesar.
 					</p>

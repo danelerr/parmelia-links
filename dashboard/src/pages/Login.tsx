@@ -22,13 +22,14 @@ function GoogleIcon() {
 }
 
 export default function Login() {
-	const [mode, setMode] = useState<Mode>("buttons");
+	const [mode, setMode] = useState<Mode>(() =>
+		isEmailSignInLink(window.location.href) ? "completing" : "buttons",
+	);
 	const [email, setEmail] = useState("");
 	const [busy, setBusy] = useState(false);
 
 	useEffect(() => {
 		if (!isEmailSignInLink(window.location.href)) return;
-		setMode("completing");
 		completeEmailLink(window.location.href)
 			.then(() => window.history.replaceState({}, "", "/"))
 			.catch((err) => {
@@ -126,7 +127,7 @@ export default function Login() {
 						<button onClick={() => setMode("email")} className="btn btn-ghost btn-block">
 							Continuar con correo
 						</button>
-						<p className="text-[12px] text-text-faint mt-1">Misma cuenta que tu app Parmelia.</p>
+						<p className="text-[12px] text-text-faint mt-1">Misma cuenta que tu app GatoPago.</p>
 					</div>
 				)}
 

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import useSWR from "swr";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { QRCodeSVG } from "qrcode.react";
 import { sileo } from "sileo";
 import { ApiError, apiFetch } from "../lib/api";

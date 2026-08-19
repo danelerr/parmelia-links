@@ -3,9 +3,9 @@
 
 import { fetchWithAuth } from "./authFetch";
 import type { User } from "./firebase";
+import { SERVER_URL } from "./brand";
 
-export const SERVER_URL =
-	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
+export { SERVER_URL };
 
 export class ApiError extends Error {
 	status: number;

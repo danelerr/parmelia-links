@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import useSWRInfinite from "swr/infinite";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { apiFetch } from "../lib/api";
 import type { User } from "../lib/firebase";
 import ErrorState from "../components/ErrorState";
