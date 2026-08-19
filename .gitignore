@@ -24,7 +24,14 @@ shared/pnpm-lock.yaml
 # Playwright runtime artifacts.
 test-results/
 playwright-report/
+.playwright-cli/
+output/
 coverage/
+*.log
+
+# Temporary assets & exports
+logos-mover/
+ava-deck.*
 
 # Local Cloudflare/D1 state created by integration and restore drills.
 .ci-d1/
