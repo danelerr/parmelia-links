@@ -3,11 +3,19 @@ import { useTranslation } from "react-i18next";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import BackHeader from "../components/BackHeader";
 import AddressQRCard from "../components/AddressQRCard";
+import Screen from "../components/Screen";
+import NetworkChips from "../components/NetworkChips";
 import { QRCodeSVG } from "qrcode.react";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import i18n from "../lib/i18n";
+import { activeNetwork } from "../lib/activeNetwork";
+import { parseQrPayload, type ParsedQrPayload } from "../lib/qrPayload";
+import { useAccountProfile } from "../hooks/useAccountProfile";
+import NoticeCard from "../components/NoticeCard";
+import { MoneyPanel, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
+import { APP_URL } from "../lib/brand";
 
 type FocusCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
@@ -41,7 +49,6 @@ type WindowWithBarcodeDetector = Window & {
   BarcodeDetector?: BarcodeDetectorConstructorLike;
 };
 
-const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
 const SCAN_INTERVAL_MS = 180;
 // jsQR cost grows ~quadratically with width and it runs on the main thread -
 // keep live analysis small so it never starves rendering. QR codes at arm's
@@ -179,48 +186,8 @@ function loadImageFromFile(file: File) {
   });
 }
 
-function isTrustedParmeliaHost(hostname: string) {
-  const trustedHosts = new Set<string>();
-
-  try {
-    trustedHosts.add(new URL(APP_URL).hostname);
-  } catch {
-    // ignore invalid env value
-  }
-
-  if (typeof window !== "undefined") {
-    trustedHosts.add(window.location.hostname);
-  }
-
-  return trustedHosts.has(hostname) || hostname.includes("parmelia");
-}
-
-function getNavigationTargetFromQr(rawValue: string) {
-  const value = rawValue.trim();
-
-  if (!value) {
-    return null;
-  }
-
-  if (value.startsWith("/")) {
-    return value;
-  }
-
-  try {
-    const parsed = new URL(value, window.location.origin);
-
-    if (
-      parsed.origin === window.location.origin ||
-      isTrustedParmeliaHost(parsed.hostname)
-    ) {
-      return parsed.pathname + parsed.search + parsed.hash;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
+type WalletQr = Extract<ParsedQrPayload, { kind: "evm-wallet" }>;
+type NetworkOption = { id: number; label: string };
 
 export default function ScanQR({ user }: { user: User }) {
   const navigate = useViewTransitionNavigate();
@@ -243,26 +210,76 @@ export default function ScanQR({ user }: { user: User }) {
   const [message, setMessage] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [scannerVersion, setScannerVersion] = useState(0);
+  const [scannedWallet, setScannedWallet] = useState<WalletQr | null>(null);
+  const [walletIdentity, setWalletIdentity] = useState<{
+    isGatoPago: boolean;
+    username: string | null;
+    lookupFailed?: boolean;
+  } | null>(null);
+  const [networkOptions, setNetworkOptions] = useState<NetworkOption[]>([
+    { id: activeNetwork.chainId, label: activeNetwork.name },
+  ]);
+  const [selectedChainId, setSelectedChainId] = useState(activeNetwork.chainId);
+  const [networksLoading, setNetworksLoading] = useState(false);
   // "Mi QR": the payable profile code lives INSIDE the scanner screen
   // (UX_DESIGN §6bis) — one place for both sides of a QR moment.
   const [view, setView] = useState<"scan" | "myqr">("scan");
-  const [profile, setProfile] = useState<{ username: string | null; walletAddress: string | null } | null>(null);
+  const { profile } = useAccountProfile(user);
 
-  // Lazy profile fetch, first time the Mi QR tab opens.
   useEffect(() => {
-    if (view !== "myqr" || profile) return;
-    (async () => {
-      try {
-        const res = await fetchWithAuth(user, `${SERVER_URL}/user/profile`);
-        if (res.ok) {
-          const data = await res.json();
-          setProfile({ username: data.username || null, walletAddress: data.walletAddress || null });
-        }
-      } catch {
-        /* non-blocking; the tab shows a retry-able error state */
+    if (!scannedWallet) return;
+    let cancelled = false;
+    setWalletIdentity(null);
+    setNetworksLoading(true);
+
+    void Promise.all([
+      fetchWithAuth(user, `${SERVER_URL}/user/resolve-wallet/${scannedWallet.address}`)
+        .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
+      fetchWithAuth(user, `${SERVER_URL}/crosschain/config`)
+        .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
+    ]).then(([identity, config]) => {
+      if (cancelled) return;
+      if (identity) {
+        setWalletIdentity({
+          isGatoPago: Boolean(identity.isGatoPago),
+          username: typeof identity.username === "string" ? identity.username : null,
+        });
+      } else {
+        // A connectivity failure is not proof that the address is external.
+        // Keep the classification honest while still allowing a reviewed send.
+        setWalletIdentity({ isGatoPago: false, username: null, lookupFailed: true });
       }
-    })();
-  }, [view, profile, user]);
+
+      const options: NetworkOption[] = [
+        { id: activeNetwork.chainId, label: activeNetwork.name },
+      ];
+      if (config?.enabled && Array.isArray(config.destinations)) {
+        for (const destination of config.destinations) {
+          if (
+            Number.isSafeInteger(destination?.chainId) &&
+            typeof destination?.name === "string" &&
+            !options.some((option) => option.id === destination.chainId)
+          ) {
+            options.push({ id: destination.chainId, label: destination.name });
+          }
+        }
+      }
+      setNetworkOptions(options);
+      const requestedChain = scannedWallet.chainId;
+      setSelectedChainId(
+        requestedChain && options.some((option) => option.id === requestedChain)
+          ? requestedChain
+          : activeNetwork.chainId,
+      );
+      setNetworksLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [scannedWallet, user]);
 
   const getOrCreateBarcodeDetector = useCallback(async () => {
     if (barcodeDetectorRef.current) {
@@ -312,6 +329,8 @@ export default function ScanQR({ user }: { user: User }) {
   const restartScanner = useCallback(() => {
     setCameraError("");
     setMessage("");
+    setScannedWallet(null);
+    setWalletIdentity(null);
     setScannerVersion((version) => version + 1);
   }, []);
 
@@ -385,14 +404,22 @@ export default function ScanQR({ user }: { user: User }) {
       await playDetectedFeedback();
       stopCamera();
 
-      const navigationTarget = getNavigationTargetFromQr(rawValue);
+      const payload = parseQrPayload(rawValue, {
+        origin: window.location.origin,
+        appUrl: APP_URL,
+      });
 
-      if (navigationTarget) {
-        navigate(navigationTarget);
+      if (payload?.kind === "gatopago") {
+        navigate(payload.target);
         return;
       }
 
-      setMessage(t("scan.notParmelia"));
+      if (payload?.kind === "evm-wallet") {
+        setScannedWallet(payload);
+        return;
+      }
+
+      setMessage(t("scan.unsupportedQr"));
     },
     [navigate, playDetectedFeedback, stopCamera, t],
   );
@@ -498,7 +525,7 @@ export default function ScanQR({ user }: { user: User }) {
         return;
       }
 
-      // Live scanning targets Parmelia QRs (dark-on-white plaques): skipping the
+      // Live scanning targets GatoPago QRs (dark-on-white plaques): skipping the
       // inverted pass halves the per-frame decode cost.
       const fallbackResult = await decodeWithJsQR(
         video,
@@ -706,9 +733,102 @@ export default function ScanQR({ user }: { user: User }) {
     };
   }, [getOrCreateBarcodeDetector, handleQRResult, scannerVersion, stopCamera, t, view]);
 
+  if (scannedWallet) {
+    const requestedNetworkSupported =
+      scannedWallet.chainId === null ||
+      networkOptions.some((option) => option.id === scannedWallet.chainId);
+    const sourceLabel = scannedWallet.source === "eip681"
+      ? "EIP-681"
+      : scannedWallet.source === "caip10"
+        ? "CAIP-10"
+        : t("scan.rawAddress");
+
+    function continueWithWallet() {
+      const query = new URLSearchParams({
+        recipient: scannedWallet!.address,
+        source: "qr",
+      });
+      if (selectedChainId === activeNetwork.chainId) {
+        navigate(`/send?${query.toString()}`);
+      } else {
+        query.set("chainId", String(selectedChainId));
+        navigate(`/crosschain?${query.toString()}`);
+      }
+    }
+
+    return (
+      <Screen>
+        <BackHeader onClick={restartScanner} title={t("scan.reviewTitle")} />
+
+        <MoneyPanel className="mb-5">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <span className={`meli-chip text-[10px] ${
+              walletIdentity?.isGatoPago
+				? "border-growth/25 bg-growth/10 text-growth"
+                : "text-text-muted bg-surface-2 border-border"
+            }`}>
+              {walletIdentity === null
+                ? t("scan.identifyingWallet")
+                : walletIdentity.lookupFailed
+                  ? t("scan.walletUnknown")
+                  : walletIdentity.isGatoPago
+                  ? t("scan.gatoPagoWallet")
+                  : t("scan.externalWallet")}
+            </span>
+            <span className="text-[11px] text-text-faint">{sourceLabel}</span>
+          </div>
+
+          {walletIdentity?.username ? (
+            <p className="text-[15px] text-text mb-2">@{walletIdentity.username}</p>
+          ) : null}
+          <p className="font-mono text-[13px] leading-relaxed break-all text-text-muted">
+            {scannedWallet.address}
+          </p>
+        </MoneyPanel>
+
+        <div className="mb-1">
+		  <SectionLabel>{t("scan.chooseNetwork")}</SectionLabel>
+          <p className="text-[12px] text-text-muted leading-relaxed mb-3">
+            {t("scan.chooseNetworkHint")}
+          </p>
+          <NetworkChips
+            options={networkOptions}
+            selected={selectedChainId}
+            onSelect={setSelectedChainId}
+          />
+        </div>
+
+        {!requestedNetworkSupported ? (
+		  <NoticeCard tone="warning" title={t("scan.walletUnknown")} className="mb-4">
+		    {t("scan.unsupportedNetwork", { chainId: scannedWallet.chainId })}
+		  </NoticeCard>
+        ) : null}
+
+		<NoticeCard title={t("scan.chooseNetwork")} className="mb-6">
+		  {selectedChainId === activeNetwork.chainId
+		    ? t("scan.sameNetworkHint", { network: activeNetwork.name })
+		    : t("scan.crosschainHint")}
+		</NoticeCard>
+
+		<TransactionActions>
+		  <button
+		    onClick={continueWithWallet}
+		    disabled={networksLoading}
+		    className="btn btn-primary btn-block"
+		  >
+		    {networksLoading ? t("common.loading") : t("scan.continue")}
+		  </button>
+		  <button onClick={restartScanner} className="btn btn-ghost btn-block mt-3">
+		    {t("scan.scanAnother")}
+		  </button>
+		</TransactionActions>
+      </Screen>
+    );
+  }
+
   return (
-    <div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-      <BackHeader onClick={() => navigate("/")} title={t("scan.title")} />
+    <Screen>
+      <BackHeader title={t("scan.title")} />
 
       <div className="seg-track seg-track-block mb-5">
         {(["scan", "myqr"] as const).map((v) => (
@@ -726,13 +846,13 @@ export default function ScanQR({ user }: { user: User }) {
 
       {view === "myqr" ? (
         <div className="flex-1 flex flex-col items-center">
-          <div className="w-full max-w-[340px] bg-surface border border-border rounded-[22px] p-6 shadow-e1">
+		  <MoneyPanel className="w-full max-w-[340px] p-6">
             {!profile ? (
               <p className="text-[13px] text-text-muted text-center py-10">{t("common.loading")}</p>
             ) : profile.username ? (
               <>
                 <div className="flex justify-center mb-4">
-                  <div className="p-3 bg-white rounded-2xl">
+                  <div className="border-2 border-text bg-white p-3 shadow-[6px_6px_0_var(--color-cat-700)]">
                     <QRCodeSVG
                       value={`${APP_URL}/${profile.username}`}
                       size={200}
@@ -750,45 +870,36 @@ export default function ScanQR({ user }: { user: User }) {
             ) : (
               <p className="text-[13px] text-text-muted text-center py-10">{t("scan.myQrError")}</p>
             )}
-          </div>
+		  </MoneyPanel>
         </div>
       ) : (
       <div className="flex-1 flex flex-col items-center">
         {cameraError ? (
-          <div className="w-full max-w-[340px] aspect-square rounded-[22px] overflow-hidden border border-glow-pink/40 mb-6 bg-surface flex items-center justify-center px-8 text-center">
-            <p className="text-glow-pink text-[15px]">{cameraError}</p>
+		  <div className="mb-6 flex aspect-square w-full max-w-[340px] items-center justify-center overflow-hidden border-2 border-danger bg-surface px-8 text-center shadow-[6px_6px_0_var(--color-danger)]">
+			<p className="text-[15px] text-danger">{cameraError}</p>
           </div>
         ) : (
-          <div className="w-full max-w-[340px] aspect-square rounded-[22px] overflow-hidden mb-6 relative bg-black shadow-e2">
+          <div className="relative mb-6 aspect-square w-full max-w-[340px] overflow-hidden border-2 border-text bg-black shadow-[7px_7px_0_var(--color-cat-700)]">
             <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
 
             {/* Brand scan frame */}
             <div className="pointer-events-none absolute inset-0">
-              <span className="absolute top-4 left-4 w-7 h-7 border-t-2 border-l-2 border-glow-sky rounded-tl-lg" />
-              <span className="absolute top-4 right-4 w-7 h-7 border-t-2 border-r-2 border-glow-sky rounded-tr-lg" />
-              <span className="absolute bottom-4 left-4 w-7 h-7 border-b-2 border-l-2 border-glow-sky rounded-bl-lg" />
-              <span className="absolute bottom-4 right-4 w-7 h-7 border-b-2 border-r-2 border-glow-sky rounded-br-lg" />
+			  <span className="absolute left-4 top-4 h-7 w-7 border-l-2 border-t-2 border-cat-500" />
+			  <span className="absolute right-4 top-4 h-7 w-7 border-r-2 border-t-2 border-cat-500" />
+			  <span className="absolute bottom-4 left-4 h-7 w-7 border-b-2 border-l-2 border-cat-500" />
+			  <span className="absolute bottom-4 right-4 h-7 w-7 border-b-2 border-r-2 border-cat-500" />
               {!isImporting && (
                 <div className="absolute inset-x-5 top-4 bottom-4 overflow-hidden">
                   {/* Full-height runner with a 2px gradient strip at its top:
                       translateY runs on the compositor, so the sweep stays
                       smooth even while jsQR is busy on the main thread. */}
-                  <div
-                    className="h-full w-full animate-qr-scan"
-                    style={{
-                      background:
-                        "linear-gradient(90deg, transparent, #f4a9cf, #9ce3f4, transparent)",
-                      backgroundSize: "100% 2px",
-                      backgroundRepeat: "no-repeat",
-                      willChange: "transform",
-                    }}
-                  />
+				  <div className="scan-line h-full w-full animate-qr-scan" style={{ willChange: "transform" }} />
                 </div>
               )}
             </div>
 
             {isImporting && (
-              <div className="absolute inset-0 bg-bg/75 backdrop-blur-sm flex items-center justify-center px-6">
+              <div className="absolute inset-0 bg-canvas/75 backdrop-blur-sm flex items-center justify-center px-6">
                 <p className="text-[14px] text-text text-center">{t("scan.analyzing")}</p>
               </div>
             )}
@@ -797,13 +908,13 @@ export default function ScanQR({ user }: { user: User }) {
 
         <canvas ref={canvasRef} className="hidden" />
 
-        <p className={`text-[14px] text-center min-h-10 ${cameraError || message ? "text-glow-pink" : "text-text-muted"}`}>
+		<p className={`min-h-10 text-center text-[14px] ${cameraError || message ? "text-danger" : "text-text-muted"}`}>
           {message || t("scan.aim")}
         </p>
 
-        {cameraError && (
-          <button onClick={restartScanner} className="mt-1 text-sky text-[14px]">
-            {t("scan.retryCamera")}
+        {(cameraError || message) && (
+		  <button onClick={restartScanner} className="mt-1 text-[14px] font-semibold text-cat-300">
+            {cameraError ? t("scan.retryCamera") : t("scan.scanAnother")}
           </button>
         )}
 
@@ -826,7 +937,6 @@ export default function ScanQR({ user }: { user: User }) {
         <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImportFile} />
       </div>
       )}
-    </div>
+    </Screen>
   );
 }
-

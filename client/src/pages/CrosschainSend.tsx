@@ -1,18 +1,19 @@
 // Cross-chain send (Flow B outbound): send USDC from Arbitrum to another CCTP
-// chain. Quote -> review sheet -> prepare (server builds approve+bridgeUSDC) ->
-// passkey sign -> /pay/submit. The burn is accepted asynchronously; the relayer
+// chain. Quote -> prepare (server builds approve+bridgeUSDC) -> exact review
+// sheet -> passkey sign -> /pay/submit. The burn is accepted asynchronously; the relayer
 // verifies it and completes the mint on the destination. The progress screen
 // tracks the op live via GET /crosschain/status/:opId (burn -> attestation ->
 // mint -> arrived) instead of relying only on the push notification.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { humanizeError, notifyError } from "../lib/notify";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
-import { hexToBytes } from "../lib/hex";
+import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
@@ -25,7 +26,15 @@ import StageOverlay from "../components/StageOverlay";
 import ConfirmSheet from "../components/ConfirmSheet";
 import TxResult from "../components/TxResult";
 import NetworkChips from "../components/NetworkChips";
-import { Spinner } from "../components/icons";
+import CrosschainTimeline from "../components/CrosschainTimeline";
+import { FormPageSkeleton } from "../components/Skeleton";
+import SigningDetails from "../components/SigningDetails";
+import {
+	InsetPanel,
+	MoneyPanel,
+	SummaryRow,
+	TransactionActions,
+} from "../components/finance/FinancialPrimitives";
 
 type Destination = { chainId: number; name: string; domain: number };
 type Mode = "fast" | "standard";
@@ -33,11 +42,27 @@ type Stage = "idle" | "preparing" | "signing" | "sending";
 
 type Quote = {
 	amountIn: string;
-	parmeliaFee: string;
+	gatoPagoFee: string;
 	cctpFeeEstimated: string;
 	amountOutEstimated: string;
 	estimatedMinutes: number;
 	mode: Mode;
+};
+
+type PreparedCrosschain = PreparedUserOperation & {
+	opId?: string;
+	summary: {
+		token: "USDC";
+		amountIn: string;
+		amountOutEstimated: string;
+		gatoPagoFee: string;
+		cctpFeeEstimated: string;
+		destinationChainId: number;
+		destinationName: string;
+		recipient: string;
+		mode: Mode;
+		estimatedMinutes: number;
+	};
 };
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -57,17 +82,25 @@ type OpStatus = {
 };
 
 /** In-flight statuses keep polling; anything else is settled or manual-land. */
-const IN_FLIGHT_STATUSES = new Set(["quoted", "submitted", "waiting_attestation", "minting"]);
-const TRACK_INTERVAL_MS = 5000;
-const TRACK_MAX_POLLS = 60; // ~5 min; after that we stop and reassure
+const IN_FLIGHT_STATUSES = new Set(["quoted", "pending_signature", "submitted", "waiting_attestation", "minting", "recoverable"]);
+const TRACK_FAST_INTERVAL_MS = 5_000;
+const TRACK_SLOW_INTERVAL_MS = 15_000;
+const TRACK_FAST_WINDOW_MS = 2 * 60_000;
+const TRACK_MAX_DURATION_MS = 30 * 60_000;
 
 export default function CrosschainSend({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const [searchParams] = useSearchParams();
 	const { t } = useTranslation();
+	const recipientParam = searchParams.get("recipient") ?? "";
+	const requestedChainId = Number(searchParams.get("chainId"));
+	const cameFromQr = searchParams.get("source") === "qr";
 	const [enabled, setEnabled] = useState<boolean | null>(null);
 	const [destinations, setDestinations] = useState<Destination[]>([]);
 	const [destChainId, setDestChainId] = useState<number | null>(null);
-	const [recipient, setRecipient] = useState("");
+	const [recipient, setRecipient] = useState(
+		ADDRESS_RE.test(recipientParam) ? recipientParam : "",
+	);
 	const [amount, setAmount] = useState("");
 	const [mode, setMode] = useState<Mode>("fast");
 	const [balance, setBalance] = useState<string | undefined>(undefined);
@@ -76,6 +109,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 	const [quoteError, setQuoteError] = useState("");
 	const [stage, setStage] = useState<Stage>("idle");
 	const [confirming, setConfirming] = useState(false);
+	const [prepared, setPrepared] = useState<PreparedCrosschain | null>(null);
 	const [result, setResult] = useState<{ txHash: string | null; received: string; minutes: number; opId: string | null } | null>(null);
 	const [opStatus, setOpStatus] = useState<OpStatus | null>(null);
 	const [trackingEnded, setTrackingEnded] = useState(false);
@@ -105,14 +139,21 @@ export default function CrosschainSend({ user }: { user: User }) {
 				if (!res.ok) throw new Error();
 				const data = await res.json();
 				setEnabled(!!data.enabled);
-				setDestinations(data.destinations || []);
-				if (data.destinations?.length) setDestChainId(data.destinations[0].chainId);
+				const available = Array.isArray(data.destinations) ? data.destinations : [];
+				setDestinations(available);
+				if (available.length) {
+					setDestChainId(
+						available.some((destination: Destination) => destination.chainId === requestedChainId)
+							? requestedChainId
+							: available[0].chainId,
+					);
+				}
 			} catch {
 				setEnabled(false);
 			}
 		})();
 		void loadBalance(true);
-	}, [user, loadBalance]);
+	}, [user, loadBalance, requestedChainId]);
 
 	// Debounced quoting.
 	useEffect(() => {
@@ -146,16 +187,15 @@ export default function CrosschainSend({ user }: { user: User }) {
 	}, [amount, destChainId, mode, enabled, user, t]);
 
 	// Live tracking of the op after the burn confirms: burn -> attestation ->
-	// mint -> arrived. Stops on a settled status or after ~5 min (then the push
-	// notification takes over; the money is safe either way — see design I1).
+	// mint -> arrived. Poll quickly while Fast transfers normally advance, then
+	// reduce frequency and keep the timeline alive long enough for Standard CCTP.
 	useEffect(() => {
 		if (!result?.opId) return;
-		let polls = 0;
+		const startedAt = Date.now();
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		const pollStatus = async () => {
 			if (stopped) return;
-			polls++;
 			try {
 				const data = await apiFetch<OpStatus>(`/crosschain/status/${result.opId}`, { user });
 				if (stopped) return;
@@ -167,12 +207,16 @@ export default function CrosschainSend({ user }: { user: User }) {
 			} catch {
 				/* transient; keep polling until the cap */
 			}
-			if (polls >= TRACK_MAX_POLLS && !stopped) {
+			const elapsed = Date.now() - startedAt;
+			if (elapsed >= TRACK_MAX_DURATION_MS && !stopped) {
 				stopped = true;
 				setTrackingEnded(true);
 			}
 			if (!stopped) {
-				timer = setTimeout(() => void pollStatus(), TRACK_INTERVAL_MS);
+				const delay = elapsed < TRACK_FAST_WINDOW_MS
+					? TRACK_FAST_INTERVAL_MS
+					: TRACK_SLOW_INTERVAL_MS;
+				timer = setTimeout(() => void pollStatus(), delay);
 			}
 		};
 		void pollStatus();
@@ -185,7 +229,9 @@ export default function CrosschainSend({ user }: { user: User }) {
 	const recipientValid = ADDRESS_RE.test(recipient.trim());
 	const canSend = !!quote && recipientValid && stage === "idle" && !quoting;
 	const destName = destinations.find((d) => d.chainId === destChainId)?.name ?? "";
-	const totalFees = quote ? Number(quote.parmeliaFee) + Number(quote.cctpFeeEstimated) : 0;
+	const totalFees = prepared
+		? Number(prepared.summary.gatoPagoFee) + Number(prepared.summary.cctpFeeEstimated)
+		: 0;
 
 	const stageCopy: Record<Exclude<Stage, "idle">, string> = {
 		preparing: t("crosschain.stagePreparing"),
@@ -193,18 +239,32 @@ export default function CrosschainSend({ user }: { user: User }) {
 		sending: t("crosschain.stageSending"),
 	};
 
-	async function handleSend() {
+	async function prepareForReview() {
 		if (!quote || !destChainId || !recipientValid) return;
 		setStage("preparing");
 		try {
-			const prep = await apiFetch<{ userOpHash: string; opId?: string; credentialId: string | null; summary: { amountOutEstimated: string; estimatedMinutes: number } }>(
+			const prep = await apiFetch<PreparedCrosschain>(
 				"/crosschain/prepare",
 				{ user, body: { amount, destinationChainId: destChainId, recipient: recipient.trim(), mode } },
 			);
+			userOperationChallenge(prep, activeNetwork.chainId);
+			setPrepared(prep);
+			setConfirming(true);
+		} catch (err) {
+			notifyError(err, t("crosschain.sendError"));
+		} finally {
+			setStage("idle");
+		}
+	}
 
+	async function confirmAndSend() {
+		const prep = prepared;
+		if (!prep) return;
+		setConfirming(false);
+		try {
 			setStage("signing");
 			const assertion = await signWithPasskey(
-				hexToBytes(prep.userOpHash as `0x${string}`),
+				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
 			);
 
@@ -228,20 +288,14 @@ export default function CrosschainSend({ user }: { user: User }) {
 			notifyError(err, t("crosschain.sendError"));
 		} finally {
 			setStage("idle");
+			setPrepared(null);
 		}
-	}
-
-	// The gradient CTA only OPENS the review sheet; prepare+sign+submit run only
-	// after an explicit confirmation (cross-chain sends are irreversible).
-	function confirmAndSend() {
-		setConfirming(false);
-		void handleSend();
 	}
 
 	// ===== Success screen (with live tracking) =====
 	if (result) {
 		const arrived = opStatus?.status === "completed";
-		const opFailed = opStatus?.status === "failed";
+		const opFailed = ["failed", "expired", "needs_support"].includes(opStatus?.status ?? "");
 		const delayed = trackingEnded && !arrived && !opFailed;
 		const destExplorer =
 			arrived && opStatus?.destinationTxHash && DEST_EXPLORERS[opStatus.destinationChainId]
@@ -251,6 +305,8 @@ export default function CrosschainSend({ user }: { user: User }) {
 			? t("crosschain.trackArrived", { network: destName })
 			: opFailed
 				? t("crosschain.trackFailed")
+				: opStatus?.status === "recoverable"
+					? t("crosschain.trackRetrying")
 				: delayed
 					? t("crosschain.trackDelayed")
 					: opStatus?.status === "minting"
@@ -258,16 +314,23 @@ export default function CrosschainSend({ user }: { user: User }) {
 						: t("crosschain.trackConfirming");
 		return (
 			<Screen>
-				<BackHeader onClick={() => navigate("/")} className="" />
+				<BackHeader onClick={() => navigate("/", { replace: true })} className="" />
 				<TxResult
 					state={opFailed ? "failed" : arrived ? "success" : "progress"}
 					lead={arrived ? t("crosschain.trackArrivedLead") : t("crosschain.successLead", { network: destName })}
 					amount={formatNumber(result.received, 6)}
 					unit="USDC"
 					body={result.opId ? trackLabel : t("crosschain.successEta", { minutes: result.minutes })}
-					bodyClassName={`text-[13px] mb-2 ${arrived ? "text-glow-sky" : opFailed ? "text-glow-pink" : "text-text-faint"} ${!arrived && !delayed && !opFailed && result.opId ? "animate-pulse-soft" : ""}`}
+					bodyClassName={`text-[13px] mb-2 ${arrived ? "text-growth" : opFailed ? "text-danger" : "text-text-faint"}`}
 				>
-					<div className="flex flex-col items-center gap-1">
+					<div className="w-full mt-5 mb-5">
+						<CrosschainTimeline
+							status={opStatus?.status ?? null}
+							destinationName={destName}
+							delayed={delayed}
+						/>
+					</div>
+					<div className="flex flex-col items-center gap-2 mb-4">
 						{result.txHash && (
 							<a
 								href={getExplorerTxUrl(result.txHash)}
@@ -300,49 +363,38 @@ export default function CrosschainSend({ user }: { user: User }) {
 	return (
 		<Screen>
 			<StageOverlay label={stage === "idle" ? null : stageCopy[stage]} spinner={stage !== "signing"} />
-			{confirming && quote && (
+			{confirming && prepared && (
 				<ConfirmSheet
 					title={t("crosschain.confirmTitle")}
 					amountLabel={t("crosschain.youSend")}
-					amount={formatNumber(quote.amountIn, 6)}
+					amount={formatNumber(prepared.summary.amountIn, 6)}
 					unit="USDC"
 					warning={t("crosschain.confirmWarning")}
 					confirmLabel={t("crosschain.confirmAndSend")}
-					onConfirm={confirmAndSend}
-					onCancel={() => setConfirming(false)}
+					onConfirm={() => void confirmAndSend()}
+					onCancel={() => {
+						setConfirming(false);
+						setPrepared(null);
+					}}
 				>
-					<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
-						<span className="text-[12px] text-text-muted block mb-1">{t("crosschain.toNetwork")}</span>
-						<span className="text-[15px] text-text">{destName}</span>
-					</div>
-					<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3">
-						<span className="text-[12px] text-text-muted block mb-1">{t("crosschain.recipient")}</span>
-						<span className="text-[13px] text-text font-mono break-all">{recipient.trim()}</span>
-					</div>
-					<div className="bg-bg border border-border rounded-[14px] px-4 py-3 mb-3 flex flex-col gap-1.5">
-						<div className="flex items-center justify-between text-[13px]">
-							<span className="text-text-muted">{t("crosschain.totalFees")}</span>
-							<span className="text-text tabular">
-								{totalFees > 0 ? `${formatNumber(totalFees, 6)} USDC` : t("crosschain.free")}
-							</span>
-						</div>
-						<div className="flex items-center justify-between text-[13px]">
-							<span className="text-text-muted">{t("crosschain.youReceiveApprox")}</span>
-							<span className="text-text tabular">{formatNumber(quote.amountOutEstimated, 6)} USDC</span>
-						</div>
-						<div className="flex items-center justify-between text-[13px]">
-							<span className="text-text-muted">{t("crosschain.estTime")}</span>
-							<span className="text-text">{t("crosschain.minutes", { minutes: quote.estimatedMinutes })}</span>
-						</div>
-					</div>
+					<p className="mb-3 text-center text-[11px] uppercase tracking-wider text-info">
+						{t("crosschain.signingPreview")}
+					</p>
+					<InsetPanel className="mb-3">
+						<SummaryRow label={t("crosschain.toNetwork")} value={prepared.summary.destinationName} />
+						<SummaryRow label={t("crosschain.recipient")} value={prepared.summary.recipient} valueClassName="font-mono break-all" />
+						<SummaryRow label={t("crosschain.actionsToSign")} value={t("crosschain.approveAndBridge")} />
+						<SummaryRow label={t("crosschain.totalFees")} value={totalFees > 0 ? `${formatNumber(totalFees, 6)} USDC` : t("crosschain.free")} />
+						<SummaryRow label={t("crosschain.youReceiveApprox")} value={`${formatNumber(prepared.summary.amountOutEstimated, 6)} USDC`} />
+						<SummaryRow label={t("crosschain.estTime")} value={t("crosschain.minutes", { minutes: prepared.summary.estimatedMinutes })} />
+					</InsetPanel>
+					<SigningDetails payload={prepared.signingPayload} networkName={activeNetwork.name} />
 				</ConfirmSheet>
 			)}
-			<BackHeader onClick={() => navigate("/")} title={t("crosschain.title")} />
+			<BackHeader title={t("crosschain.title")} />
 
 			{enabled === null ? (
-				<div className="flex-1 flex items-center justify-center">
-					<Spinner />
-				</div>
+				<FormPageSkeleton />
 			) : !enabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
@@ -362,7 +414,14 @@ export default function CrosschainSend({ user }: { user: User }) {
 					/>
 
 					{/* Recipient */}
-					<p className="text-[13px] text-text-muted px-1 mb-2">{t("crosschain.recipient")}</p>
+					<div className="flex items-center justify-between gap-3 px-1 mb-2">
+						<p className="text-[13px] text-text-muted">{t("crosschain.recipient")}</p>
+						{cameFromQr ? (
+							<span className="meli-chip text-text-faint">
+								{t("crosschain.fromQr")}
+							</span>
+						) : null}
+					</div>
 					<input
 						type="text"
 						name="recipient"
@@ -373,22 +432,22 @@ export default function CrosschainSend({ user }: { user: User }) {
 						onChange={(e) => setRecipient(e.target.value)}
 						spellCheck={false}
 						autoCapitalize="off"
-						className="w-full bg-surface border border-border rounded-[14px] h-12 px-4 text-[14px] text-text placeholder:text-text-faint font-mono focus:border-border-strong transition-colors mb-1"
+						className="meli-field mb-1 h-12 font-mono text-[14px] placeholder:text-text-faint"
 					/>
 					{recipient.length > 0 && !recipientValid && (
-						<p role="status" aria-live="polite" className="text-glow-pink text-[12px] px-1 mb-3">
+						<p role="status" aria-live="polite" className="mb-3 px-1 text-[12px] text-danger">
 							{t("crosschain.invalidAddress")}
 						</p>
 					)}
 
 					{/* Amount */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mt-4 mb-5 shadow-e1">
+					<MoneyPanel className="mt-4 mb-5">
 						<div className="flex items-center justify-between mb-3">
 							<span className="text-[13px] text-text-muted">{t("crosschain.youSend")}</span>
 							{balance !== undefined && (
 								<button
 									onClick={() => setAmount(balance)}
-									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
+									className="text-[12px] text-text-faint"
 								>
 									{t("crosschain.balanceUseAll", { balance: formatAmount(balance, "USDC") })}
 								</button>
@@ -405,7 +464,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 							/>
 							<span className="text-[15px] text-text-muted font-medium shrink-0">USDC</span>
 						</div>
-					</div>
+					</MoneyPanel>
 
 					{/* Speed mode */}
 					<div className="seg-track seg-track-block mb-2">
@@ -431,7 +490,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 					</p>
 
 					{quoteError && (
-						<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+						<p role="status" aria-live="polite" className="mb-4 text-center text-[13px] text-danger">
 							{quoteError}
 						</p>
 					)}
@@ -442,44 +501,22 @@ export default function CrosschainSend({ user }: { user: User }) {
 					)}
 
 					{quote && (
-						<div className="bg-surface border border-border rounded-[18px] px-5 py-4 mb-5">
-							<div className="flex items-center justify-between text-[14px] mb-2">
-								<span className="text-text-muted">{t("crosschain.youReceiveApprox")}</span>
-								<span className="text-text font-medium tabular">
-									{formatNumber(quote.amountOutEstimated, 6)} USDC
-								</span>
-							</div>
-							{Number(quote.parmeliaFee) > 0 && (
-								<div className="flex items-center justify-between text-[13px] mb-1.5">
-									<span className="text-text-muted">{t("crosschain.parmeliaFee")}</span>
-									<span className="text-text tabular">{quote.parmeliaFee} USDC</span>
-								</div>
+						<InsetPanel className="mb-5">
+							<SummaryRow label={t("crosschain.youReceiveApprox")} value={`${formatNumber(quote.amountOutEstimated, 6)} USDC`} valueClassName="font-medium" />
+							{Number(quote.gatoPagoFee) > 0 && (
+								<SummaryRow label={t("crosschain.gatoPagoFee")} value={`${quote.gatoPagoFee} USDC`} />
 							)}
-							<div className="flex items-center justify-between text-[13px] mb-1.5">
-								<span className="text-text-muted">{t("crosschain.bridgeCost")}</span>
-								<span className="text-text tabular">
-									{Number(quote.cctpFeeEstimated) > 0
-										? `${formatNumber(quote.cctpFeeEstimated, 6)} USDC`
-										: t("crosschain.free")}
-								</span>
-							</div>
-							<div className="flex items-center justify-between text-[13px]">
-								<span className="text-text-muted">{t("crosschain.networkFee")}</span>
-								<span className="text-glow-sky">{t("crosschain.coveredByParmelia")}</span>
-							</div>
-							<div className="flex items-center justify-between text-[13px] mt-1.5">
-								<span className="text-text-muted">{t("crosschain.estTime")}</span>
-								<span className="text-text">{t("crosschain.minutes", { minutes: quote.estimatedMinutes })}</span>
-							</div>
-						</div>
+							<SummaryRow label={t("crosschain.bridgeCost")} value={Number(quote.cctpFeeEstimated) > 0 ? `${formatNumber(quote.cctpFeeEstimated, 6)} USDC` : t("crosschain.free")} />
+							<SummaryRow label={t("crosschain.networkFee")} value={t("crosschain.coveredByGatoPago")} valueClassName="text-growth" />
+							<SummaryRow label={t("crosschain.estTime")} value={t("crosschain.minutes", { minutes: quote.estimatedMinutes })} />
+						</InsetPanel>
 					)}
 
-					<div className="flex-1" />
-
-					<button onClick={() => setConfirming(true)} disabled={!canSend} className="btn btn-gradient btn-block">
-						{t("crosschain.send")}
-					</button>
-					<p className="text-[12px] text-text-faint text-center mt-3 leading-relaxed">{t("crosschain.confirmHint")}</p>
+					<TransactionActions hint={t("crosschain.confirmHint")}>
+						<button onClick={() => void prepareForReview()} disabled={!canSend} className="btn btn-primary btn-block">
+							{t("crosschain.send")}
+						</button>
+					</TransactionActions>
 				</>
 			)}
 		</Screen>

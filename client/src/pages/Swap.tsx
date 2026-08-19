@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import useSWR from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
@@ -6,7 +7,7 @@ import { humanizeError, notifyError } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
-import { hexToBytes } from "../lib/hex";
+import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
@@ -18,6 +19,16 @@ import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import TxResult from "../components/TxResult";
+import ConfirmSheet from "../components/ConfirmSheet";
+import SigningDetails from "../components/SigningDetails";
+import TokenSelect from "../components/TokenSelect";
+import type { HomeReadModel } from "../lib/homeData";
+import {
+	InsetPanel,
+	MoneyPanel,
+	SummaryRow,
+	TransactionActions,
+} from "../components/finance/FinancialPrimitives";
 
 type SwapToken = { symbol: string; name: string; decimals: number; isNative: boolean };
 
@@ -28,14 +39,32 @@ type Quote = {
 	amountIn: string;
 	amountOutEstimated: string;
 	minimumAmountOut: string;
-	parmeliaFeeBps: number;
-	parmeliaFee: string;
+	gatoPagoFeeBps: number;
+	gatoPagoFee: string;
 	route: string;
 	slippageBps: number;
 	expiresAt: string;
+	isMax: boolean;
 };
 
 type SwapStage = "idle" | "preparing" | "signing" | "sending";
+
+type PreparedSwap = PreparedUserOperation & {
+	summary: {
+		tokenIn: string;
+		tokenOut: string;
+		amountIn: string;
+		minimumAmountOut: string;
+		route: string;
+		validUntil: string;
+	};
+};
+
+function maxAmountForInput(value: string): string {
+	const normalized = value.trim();
+	if (!normalized.includes(".")) return normalized;
+	return normalized.replace(/0+$/, "").replace(/\.$/, "") || "0";
+}
 
 export default function Swap({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
@@ -46,11 +75,13 @@ export default function Swap({ user }: { user: User }) {
 	const [tokenIn, setTokenIn] = useState("USDC");
 	const [tokenOut, setTokenOut] = useState("ETH");
 	const [amount, setAmount] = useState("");
+	const [useMax, setUseMax] = useState(false);
 	const [quote, setQuote] = useState<Quote | null>(null);
 	const [quoting, setQuoting] = useState(false);
 	const [quoteError, setQuoteError] = useState("");
 	const [stage, setStage] = useState<SwapStage>("idle");
 	const [showDetails, setShowDetails] = useState(false);
+	const [prepared, setPrepared] = useState<PreparedSwap | null>(null);
 	const [result, setResult] = useState<{
 		txHash: string | null;
 		received: string;
@@ -58,6 +89,22 @@ export default function Swap({ user }: { user: User }) {
 		userOpHash: string;
 	} | null>(null);
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const tokenInRef = useRef(tokenIn);
+	const balanceIn = balances[tokenIn];
+	const { data: homeModel } = useSWR<HomeReadModel>(`${SERVER_URL}/home`, null, {
+		revalidateOnMount: false,
+	});
+
+	useEffect(() => {
+		tokenInRef.current = tokenIn;
+	}, [tokenIn]);
+
+	// The protected app shell already loaded /home. Reuse those evidenced
+	// balances immediately, then let the dedicated live refresh reconcile them.
+	useEffect(() => {
+		if (!homeModel?.balance.tokens) return;
+		setBalances((current) => ({ ...homeModel.balance.tokens, ...current }));
+	}, [homeModel?.balance.tokens]);
 
 	// When the submit came back in flight (202/duplicate), keep polling on the
 	// success screen and flip the copy when the swap settles.
@@ -66,17 +113,20 @@ export default function Swap({ user }: { user: User }) {
 		result?.pending ? result.userOpHash : null,
 	);
 
-	const loadBalances = useCallback(async (fresh = false) => {
+	const loadBalances = useCallback(async (fresh = false): Promise<Record<string, string> | null> => {
 		try {
 			const res = await fetchWithAuth(
 				user,
 				`${SERVER_URL}/user/balance${fresh ? "?fresh=1" : ""}`,
 			);
-			if (!res.ok) return;
+			if (!res.ok) return null;
 			const data = await res.json();
-			setBalances(data.tokens || { ETH: data.eth, USDC: data.usdc });
+			const nextBalances = (data.tokens || { ETH: data.eth, USDC: data.usdc }) as Record<string, string>;
+			setBalances(nextBalances);
+			return nextBalances;
 		} catch {
 			/* non-blocking */
+			return null;
 		}
 	}, [user]);
 
@@ -108,46 +158,92 @@ export default function Swap({ user }: { user: User }) {
 		setQuoteError("");
 		if (debounceRef.current) clearTimeout(debounceRef.current);
 		const value = Number(amount);
-		if (!amount || !Number.isFinite(value) || value <= 0 || tokenIn === tokenOut) return;
+		if (
+			(!useMax && (!amount || !Number.isFinite(value) || value <= 0)) ||
+			(useMax && (!balanceIn || Number(balanceIn) <= 0)) ||
+			tokenIn === tokenOut
+		) return;
 
 		debounceRef.current = setTimeout(async () => {
 			setQuoting(true);
 			try {
 				const data = await apiFetch<Quote>("/swap/quote", {
 					user,
-					body: { tokenIn, tokenOut, amountIn: amount },
+					// Keep a decimal amount for compatibility with older Workers. The
+					// explicit flag lets current Workers resolve the live onchain max.
+					body: { tokenIn, tokenOut, amountIn: amount, useMax },
 				});
+				if (data.isMax) {
+					const resolved = maxAmountForInput(data.amountIn);
+					setAmount(resolved);
+					setBalances((current) => ({ ...current, [data.tokenIn]: data.amountIn }));
+				}
 				setQuote(data);
 			} catch (err) {
 				setQuoteError(humanizeError(err, t("swap.quoteError")).message);
 			} finally {
 				setQuoting(false);
 			}
-		}, 450);
+		}, 250);
 
 		return () => {
 			if (debounceRef.current) clearTimeout(debounceRef.current);
 		};
-	}, [amount, tokenIn, tokenOut, user, t]);
+	}, [amount, balanceIn, tokenIn, tokenOut, useMax, user, t]);
 
 	function flip() {
 		setTokenIn(tokenOut);
 		setTokenOut(tokenIn);
 		setQuote(null);
+		if (useMax) {
+			setAmount("");
+			setUseMax(false);
+		}
 	}
 
-	async function handleSwap() {
+	function handleUseAllBalance() {
+		const requestedToken = tokenIn;
+		const currentBalance = balanceIn;
+		if (!currentBalance || Number(currentBalance) <= 0) return;
+		setUseMax(true);
+		setAmount(maxAmountForInput(currentBalance));
+		// The quote endpoint resolves useMax from the live on-chain balance. Refresh
+		// this display in parallel instead of making the control feel unresponsive.
+		void loadBalances(true).then((latestBalances) => {
+			if (tokenInRef.current !== requestedToken) return;
+			const latestBalance = latestBalances?.[requestedToken];
+			if (!latestBalance || Number(latestBalance) <= 0) return;
+			setUseMax(true);
+			setAmount(maxAmountForInput(latestBalance));
+		});
+	}
+
+	async function prepareForReview() {
 		if (!quote) return;
 		setStage("preparing");
 		try {
-			const prep = await apiFetch<{ userOpHash: string; credentialId: string | null }>(
+			const prep = await apiFetch<PreparedSwap>(
 				"/swap/prepare",
 				{ user, body: { quoteId: quote.quoteId } },
 			);
+			userOperationChallenge(prep, activeNetwork.chainId);
+			setPrepared(prep);
+		} catch (err) {
+			notifyError(err, t("swap.swapError"));
+		} finally {
+			setStage("idle");
+		}
+	}
 
+	async function confirmAndSwap() {
+		const prep = prepared;
+		const reviewedQuote = quote;
+		if (!prep || !reviewedQuote) return;
+		setPrepared(null);
+		try {
 			setStage("signing");
 			const assertion = await signWithPasskey(
-				hexToBytes(prep.userOpHash as `0x${string}`),
+				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
 			);
 
@@ -157,12 +253,13 @@ export default function Swap({ user }: { user: User }) {
 			track("swap_completed", { from: tokenIn, to: tokenOut });
 			setResult({
 				txHash: submit.txHash,
-				received: quote.amountOutEstimated,
+				received: reviewedQuote.amountOutEstimated,
 				pending: !submit.confirmed,
 				userOpHash: prep.userOpHash,
 			});
 			setQuote(null);
 			setAmount("");
+			setUseMax(false);
 			if (submit.confirmed) void loadBalances(true);
 		} catch (err) {
 			notifyError(err, t("swap.swapError"));
@@ -171,7 +268,6 @@ export default function Swap({ user }: { user: User }) {
 		}
 	}
 
-	const balanceIn = balances[tokenIn];
 	const tokenOptions = tokens.map((t) => t.symbol);
 	const stageCopy: Record<Exclude<SwapStage, "idle">, string> = {
 		preparing: t("swap.stagePreparing"),
@@ -189,7 +285,7 @@ export default function Swap({ user }: { user: User }) {
 		const effectiveTx = result.txHash ?? poll.txHash;
 		return (
 			<Screen>
-				<BackHeader onClick={() => navigate("/")} className="" />
+				<BackHeader onClick={() => navigate("/", { replace: true })} className="" />
 				<TxResult
 					state={swapFailed ? "failed" : settled ? "success" : "pending"}
 					lead={swapFailed ? t("swap.failedLead") : settled ? t("swap.successLead") : t("swap.pendingLead")}
@@ -218,7 +314,25 @@ export default function Swap({ user }: { user: User }) {
 	return (
 		<Screen>
 			<StageOverlay label={stage === "idle" ? null : stageCopy[stage]} spinner={stage !== "signing"} />
-			<BackHeader onClick={() => navigate("/")} title={t("swap.title")} />
+			{prepared && quote ? (
+				<ConfirmSheet
+					title={t("swap.confirmTitle")}
+					amountLabel={quote.isMax ? t("swap.allBalance") : t("swap.youSwap")}
+					amount={formatNumber(prepared.summary.amountIn, prepared.summary.tokenIn === "USDC" ? 2 : 6)}
+					unit={prepared.summary.tokenIn}
+					warning={t("swap.confirmWarning")}
+					confirmLabel={t("swap.confirmAction")}
+					onConfirm={() => void confirmAndSwap()}
+					onCancel={() => setPrepared(null)}
+				>
+					<InsetPanel className="mb-3">
+						<SummaryRow label={t("swap.youReceiveEst")} value={`${formatNumber(quote.amountOutEstimated, 6)} ${quote.tokenOut}`} />
+						<SummaryRow label={t("swap.minReceived")} value={`${formatNumber(prepared.summary.minimumAmountOut, 6)} ${prepared.summary.tokenOut}`} />
+					</InsetPanel>
+					<SigningDetails payload={prepared.signingPayload} networkName={activeNetwork.name} />
+				</ConfirmSheet>
+			) : null}
+			<BackHeader title={t("swap.title")} />
 
 			{!swapsEnabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
@@ -231,13 +345,13 @@ export default function Swap({ user }: { user: User }) {
 			) : (
 				<>
 					{/* From */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mb-2 shadow-e1">
+					<MoneyPanel className="mb-2">
 						<div className="flex items-center justify-between mb-3">
 							<span className="text-[13px] text-text-muted">{t("swap.youSwap")}</span>
 							{balanceIn !== undefined && (
 								<button
-									onClick={() => setAmount(balanceIn)}
-									className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
+									onClick={handleUseAllBalance}
+									className="text-[12px] text-text-faint"
 								>
 									{t("swap.balanceUseAll", { balance: formatAmount(balanceIn, tokenIn) })}
 								</button>
@@ -249,34 +363,36 @@ export default function Swap({ user }: { user: User }) {
 								aria-label={t("swap.youSwap")}
 								placeholder="0"
 								value={amount}
-								onChange={setAmount}
+								onChange={(value) => {
+									setAmount(value);
+									setUseMax(false);
+								}}
 								className="flex-1 min-w-0 bg-transparent font-display text-[34px] leading-none text-text placeholder:text-text-faint tabular"
 							/>
-							<div className="seg-track shrink-0">
-								{tokenOptions.map((s) => (
-									<button
-										key={s}
-										onClick={() => {
-											if (s === tokenOut) flip();
-											else setTokenIn(s);
-										}}
-										aria-pressed={tokenIn === s}
-										data-active={tokenIn === s}
-										className="seg-item"
-									>
-										{s}
-									</button>
-								))}
-							</div>
+							<TokenSelect
+								value={tokenIn}
+								options={tokenOptions}
+								balances={balances}
+								onChange={(symbol) => {
+									if (symbol === tokenOut) flip();
+									else {
+										setTokenIn(symbol);
+										if (useMax) {
+											setAmount("");
+											setUseMax(false);
+										}
+									}
+								}}
+							/>
 						</div>
-					</div>
+					</MoneyPanel>
 
 					{/* Flip */}
 					<div className="flex justify-center -my-1 relative z-1">
 						<button
 							onClick={flip}
 							aria-label={t("swap.flip")}
-							className="w-10 h-10 rounded-full bg-surface-2 border border-border-strong flex items-center justify-center text-text-muted hover:text-text transition-colors"
+							className="meli-square-action h-10 w-10 bg-surface text-text"
 						>
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 								<path d="m7 4 0 16" />
@@ -288,10 +404,10 @@ export default function Swap({ user }: { user: User }) {
 					</div>
 
 					{/* To */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mt-2 mb-5 shadow-e1">
+					<MoneyPanel className="mt-2 mb-5">
 						<div className="flex items-center justify-between mb-3">
 							<span className="text-[13px] text-text-muted">{t("swap.youReceiveEst")}</span>
-							{quoting && <span className="w-2 h-2 rounded-full bg-sky animate-pulse" />}
+							{quoting && <span className="h-2 w-2 rounded-[2px] bg-cat-500 animate-pulse" />}
 						</div>
 						<div className="flex items-center gap-3">
 							<p className="flex-1 min-w-0 font-display text-[34px] leading-none tabular truncate text-text">
@@ -301,79 +417,59 @@ export default function Swap({ user }: { user: User }) {
 										? "…"
 										: "0"}
 							</p>
-							<div className="seg-track shrink-0">
-								{tokenOptions.map((s) => (
-									<button
-										key={s}
-										onClick={() => {
-											if (s === tokenIn) flip();
-											else setTokenOut(s);
-										}}
-										aria-pressed={tokenOut === s}
-										data-active={tokenOut === s}
-										className="seg-item"
-									>
-										{s}
-									</button>
-								))}
-							</div>
+							<TokenSelect
+								value={tokenOut}
+								options={tokenOptions}
+								balances={balances}
+								onChange={(symbol) => {
+									if (symbol === tokenIn) flip();
+									else setTokenOut(symbol);
+								}}
+							/>
 						</div>
-					</div>
+					</MoneyPanel>
 
 					{quoteError && (
-						<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+						<p role="status" aria-live="polite" className="mb-4 text-center text-[13px] text-danger">
 							{quoteError}
 						</p>
 					)}
 
 					{quote && (
-						<div className="bg-surface border border-border rounded-[18px] px-5 py-4 mb-5">
-							<div className="flex items-center justify-between text-[13px] mb-1.5">
-								<span className="text-text-muted">{t("swap.minReceived")}</span>
-								<span className="text-text tabular">
-									{formatNumber(quote.minimumAmountOut, 6)} {quote.tokenOut}
-								</span>
-							</div>
-							<div className="flex items-center justify-between text-[13px]">
-								<span className="text-text-muted">{t("swap.networkFee")}</span>
-								<span className="text-glow-sky">{t("swap.coveredByParmelia")}</span>
-							</div>
-							{quote.parmeliaFeeBps > 0 && (
-								<div className="flex items-center justify-between text-[13px] mt-1.5">
-									<span className="text-text-muted">{t("swap.parmeliaService", { pct: (quote.parmeliaFeeBps / 100).toFixed(2) })}</span>
-									<span className="text-text tabular">
-										{formatNumber(quote.parmeliaFee, 6)} {quote.tokenOut}
-									</span>
-								</div>
+						<InsetPanel className="mb-5">
+							<SummaryRow label={t("swap.minReceived")} value={`${formatNumber(quote.minimumAmountOut, 6)} ${quote.tokenOut}`} />
+							<SummaryRow label={t("swap.networkFee")} value={t("swap.coveredByGatoPago")} valueClassName="text-growth" />
+							{quote.gatoPagoFeeBps > 0 && (
+								<SummaryRow
+									label={t("swap.gatoPagoService", { pct: (quote.gatoPagoFeeBps / 100).toFixed(2) })}
+									value={`${formatNumber(quote.gatoPagoFee, 6)} ${quote.tokenOut}`}
+								/>
 							)}
 							<button
 								onClick={() => setShowDetails(!showDetails)}
-								className="text-[12px] text-text-faint hover:text-text-muted transition-colors mt-2.5"
+								className="mt-2.5 text-[12px] text-text-faint"
 							>
 								{showDetails ? t("swap.hideDetails") : t("swap.showDetails")}
 							</button>
 							{showDetails && (
-								<div className="mt-2 pt-2 border-t border-border text-[12px] text-text-faint leading-relaxed">
+								<div className="mt-2 pt-2 text-[12px] text-text-faint leading-relaxed">
 									<p>{t("swap.route", { route: quote.route })}</p>
 									<p>{t("swap.priceTolerance", { pct: (quote.slippageBps / 100).toFixed(2) })}</p>
 									<p>{t("swap.network", { network: activeNetwork.name })}</p>
 								</div>
 							)}
-						</div>
+						</InsetPanel>
 					)}
 
-					<div className="flex-1" />
-
-					<button
-						onClick={handleSwap}
-						disabled={!quote || quoting || stage !== "idle"}
-						className="btn btn-gradient btn-block"
-					>
-						{quoting ? t("swap.findingRoute") : t("swap.swap")}
-					</button>
-					<p className="text-[12px] text-text-faint text-center mt-3">
-						{t("swap.confirmHint")}
-					</p>
+					<TransactionActions hint={t("swap.confirmHint")}>
+						<button
+							onClick={() => void prepareForReview()}
+							disabled={!quote || quoting || stage !== "idle"}
+							className="btn btn-primary btn-block"
+						>
+							{quoting ? t("swap.findingRoute") : t("swap.swap")}
+						</button>
+					</TransactionActions>
 				</>
 			)}
 		</Screen>

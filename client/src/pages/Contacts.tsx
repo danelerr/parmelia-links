@@ -1,4 +1,4 @@
-// Contacts ("amigos"): save Parmelia users, pay them in one tap, invite new
+// Contacts ("amigos"): save GatoPago users, pay them in one tap, invite new
 // people with your link and see how many joined.
 
 import { useCallback, useEffect, useState } from "react";
@@ -12,8 +12,7 @@ import LinkButton from "../components/LinkButton";
 import BackHeader from "../components/BackHeader";
 import { RowSkeletonList } from "../components/Skeleton";
 import { useTranslation } from "react-i18next";
-
-const APP_URL = import.meta.env.VITE_APP_URL || "https://parmelia.me";
+import { APP_URL } from "../lib/brand";
 
 type Contact = {
 	id: string;
@@ -108,7 +107,7 @@ export default function Contacts({ user }: { user: User }) {
 		const text = t("contacts.inviteText");
 		if (navigator.share) {
 			try {
-				await navigator.share({ title: "Parmelia", text, url: inviteUrl });
+				await navigator.share({ title: "GatoPago", text, url: inviteUrl });
 				return;
 			} catch {
 				/* cancelled */
@@ -120,15 +119,12 @@ export default function Contacts({ user }: { user: User }) {
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] w-full max-w-[460px] mx-auto animate-fade-up">
-			<BackHeader to="/settings" title={t("contacts.title")} />
+		<div className="app-frame relative flex min-h-dvh w-full max-w-[480px] flex-col px-5 pt-[calc(env(safe-area-inset-top)_+_1.5rem)] pb-[calc(env(safe-area-inset-bottom)_+_3rem)] mx-auto animate-fade-up">
+			<BackHeader title={t("contacts.title")} />
 
 			{/* Invite card */}
-			<div className="relative overflow-hidden bg-surface border border-border rounded-[20px] p-5 mb-6 shadow-e1">
-				<div
-					className="pointer-events-none absolute -top-16 -right-12 w-44 h-44 rounded-full opacity-[0.16] blur-2xl"
-					style={{ background: "radial-gradient(circle,#f4a9cf,transparent 70%)" }}
-				/>
+			<div className="meli-paper-card meli-paper-card--strong relative mb-6 overflow-hidden p-5">
+				<div className="pointer-events-none absolute right-5 top-0 h-1 w-12 bg-cat-500 shadow-[8px_4px_0_var(--color-cat-700)]" />
 				<div className="flex items-center justify-between gap-3 relative z-1">
 					<div className="min-w-0 flex-1">
 						<p className="font-display text-[17px] mb-1">{t("contacts.inviteTitle")}</p>
@@ -150,10 +146,10 @@ export default function Contacts({ user }: { user: User }) {
 							navigator.clipboard.writeText(referralCode);
 							notifySuccess(t("contacts.codeCopied"));
 						}}
-						className="mt-3.5 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-bg/60 border border-border hover:border-border-strong transition-colors relative z-1"
+						className="relative z-1 mt-3.5 flex items-center gap-2.5 border border-border bg-surface-2 px-3.5 py-2"
 					>
 						<span className="text-[12px] text-text-faint">{t("contacts.yourCode")}</span>
-						<span className="font-mono text-[14px] tracking-[0.2em] text-glow-gold">
+						<span className="font-mono text-[14px] tracking-[0.2em] text-pending">
 							{referralCode}
 						</span>
 						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint">
@@ -166,7 +162,7 @@ export default function Contacts({ user }: { user: User }) {
 
 			{/* Add contact */}
 			<div className="flex gap-2 mb-6">
-				<div className="flex-1 min-w-0 flex items-center gap-1.5 bg-surface border border-border rounded-full h-12 px-4 focus-within:border-border-strong transition-colors">
+				<div className="min-w-0 flex h-12 flex-1 items-center gap-1.5 border-2 border-text bg-surface px-4">
 					<span className="text-text-faint text-[14px] shrink-0">@</span>
 					<input
 						type="text"
@@ -201,17 +197,17 @@ export default function Contacts({ user }: { user: User }) {
 					</p>
 				</div>
 			) : (
-				<div className="flex flex-col gap-1">
+				<div className="meli-paper-card flex flex-col">
 					{contacts.map((ct) => (
 						<div
 							key={ct.id}
-							className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors"
+							className="flex items-center gap-3.5 border-b border-border px-3 py-3 last:border-b-0"
 						>
 							<LinkButton
 								to={`/${ct.username}`}
 								className="flex items-center gap-3.5 flex-1 min-w-0 text-left"
 							>
-								<span className="w-10 h-10 rounded-full bg-pink/15 text-glow-pink font-display flex items-center justify-center uppercase shrink-0">
+								<span className="flex h-10 w-10 shrink-0 items-center justify-center border border-text bg-cat-500 font-display uppercase text-on-cat">
 									{(ct.alias || ct.username)[0]}
 								</span>
 								<span className="min-w-0">
@@ -226,13 +222,13 @@ export default function Contacts({ user }: { user: User }) {
 								<div className="flex items-center gap-1 shrink-0">
 									<button
 										onClick={() => handleDelete(ct.id)}
-										className="text-[13px] text-danger font-medium px-2.5 py-1.5 rounded-full hover:bg-danger/10 transition-colors"
+										className="rounded-full bg-danger/10 px-2.5 py-1.5 text-[13px] font-medium text-danger"
 									>
 										{t("contacts.deleteConfirm")}
 									</button>
 									<button
 										onClick={() => setConfirmDeleteId(null)}
-										className="text-[13px] text-text-muted px-2 py-1.5 rounded-full hover:bg-surface-2 transition-colors"
+										className="rounded-full bg-surface-2 px-2 py-1.5 text-[13px] text-text-muted"
 									>
 										{t("common.cancel")}
 									</button>
@@ -241,14 +237,14 @@ export default function Contacts({ user }: { user: User }) {
 								<>
 									<LinkButton
 										to={`/${ct.username}`}
-										className="text-[13px] text-glow-sky shrink-0 px-2 py-1.5"
+									className="shrink-0 px-2 py-1.5 text-[13px] font-semibold text-cat-300"
 									>
 										{t("contacts.pay")}
 									</LinkButton>
 									<button
 										onClick={() => setConfirmDeleteId(ct.id)}
 										aria-label={t("contacts.deleteAria", { username: ct.username })}
-										className="w-8 h-8 rounded-full flex items-center justify-center text-text-faint hover:text-glow-pink hover:bg-glow-pink/10 transition-colors shrink-0"
+										className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-faint"
 									>
 										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											<path d="M3 6h18" />

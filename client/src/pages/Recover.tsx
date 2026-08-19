@@ -26,9 +26,15 @@ import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import TxResult from "../components/TxResult";
 import LinkButton from "../components/LinkButton";
-import { Spinner } from "../components/icons";
+import { FormPageSkeleton } from "../components/Skeleton";
+import {
+	readMigratedStorage,
+	removeMigratedStorage,
+	writeStorage,
+} from "../lib/storageMigration";
 
-const POINTER_KEY = "parmelia:recovery-credential:v1";
+const POINTER_KEY = "gatopago:recovery-credential:v1";
+const LEGACY_POINTER_KEY = "parmelia:recovery-credential:v1";
 
 type RecoveryPointer = {
 	credentialId: string;
@@ -39,7 +45,7 @@ type RecoveryPointer = {
 
 function readPointer(): RecoveryPointer | null {
 	try {
-		const raw = localStorage.getItem(POINTER_KEY);
+		const raw = readMigratedStorage(POINTER_KEY, LEGACY_POINTER_KEY);
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as RecoveryPointer;
 		if (!parsed?.credentialId || !parsed?.qx || !parsed?.qy) return null;
@@ -51,7 +57,7 @@ function readPointer(): RecoveryPointer | null {
 
 function clearPointer() {
 	try {
-		localStorage.removeItem(POINTER_KEY);
+		removeMigratedStorage(POINTER_KEY, LEGACY_POINTER_KEY);
 	} catch {
 		/* storage unavailable */
 	}
@@ -168,7 +174,7 @@ export default function Recover({ user }: { user: User }) {
 			});
 			await waitForAccountOperation(user, operation);
 			// Only NOW is this credential the proposed one - promote it.
-			localStorage.setItem(
+			writeStorage(
 				POINTER_KEY,
 				JSON.stringify({ ...created, proposedAt: new Date().toISOString() }),
 			);
@@ -202,6 +208,7 @@ export default function Recover({ user }: { user: User }) {
 			// The Home "new device?" banner earns a fresh start after a recovery.
 			if (user.uid) {
 				try {
+					localStorage.removeItem(`gatopago:recovery-banner-dismissed:${user.uid}`);
 					localStorage.removeItem(`parmelia:recovery-banner-dismissed:${user.uid}`);
 				} catch {
 					/* storage unavailable */
@@ -289,10 +296,8 @@ export default function Recover({ user }: { user: User }) {
 	if (phase === "loading") {
 		return (
 			<Screen>
-				<BackHeader to="/" />
-				<div className="flex-1 flex items-center justify-center">
-					<Spinner />
-				</div>
+				<BackHeader to="/" replace />
+				<FormPageSkeleton />
 			</Screen>
 		);
 	}
@@ -300,10 +305,10 @@ export default function Recover({ user }: { user: User }) {
 	if (phase === "no-wallet") {
 		return (
 			<Screen>
-				<BackHeader to="/" title={t("recover.title")} />
+				<BackHeader to="/" replace title={t("recover.title")} />
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<p className="text-[14px] text-text-muted mb-6">{t("recover.noWalletBody")}</p>
-					<LinkButton to="/" className="btn btn-primary">
+					<LinkButton to="/" replace className="btn btn-primary">
 						{t("recover.successCta")}
 					</LinkButton>
 				</div>
@@ -315,15 +320,15 @@ export default function Recover({ user }: { user: User }) {
 		const steps = [t("recover.step1"), t("recover.step2"), t("recover.step3")];
 		return (
 			<Screen>
-				<BackHeader to="/" title={t("recover.title")} />
+				<BackHeader to="/" replace title={t("recover.title")} />
 
 				<p className="text-[14px] text-text leading-relaxed mb-6">{t("recover.promise")}</p>
 
-				<div className="bg-surface border border-border rounded-[20px] p-6 mb-4 shadow-e1">
+				<div className="meli-paper-card meli-paper-card--strong mb-5 p-6">
 					<ol className="flex flex-col gap-4">
 						{steps.map((step, i) => (
 							<li key={i} className="flex items-start gap-3">
-								<span className="w-6 h-6 rounded-full bg-sky/15 text-glow-sky text-[12px] font-medium flex items-center justify-center shrink-0 mt-0.5">
+								<span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center border border-text bg-cat-500 text-[12px] font-semibold text-on-cat">
 									{i + 1}
 								</span>
 								<p className="text-[14px] text-text leading-relaxed">{step}</p>
@@ -332,8 +337,8 @@ export default function Recover({ user }: { user: User }) {
 					</ol>
 				</div>
 
-				<div className="flex items-start gap-2 rounded-[14px] bg-pink/8 border border-pink/25 px-3.5 py-3 mb-5">
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f4a9cf" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+				<div className="mb-5 flex items-start gap-2 border-l-4 border-pending bg-pending/8 px-3.5 py-3 text-pending">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
 						<path d="M12 9v4M12 17h.01" />
 						<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
 					</svg>
@@ -353,7 +358,7 @@ export default function Recover({ user }: { user: User }) {
 		const msLeft = Math.max(0, executableAt - now);
 		return (
 			<Screen>
-				<BackHeader to="/" />
+				<BackHeader to="/" replace />
 				<TxResult
 					state="progress"
 					lead={t("recover.pendingLead")}
@@ -372,7 +377,7 @@ export default function Recover({ user }: { user: User }) {
 							<p className="text-[13px] text-text-faint leading-relaxed max-w-[320px] mt-3">
 								{t("recover.pendingOldDevice")}
 							</p>
-							<LinkButton to="/" className="btn btn-primary mt-6">
+							<LinkButton to="/" replace className="btn btn-primary mt-6">
 								{t("recover.successCta")}
 							</LinkButton>
 							{cancelButton}
@@ -393,7 +398,7 @@ export default function Recover({ user }: { user: User }) {
 	if (phase === "ready" || phase === "ready-elsewhere") {
 		return (
 			<Screen>
-				<BackHeader to="/" />
+				<BackHeader to="/" replace />
 				<TxResult
 					state="progress"
 					lead={t("recover.readyLead")}
@@ -418,7 +423,7 @@ export default function Recover({ user }: { user: User }) {
 		return (
 			<Screen>
 				<TxResult state="success" lead={t("recover.successLead")} body={t("recover.successBody")}>
-					<button onClick={() => navigate("/")} className="btn btn-primary btn-block mt-6">
+					<button onClick={() => navigate("/", { replace: true })} className="btn btn-primary btn-block mt-6">
 						{t("recover.successCta")}
 					</button>
 				</TxResult>
@@ -429,9 +434,9 @@ export default function Recover({ user }: { user: User }) {
 	if (phase === "cancelled") {
 		return (
 			<Screen>
-				<BackHeader to="/" />
+				<BackHeader to="/" replace />
 				<TxResult state="success" lead={t("recover.cancelledLead")} body={t("recover.cancelledBody")}>
-					<LinkButton to="/" className="btn btn-primary mt-6">
+					<LinkButton to="/" replace className="btn btn-primary mt-6">
 						{t("recover.successCta")}
 					</LinkButton>
 					<button onClick={() => setPhase("intro")} className="btn-text mt-3">
@@ -445,7 +450,7 @@ export default function Recover({ user }: { user: User }) {
 	// error: retry re-reads the server state and lands on the right actionable phase.
 	return (
 		<Screen>
-			<BackHeader to="/" />
+			<BackHeader to="/" replace />
 			<TxResult state="failed" lead={t("recover.errorLead")} body={t("recover.errorBody")}>
 				<button
 					onClick={() => {

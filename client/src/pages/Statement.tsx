@@ -4,29 +4,30 @@
 // back/forward walks through filter changes; defaults keep the URL clean.
 
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import useSWRInfinite from "swr/infinite";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import Logo from "../components/Logo";
-import BackHeader from "../components/BackHeader";
 import ReceiptModal from "../components/ReceiptModal";
+import ActivityRow from "../components/ActivityRow";
+import PrimaryNav from "../components/PrimaryNav";
+import Screen from "../components/Screen";
 import { RowSkeletonList } from "../components/Skeleton";
+import SelectMenu from "../components/SelectMenu";
 import { activeNetwork } from "../lib/activeNetwork";
+import { readMigratedStorage } from "../lib/storageMigration";
 import {
 	parseTransactions,
-	formatShortDate,
-	txLabel,
 	type RawTxPayload,
 	type Transaction,
 } from "../lib/transactions";
-import { formatAmount } from "../lib/format";
 
 
 type PeriodOption = "all" | "today" | "week" | "month" | "prev-month" | "custom";
-type TypeFilter = "all" | "sent" | "received";
+type TypeFilter = "all" | "sent" | "received" | "swap";
 
 // Label is an i18n key, resolved with t() at render time.
 const PERIOD_OPTIONS: [PeriodOption, string][] = [
@@ -66,7 +67,7 @@ export default function Statement({ user }: { user: User }) {
 	const [searchParams, setSearchParams] = useSearchParams();
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
-	const hideBalance = localStorage.getItem("parmelia:hideBalance") === "1";
+	const hideBalance = readMigratedStorage("gatopago:hideBalance", "parmelia:hideBalance") === "1";
 
 	// Filters come FROM the URL (validated; anything unknown falls back to the
 	// default so a mangled shared link still renders).
@@ -80,7 +81,9 @@ export default function Statement({ user }: { user: User }) {
 	const asset = assetParam && activeNetwork.currencies.includes(assetParam) ? assetParam : "all";
 	const typeParam = searchParams.get("type");
 	const typeFilter: TypeFilter =
-		typeParam === "sent" || typeParam === "received" ? typeParam : "all";
+		typeParam === "sent" || typeParam === "received" || typeParam === "swap"
+			? typeParam
+			: "all";
 
 	// Write filters TO the URL. Defaults ("all" / empty) are removed so the
 	// default view keeps a clean /statement URL.
@@ -145,46 +148,27 @@ export default function Statement({ user }: { user: User }) {
 			if (asset !== "all" && t.currency !== asset) return false;
 			if (typeFilter === "sent" && t.type !== "sent") return false;
 			if (typeFilter === "received" && t.type !== "received") return false;
+			if (typeFilter === "swap" && t.kind !== "swap") return false;
 			return true;
 		});
 	}, [transactions, period, fromDate, toDate, asset, typeFilter]);
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+3rem)] w-full max-w-115 mx-auto animate-fade-up">
-			<BackHeader to="/" title={t("statement.title")} className="mb-6" />
+		<Screen withPrimaryNav>
+			<header className="mb-6">
+				<p className="meli-kicker mb-3">{t("statement.eyebrow")}</p>
+				<h1 className="font-display text-[36px] leading-[.94]">{t("statement.title")}</h1>
+				<p className="mt-3 text-[13px] leading-relaxed text-text-muted">{t("statement.intro")}</p>
+			</header>
 
-			{/* Period dropdown */}
-			<div className="relative mb-3">
-				<select
-					value={period}
-					aria-label={t("statement.periodLabel")}
-					onChange={(e) => {
-						const value = e.target.value as PeriodOption;
-						// Leaving "custom" drops the stale date range from the URL.
-						setFilter({ period: value, ...(value !== "custom" ? { from: "", to: "" } : {}) });
-					}}
-					className="w-full h-12 appearance-none bg-surface border border-border rounded-[14px] pl-4 pr-10 text-[14px] text-text scheme-dark focus:border-border-strong transition-colors"
-				>
-					{PERIOD_OPTIONS.map(([value, label]) => (
-						<option key={value} value={value}>
-							{t(label)}
-						</option>
-					))}
-				</select>
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					strokeWidth="2"
-					strokeLinecap="round"
-					strokeLinejoin="round"
-					className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-text-faint"
-				>
-					<path d="m6 9 6 6 6-6" />
-				</svg>
-			</div>
+			<SelectMenu
+				label={t("statement.periodLabel")}
+				value={period}
+				options={PERIOD_OPTIONS.map(([value, label]) => ({ value, label: t(label) }))}
+				onChange={(value) => setFilter({ period: value, ...(value !== "custom" ? { from: "", to: "" } : {}) })}
+				showLabel={false}
+				className="mb-3"
+			/>
 
 			{/* Custom range */}
 			{period === "custom" && (
@@ -195,14 +179,14 @@ export default function Statement({ user }: { user: User }) {
 							["statement.to", "to", toDate],
 						] as const
 					).map(([label, param, value]) => (
-						<label key={label} className="flex-1 bg-surface border border-border rounded-[14px] px-3.5 py-2.5">
+						<label key={label} className="flex-1 border border-border bg-surface px-3.5 py-2.5">
 							<span className="block text-[11px] text-text-faint mb-0.5">{t(label)}</span>
 							<input
 								type="date"
 								name={param}
 								value={value}
 								onChange={(e) => setFilter({ [param]: e.target.value })}
-								className="w-full bg-transparent text-[13px] text-text scheme-dark"
+								className="w-full bg-transparent text-[13px] text-text scheme-light"
 							/>
 						</label>
 					))}
@@ -210,65 +194,32 @@ export default function Statement({ user }: { user: User }) {
 			)}
 
 			{/* Asset + type filters */}
-			<div className="seg-track seg-track-block mb-2">
-				{["all", ...activeNetwork.currencies].map((c) => (
-					<button
-						key={c}
-						onClick={() => setFilter({ asset: c })}
-						aria-pressed={asset === c}
-						data-active={asset === c}
-						className="seg-item"
-					>
-						{c === "all" ? t("statement.all") : c}
-					</button>
-				))}
-			</div>
-			<div className="flex justify-center mb-5">
-				<div className="seg-track">
-					{(
-						[
-							["all", "statement.allTypes", null],
-							["received", "statement.received", "in"],
-							["sent", "statement.sent", "out"],
-						] as const
-					).map(([value, label, dir]) => (
-						<button
-							key={value}
-							onClick={() => setFilter({ type: value })}
-							aria-pressed={typeFilter === value}
-							data-active={typeFilter === value}
-							className="seg-item gap-1.5"
-						>
-							{dir && (
-								<svg
-									width="13"
-									height="13"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2.5"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-									className={dir === "in" ? "text-glow-sky" : "text-glow-pink"}
-								>
-									{dir === "in" ? (
-										<>
-											<path d="M12 5v14" />
-											<path d="m19 12-7 7-7-7" />
-										</>
-									) : (
-										<>
-											<path d="M12 19V5" />
-											<path d="m5 12 7-7 7 7" />
-										</>
-									)}
-								</svg>
-							)}
-							{t(label)}
-						</button>
-					))}
-				</div>
-			</div>
+			<SelectMenu
+				label={t("statement.assetLabel")}
+				value={asset}
+				options={["all", ...activeNetwork.currencies].map((currency) => ({
+					value: currency,
+					label: currency === "all" ? t("statement.allAssets") : currency,
+				}))}
+				onChange={(value) => setFilter({ asset: value })}
+				showLabel={false}
+				className="mb-2"
+			/>
+			<SelectMenu
+				label={t("statement.typeLabel")}
+				value={typeFilter}
+				options={(
+					[
+						["all", "statement.allTypes"],
+						["received", "statement.received"],
+						["sent", "statement.sent"],
+						["swap", "statement.swaps"],
+					] as const
+				).map(([value, label]) => ({ value, label: t(label) }))}
+				onChange={(value) => setFilter({ type: value })}
+				showLabel={false}
+				className="mb-5"
+			/>
 
 			{/* List */}
 			{isLoading && !txData ? (
@@ -283,50 +234,8 @@ export default function Statement({ user }: { user: User }) {
 					<p className="text-[12px] text-text-faint px-1 mb-2">
 						{t("statement.movement", { count: filtered.length })}
 					</p>
-					<div className="flex flex-col gap-1">
-						{filtered.map((tx) => {
-							const received = tx.type === "received";
-							return (
-								<button
-									key={tx.id}
-									onClick={() => setSelectedTx(tx)}
-									className="flex items-center gap-3.5 py-3 px-2 -mx-2 rounded-[14px] hover:bg-surface transition-colors text-left"
-								>
-									<span
-										className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${received ? "bg-sky/15 text-glow-sky" : "bg-pink/15 text-glow-pink"
-											}`}
-									>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-											{received ? (
-												<>
-													<path d="M12 5v14" />
-													<path d="m19 12-7 7-7-7" />
-												</>
-											) : (
-												<>
-													<path d="M12 19V5" />
-													<path d="m5 12 7-7 7 7" />
-												</>
-											)}
-										</svg>
-									</span>
-									<div className="min-w-0 flex-1">
-										<p className="text-[15px] truncate">{txLabel(tx)}</p>
-										<p className="text-[12px] text-text-faint">
-											{formatShortDate(tx.createdAt)}
-											{tx.kind === "link" && ` · ${t("statement.fromLink")}`}
-										</p>
-									</div>
-									<span
-										className={`text-[15px] font-medium tabular shrink-0 ${hideBalance ? "text-text-faint" : received ? "text-glow-sky" : "text-glow-pink"
-											}`}
-									>
-										{!hideBalance && (received ? "+" : "−")}
-										{hideBalance ? "••••" : `${formatAmount(tx.amount, tx.currency)} ${tx.currency}`}
-									</span>
-								</button>
-							);
-						})}
+					<div className="meli-paper-card flex flex-col">
+						{filtered.map((tx) => <ActivityRow key={tx.id} tx={tx} hideAmount={hideBalance} onOpen={() => setSelectedTx(tx)} />)}
 					</div>
 				</>
 			)}
@@ -335,7 +244,7 @@ export default function Statement({ user }: { user: User }) {
 					type="button"
 					disabled={isLoadingMore}
 					onClick={() => void setSize((current) => current + 1)}
-					className="mt-5 h-11 rounded-[14px] border border-border bg-surface text-[14px] text-text-muted hover:text-text disabled:opacity-50 transition-colors"
+					className="btn btn-ghost btn-block mt-5 disabled:opacity-50"
 				>
 					{isLoadingMore
 						? t("statement.loadingMore")
@@ -344,6 +253,7 @@ export default function Statement({ user }: { user: User }) {
 			)}
 
 			{selectedTx && <ReceiptModal tx={selectedTx} onClose={() => setSelectedTx(null)} />}
-		</div>
+			<PrimaryNav />
+		</Screen>
 	);
 }

@@ -6,8 +6,13 @@ import {
 	completeEmailLink,
 } from "../lib/firebase";
 import { isUserCancelled, notifyError } from "../lib/notify";
-import Logo from "../components/Logo";
+import BrandLockup from "../components/brand/BrandLockup";
+import MeliSprite from "../components/brand/MeliSprite";
+import PixelRail from "../components/brand/PixelRail";
 import { useTranslation } from "react-i18next";
+import { writeStorage } from "../lib/storageMigration";
+
+const RECOVER_INTENT_KEY = "gatopago:recover-intent";
 
 type Mode = "buttons" | "email" | "sent" | "completing" | "need-email";
 
@@ -104,8 +109,9 @@ export default function Login() {
   // ===== Completing / need-email / sent screens =====
   if (mode === "completing") {
     return (
-      <div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center">
-        <Logo className="w-16 mb-6 animate-float-glow" />
+      <div className="app-frame mx-auto flex min-h-dvh w-full max-w-[480px] flex-col items-center justify-center px-6 text-center">
+        <MeliSprite name="body-courier" className="mb-4 w-36" priority />
+        <PixelRail state="active" className="mb-5 max-w-[180px]" />
         <p className="text-[15px] text-text-muted">{t("login.signingIn")}</p>
       </div>
     );
@@ -113,10 +119,8 @@ export default function Login() {
 
   if (mode === "sent") {
     return (
-      <div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center animate-fade-up">
-        <div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 text-glow-sky">
-          <MailIcon />
-        </div>
+      <div className="app-frame mx-auto flex min-h-dvh w-full max-w-[480px] flex-col items-center justify-center px-6 text-center animate-fade-up">
+        <MeliSprite name="body-peek-card" motion="peek" className="mb-4 w-40" priority />
         <h1 className="font-display text-[24px] mb-2">{t("login.checkEmailTitle")}</h1>
         <p className="text-[14px] text-text-muted max-w-[300px] leading-relaxed mb-7">
           {t("login.emailSentTo")} <span className="text-text">{email}</span>.{" "}
@@ -131,8 +135,8 @@ export default function Login() {
 
   if (mode === "need-email") {
     return (
-      <div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center animate-fade-up">
-        <Logo className="w-14 mb-6" />
+      <div className="app-frame mx-auto flex min-h-dvh w-full max-w-[480px] flex-col items-center justify-center px-6 text-center animate-fade-up">
+        <MeliSprite name="head-curious" motion="idle" className="mb-5 w-24" priority />
         <h1 className="font-display text-[22px] mb-2">{t("login.confirmEmailTitle")}</h1>
         <p className="text-[14px] text-text-muted max-w-[300px] leading-relaxed mb-6">
           {t("login.confirmEmailBody")}
@@ -144,17 +148,19 @@ export default function Login() {
           }}
           className="w-full max-w-[320px] flex flex-col items-center"
         >
-          <input
-            type="email"
-            name="email"
-            inputMode="email"
-            autoComplete="email"
-            aria-label={t("login.emailLabel")}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder={t("login.emailPlaceholder")}
-            className="w-full bg-surface border border-border rounded-full h-12 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors mb-4"
-          />
+          <label className="mb-4 block w-full text-left text-[13px] text-text-muted">
+            <span className="mb-2 block">{t("login.emailLabel")}</span>
+            <input
+              type="email"
+              name="email"
+              inputMode="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder={t("login.emailPlaceholder")}
+              className="meli-field text-[15px] placeholder:text-text-faint"
+            />
+          </label>
           <button type="submit" disabled={busy} className="btn btn-primary btn-block">
             {busy ? t("login.entering") : t("login.enter")}
           </button>
@@ -165,14 +171,20 @@ export default function Login() {
 
   // ===== Main login =====
   return (
-    <div className="flex flex-col min-h-dvh px-6 w-full max-w-[460px] mx-auto">
-      <div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
-        <Logo className="w-24 mb-9 animate-float-glow" />
-        <h1 className="font-display text-[34px] leading-[1.06] mb-4 max-w-[300px]">
+    <div className="app-frame mx-auto flex min-h-dvh w-full max-w-[480px] flex-col px-5">
+      <header className="flex shrink-0 justify-center pt-[calc(env(safe-area-inset-top)+1.25rem)] animate-fade-in">
+        <BrandLockup compact />
+      </header>
+      <div className={`flex flex-1 flex-col items-center justify-center text-center animate-fade-up ${mode === "email" ? "py-1" : "py-5"}`}>
+		<div className={`meli-login-stage mb-6 ${mode === "email" ? "min-h-[150px]" : "min-h-[205px]"}`}>
+			<span aria-hidden="true" />
+			<MeliSprite name="body-sitting" motion="idle" className={mode === "email" ? "w-28" : "w-40 sm:w-44"} priority />
+		</div>
+        <h1 className={`mb-3 max-w-[340px] font-display leading-[1.02] ${mode === "email" ? "text-[28px]" : "text-[34px]"}`}>
           {t("login.heroLead")}{" "}
-          <span className="text-brand-gradient">{t("login.heroEmphasis")}</span>
+          <span className="text-cat-300">{t("login.heroEmphasis")}</span>
         </h1>
-        <p className="text-text-muted text-[15px] leading-relaxed max-w-[290px]">
+        <p className="max-w-[330px] text-[14px] leading-relaxed text-text-muted">
           {t("login.subtitle")}
         </p>
       </div>
@@ -190,18 +202,19 @@ export default function Login() {
               }}
               className="w-full flex flex-col items-center gap-3"
             >
-              <input
-                type="email"
-                name="email"
-                inputMode="email"
-                autoComplete="email"
-                aria-label={t("login.emailLabel")}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder={t("login.emailPlaceholder")}
-                className="w-full bg-surface border border-border rounded-full h-13 px-5 text-[15px] text-text placeholder:text-text-faint text-center focus:border-border-strong transition-colors"
-                style={{ height: "3.25rem" }}
-              />
+              <label className="block w-full text-left text-[13px] text-text-muted">
+                <span className="mb-2 block">{t("login.emailLabel")}</span>
+                <input
+                  type="email"
+                  name="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder={t("login.emailPlaceholder")}
+                  className="meli-field text-[15px] placeholder:text-text-faint"
+                />
+              </label>
               <button type="submit" disabled={busy} className="btn btn-primary btn-block">
                 {busy ? t("login.sending") : t("login.sendLink")}
               </button>
@@ -233,7 +246,7 @@ export default function Login() {
               <button
                 onClick={() => {
                   try {
-                    localStorage.setItem("parmelia:recover-intent", "1");
+                    writeStorage(RECOVER_INTENT_KEY, "1");
                   } catch {
                     /* storage unavailable */
                   }

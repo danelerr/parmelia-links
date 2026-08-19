@@ -1,11 +1,11 @@
-// Public cross-chain checkout (Flow A inbound): an EXTERNAL wallet pays a Parmelia
-// user from another CCTP chain. No Parmelia account needed. The payer connects
+// Public cross-chain checkout (Flow A inbound): an EXTERNAL wallet pays a GatoPago
+// user from another CCTP chain. No GatoPago account needed. The payer connects
 // their own wallet (window.ethereum), and signs the approve + depositForBurn that
-// the backend pre-encoded. Parmelia's relayer then mints native USDC on Arbitrum
+// the backend pre-encoded. GatoPago's relayer then mints native USDC on Arbitrum
 // to the recipient. Reached at /cc/:recipient (a username or 0x address).
 
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams } from "react-router";
 import { SERVER_URL } from "../lib/api";
 import { useTranslation } from "react-i18next";
 import { formatNumber } from "../lib/format";
@@ -14,7 +14,17 @@ import Logo from "../components/Logo";
 import AmountInput from "../components/AmountInput";
 import TxResult from "../components/TxResult";
 import NetworkChips from "../components/NetworkChips";
-import { Spinner } from "../components/icons";
+import Screen from "../components/Screen";
+import { FormPageSkeleton } from "../components/Skeleton";
+import ConfirmSheet from "../components/ConfirmSheet";
+import NoticeCard from "../components/NoticeCard";
+import {
+	InsetPanel,
+	MoneyPanel,
+	SectionLabel,
+	SummaryRow,
+	TransactionActions,
+} from "../components/finance/FinancialPrimitives";
 
 type Eip1193 = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
 function getEthereum(): Eip1193 | null {
@@ -117,6 +127,7 @@ export default function CrosschainReceive() {
 	const [done, setDone] = useState<{ completed: boolean; minutes: number; received: string } | null>(null);
 	const [directAddress, setDirectAddress] = useState<string | null>(null);
 	const [copiedDirect, setCopiedDirect] = useState(false);
+	const [reviewing, setReviewing] = useState(false);
 
 	useEffect(() => {
 		(async () => {
@@ -215,7 +226,7 @@ export default function CrosschainReceive() {
 			const burnReceipt = await waitReceipt(eth, burnHash);
 			if (!burnReceipt || burnReceipt.status === "0x0") throw new Error(t("ccpay.burnError"));
 
-			// Tell Parmelia to relay the mint, then poll until delivered.
+			// Tell GatoPago to relay the mint, then poll until delivered.
 			await fetch(`${SERVER_URL}/crosschain/inbound/register`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -255,25 +266,47 @@ export default function CrosschainReceive() {
 	const recipientLabel = recipient.startsWith("0x")
 		? `${recipient.slice(0, 6)}…${recipient.slice(-4)}`
 		: `@${recipient}`;
+	const sourceName = sources.find((source) => source.chainId === sourceChainId)?.name ?? "—";
 
 	// ===== Success / on-its-way =====
 	if (done) {
 		return (
-			<div className="flex flex-col min-h-dvh px-6 animate-fade-up">
+			<Screen className="px-6">
 				<TxResult
-					state="success"
+					state={done.completed ? "success" : "progress"}
 					lead={done.completed ? t("ccpay.doneTitle", { name: recipientLabel }) : t("ccpay.onWayTitle", { name: recipientLabel })}
 					amount={formatNumber(done.received, 6)}
 					unit="USDC"
 					body={done.completed ? t("ccpay.doneBody") : t("ccpay.onWayBody", { minutes: done.minutes })}
 					bodyClassName="text-[13px] text-text-faint max-w-[300px] leading-relaxed"
 				/>
-			</div>
+			</Screen>
 		);
 	}
 
 	return (
-		<div className="flex flex-col min-h-dvh px-5 pt-[calc(env(safe-area-inset-top)_+_2rem)] pb-[calc(env(safe-area-inset-bottom)_+_2.5rem)] w-full max-w-[460px] mx-auto animate-fade-up">
+		<Screen className="pt-[calc(env(safe-area-inset-top)_+_2rem)]">
+			{reviewing ? (
+				<ConfirmSheet
+					title={t("ccpay.confirmTitle")}
+					amountLabel={t("ccpay.amount")}
+					amount={formatNumber(amount, 6)}
+					unit="USDC"
+					warning={t("ccpay.twoTxHint")}
+					confirmLabel={t("ccpay.confirmAction")}
+					onConfirm={() => {
+						setReviewing(false);
+						void pay();
+					}}
+					onCancel={() => setReviewing(false)}
+				>
+					<InsetPanel className="mb-3">
+						<SummaryRow label={t("ccpay.fromNetwork")} value={sourceName} />
+						<SummaryRow label={t("ccpay.recipient")} value={recipientLabel} />
+						<SummaryRow label={t("ccpay.speed")} value={mode === "fast" ? t("ccpay.fast") : t("ccpay.economic")} />
+					</InsetPanel>
+				</ConfirmSheet>
+			) : null}
 			<div className="flex flex-col items-center text-center mb-7">
 				<Logo className="w-12 mb-4" />
 				<p className="text-[13px] text-text-muted">{t("ccpay.payTo")}</p>
@@ -281,9 +314,7 @@ export default function CrosschainReceive() {
 			</div>
 
 			{enabled === null ? (
-				<div className="flex-1 flex items-center justify-center">
-					<Spinner />
-				</div>
+				<FormPageSkeleton />
 			) : !enabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<p className="text-[14px] text-text-muted max-w-[280px] leading-relaxed">{t("ccpay.disabled")}</p>
@@ -291,7 +322,7 @@ export default function CrosschainReceive() {
 			) : (
 				<>
 					{/* Source network */}
-					<p className="text-[13px] text-text-muted px-1 mb-2">{t("ccpay.fromNetwork")}</p>
+					<SectionLabel>{t("ccpay.fromNetwork")}</SectionLabel>
 					<NetworkChips
 						options={sources.map((s) => ({ id: s.chainId, label: s.name }))}
 						selected={sourceChainId}
@@ -299,7 +330,7 @@ export default function CrosschainReceive() {
 					/>
 
 					{/* Amount */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mb-5 shadow-e1">
+					<MoneyPanel className="mb-5">
 						<p className="text-[13px] text-text-muted mb-3">{t("ccpay.amount")}</p>
 						<div className="flex items-center gap-3">
 							<AmountInput
@@ -312,7 +343,7 @@ export default function CrosschainReceive() {
 							/>
 							<span className="text-[15px] text-text-muted font-medium shrink-0">USDC</span>
 						</div>
-					</div>
+					</MoneyPanel>
 
 					{/* Speed */}
 					<div className="seg-track seg-track-block mb-2">
@@ -339,25 +370,22 @@ export default function CrosschainReceive() {
 
 					{/* Same-network shortcut: no bridge needed if the USDC is already here. */}
 					{directAddress && (
-						<div className="bg-surface border border-border rounded-[14px] px-4 py-3 mb-5">
-							<p className="text-[12px] text-text-muted mb-1">
-								{t("ccpay.directTitle", { network: activeNetwork.name })}
-							</p>
+						<NoticeCard title={t("ccpay.directTitle", { network: activeNetwork.name })} className="mb-5">
 							<p className="text-[11px] text-text-faint mb-2 leading-relaxed">{t("ccpay.directBody")}</p>
 							<div className="flex items-center gap-2">
 								<span className="text-[12px] text-text font-mono break-all flex-1 select-all">{directAddress}</span>
 								<button
 									onClick={() => void copyDirectAddress()}
-									className="shrink-0 text-[12px] text-glow-sky hover:opacity-80 transition-opacity"
+									className="shrink-0 text-[12px] font-semibold text-cat-300"
 								>
 									{copiedDirect ? t("common.copied") : t("common.copy")}
 								</button>
 							</div>
-						</div>
+						</NoticeCard>
 					)}
 
 					{error && (
-						<p role="status" aria-live="polite" className="text-glow-pink text-[13px] text-center mb-4">
+						<p role="status" aria-live="polite" className="mb-4 text-center text-[13px] text-danger">
 							{error}
 						</p>
 					)}
@@ -367,27 +395,23 @@ export default function CrosschainReceive() {
 						</p>
 					)}
 
-					<div className="flex-1" />
-
-					{!account ? (
-						<button onClick={connect} className="btn btn-primary btn-block">
-							{t("ccpay.connect")}
-						</button>
-					) : (
-						<button onClick={pay} disabled={!amountValid || !!busy} className="btn btn-gradient btn-block">
-							{t("ccpay.pay")}
-						</button>
-					)}
-					<p className="text-[12px] text-text-faint text-center mt-3 leading-relaxed">
-						{account ? t("ccpay.connectedHint", { addr: `${account.slice(0, 6)}…${account.slice(-4)}` }) : t("ccpay.hint")}
-					</p>
-					{account && !busy && (
-						<p className="text-[12px] text-text-faint text-center mt-1 leading-relaxed">
-							{t("ccpay.twoTxHint")}
-						</p>
-					)}
+					<TransactionActions
+						hint={account
+							? <><span className="block">{t("ccpay.connectedHint", { addr: `${account.slice(0, 6)}…${account.slice(-4)}` })}</span><span className="block mt-1">{t("ccpay.twoTxHint")}</span></>
+							: t("ccpay.hint")}
+					>
+						{!account ? (
+							<button onClick={connect} className="btn btn-primary btn-block">
+								{t("ccpay.connect")}
+							</button>
+						) : (
+							<button onClick={() => setReviewing(true)} disabled={!amountValid || !sourceChainId || !!busy} className="btn btn-primary btn-block">
+								{t("ccpay.pay")}
+							</button>
+						)}
+					</TransactionActions>
 				</>
 			)}
-		</div>
+		</Screen>
 	);
 }

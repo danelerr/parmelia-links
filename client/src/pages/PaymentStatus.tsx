@@ -1,9 +1,10 @@
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { useRef } from "react";
 import Logo from "../components/Logo";
+import MeliSprite from "../components/brand/MeliSprite";
+import PixelRail from "../components/brand/PixelRail";
 import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
-import { IconCheck, IconCross, Spinner } from "../components/icons";
 import type { User } from "../lib/firebase";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
@@ -11,6 +12,7 @@ import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { useTranslation } from "react-i18next";
 import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard, shareCard } from "../lib/exportCard";
+import { notifyError } from "../lib/notify";
 
 export default function PaymentStatus({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
@@ -43,15 +45,15 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 
 	async function handleDownload() {
 		try {
-			await downloadCard(cardRef.current, `parmelia-pago-${amount}-${currency}.png`);
-		} catch {
-			/* ignore */
+			await downloadCard(cardRef.current, `gatopago-pago-${amount}-${currency}.png`);
+		} catch (error) {
+			notifyError(error, t("paymentStatus.downloadError"));
 		}
 	}
 
 	async function handleShare() {
 		await shareCard(cardRef.current, {
-			filename: `parmelia-pago-${amount}-${currency}.png`,
+			filename: `gatopago-pago-${amount}-${currency}.png`,
 			text: t("paymentStatus.shareText", { amount, currency }),
 			url: txHash ? getExplorerTxUrl(txHash) : undefined,
 		});
@@ -59,42 +61,26 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 
 	return (
 		<Screen>
-			<BackHeader onClick={() => navigate("/")} ariaLabel={t("pay.goHome")} className="" />
+			<BackHeader onClick={() => navigate("/", { replace: true })} ariaLabel={t("pay.goHome")} className="" />
 			<div className="flex-1 flex flex-col justify-center">
 				<div
 					ref={cardRef}
-					className="relative overflow-hidden bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e2"
+					className="receipt-paper relative flex flex-col items-center overflow-hidden p-8"
 				>
-					<div
-						className="absolute top-0 left-0 right-0 h-1"
-						style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
-					/>
-					<div
-						className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
-						style={{ background: "radial-gradient(circle,#9ce3f4,transparent 70%)" }}
-					/>
+					<div className="receipt-rail absolute inset-x-0 top-0 h-1" />
 
 					<div className="flex items-center gap-2 mb-6 relative z-1">
 						<Logo className="w-6" />
-						<span className="font-display text-[16px]">Parmelia</span>
+						<span className="font-display text-[16px]">GatoPago</span>
 					</div>
 
-					{/* Status icon: check (confirmed) / spinner (in flight) / cross (failed) */}
-					{confirmed && (
-						<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 shadow-glow-sky-soft relative z-1">
-							<IconCheck />
-						</div>
-					)}
-					{pending && (
-						<div className="w-16 h-16 rounded-full bg-sky/15 flex items-center justify-center mb-6 relative z-1">
-							<Spinner className="w-7 h-7" />
-						</div>
-					)}
-					{failed && (
-						<div className="w-16 h-16 rounded-full bg-pink/15 flex items-center justify-center mb-6 relative z-1">
-							<IconCross />
-						</div>
-					)}
+					<MeliSprite
+						name={confirmed ? "head-happy" : failed ? "head-cautious" : "body-courier"}
+						motion={confirmed ? "purr" : "none"}
+						className={`relative z-1 mb-4 ${pending ? "w-32" : "w-24"}`}
+						priority
+					/>
+					{pending ? <PixelRail state="active" className="relative z-1 mb-4 max-w-[180px]" /> : null}
 
 					<p className="text-[15px] text-text-muted mb-1 relative z-1">
 						{confirmed
@@ -104,7 +90,7 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 								: t("paymentStatus.pendingLead")}
 					</p>
 					{amount && (
-						<p className="font-display text-[44px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
+						<p className="type-mono relative z-1 mb-4 max-w-full break-words text-center text-[44px] font-bold leading-tight">
 							{formatAmount(amount, currency ?? "")}
 							<span className="text-text-muted text-[22px] ml-1.5">{currency}</span>
 						</p>
@@ -121,7 +107,7 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 						</p>
 					)}
 					{pending && (
-						<p role="status" aria-live="polite" className="text-[12px] text-text-faint text-center leading-relaxed relative z-1 animate-pulse-soft">
+						<p role="status" aria-live="polite" className="text-[12px] text-text-faint text-center leading-relaxed relative z-1">
 							{poll.ended ? t("paymentStatus.pendingSlow") : t("paymentStatus.pendingBody")}
 						</p>
 					)}
@@ -149,7 +135,7 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 								</span>
 							</div>
 						)}
-						<p className="text-[11px] text-text-faint text-center mt-2">parmelia.me</p>
+						<p className="text-[11px] text-text-faint text-center mt-2">GatoPago · Comprobante</p>
 					</div>
 
 					{txHash && (
@@ -176,7 +162,7 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 					</button>
 				</div>
 			) : (
-				<button onClick={() => navigate("/")} className="btn btn-primary btn-block mt-6">
+				<button onClick={() => navigate("/", { replace: true })} className="btn btn-primary btn-block mt-6">
 					{t("pay.goHome")}
 				</button>
 			)}

@@ -1,12 +1,12 @@
-import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { mutate as mutateSWR } from "swr";
-import { Toaster } from "sileo";
-import { useTranslation } from "react-i18next";
 import { onAuthChange, type User } from "./lib/firebase";
-import Logo from "./components/Logo";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DesktopNotice from "./components/DesktopNotice";
+import AccountLaunchScreen from "./components/AccountLaunchScreen";
+import ToastViewport from "./components/ToastViewport";
+import ScrollToTop from "./components/ScrollToTop";
 import { SERVER_URL } from "./lib/api";
 import { initAnalytics } from "./lib/analytics";
 import { activeNetwork } from "./lib/activeNetwork";
@@ -15,56 +15,92 @@ import {
 	loadHomeCache,
 	saveHomeCache,
 } from "./lib/homeData";
+import {
+	readMigratedStorage,
+	removeMigratedStorage,
+	writeStorage,
+} from "./lib/storageMigration";
+
+const REF_STORAGE_KEY = "gatopago:ref";
+const RECOVER_INTENT_KEY = "gatopago:recover-intent";
+const LEGACY_RECOVER_INTENT_KEY = "parmelia:recover-intent";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
 const Login = lazy(() => import("./pages/Login"));
 const Onboarding = lazy(() => import("./pages/Onboarding"));
-const Home = lazy(() => import("./pages/Home"));
+const loadHome = () => import("./pages/Home");
+const loadMove = () => import("./pages/Move");
+const loadPayPage = () => import("./pages/PayPage");
+const loadSwap = () => import("./pages/Swap");
+const loadStatement = () => import("./pages/Statement");
+const loadReceive = () => import("./pages/Receive");
+const loadEarn = () => import("./pages/Earn");
+const Home = lazy(loadHome);
+const Move = lazy(loadMove);
 const CreateLink = lazy(() => import("./pages/CreateLink"));
-const PayPage = lazy(() => import("./pages/PayPage"));
+const PayPage = lazy(loadPayPage);
 const PaymentStatus = lazy(() => import("./pages/PaymentStatus"));
 const Settings = lazy(() => import("./pages/Settings"));
 const ScanQR = lazy(() => import("./pages/ScanQR"));
-const Swap = lazy(() => import("./pages/Swap"));
-const Statement = lazy(() => import("./pages/Statement"));
+const Swap = lazy(loadSwap);
+const Statement = lazy(loadStatement);
 const Contacts = lazy(() => import("./pages/Contacts"));
 const CrosschainSend = lazy(() => import("./pages/CrosschainSend"));
 const CrosschainReceive = lazy(() => import("./pages/CrosschainReceive"));
-const Receive = lazy(() => import("./pages/Receive"));
-const Earn = lazy(() => import("./pages/Earn"));
-const BinanceDeposit = lazy(() => import("./pages/BinanceDeposit"));
+const Receive = lazy(loadReceive);
+const Earn = lazy(loadEarn);
 const Recover = lazy(() => import("./pages/Recover"));
 const Security = lazy(() => import("./pages/Security"));
+const Profile = lazy(() => import("./pages/Profile"));
+const TestFunds = lazy(() => import("./pages/TestFunds"));
+const DesignPreview = import.meta.env.DEV
+	? lazy(() => import("./pages/DesignPreview"))
+	: null;
 
 // Capture ?ref=<username> from invitation links before the router strips it;
 // Onboarding attaches it to account creation for referral attribution.
 const refParam = new URLSearchParams(window.location.search).get("ref");
 if (refParam && /^[a-z0-9_-]{3,30}$/i.test(refParam)) {
-	localStorage.setItem("parmelia:ref", refParam.toLowerCase());
+	writeStorage(REF_STORAGE_KEY, refParam.toLowerCase());
 }
 
 function App() {
-	const { t } = useTranslation();
 	const [user, setUser] = useState<User | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [hasWallet, setHasWallet] = useState<boolean | null>(null);
-	// Flag, not a message: the copy is resolved with t() at render time so it
-	// always follows the active language.
+	const walletCheckRunRef = useRef(0);
 	const [walletCheckFailed, setWalletCheckFailed] = useState(false);
 
 	const checkWallet = async (currentUser: User) => {
+		const runId = ++walletCheckRunRef.current;
+		let usableCache = false;
 		try {
 			const cached = await loadHomeCache(
 				currentUser.uid,
 				activeNetwork.chainId,
 			);
+			if (runId !== walletCheckRunRef.current) return;
+
+			// A previously validated wallet is enough to render immediately. The
+			// authenticated API still authorizes every action; this cache only avoids
+			// blocking the shell while /home revalidates in the background.
+			if (cached?.model.account.walletAddress) {
+				usableCache = true;
+				await mutateSWR(`${SERVER_URL}/home`, cached.model, { revalidate: false });
+				if (runId !== walletCheckRunRef.current) return;
+				setHasWallet(true);
+				setWalletCheckFailed(false);
+				setLoading(false);
+			}
+
 			const { model, etag } = await fetchHomeModel(
 				currentUser,
 				`${SERVER_URL}/home`,
 				cached,
 				activeNetwork.chainId,
 			);
-			await saveHomeCache(
+			if (runId !== walletCheckRunRef.current) return;
+			void saveHomeCache(
 				currentUser.uid,
 				activeNetwork.chainId,
 				model,
@@ -73,14 +109,20 @@ function App() {
 			// Seed Home's canonical SWR key. Mounting Home does not create a
 			// second request after this account gate.
 			await mutateSWR(`${SERVER_URL}/home`, model, { revalidate: false });
+			if (runId !== walletCheckRunRef.current) return;
 			setHasWallet(!!model.account.walletAddress);
 			setWalletCheckFailed(false);
 		} catch (error) {
 			console.error("Wallet check failed", error);
-			setHasWallet(null);
-			setWalletCheckFailed(true);
+			if (runId !== walletCheckRunRef.current) return;
+			// Keep a locally known account usable during a transient backend failure.
+			// Mutating operations remain protected by the authenticated server.
+			if (!usableCache) {
+				setHasWallet(null);
+				setWalletCheckFailed(true);
+			}
 		} finally {
-			setLoading(false);
+			if (runId === walletCheckRunRef.current) setLoading(false);
 		}
 	};
 
@@ -89,7 +131,27 @@ function App() {
 	}, []);
 
 	useEffect(() => {
+		if (hasWallet !== true) return;
+		// Keep the first bundle small, then warm the four primary destinations and
+		// their immediate money flows once the authenticated shell is interactive.
+		// This removes the one-time route-chunk pause without delaying Home.
+		const timer = window.setTimeout(() => {
+			void Promise.allSettled([
+				loadHome(),
+				loadMove(),
+				loadEarn(),
+				loadStatement(),
+				loadPayPage(),
+				loadReceive(),
+				loadSwap(),
+			]);
+		}, 150);
+		return () => window.clearTimeout(timer);
+	}, [hasWallet]);
+
+	useEffect(() => {
 		const unsub = onAuthChange((nextUser) => {
+			walletCheckRunRef.current++;
 			setUser(nextUser);
 
 			if (nextUser) {
@@ -106,33 +168,14 @@ function App() {
 	}, []);
 
 	function renderAccountState() {
-		return (
-			<div className="flex flex-col items-center justify-center min-h-dvh px-6 text-center">
-				<Logo className="w-20 animate-pulse" />
-				<p className="text-sm text-muted mt-5 max-w-xs">
-					{walletCheckFailed ? t("app.walletCheckError") : t("app.loadingAccount")}
-				</p>
-				{walletCheckFailed && user && (
-					<button
-						onClick={() => {
-							setLoading(true);
-							setWalletCheckFailed(false);
-							void checkWallet(user);
-						}}
-						className="mt-5 bg-parmelia-blue text-black px-6 py-2.5 rounded-full text-sm font-medium"
-					>
-						{t("common.retry")}
-					</button>
-				)}
-			</div>
-		);
+		return <AccountLaunchScreen failed={walletCheckFailed} onRetry={user ? () => {
+			setLoading(true);
+			setWalletCheckFailed(false);
+			void checkWallet(user);
+		} : undefined} />;
 	}
 
-	const splash = (
-		<div className="flex items-center justify-center min-h-dvh">
-			<Logo className="w-20 animate-pulse" />
-		</div>
-	);
+	const splash = <AccountLaunchScreen />;
 
 	function renderProtectedRoute(content: ReactNode) {
 		if (loading) {
@@ -180,11 +223,11 @@ function App() {
 		}
 		if (user) {
 			// "Lost your key?" tapped before signing in (Login saves the flag, same
-			// pattern as parmelia:ref): consume it once and land on /recover instead
+			// pattern as gatopago:ref): consume it once and land on /recover instead
 			// of Home. If the magic link opened in another browser the flag is simply
 			// absent - the Home banner is the fallback entry.
-			if (localStorage.getItem("parmelia:recover-intent")) {
-				localStorage.removeItem("parmelia:recover-intent");
+			if (readMigratedStorage(RECOVER_INTENT_KEY, LEGACY_RECOVER_INTENT_KEY)) {
+				removeMigratedStorage(RECOVER_INTENT_KEY, LEGACY_RECOVER_INTENT_KEY);
 				return <Navigate to="/recover" />;
 			}
 			return <Navigate to="/" />;
@@ -194,34 +237,19 @@ function App() {
 
 	return (
 		<BrowserRouter>
+			<ScrollToTop />
 			<DesktopNotice />
-			<Toaster
-				position="top-center"
-				theme="dark"
-				offset={{ top: "calc(env(safe-area-inset-top) + 0.75rem)" }}
-				options={{
-					fill: "#1a1a1a",
-					roundness: 12,
-					styles: {
-						title: "text-white!",
-						description: "text-white/75!",
-						badge: "bg-white/10!",
-						button: "bg-white/10! hover:bg-white/15!",
-					},
-				}}
-			/>
+			<ToastViewport />
 			<ErrorBoundary>
 				<Suspense
-					fallback={
-						<div className="flex items-center justify-center min-h-dvh">
-							<Logo className="w-20 animate-pulse" />
-						</div>
-					}
+					fallback={<AccountLaunchScreen />}
 				>
 					<Routes>
 					<Route path="/login" element={renderLoginRoute()} />
+					{DesignPreview ? <Route path="/__design/meli" element={<DesignPreview />} /> : null}
 					<Route path="/onboarding" element={renderOnboardingRoute()} />
 					<Route path="/" element={renderProtectedRoute(user ? <Home user={user} /> : null)} />
+					<Route path="/move" element={renderProtectedRoute(<Move />)} />
 					<Route
 						path="/charge"
 						element={renderProtectedRoute(user ? <CreateLink user={user} /> : null)}
@@ -255,13 +283,18 @@ function App() {
 						path="/earn"
 						element={renderProtectedRoute(user ? <Earn user={user} /> : null)}
 					/>
+					<Route path="/deposit/binance" element={renderProtectedRoute(<Navigate to="/receive" replace />)} />
 					<Route
-						path="/deposit/binance"
-						element={renderProtectedRoute(user ? <BinanceDeposit user={user} /> : null)}
+						path="/profile"
+						element={renderProtectedRoute(user ? <Profile user={user} /> : null)}
 					/>
 					<Route
 						path="/settings"
 						element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
+					/>
+					<Route
+						path="/test-funds"
+						element={renderProtectedRoute(user ? <TestFunds user={user} /> : null)}
 					/>
 					<Route
 						path="/recover"

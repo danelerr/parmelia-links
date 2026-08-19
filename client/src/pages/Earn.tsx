@@ -5,24 +5,31 @@
 // /earn/prepare → passkey signature → /pay/submit (standard lifecycle), with
 // the shared ConfirmSheet + StageOverlay (UX_DESIGN.md R-4).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { useTranslation } from "react-i18next";
 import { apiFetch } from "../lib/api";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
-import { hexToBytes } from "../lib/hex";
+import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
+import { activeNetwork } from "../lib/activeNetwork";
 import { notifyError } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { formatNumber } from "../lib/format";
 import AmountInput from "../components/AmountInput";
 import Logo from "../components/Logo";
+import MeliSprite from "../components/brand/MeliSprite";
+import PixelRail from "../components/brand/PixelRail";
 import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import ConfirmSheet from "../components/ConfirmSheet";
 import TxResult from "../components/TxResult";
+import { Skeleton } from "../components/Skeleton";
+import SigningDetails from "../components/SigningDetails";
+import PrimaryNav from "../components/PrimaryNav";
+import { MoneyPanel, PanelActions } from "../components/finance/FinancialPrimitives";
 
 interface EarnConfig {
 	enabled: boolean;
@@ -32,19 +39,33 @@ interface EarnConfig {
 	savings: string | null;
 	available: string | null;
 	balanceStatus: "fresh" | "stale" | "unavailable";
+	estimatedEarnings: string | null;
+	protocol: string;
+	networkName: string;
+	poolAddress: string | null;
 }
 
 type Action = "deposit" | "withdraw";
 type Stage = "idle" | "preparing" | "signing" | "sending";
+
+type PreparedEarn = PreparedUserOperation & {
+	summary: {
+		action: Action;
+		amount: string;
+		apyPercent: number;
+		withdrawAll: boolean;
+	};
+};
 
 export default function Earn({ user }: { user: User }) {
 	const { t } = useTranslation();
 	const [config, setConfig] = useState<EarnConfig | null>(null);
 	const [loadFailed, setLoadFailed] = useState(false);
 	const [action, setAction] = useState<Action>("deposit");
+	const actionRef = useRef<Action>("deposit");
 	const [amount, setAmount] = useState("");
 	const [useMax, setUseMax] = useState(false);
-	const [confirming, setConfirming] = useState(false);
+	const [prepared, setPrepared] = useState<PreparedEarn | null>(null);
 	const [stage, setStage] = useState<Stage>("idle");
 	const [result, setResult] = useState<{
 		action: Action;
@@ -60,7 +81,7 @@ export default function Earn({ user }: { user: User }) {
 		result?.pending ? result.userOpHash : null,
 	);
 
-	const loadConfig = useCallback(async (fresh = false) => {
+	const loadConfig = useCallback(async (fresh = false): Promise<EarnConfig | null> => {
 		try {
 			if (!fresh) setLoadFailed(false);
 			const data = await apiFetch<EarnConfig>(
@@ -68,10 +89,10 @@ export default function Earn({ user }: { user: User }) {
 				{ user },
 			);
 			setConfig(data);
-			return true;
+			return data;
 		} catch {
 			if (!fresh) setLoadFailed(true);
-			return false;
+			return null;
 		}
 	}, [user]);
 
@@ -93,7 +114,9 @@ export default function Earn({ user }: { user: User }) {
 	const canContinue =
 		!!config &&
 		(action === "deposit" ? config.canDeposit : config.canWithdraw) &&
-		(useMax || (amountNumber > 0 && amountNumber <= Number(sourceBalance || "0")));
+		(useMax
+			? Number(sourceBalance || "0") > 0
+			: amountNumber > 0 && amountNumber <= Number(sourceBalance || "0"));
 
 	const stageCopy: Record<Exclude<Stage, "idle">, string> = {
 		preparing: t("earn.stagePreparing"),
@@ -102,43 +125,72 @@ export default function Earn({ user }: { user: User }) {
 	};
 
 	function pickAction(next: Action) {
+		actionRef.current = next;
 		setAction(next);
 		setAmount("");
 		setUseMax(false);
 	}
 
-	function useAll() {
-		if (!sourceBalance) return;
-		setAmount(sourceBalance);
+	function handleUseAll() {
+		const requestedAction = action;
+		const currentBalance = sourceBalance;
+		if (!currentBalance || Number(currentBalance) <= 0) return;
+		// Respond immediately with the last evidenced balance. For withdrawals the
+		// Worker resolves Aave's protocol-level max from the live aToken balance,
+		// so this decimal is an estimate for display rather than the execution cap.
+		setAmount(currentBalance);
 		// Only withdrawals support the protocol-level "everything" sentinel
 		// (avoids interest dust accrued between prepare and execution).
-		setUseMax(action === "withdraw");
+		setUseMax(requestedAction === "withdraw");
+
+		// Reconcile the displayed estimate without blocking the tap. If the user
+		// changes action while this is in flight, leave the new form untouched.
+		void loadConfig(true).then((latest) => {
+			if (actionRef.current !== requestedAction) return;
+			const latestBalance = requestedAction === "deposit" ? latest?.available : latest?.savings;
+			if (!latestBalance || Number(latestBalance) <= 0) return;
+			setAmount(latestBalance);
+			setUseMax(requestedAction === "withdraw");
+		});
 	}
 
-	async function handleConfirm() {
+	async function prepareForReview() {
 		if (!config) return;
 		setStage("preparing");
 		try {
-			const prep = await apiFetch<{ userOpHash: string; credentialId: string | null }>(
+			const prep = await apiFetch<PreparedEarn>(
 				"/earn/prepare",
-				{ user, body: { action, amount: useMax ? "max" : amount } },
+				// A numeric amount remains compatible with an older Worker; the
+				// explicit flag tells the current Worker to use Aave's full-withdraw.
+				{ user, body: { action, amount, withdrawAll: useMax } },
 			);
+			userOperationChallenge(prep, activeNetwork.chainId);
+			setPrepared(prep);
+		} catch (err) {
+			notifyError(err, t("earn.error"));
+		} finally {
+			setStage("idle");
+		}
+	}
 
+	async function confirmAndRun() {
+		const prep = prepared;
+		if (!prep) return;
+		setPrepared(null);
+		try {
 			setStage("signing");
 			const assertion = await signWithPasskey(
-				hexToBytes(prep.userOpHash as `0x${string}`),
+				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
 			);
 
 			setStage("sending");
 			const submit = await submitUserOp(user, prep.userOpHash, assertion);
 
-			track(action === "deposit" ? "earn_deposit" : "earn_withdraw", {});
+			track(prep.summary.action === "deposit" ? "earn_deposit" : "earn_withdraw", {});
 			setResult({
-				action,
-				// useAll() already copied the exact source balance into `amount`;
-				// the prepare request alone swaps that value for the "max" sentinel.
-				amount,
+				action: prep.summary.action,
+				amount: prep.summary.amount,
 				pending: !submit.confirmed,
 				userOpHash: prep.userOpHash,
 			});
@@ -152,13 +204,6 @@ export default function Earn({ user }: { user: User }) {
 		}
 	}
 
-	// The gradient CTA only OPENS the review sheet; prepare+sign+submit run only
-	// after an explicit confirmation (same pattern as Pay and Crosschain).
-	function confirmAndRun() {
-		setConfirming(false);
-		void handleConfirm();
-	}
-
 	// ===== Result (success / in-flight / failed) =====
 	if (result) {
 		const opFailed = result.pending && poll.status === "failed";
@@ -168,7 +213,7 @@ export default function Earn({ user }: { user: User }) {
 			poll.status === "confirmed";
 		return (
 			<Screen>
-				<BackHeader to="/" title={t("earn.title")} />
+				<BackHeader to="/" replace title={t("earn.title")} />
 				<TxResult
 					state={opFailed ? "failed" : settled ? "success" : "pending"}
 					lead={
@@ -191,50 +236,63 @@ export default function Earn({ user }: { user: User }) {
 		);
 	}
 
-	const shownAmount = useMax && config ? config.savings : amount;
 	const shownSavings =
 		config?.savings === null || config?.savings === undefined
 			? "—"
-			: formatNumber(config.savings, 2);
+			: formatNumber(config.savings, 6);
 	const shownAvailable =
 		config?.available === null || config?.available === undefined
 			? "—"
-			: formatNumber(config.available, 2);
+			: formatNumber(config.available, 6);
 
 	// ===== Main =====
 	return (
-		<Screen>
+		<Screen withPrimaryNav>
 			<StageOverlay label={stage === "idle" ? null : stageCopy[stage]} spinner={stage !== "signing"} />
-			{confirming && config && (
+			{prepared && config && (
 				<ConfirmSheet
-					title={action === "deposit" ? t("earn.confirmDepositTitle") : t("earn.confirmWithdrawTitle")}
-					amount={formatNumber(shownAmount, 2)}
+					title={prepared.summary.action === "deposit" ? t("earn.confirmDepositTitle") : t("earn.confirmWithdrawTitle")}
+					amount={formatNumber(prepared.summary.amount, 6)}
 					unit="USDC"
 					confirmLabel={t("earn.confirmAction")}
-					onConfirm={confirmAndRun}
-					onCancel={() => setConfirming(false)}
+					onConfirm={() => void confirmAndRun()}
+					onCancel={() => setPrepared(null)}
 				>
 					<p className="text-[13px] text-text-muted leading-relaxed text-center mb-3">
-						{action === "deposit"
-							? t("earn.confirmDepositBody", { amount: formatNumber(shownAmount, 2) })
-							: useMax
-								? t("earn.confirmWithdrawAllBody", { amount: formatNumber(shownAmount, 2) })
-								: t("earn.confirmWithdrawBody", { amount: formatNumber(shownAmount, 2) })}
+						{prepared.summary.action === "deposit"
+							? t("earn.confirmDepositBody", { amount: formatNumber(prepared.summary.amount, 6) })
+							: prepared.summary.withdrawAll
+								? t("earn.confirmWithdrawAllBody", { amount: formatNumber(prepared.summary.amount, 6) })
+								: t("earn.confirmWithdrawBody", { amount: formatNumber(prepared.summary.amount, 6) })}
 					</p>
-					{action === "deposit" && (
+					{prepared.summary.action === "deposit" && (
 						<p className="text-[12px] text-text-faint text-center mb-5">
-							{t("earn.apyLine", { apy: config.apyPercent })}
+							{t("earn.apyLine", { apy: prepared.summary.apyPercent })}
 						</p>
 					)}
+					<SigningDetails payload={prepared.signingPayload} networkName={activeNetwork.name} />
 				</ConfirmSheet>
 			)}
-			<BackHeader to="/" title={t("earn.title")} />
+			<header className="mb-6">
+				<p className="meli-kicker mb-3">{t("earn.eyebrow")}</p>
+				<h1 className="font-display text-[36px] leading-[.94]">{t("earn.title")}</h1>
+				<p className="mt-3 text-[13px] leading-relaxed text-text-muted">{t("earn.intro")}</p>
+			</header>
+			<PixelRail state={config?.enabled ? "done" : "future"} className="mb-5" />
 
 			{!config && !loadFailed && (
-				<div className="flex-1 flex items-center justify-center">
-					<p role="status" aria-live="polite" className="text-[13px] text-text-muted animate-pulse-soft">
-						{t("earn.loading")}
-					</p>
+				<div className="flex-1" aria-busy="true">
+					<div className="rounded-[18px] bg-surface p-5 mb-4 shadow-e1" aria-hidden="true">
+						<Skeleton className="h-3.5 w-24 rounded-[6px] mb-3" />
+						<Skeleton className="h-10 w-40 rounded-[12px] mb-3" />
+						<Skeleton className="h-3 w-28 rounded-[6px]" />
+					</div>
+					<div className="rounded-[18px] bg-surface p-5 shadow-e1" aria-hidden="true">
+						<Skeleton className="h-10 w-full rounded-full mb-5" />
+						<Skeleton className="h-3.5 w-36 rounded-[6px] mb-4" />
+						<Skeleton className="h-10 w-32 rounded-[10px] mb-5" />
+						<Skeleton className="h-12 w-full rounded-full" />
+					</div>
 				</div>
 			)}
 
@@ -258,16 +316,18 @@ export default function Earn({ user }: { user: User }) {
 			{config && config.enabled && (
 				<>
 					{/* Savings card */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mb-4 shadow-e1">
-						<p className="text-[13px] text-text-muted mb-2">{t("earn.savingsLabel")}</p>
-						<p className="font-display text-[38px] leading-none text-text tabular mb-2">
+					<MoneyPanel className="mb-4 min-h-[150px] pr-24">
+						<p className="text-[13px] text-text-muted mb-2">{t("earn.growingLabel")}</p>
+						<p className="type-mono mb-2 text-[38px] font-bold leading-none text-text">
 							{shownSavings} <span className="text-[20px]">USDC</span>
 						</p>
 						<p className="text-[12px] text-text-faint">{t("earn.apyLine", { apy: config.apyPercent })}</p>
-					</div>
+						<p className="mt-3 text-[13px] text-growth">{config.estimatedEarnings === null ? t("earn.earningsUnavailable") : t("earn.earnings", { amount: formatNumber(config.estimatedEarnings, 6) })}</p>
+						<MeliSprite name="body-sleeping" className="pointer-events-none absolute -bottom-3 -right-2 w-28" />
+					</MoneyPanel>
 
 					{/* Action */}
-					<div className="bg-surface border border-border rounded-[18px] p-5 mb-4 shadow-e1">
+					<MoneyPanel className="mb-4">
 						<div className="seg-track w-full mb-4">
 							{(["deposit", "withdraw"] as Action[]).map((a) => (
 								<button
@@ -288,9 +348,9 @@ export default function Earn({ user }: { user: User }) {
 									: t("earn.savedLabel", { balance: shownSavings })}
 							</span>
 							<button
-								onClick={useAll}
+								onClick={handleUseAll}
 								disabled={!sourceBalance}
-								className="text-[12px] text-text-faint hover:text-text-muted transition-colors"
+								className="text-[12px] text-text-faint"
 							>
 								{t("earn.useAll")}
 							</button>
@@ -306,13 +366,15 @@ export default function Earn({ user }: { user: User }) {
 							}}
 							className="w-full bg-transparent font-display text-[34px] leading-none text-text placeholder:text-text-faint tabular mb-4"
 						/>
-						<button
-							onClick={() => setConfirming(true)}
-							disabled={!canContinue || stage !== "idle"}
-							className="btn btn-gradient btn-block"
-						>
-							{t("earn.continue")}
-						</button>
+						<PanelActions>
+							<button
+								onClick={() => void prepareForReview()}
+								disabled={!canContinue || stage !== "idle"}
+								className="btn btn-primary btn-block"
+							>
+								{t("earn.continue")}
+							</button>
+						</PanelActions>
 						{config && action === "deposit" && !config.canDeposit && (
 							<p role="status" aria-live="polite" className="text-[12px] text-text-muted mt-3 text-center">
 								{t("earn.depositsUnavailable")}
@@ -323,20 +385,26 @@ export default function Earn({ user }: { user: User }) {
 								{t("earn.balancesUnavailable")}
 							</p>
 						)}
-					</div>
+					</MoneyPanel>
 
-					{/* Mandatory honest copy (DEFI_DESIGN §7.4) */}
-					<div className="px-1">
-						<p className="text-[12px] text-text-muted mb-2">{t("earn.riskTitle")}</p>
-						<ul className="text-[12px] text-text-faint leading-relaxed list-disc pl-4 flex flex-col gap-1">
+					<details className="meli-paper-card meli-paper-card--strong px-4 py-3">
+						<summary className="min-h-11 cursor-pointer py-3 text-[13px] text-text-muted">{t("earn.detailsTitle")}</summary>
+						<dl className="grid gap-3 pt-4 text-[12px]">
+							<div className="flex justify-between gap-4"><dt className="text-text-faint">{t("earn.protocol")}</dt><dd>{config.protocol}</dd></div>
+							<div className="flex justify-between gap-4"><dt className="text-text-faint">{t("signing.network")}</dt><dd>{config.networkName}</dd></div>
+							{config.poolAddress ? <div><dt className="mb-1 text-text-faint">{t("earn.contract")}</dt><dd className="break-all font-mono text-[11px]">{config.poolAddress}</dd><a className="mt-2 inline-block text-info" href={`${activeNetwork.explorerBaseUrl}/address/${config.poolAddress}`} target="_blank" rel="noopener noreferrer">{t("settings.viewExplorer")} ↗</a></div> : null}
+						</dl>
+						<p className="mt-5 text-[12px] text-text-muted mb-2">{t("earn.riskTitle")}</p>
+						<ul className="text-[12px] text-text-faint leading-relaxed list-disc pl-4 flex flex-col gap-1 pb-2">
 							<li>{t("earn.risk1")}</li>
 							<li>{t("earn.risk2")}</li>
 							<li>{t("earn.risk3")}</li>
 							<li>{t("earn.risk4")}</li>
 						</ul>
-					</div>
+					</details>
 				</>
 			)}
+			<PrimaryNav />
 		</Screen>
 	);
 }
