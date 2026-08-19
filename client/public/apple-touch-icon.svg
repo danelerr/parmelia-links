@@ -7,7 +7,7 @@
     </linearGradient>
   </defs>
   <rect width="128" height="128" fill="#0B0B0F"/>
-  <g transform="translate(16 16) scale(.75)">
+  <g transform="translate(11.52 11.52) scale(.82)">
     <path fill="#050507" d="M16 28V12h28v8h8v8h24v-8h8v-8h28v16h8v60h-8v12h-8v8h-12v8H36v-8H24v-8h-8V88H8V28z"/>
     <path fill="url(#fur)" d="M20 28V16h20v8h8v8h32v-8h8v-8h20v12h8v56h-8v12h-8v8h-8v8H36v-8h-8v-8h-8V84h-8V28z"/>
     <path fill="#CF3433" d="M24 24h12v8h8v12H32v-8h-8zm68 0h12v12h-8v8H84V32h8zM52 32h8v16h-8zm16 0h8v16h-8z"/>
@@ -17,3 +17,4 @@
     <path fill="#F85239" d="M18 112h12v4H18zm80 0h12v4H98z"/>
   </g>
 </svg>
+

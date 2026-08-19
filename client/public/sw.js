@@ -1,22 +1,65 @@
-// Parmelia service worker — minimal and safe by design:
+// GatoPago service worker — minimal and safe by design:
 //   - hashed build assets (/assets/*): cache-first (immutable by filename)
 //   - navigations: network-first with the cached shell as offline fallback
 //   - everything else (API, cross-origin, non-GET): untouched — money flows
 //     must NEVER be served from a cache.
-const CACHE = "parmelia-shell-v2";
+const CACHE = "gatopago-shell-v6";
 const SHELL = "/index.html";
+const PRECACHE = [
+	SHELL,
+	"/manifest.webmanifest",
+	"/favicon.ico",
+	"/apple-touch-icon.png",
+	"/gatopago.svg",
+	"/gatopago-icon.svg",
+	"/icon-192.png",
+	"/icon-512.png",
+	"/maskable-192.png",
+	"/maskable-512.png",
+	"/icon-monochrome.svg",
+	"/badge-96.png",
+];
+const STATIC_ROOT_ASSETS = new Set(PRECACHE.slice(1));
+
+async function precacheAppShell() {
+	const cache = await caches.open(CACHE);
+	const shellResponse = await fetch(SHELL, { cache: "reload" });
+	if (!shellResponse.ok) {
+		throw new Error(`Unable to precache app shell (${shellResponse.status})`);
+	}
+
+	// The service worker is copied from public/ and cannot know Vite's hashed
+	// bundle names ahead of time. Discover every same-origin build asset linked
+	// by the generated HTML so the first successful visit is genuinely offline
+	// capable, even before a controlled page has made any asset requests.
+	const html = await shellResponse.clone().text();
+	const buildAssets = Array.from(
+		html.matchAll(/\b(?:src|href)=["']([^"']+)["']/g),
+		(match) => new URL(match[1], self.location.origin),
+	)
+		.filter(
+			(url) =>
+				url.origin === self.location.origin &&
+				url.pathname.startsWith("/assets/"),
+		)
+		.map((url) => `${url.pathname}${url.search}`);
+
+	await cache.put(SHELL, shellResponse);
+	await Promise.all(
+		[...new Set([...PRECACHE.slice(1), ...buildAssets])].map(async (path) => {
+			const response = await fetch(path, { cache: "reload" });
+			if (!response.ok) {
+				throw new Error(`Unable to precache ${path} (${response.status})`);
+			}
+			await cache.put(path, response);
+		}),
+	);
+}
 
 self.addEventListener("install", (event) => {
-	// Precache the app shell so the very first offline load — before any online
-	// navigation has populated the cache — still has a fallback to render.
-	event.waitUntil(
-		caches
-			.open(CACHE)
-			.then((cache) => cache.add(SHELL))
-			.catch(() => {
-				/* offline shell is a nice-to-have, never blocks activation */
-			}),
-	);
+	// Keep the prior worker active unless the complete new shell was cached.
+	// A partially installed release must not replace a working offline version.
+	event.waitUntil(precacheAppShell());
 	self.skipWaiting();
 });
 
@@ -37,7 +80,7 @@ self.addEventListener("fetch", (event) => {
 	if (url.origin !== self.location.origin) return;
 
 	// Immutable build assets → cache-first.
-	if (url.pathname.startsWith("/assets/")) {
+	if (url.pathname.startsWith("/assets/") || STATIC_ROOT_ASSETS.has(url.pathname)) {
 		event.respondWith(
 			caches.open(CACHE).then(async (cache) => {
 				const hit = await cache.match(request);
@@ -80,7 +123,7 @@ self.addEventListener("push", (event) => {
 	const info = payload.notification || payload.data || {};
 	const isHomeInvalidation =
 		payload.data && payload.data.type === "home.invalidate";
-	const title = info.title || "Parmelia";
+	const title = info.title || "GatoPago";
 	const body = info.body || "";
 	const link = (payload.data && payload.data.link) || "/";
 	const invalidateWindows = self.clients
@@ -88,7 +131,7 @@ self.addEventListener("push", (event) => {
 				.then((clients) => {
 					for (const client of clients) {
 						client.postMessage({
-							type: "PARMELIA_HOME_INVALIDATE",
+							type: "GATOPAGO_HOME_INVALIDATE",
 							stateVersion:
 								payload.data && payload.data.stateVersion,
 						});
@@ -103,8 +146,8 @@ self.addEventListener("push", (event) => {
 			invalidateWindows,
 			self.registration.showNotification(title, {
 				body,
-				icon: "/parmelia.svg",
-				badge: "/parmelia.svg",
+				icon: "/icon-192.png",
+				badge: "/badge-96.png",
 				data: { link },
 			}),
 		]),
@@ -113,7 +156,16 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
 	event.notification.close();
-	const link = (event.notification.data && event.notification.data.link) || "/";
+	const rawLink = (event.notification.data && event.notification.data.link) || "/";
+	let link = "/";
+	try {
+		const target = new URL(rawLink, self.location.origin);
+		if (target.origin === self.location.origin) {
+			link = `${target.pathname}${target.search}${target.hash}`;
+		}
+	} catch {
+		/* malformed or cross-origin notification links fall back to Home */
+	}
 	event.waitUntil(
 		self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
 			for (const client of list) {
