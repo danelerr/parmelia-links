@@ -42,7 +42,10 @@ test("cross-chain checkout is accessible and keyboard reachable", async ({ page 
 			contentType: "application/json",
 			body: JSON.stringify({
 				enabled: true,
-				sources: [{ chainId: 84532, name: "Base Sepolia", domain: 6 }],
+				sources: [
+					{ chainId: 84532, name: "Base Sepolia", domain: 6 },
+					{ chainId: 43113, name: "Avalanche Fuji", domain: 1 },
+				],
 			}),
 		});
 	});
@@ -56,12 +59,19 @@ test("cross-chain checkout is accessible and keyboard reachable", async ({ page 
 	await page.goto("/cc/a11y-user", { waitUntil: "domcontentloaded" });
 	await dismissDesktopNotice(page);
 	await expect(page.getByRole("heading", { level: 1, name: "@a11y-user" })).toBeVisible();
-	await expect(page.getByRole("button", { name: "Base Sepolia" })).toBeVisible();
+	const networkTrigger = page.getByRole("button", { name: /red|network/i });
+	await expect(networkTrigger).toBeVisible();
 	await expectNoWcagViolations(page);
+	await networkTrigger.click();
+	const networkList = page.getByRole("listbox", { name: /red|network/i });
+	await expect(networkList).toBeVisible();
+	await networkList.getByRole("option", { name: "Avalanche Fuji" }).click();
+	await expect(networkTrigger).toContainText("Avalanche Fuji");
 
 	const amount = page.getByRole("textbox", { name: /monto|amount/i });
 	await tabTo(page, amount);
-	await amount.fill("12.5");
+	await amount.fill("12,5");
+	await expect(amount).toHaveValue("12.5");
 	await expect(page.getByRole("button", { name: /conectar|connect/i })).toBeEnabled();
 	const width = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
 	expect(width.document).toBeLessThanOrEqual(width.viewport + 1);

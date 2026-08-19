@@ -1,5 +1,5 @@
 apis:
-  parmelia@v1:
+  gatopago@v1:
     root: ./docs/openapi.yaml
 
 extends:

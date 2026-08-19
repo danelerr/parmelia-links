@@ -6,14 +6,25 @@ packages:
 minimumReleaseAge: 10080
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
-auditConfig:
-  # GHSA-qwww-vcr4-c8h2 affects only unstable React Router RSC APIs. Parmelia is
-  # a Vite SPA and CI forbids those imports via check:router-rsc. Remove this
-  # exact exception as soon as the announced fixed npm release is available.
-  ignoreGhsas:
-    - GHSA-qwww-vcr4-c8h2
+trustPolicyExclude:
+  - semver@6.3.1
+  - sileo@0.1.5
+overrides:
+  '@grpc/grpc-js@<1.9.16': '>=1.9.16'
+  'protobufjs@<7.6.3': '>=7.6.3'
+  'ws@<8.21.0': '>=8.21.0'
+  'esbuild@>=0.18.0 <0.28.1': '>=0.28.1'
+  'picomatch@>=4.0.0 <4.0.4': '>=4.0.4'
+  'postcss@<8.5.23': '>=8.5.23'
+  'nanoid@<3.3.18': '>=3.3.18'
+  'websocket-driver@<0.7.5': '>=0.7.5'
 allowBuilds:
+  '@firebase/util': false
   '@swc/core': false
   esbuild: false
   sharp: false
   workerd: false
+minimumReleaseAgeExclude:
+  - flatted@3.4.2
+  - brace-expansion@5.0.5 || 5.0.6 || 5.0.7 || 5.0.8 || 5.0.9
+  - '@babel/core@7.29.1'

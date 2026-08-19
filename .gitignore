@@ -46,3 +46,5 @@ backups/
 # The `npx skills` toolchain has no "install everything from skills-lock.json"
 # command yet (vercel-labs/skills#283), so the only restore path is re-adding each
 # skill by hand. Once that command ships, gitignore .agents/ and restore from the lockfile.
+
+.vercel

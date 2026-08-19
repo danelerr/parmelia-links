@@ -1,7 +1,7 @@
 {
-  "name": "parmelia-links",
+  "name": "gatopago",
   "private": true,
-  "packageManager": "pnpm@10.31.0",
+  "packageManager": "pnpm@11.21.0",
   "scripts": {
     "preverify": "pnpm build:contracts",
     "dev:client": "pnpm --filter client dev",
@@ -17,7 +17,7 @@
     "test:e2e": "playwright test",
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "check:rpc-indexer": "node scripts/check-rpc-indexer.mjs",
-    "check:openapi": "redocly lint parmelia@v1",
+    "check:openapi": "redocly lint gatopago@v1",
     "check:home-no-rpc": "node scripts/check-home-no-rpc.mjs",
     "check:router-rsc": "node scripts/check-react-router-rsc.mjs",
     "check:server-console": "node scripts/check-server-console.mjs",
@@ -35,22 +35,11 @@
     "install:all": "pnpm install && cd contracts && forge install"
   },
   "engines": {
-    "node": "22.x"
-  },
-  "pnpm": {
-    "overrides": {
-      "@grpc/grpc-js@<1.9.16": ">=1.9.16",
-      "protobufjs@<7.6.3": ">=7.6.3",
-      "ws@<8.21.0": ">=8.21.0",
-      "esbuild@>=0.18.0 <0.28.1": ">=0.28.1",
-      "picomatch@>=4.0.0 <4.0.4": ">=4.0.4",
-      "postcss@<8.5.18": ">=8.5.18",
-      "websocket-driver@<0.7.5": ">=0.7.5"
-    }
+    "node": ">=24.0.0 <25"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.12.1",
-    "@playwright/test": "^1.61.1",
-    "@redocly/cli": "2.37.0"
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.62.1",
+    "@redocly/cli": "2.46.1"
   }
 }

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const FORMAT = "parmelia-release-v1";
+const FORMAT = "gatopago-release-v1";
 const MANIFEST_NAME = "release-manifest.json";
 const MAX_FILES = 20_000;
 const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
@@ -191,7 +191,7 @@ async function expectFailure(action, pattern) {
 }
 
 async function drill() {
-	const root = await mkdtemp(path.join(tmpdir(), "parmelia-release-drill-"));
+	const root = await mkdtemp(path.join(tmpdir(), "gatopago-release-drill-"));
 	try {
 		await mkdir(path.join(root, "nested"));
 		await writeFile(path.join(root, "index.js"), "export default {};\n", "utf8");

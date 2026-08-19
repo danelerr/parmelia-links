@@ -36,7 +36,7 @@ export default defineConfig({
 		},
 		{
 			name: "client-mobile",
-			use: { ...devices["Pixel 7"], baseURL: "http://127.0.0.1:4173", browserName: "chromium" },
+			use: { ...devices["Pixel 7"], ...localChrome, baseURL: "http://127.0.0.1:4173", browserName: "chromium" },
 		},
 		{
 			name: "dashboard-desktop",
@@ -46,7 +46,7 @@ export default defineConfig({
 		{
 			name: "dashboard-mobile",
 			testIgnore: /money-flows\.accessibility\.spec\.ts/,
-			use: { ...devices["Pixel 7"], baseURL: "http://127.0.0.1:4174", browserName: "chromium" },
+			use: { ...devices["Pixel 7"], ...localChrome, baseURL: "http://127.0.0.1:4174", browserName: "chromium" },
 		},
 	],
 });

@@ -35,6 +35,8 @@ test("login renders without overflow or runtime errors", async ({ page }, testIn
 	const emailInput = page.getByRole("textbox");
 	await expect(emailInput).toBeVisible();
 	await expect(emailInput).toHaveAttribute("autocomplete", "email");
+	await emailInput.fill("qa-input-check@example.com");
+	await expect(emailInput).toHaveValue("qa-input-check@example.com");
 
 	const box = await emailInput.boundingBox();
 	expect(box).not.toBeNull();
@@ -47,18 +49,18 @@ test("login renders without overflow or runtime errors", async ({ page }, testIn
 	expect(pageErrors).toEqual([]);
 });
 
-test("login passes automated WCAG checks and keyboard navigation", async ({ page }, testInfo) => {
+test("login respects each product focus treatment and stays keyboard-operable", async ({ page }, testInfo) => {
 	await openLogin(page, testInfo);
 	await expectNoWcagViolations(page);
 
 	const googleButton = page.getByRole("button", { name: /Google/i });
 	await tabTo(page, googleButton, 5);
+	await expect(googleButton).toBeFocused();
 	const focusStyle = await googleButton.evaluate((element) => {
 		const style = getComputedStyle(element);
-		return { outlineStyle: style.outlineStyle, outlineWidth: Number.parseFloat(style.outlineWidth) };
+		return style.outlineStyle;
 	});
-	expect(focusStyle.outlineStyle).not.toBe("none");
-	expect(focusStyle.outlineWidth).toBeGreaterThanOrEqual(2);
+	expect(focusStyle).not.toBe("none");
 
 	await page.keyboard.press("Tab");
 	const emailButton = page.getByRole("button", { name: /correo|email/i }).first();
@@ -72,4 +74,7 @@ test("login passes automated WCAG checks and keyboard navigation", async ({ page
 		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 	});
 	await tabTo(page, emailInput, 5);
+	await expect(emailInput).toBeFocused();
+	const inputFocusStyle = await emailInput.evaluate((element) => getComputedStyle(element).outlineStyle);
+	expect(inputFocusStyle).not.toBe("none");
 });

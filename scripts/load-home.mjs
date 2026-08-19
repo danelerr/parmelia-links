@@ -84,14 +84,15 @@ function parseTokenFile(raw) {
 }
 
 async function tokensFor(options) {
-	if (process.env.PARMELIA_LOAD_TOKEN) {
-		return [process.env.PARMELIA_LOAD_TOKEN.trim()];
+	const loadToken = process.env.GATOPAGO_LOAD_TOKEN || process.env.PARMELIA_LOAD_TOKEN;
+	if (loadToken) {
+		return [loadToken.trim()];
 	}
 	if (options.tokenFile) {
 		return parseTokenFile(await readFile(options.tokenFile, "utf8"));
 	}
 	throw new Error(
-		"Set PARMELIA_LOAD_TOKEN or provide --token-file with one or more tokens (never pass tokens on the command line)",
+		"Set GATOPAGO_LOAD_TOKEN or provide --token-file with one or more tokens (never pass tokens on the command line)",
 	);
 }
 

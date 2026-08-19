@@ -29,8 +29,11 @@ const serverDir = resolve(rootDir, "server");
 const remoteConfigPath = resolve(serverDir, "wrangler.jsonc");
 const migrationsDir = resolve(serverDir, "migrations");
 const wranglerCli = resolve(serverDir, "node_modules", "wrangler", "bin", "wrangler.js");
-const database = "PARMELIA_DB";
-const magic = Buffer.from("PARMELIA_D1_BACKUP_V1\n", "ascii");
+const database = "GATOPAGO_DB";
+const backupFormat = "GATOPAGO_D1_BACKUP_V1";
+const legacyBackupFormat = "PARMELIA_D1_BACKUP_V1";
+const magic = Buffer.from(`${backupFormat}\n`, "ascii");
+const legacyMagic = Buffer.from(`${legacyBackupFormat}\n`, "ascii");
 const nonceLength = 12;
 const tagLength = 16;
 const requiredTables = [
@@ -101,12 +104,12 @@ function localArgs(cwd) {
 
 function writeDrillConfig(cwd) {
   const config = {
-    name: "parmelia-d1-restore-drill",
+    name: "gatopago-d1-restore-drill",
     compatibility_date: "2026-07-14",
     d1_databases: [
       {
         binding: database,
-        database_name: "parmeliadb-restore-drill",
+        database_name: "gatopagodb-restore-drill",
         database_id: "00000000-0000-0000-0000-000000000001",
         migrations_dir: migrationsDir,
       },
@@ -181,7 +184,9 @@ async function sha256File(path) {
 async function encryptFile(source, destination, key) {
   if (existsSync(destination)) throw new Error(`Refusing to overwrite ${destination}`);
   const nonce = randomBytes(nonceLength);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce, {
+    authTagLength: tagLength,
+  });
   const plaintextHash = createHash("sha256");
 
   writeFileSync(destination, Buffer.concat([magic, nonce]), { flag: "wx", mode: 0o600 });
@@ -212,12 +217,15 @@ async function decryptFile(source, destination, key, expected) {
     const tag = Buffer.alloc(tagLength);
     await file.read(header, 0, header.length, 0);
     await file.read(tag, 0, tag.length, size - tagLength);
-    if (!header.subarray(0, magic.length).equals(magic)) {
+		const fileMagic = header.subarray(0, magic.length);
+    if (!fileMagic.equals(magic) && !fileMagic.equals(legacyMagic)) {
       throw new Error("Unsupported D1 backup format");
     }
 
     const nonce = header.subarray(magic.length);
-    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+    const decipher = createDecipheriv("aes-256-gcm", key, nonce, {
+      authTagLength: tagLength,
+    });
     decipher.setAuthTag(tag);
     const plaintextHash = createHash("sha256");
     await pipeline(
@@ -238,14 +246,14 @@ async function decryptFile(source, destination, key, expected) {
 }
 
 async function makeTempDir(label) {
-  return mkdtemp(join(tmpdir(), `parmelia-d1-${label}-`));
+  return mkdtemp(join(tmpdir(), `gatopago-d1-${label}-`));
 }
 
 async function removeTempDir(path) {
   const absolute = resolve(path);
   const tempRoot = resolve(tmpdir());
-  if (!absolute.startsWith(`${tempRoot}${sep}`) || !basename(absolute).startsWith("parmelia-d1-")) {
-    throw new Error(`Refusing to remove non-Parmelia temp path: ${absolute}`);
+  if (!absolute.startsWith(`${tempRoot}${sep}`) || !basename(absolute).startsWith("gatopago-d1-")) {
+    throw new Error(`Refusing to remove non-GatoPago temp path: ${absolute}`);
   }
   await rm(absolute, { recursive: true, force: true });
 }
@@ -339,7 +347,7 @@ async function runDrill() {
     writeFileSync(
       `${encrypted}.manifest.json`,
       `${JSON.stringify({
-        format: "PARMELIA_D1_BACKUP_V1",
+        format: backupFormat,
         encryptedFile: basename(encrypted),
         encryptedBytes: statSync(encrypted).size,
         keyId: "restore-drill",
@@ -367,7 +375,7 @@ async function runRemoteBackup(outputArg) {
   const timestamp = new Date().toISOString().replaceAll(":", "-");
   const output = outputArg
     ? resolve(rootDir, outputArg)
-    : resolve(rootDir, "backups", `parmeliadb-${timestamp}.sql.enc`);
+    : resolve(rootDir, "backups", `gatopagodb-${timestamp}.sql.enc`);
   if (!isAbsolute(output)) throw new Error("Backup output must resolve to an absolute path");
   if (!output.endsWith(".sql.enc")) throw new Error("Backup output must end in .sql.enc");
   if (existsSync(output) || existsSync(`${output}.manifest.json`)) {
@@ -403,7 +411,7 @@ async function runRemoteBackup(outputArg) {
     await decryptFile(output, decrypted, key, checksums);
     const verification = await verifyRestore(decrypted, { expectFixture: false });
     const manifest = {
-      format: "PARMELIA_D1_BACKUP_V1",
+      format: backupFormat,
       database,
       exportedAt: new Date().toISOString(),
       encryptedFile: basename(output),
@@ -434,7 +442,7 @@ function loadManifest(encryptedPath) {
   if (!existsSync(manifestPath)) throw new Error(`Backup manifest not found: ${manifestPath}`);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (
-    manifest.format !== "PARMELIA_D1_BACKUP_V1" ||
+    ![backupFormat, legacyBackupFormat].includes(manifest.format) ||
     manifest.encryptedFile !== basename(encryptedPath) ||
     manifest.encryptedBytes !== statSync(encryptedPath).size ||
     typeof manifest.keyId !== "string" ||
