@@ -15,7 +15,7 @@
 //   - quotes expire (60s) and are re-checked against the pool before preparing
 
 import { Hono } from "hono";
-import { formatUnits, parseUnits, type Hex } from "viem";
+import { formatUnits, type Hex } from "viem";
 import { erc20Abi, getNetworkConfig, getTokenBySymbol, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import { getPublicClient } from "../services/clients";
@@ -34,6 +34,7 @@ import {
 	applySlippage,
 	describeRoute,
 	quoteBestRoute,
+	resolveSwapAmountInput,
 	resolveFeePolicy,
 } from "../services/swap";
 import {
@@ -96,15 +97,6 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 		}
 
 		const amountRawStr = typeof body.amountIn === "string" ? body.amountIn.trim() : "";
-		let amountIn: bigint;
-		try {
-			amountIn = parseUnits(amountRawStr, tokenIn.decimals);
-		} catch {
-			return c.json({ error: "Monto inválido.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
-		}
-		if (amountIn <= 0n) {
-			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
-		}
 
 		let slippageBps = DEFAULT_SLIPPAGE_BPS;
 		if (body.slippageBps !== undefined) {
@@ -131,6 +123,21 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 					args: [account],
 				})) as bigint)
 			: await publicClient.getBalance({ address: account });
+		let amountIn: bigint;
+		let isMax: boolean;
+		try {
+			({ amountIn, isMax } = resolveSwapAmountInput(
+				amountRawStr,
+				tokenIn.decimals,
+				balance,
+				body.useMax === true,
+			));
+		} catch {
+			return c.json({ error: "Monto inválido.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
+		}
+		if (amountIn <= 0n) {
+			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
+		}
 		if (balance < amountIn) {
 			return c.json(
 				{
@@ -180,6 +187,7 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 			expiresAt: expiresAt.toISOString(),
 		});
 
+		const resolvedAmount = formatUnits(amountIn, tokenIn.decimals);
 		logInfo("swap_quote_created", {
 			requestId,
 			uid: user.sub,
@@ -187,19 +195,26 @@ swapRoutes.post("/quote", requireAuth, async (c) => {
 			pair: `${tokenIn.symbol}->${tokenOut.symbol}`,
 			protocol: best.route.protocol,
 			poolFee: best.route.fee,
-			amountIn: amountRawStr,
+			amountIn: resolvedAmount,
+			isMax,
 		});
 
+		const gatoPagoFeeBps = Number(feeBps);
+		const gatoPagoFee = formatUnits(feeAmount, tokenOut.decimals);
 		return c.json({
 			quoteId,
 			chainId: network.chainId,
 			tokenIn: tokenIn.symbol,
 			tokenOut: tokenOut.symbol,
-			amountIn: amountRawStr,
+			amountIn: resolvedAmount,
+			isMax,
 			amountOutEstimated: formatUnits(netAmount, tokenOut.decimals),
 			minimumAmountOut: formatUnits(minimumAmountOut, tokenOut.decimals),
-			parmeliaFeeBps: Number(feeBps),
-			parmeliaFee: formatUnits(feeAmount, tokenOut.decimals),
+			gatoPagoFeeBps,
+			gatoPagoFee,
+			// Compatibility aliases for integrations built before GatoPago.
+			parmeliaFeeBps: gatoPagoFeeBps,
+			parmeliaFee: gatoPagoFee,
 			gasEstimate: best.gasEstimate.toString(),
 			gasSponsored: true,
 			route: describeRoute(best.route),
@@ -336,7 +351,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 
 		const executeCalldata = encodeExecuteBatch(calls);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: SWAP_CALL_GAS_LIMIT,
@@ -376,6 +391,7 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 		return c.json({
 			userOpHash,
 			credentialId: profile.credentialId ?? null,
+			signingPayload,
 			summary: {
 				tokenIn: quote.tokenIn,
 				tokenOut: quote.tokenOut,

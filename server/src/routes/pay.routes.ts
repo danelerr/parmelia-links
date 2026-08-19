@@ -231,7 +231,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			executeCalldata = buildExecuteCalldata(recipientAddress, ethAmount, "0x");
 		}
 
-		const { userOp, userOpHash, chainId } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, chainId, signingPayload } = await buildSponsoredUserOp(c.env, {
 			sender: senderAddress as `0x${string}`,
 			callData: executeCalldata,
 			transportMode: submissionTransport,
@@ -261,7 +261,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			chainId,
 			submissionTransport,
 		});
-		return c.json({ userOpHash, credentialId, submissionTransport });
+		return c.json({ userOpHash, credentialId, submissionTransport, signingPayload });
 	} catch (error) {
 		const user = c.get("user");
 		logError("payment_prepare_failed", error, { requestId, uid: user?.sub ?? null });
@@ -305,9 +305,9 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		}
 
 		// Narrow the double-payment window: re-check the link (and any backing
-		// intent) at submit time, not just at prepare. The post-chain
-		// markPaymentLinkPaid guard is the last line of defense; this check stops
-		// the second payer BEFORE their funds move on-chain.
+		// intent) at submit time, not just at prepare. The post-chain atomic
+		// settlement guard is the last line of defense; this check stops the
+		// second payer BEFORE their funds move on-chain.
 		if (!NON_PAYMENT_CURRENCIES.has(pending.currency) && isStoredPaymentLink(pending.linkId)) {
 			const linkNow = await getPaymentLinkById(c.env, pending.linkId);
 			if (linkNow?.status === "paid") {
@@ -611,7 +611,6 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			error.possiblySubmitted &&
 			userOpHashForLog
 		) {
-			submissionAccepted = true;
 			const ambiguousTransport = error.transport ?? "bundler";
 			await setPendingPaymentSubmitted(
 				c.env,

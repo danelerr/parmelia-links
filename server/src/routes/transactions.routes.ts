@@ -74,6 +74,8 @@ txRoutes.get("/", requireAuth, async (c) => {
 			reference: e.reference ?? "",
 			createdAt: e.createdAt,
 			kind: e.kind,
+			counterpartyUsername: e.counterpartyUsername ?? null,
+			counterpartyDisplayName: e.counterpartyDisplayName ?? null,
 		}));
 
 	const received = entries
@@ -88,6 +90,8 @@ txRoutes.get("/", requireAuth, async (c) => {
 			paidBy: e.counterparty ?? "",
 			createdAt: e.createdAt,
 			kind: e.kind,
+			counterpartyUsername: e.counterpartyUsername ?? null,
+			counterpartyDisplayName: e.counterpartyDisplayName ?? null,
 		}));
 
 	return c.json({

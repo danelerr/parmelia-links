@@ -1,12 +1,12 @@
-// Cross-chain outbound (Flow B): a Parmelia user sends USDC from Arbitrum to
-// another CCTP chain. CCTP v2 direct via the ParmeliaCrosschainRouter:
+// Cross-chain outbound (Flow B): a GatoPago user sends USDC from Arbitrum to
+// another CCTP chain. CCTP v2 direct via the legacy-named ParmeliaCrosschainRouter:
 //   POST /crosschain/quote   → fee + amount-out estimate (stateless, deterministic)
 //   POST /crosschain/prepare → builds the ERC-7821 batch (approve + bridgeUSDC) as a
 //                              sponsored UserOp; the client signs it and submits via
 //                              the existing /pay/submit, which records the op.
 //
 // Security: token is always USDC (router-immutable), amount/recipient/domains are
-// validated server-side, fee is recomputed fresh (no stale quote), and the Parmelia
+// validated server-side, fee is recomputed fresh (no stale quote), and the GatoPago
 // fee is capped both here and on-chain (MAX_FEE_BPS = 1%).
 
 import { Hono } from "hono";
@@ -76,7 +76,7 @@ const cctpTokenMessengerAbi = [
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const USDC_DECIMALS = 6;
-const MAX_PARMELIA_FEE_BPS = 100n; // mirrors the contract cap (1%)
+const MAX_GATOPAGO_FEE_BPS = 100n; // mirrors the contract cap (1%)
 /** Comfortable maxFee cap so Fast always triggers (real CCTP fast fee ~1.3 bps). */
 const CCTP_FAST_MAX_BPS = 10n; // 0.1%
 /** Display-only estimate of the CCTP fast fee (Arbitrum source ~1.3 bps). */
@@ -132,14 +132,14 @@ function isInboundEnabled(env: Bindings): boolean {
 function computeAmounts(crosschainFeeBps: string | undefined, amountRaw: bigint, mode: Mode) {
 	let feeBps = BigInt(crosschainFeeBps || "0");
 	if (feeBps < 0n) feeBps = 0n;
-	if (feeBps > MAX_PARMELIA_FEE_BPS) feeBps = MAX_PARMELIA_FEE_BPS;
-	const parmeliaFee = (amountRaw * feeBps) / 10_000n;
-	const net = amountRaw - parmeliaFee;
+	if (feeBps > MAX_GATOPAGO_FEE_BPS) feeBps = MAX_GATOPAGO_FEE_BPS;
+	const gatoPagoFee = (amountRaw * feeBps) / 10_000n;
+	const net = amountRaw - gatoPagoFee;
 	const cctpFee = mode === "fast" ? (net * CCTP_FAST_FEE_EST_NUM) / CCTP_FAST_FEE_EST_DEN : 0n;
 	const maxFee = mode === "fast" ? ceilDiv(net * CCTP_FAST_MAX_BPS, 10_000n) : 0n;
 	const minFinalityThreshold = mode === "fast" ? 1000 : 2000;
 	const amountOut = net > cctpFee ? net - cctpFee : 0n;
-	return { feeBps, parmeliaFee, net, cctpFee, maxFee, minFinalityThreshold, amountOut };
+	return { feeBps, gatoPagoFee, net, cctpFee, maxFee, minFinalityThreshold, amountOut };
 }
 
 // GET /crosschain/config - what the UI may offer.
@@ -196,17 +196,22 @@ crosschainRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
-		const a = computeAmounts(c.env.PARMELIA_CROSSCHAIN_FEE_BPS, amountRaw, mode);
+		const a = computeAmounts(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
+		const gatoPagoFee = formatUnits(a.gatoPagoFee, USDC_DECIMALS);
+		const gatoPagoFeeBps = Number(a.feeBps);
 		return c.json({
 			token: "USDC",
 			mode,
 			destinationChainId: dest.chainId,
 			amountIn: formatUnits(amountRaw, USDC_DECIMALS),
-			parmeliaFee: formatUnits(a.parmeliaFee, USDC_DECIMALS),
-			parmeliaFeeBps: Number(a.feeBps),
+			gatoPagoFee,
+			gatoPagoFeeBps,
+			// Compatibility aliases; remove only after all API clients migrate.
+			parmeliaFee: gatoPagoFee,
+			parmeliaFeeBps: gatoPagoFeeBps,
 			cctpFeeEstimated: formatUnits(a.cctpFee, USDC_DECIMALS),
 			amountOutEstimated: formatUnits(a.amountOut, USDC_DECIMALS),
 			estimatedMinutes: mode === "fast" ? 1 : 15,
@@ -275,7 +280,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			);
 		}
 
-		const a = computeAmounts(c.env.PARMELIA_CROSSCHAIN_FEE_BPS, amountRaw, mode);
+		const a = computeAmounts(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
@@ -304,7 +309,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			args: [
 				opId,
 				amountRaw,
-				a.parmeliaFee,
+				a.gatoPagoFee,
 				dest.domain,
 				mintRecipient,
 				a.maxFee,
@@ -318,7 +323,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		];
 		const executeCalldata = encodeExecuteBatch(calls);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: CROSSCHAIN_CALL_GAS_LIMIT,
@@ -349,7 +354,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			attestation: null,
 			token: "USDC",
 			amountIn: amountRaw.toString(),
-			parmeliaFee: a.parmeliaFee.toString(),
+			gatoPagoFee: a.gatoPagoFee.toString(),
 			maxFee: a.maxFee.toString(),
 			minFinalityThreshold: a.minFinalityThreshold,
 			cctpFeeEstimated: a.cctpFee.toString(),
@@ -382,7 +387,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 				destinationDomain: dest.domain,
 				recipient,
 				amountIn: amountRaw.toString(),
-				parmeliaFee: a.parmeliaFee.toString(),
+				gatoPagoFee: a.gatoPagoFee.toString(),
 				maxFee: a.maxFee.toString(),
 				minFinalityThreshold: a.minFinalityThreshold,
 				cctpFeeEstimated: a.cctpFee.toString(),
@@ -399,16 +404,20 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			mode,
 		});
 
+		const summaryGatoPagoFee = formatUnits(a.gatoPagoFee, USDC_DECIMALS);
 		return c.json({
 			userOpHash,
 			// For GET /crosschain/status/:opId once the burn is submitted.
 			opId,
 			credentialId: profile?.credentialId ?? null,
+			signingPayload,
 			summary: {
 				token: "USDC",
 				amountIn: formatUnits(amountRaw, USDC_DECIMALS),
 				amountOutEstimated: formatUnits(a.amountOut, USDC_DECIMALS),
-				parmeliaFee: formatUnits(a.parmeliaFee, USDC_DECIMALS),
+				gatoPagoFee: summaryGatoPagoFee,
+				parmeliaFee: summaryGatoPagoFee,
+				cctpFeeEstimated: formatUnits(a.cctpFee, USDC_DECIMALS),
 				destinationChainId: dest.chainId,
 				destinationName: dest.name,
 				recipient,
@@ -422,8 +431,8 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 	}
 });
 
-// ===== Inbound (Flow A): an EXTERNAL wallet pays a Parmelia user. Public routes
-// (the payer has no Parmelia account). The payer calls CCTP's TokenMessenger
+// ===== Inbound (Flow A): an EXTERNAL wallet pays a GatoPago user. Public routes
+// (the payer has no GatoPago account). The payer calls CCTP's TokenMessenger
 // directly on the source chain; the relayer mints on Arbitrum (destination). =====
 
 // GET /crosschain/inbound/config - source chains the checkout may offer.
@@ -452,7 +461,7 @@ crosschainRoutes.get("/inbound/config", async (c) => {
 crosschainRoutes.post("/inbound/prepare", async (c) => {
 	const requestId = c.get("requestId");
 	try {
-		// Public endpoint (the external payer has no Parmelia session): cap the
+		// Public endpoint (the external payer has no GatoPago session): cap the
 		// per-IP rate so it can't be used to spam operation rows.
 		const ip = c.req.header("CF-Connecting-IP") || "unknown";
 		if (!(await rateLimitConsume(c.env, "cc-in-prepare", ip, 20, 3600, { failClosed: true }))) {
@@ -480,7 +489,7 @@ crosschainRoutes.post("/inbound/prepare", async (c) => {
 		}
 		const mode: Mode = body.mode === "standard" ? "standard" : "fast";
 
-		// Resolve the recipient (Parmelia user) from a username or their address.
+		// Resolve the recipient (GatoPago user) from a username or their address.
 		const recipientInput = typeof body.recipient === "string" ? body.recipient.trim() : "";
 		const recipientUser = isAddress(recipientInput)
 			? await getUserByWallet(c.env, recipientInput)
@@ -500,7 +509,7 @@ crosschainRoutes.post("/inbound/prepare", async (c) => {
 			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
-		// Inbound v1 charges no Parmelia fee (feeBps "0"); only the CCTP fast fee.
+		// Inbound v1 charges no GatoPago fee (feeBps "0"); only the CCTP fast fee.
 		const a = computeAmounts("0", amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre la comisión de red.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
@@ -548,7 +557,7 @@ crosschainRoutes.post("/inbound/prepare", async (c) => {
 			attestation: null,
 			token: "USDC",
 			amountIn: amountRaw.toString(),
-			parmeliaFee: "0",
+			gatoPagoFee: "0",
 			maxFee: a.maxFee.toString(),
 			minFinalityThreshold: a.minFinalityThreshold,
 			cctpFeeEstimated: a.cctpFee.toString(),

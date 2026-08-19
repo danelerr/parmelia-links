@@ -280,7 +280,7 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 
 	try {
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData: callData as Hex,
 			verificationGasLimit: 400000n,
@@ -304,6 +304,7 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 			userOpHash,
 			credentialId: profile?.credentialId ?? null,
 			submissionTransport,
+			signingPayload,
 		});
 	} catch (error) {
 		logError("account_passkey_prepare_failed", error, { uid: user.sub });

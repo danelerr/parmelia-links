@@ -19,6 +19,7 @@ import {
 	buildDepositCalls,
 	buildWithdrawCalls,
 	getEarnStatus,
+	isWithdrawAllRequest,
 	isEarnConfigured,
 } from "../services/earn";
 import { createPendingPayment, getUserByUid } from "../services/storage";
@@ -26,8 +27,6 @@ import { buildSponsoredUserOp, encodeExecuteBatch, serializeBigInts } from "../s
 import { logError, logInfo } from "../services/logger";
 import { selectUserOperationTransport } from "../services/userOperationTransport";
 import { readBalanceModel } from "../services/homeReadModel";
-import { formatSnapshotBalances } from "../services/balanceReadModel";
-import { refreshWalletBalancesLatest } from "../services/balanceReconciler";
 
 const earnRoutes = new Hono<AppContext>();
 
@@ -37,43 +36,68 @@ const EARN_CALL_GAS_LIMIT = 600000n;
 earnRoutes.get("/config", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
-	const [status, initialModel] = await Promise.all([
+	const initialModelPromise = readBalanceModel(c.env, user.sub);
+	const liveBalancesPromise = c.req.query("fresh") === "1"
+		? initialModelPromise.then(async (model) => {
+			if (!model.walletAddress || !network.aave) return null;
+			try {
+				const publicClient = getPublicClient(c.env);
+				const [availableRaw, savingsRaw] = await publicClient.multicall({
+					allowFailure: false,
+					contracts: [
+						{
+							address: network.contracts.usdc,
+							abi: erc20Abi,
+							functionName: "balanceOf",
+							args: [model.walletAddress],
+						},
+						{
+							address: network.aave.aUsdc,
+							abi: erc20Abi,
+							functionName: "balanceOf",
+							args: [model.walletAddress],
+						},
+					],
+				});
+				return {
+					available: formatUnits(availableRaw, network.contracts.usdcDecimals),
+					savings: formatUnits(savingsRaw, network.contracts.usdcDecimals),
+				};
+			} catch (error) {
+				// This endpoint is an interactive view, not an accounting write. Keep
+				// the block-evidenced read model when the single multicall is unavailable.
+				logError("earn_interactive_balance_refresh_failed", error, {
+					uid: user.sub,
+				});
+				return null;
+			}
+		})
+		: Promise.resolve(null);
+
+	const [status, initialModel, tracked, liveBalances] = await Promise.all([
 		getEarnStatus(c.env).catch(() => ({
 			enabled: false,
 			canDeposit: false,
 			canWithdraw: false,
 			apyPercent: 0,
 		})),
-		readBalanceModel(c.env, user.sub),
+		initialModelPromise,
+		c.env.GATOPAGO_DB.prepare(
+			`SELECT
+			   COALESCE(SUM(CASE WHEN direction = 'out' THEN CAST(amount AS REAL) ELSE 0 END), 0) AS deposits,
+			   COALESCE(SUM(CASE WHEN direction = 'in' THEN CAST(amount AS REAL) ELSE 0 END), 0) AS withdrawals
+			 FROM ledger WHERE uid = ? AND kind = 'earn' AND canonical = 1`,
+		).bind(user.sub).first<{ deposits: number; withdrawals: number }>(),
+		liveBalancesPromise,
 	]);
 
-	let savings = initialModel.balance.savings;
-	let available = initialModel.balance.tokens.USDC ?? null;
-	let balanceStatus = initialModel.balance.status;
-	if (
-		c.req.query("fresh") === "1" &&
-		initialModel.walletAddress &&
-		network.aave
-	) {
-		try {
-			const snapshots = await refreshWalletBalancesLatest(c.env, {
-				uid: user.sub,
-				accountAddress: initialModel.walletAddress,
-				chainId: network.chainId,
-			});
-			const balances = formatSnapshotBalances(snapshots);
-			available = balances.USDC ?? available;
-			savings = balances.aUSDC ?? savings;
-			balanceStatus = "fresh";
-		} catch (error) {
-			// Keep the last known D1 values. A transient provider failure must not
-			// turn a real position into a fake zero balance.
-			logError("earn_interactive_balance_refresh_failed", error, {
-				uid: user.sub,
-			});
-		}
-	}
+	const savings = liveBalances?.savings ?? initialModel.balance.savings;
+	const available = liveBalances?.available ?? initialModel.balance.tokens.USDC ?? null;
+	const balanceStatus = liveBalances ? "fresh" : initialModel.balance.status;
 
+	const estimatedEarnings = savings === null
+		? null
+		: Math.max(0, Number(savings) + Number(tracked?.withdrawals ?? 0) - Number(tracked?.deposits ?? 0)).toFixed(6);
 	return c.json({
 		enabled: status.enabled,
 		canDeposit: status.canDeposit,
@@ -83,6 +107,10 @@ earnRoutes.get("/config", requireAuth, async (c) => {
 		savings,
 		available,
 		balanceStatus,
+		estimatedEarnings,
+		protocol: "Aave V3",
+		networkName: network.name,
+		poolAddress: network.aave?.pool ?? null,
 	});
 });
 
@@ -114,7 +142,7 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 
 		const decimals = network.contracts.usdcDecimals;
-		const withdrawAll = action === "withdraw" && body.amount === "max";
+		const withdrawAll = isWithdrawAllRequest(action, body.amount, body.withdrawAll);
 
 		let amountRaw: bigint | null = null;
 		if (!withdrawAll) {
@@ -175,7 +203,7 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 				? buildDepositCalls(network, account, amountRaw!)
 				: buildWithdrawCalls(network, account, withdrawAll ? null : amountRaw);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: encodeExecuteBatch(calls),
 			callGasLimit: EARN_CALL_GAS_LIMIT,
@@ -200,7 +228,8 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 			userOpHash,
 			credentialId: profile?.credentialId ?? null,
 			submissionTransport,
-			summary: { action, amount: ledgerAmount, apyPercent: status.apyPercent },
+			signingPayload,
+			summary: { action, amount: ledgerAmount, apyPercent: status.apyPercent, withdrawAll },
 		});
 	} catch (error) {
 		logError("earn_prepare_failed", error, { requestId });

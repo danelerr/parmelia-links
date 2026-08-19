@@ -30,6 +30,7 @@ import crosschainRoutes from "./routes/crosschain.routes";
 import v1Routes from "./routes/v1.routes";
 import merchantRoutes from "./routes/merchant.routes";
 import homeRoutes from "./routes/home.routes";
+import cardRoutes from "./routes/card.routes";
 import ingestRoutes from "./routes/ingest.routes";
 import { getRpcHealthSummary, type RpcRoleName } from "./services/rpcControlPlane";
 import { getRpcUrls } from "./services/clients";
@@ -243,12 +244,13 @@ app.get("/health", async (c) => {
 app.use(authMiddleware);
 
 // Healthcheck
-app.get("/", (c) => c.text("Parmelia Links API (Modular)"));
+app.get("/", (c) => c.text("GatoPago API"));
 
 // Mount Routes
 app.route("/user/transactions", txRoutes);
 app.route("/user", userRoutes);
 app.route("/home", homeRoutes);
+app.route("/card", cardRoutes);
 app.route("/ingest", ingestRoutes);
 app.route("/account", accountRoutes);
 app.route("/links", linksRoutes);

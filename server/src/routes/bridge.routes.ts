@@ -51,7 +51,7 @@ bridgeRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json({ error: "Necesitas una cuenta primero.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
-		const crosschainFeeBps = BigInt(c.env.PARMELIA_CROSSCHAIN_FEE_BPS || "0");
+		const crosschainFeeBps = BigInt(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS || "0");
 		const quote = await quoteBridge({
 			direction,
 			externalChainId,
@@ -61,7 +61,12 @@ bridgeRoutes.post("/quote", requireAuth, async (c) => {
 			crosschainFeeBps: crosschainFeeBps > 100n ? 100n : crosschainFeeBps,
 		});
 
-		return c.json({ ...quote, requestId });
+		return c.json({
+			...quote,
+			// Compatibility alias for the previous response schema.
+			parmeliaFee: quote.gatoPagoFee,
+			requestId,
+		});
 	} catch (error) {
 		if (error instanceof BridgeError) {
 			return c.json({ error: error.message, error_code: ERR.BRIDGE_INVALID_REQUEST, requestId }, 400);

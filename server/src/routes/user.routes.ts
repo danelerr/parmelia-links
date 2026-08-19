@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { getUserByUid, getUserByUsername, saveUser, addPushToken, updateProfileFields, rateLimitConsume } from "../services/storage";
+import { getUserByUid, getUserByUsername, getUserByWallet, saveUser, addPushToken, updateProfileFields, rateLimitConsume } from "../services/storage";
 import {
 	readBalanceModel,
 } from "../services/homeReadModel";
@@ -70,15 +70,16 @@ userRoutes.put("/username", requireAuth, async (c) => {
 	// plus API roots and common traps. Old Spanish routes kept defensively.
 	const reserved = [
 		// client routes
-		"login", "onboarding", "charge", "send", "scan", "swap",
+		"login", "onboarding", "charge", "send", "scan", "swap", "move",
 		"statement", "contacts", "deposit", "settings", "pay", "status",
+		"earn", "receive", "crosschain", "profile", "recover", "security",
 		// API roots
 		"user", "account", "links", "bridge", "api",
 		// legacy Spanish routes
 		"cobrar", "pagar", "cambiar", "extractos", "contactos", "depositar",
 		// common traps
 		"admin", "create", "app", "help", "support", "about", "terms", "privacy",
-		"parmelia", "www", "root",
+		"gatopago", "parmelia", "www", "root",
 	];
 	if (reserved.includes(username)) {
 		return c.json({ error: "Username reservado", error_code: ERR.USERNAME_RESERVED }, 400);
@@ -175,6 +176,25 @@ userRoutes.put("/push-token", requireAuth, async (c) => {
 	}
 	await addPushToken(c.env, user.sub, token);
 	return c.json({ success: true });
+});
+
+// Authenticated wallet classification for the QR review screen. This performs
+// a D1 lookup only (no blockchain/RPC request) and reveals no private profile
+// fields. It must remain above the public /:username catch-all route.
+userRoutes.get("/resolve-wallet/:address", requireAuth, async (c) => {
+	const address = c.req.param("address") ?? "";
+	if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+		return c.json({ error: "Invalid wallet address", error_code: ERR.INVALID_WALLET }, 400);
+	}
+
+	const profile = await getUserByWallet(c.env, address);
+	const isGatoPago = Boolean(profile?.walletAddress);
+	return c.json({
+		isGatoPago,
+		// Read-only compatibility alias for clients that have not updated yet.
+		isParmelia: isGatoPago,
+		username: profile?.username ?? null,
+	});
 });
 
 // Get user by username (public)

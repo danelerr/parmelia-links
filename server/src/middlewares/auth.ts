@@ -7,7 +7,7 @@ import { logWarn } from "../services/logger";
 
 export type { Bindings } from "../env";
 
-export type Variables = {
+type Variables = {
 	user: { sub: string; email?: string; name?: string; picture?: string } | null;
 	requestId: string;
 	/** Set by the API-key middleware on /v1 routes. */
@@ -24,7 +24,7 @@ const JWKS_URL = "https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@s
 const JWKS_TIMEOUT_MS = 5_000;
 const JWKS_MAX_BYTES = 64 * 1024;
 
-export async function getFirebaseJWKS() {
+async function getFirebaseJWKS() {
 	const now = Date.now();
 	if (cachedJWKS && now - jwksCachedAt < 3600_000) return cachedJWKS;
 	const res = await fetch(JWKS_URL, { signal: AbortSignal.timeout(JWKS_TIMEOUT_MS) });
@@ -38,7 +38,7 @@ export async function getFirebaseJWKS() {
 	return cachedJWKS;
 }
 
-export async function verifyFirebaseToken(token: string, projectId: string) {
+async function verifyFirebaseToken(token: string, projectId: string) {
 	const jwks = await getFirebaseJWKS();
 	const { payload } = await jwtVerify(token, jwks, {
 		issuer: `https://securetoken.google.com/${projectId}`,

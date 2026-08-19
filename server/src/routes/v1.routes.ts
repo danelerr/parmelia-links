@@ -1,10 +1,10 @@
-// Parmelia payments API — /v1 surface (authenticated with sk_ API keys).
+// GatoPago payments API — /v1 surface (authenticated with sk_ API keys).
 //
 // Flow A (closed-loop): a payment_intent is backed by a payment_links row, so the
-// payer settles it through the existing Parmelia checkout. When the link is paid
+// payer settles it through the existing GatoPago checkout. When the link is paid
 // (in pay.routes), the intent flips to `paid` and payment.paid is emitted.
 //
-// Flow B (open): GET /payment_intents/:id/onchain returns a Parmelia-signed
+// Flow B (open): GET /payment_intents/:id/onchain returns a GatoPago-signed
 // authorization so any external wallet can call PaymentRouter.payInvoice; the
 // indexer attributes the InvoicePaid event back to the intent.
 //

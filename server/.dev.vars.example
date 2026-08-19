@@ -21,7 +21,7 @@ RPC_PROVIDER_CAPABILITIES=
 
 # ERC-4337 submission. `self` conserva el handleOps propio; `bundler` elimina
 # el nonce único del relayer. El proveedor DEBE anunciar soporte para el
-# EntryPoint v0.9 de Parmelia; la app lo verifica antes de enviar.
+# EntryPoint v0.9 de GatoPago; la app lo verifica antes de enviar.
 RELAYER_MODE=self
 BUNDLER_RPC_URLS=
 BUNDLER_ROLLOUT_PERCENT=0
@@ -48,7 +48,7 @@ INDEXER_SAFETY_SWEEP_SECONDS=3600
 BALANCE_MAX_STALENESS_SECONDS=300
 # Sólo activos rpc_only (ETH/aUSDC) se auditan por tiempo. Este trabajo es
 # global y acotado; abrir Home nunca crea un refresh por snapshot viejo.
-# Política Parmelia: una inclusión de batch sólo asciende a l1_confirmed al
+# Política GatoPago: una inclusión de batch sólo asciende a l1_confirmed al
 # alcanzar este umbral. No equivale a assertion/finality del Rollup.
 ARBITRUM_L1_CONFIRMATIONS_REQUIRED=12
 
@@ -110,13 +110,13 @@ FCM_SERVICE_ACCOUNT=
 # URL publica del cliente usada para links de checkout.
 APP_URL=https://app.parmelia.me
 
-# Fees permanecen desactivadas salvo que PARMELIA_FEES_ENABLED sea "true".
-PARMELIA_FEES_ENABLED=false
-PARMELIA_SWAP_FEE_BPS=0
-PARMELIA_MAX_FEE_BPS=100
-PARMELIA_TREASURY_ADDRESS=
-PARMELIA_CROSSCHAIN_FEE_BPS=0
-PARMELIA_PAYMENT_FEE_BPS=0
+# Fees permanecen desactivadas salvo que GATOPAGO_FEES_ENABLED sea "true".
+GATOPAGO_FEES_ENABLED=false
+GATOPAGO_SWAP_FEE_BPS=0
+GATOPAGO_MAX_FEE_BPS=100
+GATOPAGO_TREASURY_ADDRESS=
+GATOPAGO_CROSSCHAIN_FEE_BPS=0
+GATOPAGO_PAYMENT_FEE_BPS=0
 
 # Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).
 CCTP_RPC_URLS=

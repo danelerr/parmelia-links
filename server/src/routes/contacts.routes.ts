@@ -1,5 +1,5 @@
 // Contacts ("amigos") + invitation counter.
-// Contacts are Parmelia users only (resolved by username against our own DB),
+// Contacts are GatoPago users only (resolved by username against our own DB),
 // so paying a contact is always paying a verified smart account.
 
 import { Hono } from "hono";
@@ -50,7 +50,7 @@ contactsRoutes.post("/", requireAuth, async (c) => {
 
 	const target = await getUserByUsername(c.env, username);
 	if (!target || !target.walletAddress) {
-		return c.json({ error: "Ese usuario no existe en Parmelia.", error_code: ERR.USER_NOT_FOUND }, 404);
+		return c.json({ error: "Ese usuario no existe en GatoPago.", error_code: ERR.USER_NOT_FOUND }, 404);
 	}
 	if (target.uid === user.sub) {
 		return c.json({ error: "No puedes agregarte a ti mismo.", error_code: ERR.CANNOT_ADD_SELF }, 400);
