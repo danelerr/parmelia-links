@@ -1,4 +1,4 @@
-// Centralized notifications - the only place that talks to sileo for outcomes.
+// Centralized notifications for all client outcomes.
 //
 // Guarantees:
 //   - the user NEVER sees raw technical text (hex blobs, stack-ish messages);
@@ -6,9 +6,9 @@
 //   - server requestIds are surfaced ("Ref: ...") so support can find the log;
 //   - identical toasts within a short window are deduped (no double-tap spam).
 
-import { sileo, type SileoButton } from "sileo";
 import { ApiError } from "./api";
 import i18n from "./i18n";
+import { pushToast, updateToast, type ToastAction } from "./toastStore";
 
 // How long each kind of toast stays on screen (ms). Confirmations leave quickly,
 // errors linger so they can be read, and anything actionable stays long enough
@@ -68,7 +68,7 @@ export function humanizeError(
 export function notifyError(
 	err: unknown,
 	title = i18n.t("notify.somethingWrong"),
-	action?: SileoButton,
+	action?: ToastAction,
 ) {
 	if (isUserCancelled(err)) {
 		notifyWarning(i18n.t("notify.cancelled"), i18n.t("notify.noChange"));
@@ -79,27 +79,29 @@ export function notifyError(
 		? `${message} · Ref: ${String(requestId).slice(0, 8)}`
 		: message;
 	if (deduped(`e:${title}:${description}`)) return;
-	sileo.error({
+	pushToast({
+		kind: "error",
 		title,
 		description,
-		button: action,
+		action,
 		duration: action ? DURATION.actionable : DURATION.error,
 	});
 }
 
-export function notifySuccess(title: string, description?: string, action?: SileoButton) {
+export function notifySuccess(title: string, description?: string, action?: ToastAction) {
 	if (deduped(`s:${title}:${description ?? ""}`)) return;
-	sileo.success({
+	pushToast({
+		kind: "success",
 		title,
 		description,
-		button: action,
+		action,
 		duration: action ? DURATION.actionable : DURATION.success,
 	});
 }
 
 export function notifyWarning(title: string, description?: string) {
 	if (deduped(`w:${title}:${description ?? ""}`)) return;
-	sileo.warning({ title, description, duration: DURATION.warning });
+	pushToast({ kind: "warning", title, description, duration: DURATION.warning });
 }
 
 /**
@@ -116,32 +118,35 @@ export function notifyPromise<T>(
 		error?: string;
 	},
 ): Promise<T> {
-	sileo.promise(promise, {
-		loading: { title: messages.loading },
-		success: (value: T) => ({
-			title:
-				typeof messages.success === "function"
-					? messages.success(value)
-					: messages.success,
-			duration: DURATION.success,
-		}),
-		error: (err: unknown) => {
+	const toastId = pushToast({ kind: "loading", title: messages.loading, duration: null });
+	void promise.then(
+		(value) => {
+			updateToast(toastId, {
+				kind: "success",
+				title: typeof messages.success === "function" ? messages.success(value) : messages.success,
+				duration: DURATION.success,
+			});
+		},
+		(err: unknown) => {
 			if (isUserCancelled(err)) {
-				return {
+				updateToast(toastId, {
+					kind: "warning",
 					title: i18n.t("notify.cancelled"),
 					description: i18n.t("notify.noChange"),
 					duration: DURATION.warning,
-				};
+				});
+				return;
 			}
 			const { message, requestId } = humanizeError(err);
-			return {
+			updateToast(toastId, {
+				kind: "error",
 				title: messages.error ?? i18n.t("notify.somethingWrong"),
 				description: requestId
 					? `${message} · Ref: ${String(requestId).slice(0, 8)}`
 					: message,
 				duration: DURATION.error,
-			};
+			});
 		},
-	});
+	);
 	return promise;
 }

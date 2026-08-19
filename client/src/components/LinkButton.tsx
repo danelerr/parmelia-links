@@ -3,7 +3,7 @@
 // the exact same classes as the <button> it replaces. View transitions are on
 // by default to match useViewTransitionNavigate's cross-fade.
 
-import { Link, type LinkProps } from "react-router-dom";
+import { Link, type LinkProps } from "react-router";
 
 export default function LinkButton({ viewTransition = true, ...props }: LinkProps) {
 	return <Link viewTransition={viewTransition} {...props} />;

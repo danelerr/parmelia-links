@@ -1,5 +1,5 @@
 // Tappable option row used in the "Otras opciones" sections of Cobrar (money-in
-// methods) and Pagar (money-out methods). Parmelia card style: surface + border,
+// methods) and Pagar (money-out methods). GatoPago card style: tonal surface,
 // brand-accent icon disc, optional "coming soon" badge / disabled state.
 // Pass `to` for pure navigation (renders a real link); `onClick` for actions.
 
@@ -9,8 +9,7 @@ import LinkButton from "./LinkButton";
 type OptionCardProps = {
 	title: string;
 	desc: string;
-	/** Brand accent hex (e.g. "#9ce3f4" sky, "#f4a9cf" pink, "#efe08c" gold). */
-	accent: string;
+	tone?: "brand" | "growth" | "info" | "pending" | "danger" | "neutral";
 	icon: ReactNode;
 	/** Route target - preferred when the tap only navigates. */
 	to?: string;
@@ -20,14 +19,23 @@ type OptionCardProps = {
 };
 
 const BASE_CLASS =
-	"w-full flex items-center gap-3.5 bg-surface border border-border rounded-[16px] p-4 text-left transition-colors";
+	"meli-path-card-app interactive-surface w-full p-4 text-left";
 
-export default function OptionCard({ title, desc, accent, icon, to, onClick, badge, disabled }: OptionCardProps) {
+const TONES = {
+	brand: "bg-cat-500/12 text-cat-300",
+	growth: "bg-growth/12 text-growth",
+	info: "bg-info/12 text-info",
+	pending: "bg-pending/12 text-pending",
+	danger: "bg-danger/12 text-danger",
+	neutral: "bg-surface-3 text-text-muted",
+} as const;
+
+export default function OptionCard({ title, desc, tone = "brand", icon, to, onClick, badge, disabled }: OptionCardProps) {
 	const content = (
 		<>
 			<span
-				className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
-				style={{ background: `${accent}26`, color: accent }}
+				aria-hidden="true"
+				className={`flex h-11 w-11 shrink-0 items-center justify-center ${TONES[tone]}`}
 			>
 				{icon}
 			</span>
@@ -35,15 +43,15 @@ export default function OptionCard({ title, desc, accent, icon, to, onClick, bad
 				<div className="flex items-center gap-2">
 					<p className="text-[14px] text-text">{title}</p>
 					{badge && (
-						<span className="text-[10px] uppercase tracking-wide text-text-faint border border-border rounded-full px-2 py-0.5">
+						<span className="meli-chip border-border bg-surface-2 text-text-faint">
 							{badge}
 						</span>
 					)}
 				</div>
-				<p className="text-[12px] text-text-muted truncate">{desc}</p>
+				<p className="text-[12px] text-text-muted leading-relaxed line-clamp-2">{desc}</p>
 			</div>
 			{!disabled && (
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0">
+				<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0">
 					<path d="m9 18 6-6-6-6" />
 				</svg>
 			)}
@@ -51,9 +59,8 @@ export default function OptionCard({ title, desc, accent, icon, to, onClick, bad
 	);
 
 	if (to && !disabled) {
-		// `:enabled` doesn't match anchors, so the hover state is applied directly.
 		return (
-			<LinkButton to={to} className={`${BASE_CLASS} hover:border-border-strong`}>
+			<LinkButton to={to} className={BASE_CLASS}>
 				{content}
 			</LinkButton>
 		);
@@ -61,9 +68,10 @@ export default function OptionCard({ title, desc, accent, icon, to, onClick, bad
 
 	return (
 		<button
+			type="button"
 			onClick={onClick}
 			disabled={disabled}
-			className={`${BASE_CLASS} enabled:hover:border-border-strong disabled:opacity-55 disabled:cursor-default`}
+			className={`${BASE_CLASS} disabled:cursor-default disabled:opacity-55`}
 		>
 			{content}
 		</button>

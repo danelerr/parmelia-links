@@ -18,10 +18,12 @@ export interface Transaction {
 	createdAt: string;
 	/** Ledger kind: payment, link (cobro), swap, fund (faucet), external (depósito), earn (ahorro). */
 	kind?: string;
+	counterpartyUsername?: string | null;
+	counterpartyDisplayName?: string | null;
 }
 
 /** Human label for a movement row. */
-export function txLabel(t: Transaction): string {
+function txLabel(t: Transaction): string {
 	if (t.kind === "swap") return t.reference || i18n.t("tx.swap");
 	if (t.kind === "earn") {
 		return t.reference || (t.type === "received" ? i18n.t("tx.earnWithdraw") : i18n.t("tx.earnDeposit"));
@@ -32,8 +34,38 @@ export function txLabel(t: Transaction): string {
 	return i18n.t("tx.paymentSent");
 }
 
+function shortAddress(value?: string): string | null {
+	if (!value) return null;
+	return value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
+}
+
+/** Presentation that starts with the person, merchant or protocol involved. */
+export function transactionPresentation(t: Transaction): {
+	title: string;
+	detail: string;
+	status: string;
+} {
+	if (t.kind === "earn") {
+		return {
+			title: "Aave",
+			detail: t.type === "received" ? i18n.t("tx.earnWithdraw") : i18n.t("tx.earnDeposit"),
+			status: i18n.t("tx.completed"),
+		};
+	}
+	if (t.kind === "swap") {
+		return { title: i18n.t("tx.swap"), detail: t.reference || i18n.t("tx.swapDetail"), status: i18n.t("tx.completed") };
+	}
+	const identity = t.counterpartyDisplayName || (t.counterpartyUsername ? `@${t.counterpartyUsername}` : null);
+	const address = shortAddress(t.type === "received" ? t.from : t.to);
+	const title = identity || (address ? i18n.t("tx.wallet", { address }) : txLabel(t));
+	const fallback = t.type === "received"
+		? (t.kind === "external" ? i18n.t("tx.depositReceived") : i18n.t("tx.chargeReceived"))
+		: i18n.t("tx.paymentSent");
+	return { title, detail: t.reference || fallback, status: i18n.t("tx.completed") };
+}
+
 /** Raw ledger row as returned by GET /user/transactions (loosely typed). */
-export interface RawLedgerRow {
+interface RawLedgerRow {
 	id?: string;
 	txHash?: string;
 	amount?: string;
@@ -43,6 +75,8 @@ export interface RawLedgerRow {
 	reference?: string;
 	createdAt?: string;
 	kind?: string;
+	counterpartyUsername?: string | null;
+	counterpartyDisplayName?: string | null;
 }
 
 export interface RawTxPayload {
@@ -64,6 +98,8 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 		reference: t.reference,
 		createdAt: t.createdAt ?? "",
 		kind: t.kind ?? "payment",
+		counterpartyUsername: t.counterpartyUsername,
+		counterpartyDisplayName: t.counterpartyDisplayName,
 	}));
 	const received: Transaction[] = (txData.received || []).map((t) => ({
 		id: t.id ?? "",
@@ -76,6 +112,8 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 		reference: t.reference,
 		createdAt: t.createdAt ?? "",
 		kind: t.kind ?? "payment",
+		counterpartyUsername: t.counterpartyUsername,
+		counterpartyDisplayName: t.counterpartyDisplayName,
 	}));
 	const merged = [...sent, ...received].sort(
 		(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),

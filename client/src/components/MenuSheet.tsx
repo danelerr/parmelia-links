@@ -1,26 +1,32 @@
 // Account menu (bottom sheet). The avatar used to be a single silent link to
 // Settings; this makes the account-level destinations explicit without
 // touching Home's layout. Same surface language as ConfirmSheet (backdrop +
-// card + fade-up), but rows instead of an amount. "Tarjeta" is a visible
-// promise, disabled until Gnosis Pay lands.
+// card + fade-up), but rows instead of an amount. Card discovery lives on Home
+// so the account menu contains only destinations that are available today.
 
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useDialog } from "../hooks/useDialog";
-import { useViewTransitionNavigate } from "../hooks/useNav";
 import { SUPPORT_URL } from "../lib/support";
 import type { User } from "../lib/firebase";
+import { activeNetwork } from "../lib/activeNetwork";
+import LinkButton from "./LinkButton";
+import BrandLockup from "./brand/BrandLockup";
 
 const ROW =
-	"w-full flex items-center gap-3 px-3 py-3 rounded-[14px] hover:bg-surface-2 transition-colors text-left";
+	"interactive-surface flex w-full items-center gap-3 border-b border-border px-3 py-3 text-left last:border-b-0 hover:bg-cat-50";
 
-function RowIcon({ accent, children }: { accent: string; children: ReactNode }) {
+function RowIcon({ tone, children }: { tone: "brand" | "growth" | "info" | "pending" | "neutral"; children: ReactNode }) {
+	const tones = {
+		brand: "bg-cat-500/12 text-cat-300",
+		growth: "bg-growth/12 text-growth",
+		info: "bg-info/12 text-info",
+		pending: "bg-pending/12 text-pending",
+		neutral: "bg-surface-3 text-text-muted",
+	} as const;
 	return (
-		<span
-			className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
-			style={{ background: `${accent}22`, color: accent }}
-		>
+		<span aria-hidden="true" className={`flex h-9 w-9 shrink-0 items-center justify-center border border-current ${tones[tone]}`}>
 			{children}
 		</span>
 	);
@@ -28,7 +34,7 @@ function RowIcon({ accent, children }: { accent: string; children: ReactNode }) 
 
 function icon(paths: ReactNode) {
 	return (
-		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+		<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 			{paths}
 		</svg>
 	);
@@ -51,16 +57,16 @@ const ICONS = {
 		</>,
 	),
 	chat: icon(<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />),
-	card: icon(
+	coin: icon(
 		<>
-			<rect x="1" y="4" width="22" height="16" rx="2" />
-			<path d="M1 10h22" />
+			<circle cx="12" cy="12" r="9" />
+			<path d="M12 7v10M9.5 9.5a2.5 2 0 0 1 5 0c0 2-5 1-5 3a2.5 2 0 0 0 5 0" />
 		</>,
 	),
 };
 
 const CHEVRON = (
-	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0 ml-auto">
+	<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0 ml-auto">
 		<path d="m9 18 6-6-6-6" />
 	</svg>
 );
@@ -75,13 +81,7 @@ export default function MenuSheet({
 	onClose: () => void;
 }) {
 	const { t } = useTranslation();
-	const navigate = useViewTransitionNavigate();
 	const dialogRef = useDialog<HTMLDivElement>(onClose);
-
-	function go(to: string) {
-		onClose();
-		navigate(to);
-	}
 
 	// Portal to <body>: page containers animate with a persistent transform
 	// (animate-fade-up, fill-mode both), which turns them into containing
@@ -90,7 +90,7 @@ export default function MenuSheet({
 	// "Home scrolls to the bottom on open" bug).
 	return createPortal(
 		<div
-			className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center px-5 animate-fade-in"
+			className="dialog-backdrop fixed inset-0 z-50 flex items-end justify-center px-5 animate-fade-in"
 			style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
 			onClick={onClose}
 		>
@@ -100,24 +100,26 @@ export default function MenuSheet({
 				aria-modal="true"
 				aria-label={t("menu.aria")}
 				tabIndex={-1}
-				className="w-full max-w-sm bg-surface border border-border rounded-[24px] p-3 shadow-e3 animate-sheet-up"
+				className="dialog-panel w-full max-w-sm max-h-[min(86dvh,680px)] overflow-y-auto overscroll-contain p-3 animate-sheet-up"
 				onClick={(e) => e.stopPropagation()}
 			>
 				{/* Bottom-sheet handle: signals "this slides / can be dismissed". */}
-				<div className="w-10 h-1 rounded-full bg-border mx-auto mt-1 mb-2.5" />
+				<div className="sheet-handle mt-1 mb-3" aria-hidden="true" />
+				<div className="px-2 pb-3"><BrandLockup compact /></div>
 
 				{/* Identity doubles as the Perfil entry: tapping who you are opens
 				    your profile (username today; name/photo/social later). */}
-				<button
-					onClick={() => go("/settings#profile")}
+				<LinkButton
+					to="/profile"
+					onClick={onClose}
 					aria-label={t("menu.profile")}
-					className="w-full flex items-center gap-3 px-3 py-2.5 mb-2 rounded-[16px] bg-surface-2/60 hover:bg-surface-2 transition-colors text-left"
+					className="mb-2 flex w-full items-center gap-3 border-2 border-text bg-surface px-3 py-2.5 text-left shadow-[4px_4px_0_var(--color-border)]"
 				>
-					<div className="w-11 h-11 rounded-full overflow-hidden border border-border bg-surface-2 flex items-center justify-center shrink-0">
+					<div className="meli-avatar shrink-0">
 						{user.photoURL ? (
 							<img src={user.photoURL} alt="" width="48" height="48" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
 						) : (
-							<span className="text-[15px] font-display text-sky uppercase">
+							<span className="font-display text-[15px] uppercase text-cat-300">
 								{(username || user.displayName || "?")[0]}
 							</span>
 						)}
@@ -129,37 +131,36 @@ export default function MenuSheet({
 						</p>
 					</div>
 					{CHEVRON}
-				</button>
+				</LinkButton>
 
-				<button onClick={() => go("/security")} className={ROW}>
-					<RowIcon accent="#efe08c">{ICONS.shield}</RowIcon>
+				<LinkButton to="/security" onClick={onClose} className={ROW}>
+					<RowIcon tone="pending">{ICONS.shield}</RowIcon>
 					<span className="text-[15px]">{t("menu.security")}</span>
 					{CHEVRON}
-				</button>
-				<button onClick={() => go("/contacts")} className={ROW}>
-					<RowIcon accent="#f4a9cf">{ICONS.users}</RowIcon>
+				</LinkButton>
+				<LinkButton to="/contacts" onClick={onClose} className={ROW}>
+					<RowIcon tone="brand">{ICONS.users}</RowIcon>
 					<span className="text-[15px]">{t("menu.contacts")}</span>
 					{CHEVRON}
-				</button>
-				<button onClick={() => go("/settings")} className={ROW}>
-					<RowIcon accent="#9ce3f4">{ICONS.gear}</RowIcon>
+				</LinkButton>
+				<LinkButton to="/settings" onClick={onClose} className={ROW}>
+					<RowIcon tone="neutral">{ICONS.gear}</RowIcon>
 					<span className="text-[15px]">{t("menu.settings")}</span>
 					{CHEVRON}
-				</button>
+				</LinkButton>
+				{activeNetwork.faucetUrl ? (
+					<LinkButton to="/test-funds" onClick={onClose} className={ROW}>
+						<RowIcon tone="pending">{ICONS.coin}</RowIcon>
+						<span className="text-[15px]">{t("menu.testFunds")}</span>
+						{CHEVRON}
+					</LinkButton>
+				) : null}
 				<a href={SUPPORT_URL} target="_blank" rel="noopener noreferrer" onClick={onClose} className={ROW}>
-					<RowIcon accent="#9ce3f4">{ICONS.chat}</RowIcon>
+					<RowIcon tone="info">{ICONS.chat}</RowIcon>
 					<span className="text-[15px]">{t("menu.support")}</span>
 					{CHEVRON}
 				</a>
-				<div className={`${ROW} opacity-55 cursor-default`} aria-disabled="true">
-					<RowIcon accent="#efe08c">{ICONS.card}</RowIcon>
-					<span className="text-[15px]">{t("menu.card")}</span>
-					<span className="ml-auto text-[11px] bg-surface-2 text-text-muted rounded-full px-2.5 py-1 shrink-0">
-						{t("common.soon")}
-					</span>
-				</div>
-
-				<button onClick={onClose} className="btn-text w-full mt-1.5">
+				<button type="button" onClick={onClose} className="btn-text w-full mt-1.5">
 					{t("common.close")}
 				</button>
 			</div>

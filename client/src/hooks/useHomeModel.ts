@@ -3,7 +3,6 @@ import useSWR from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { activeNetwork } from "../lib/activeNetwork";
-import { pushAlreadyEnabled } from "../lib/push";
 import {
 	fetchHomeModel,
 	loadHomeCache,
@@ -12,29 +11,45 @@ import {
 	type HomeReadModel,
 } from "../lib/homeData";
 
-const INVALIDATION_EVENT = "parmelia:home-invalidate";
-const SAFETY_REFRESH_BASE_MS = 5 * 60_000;
+const INVALIDATION_EVENT = "gatopago:home-invalidate";
+const ACTIVE_REFRESH_MS = 10_000;
+const SAFETY_REFRESH_BASE_MS = 60_000;
 
 function stableJitter(uid: string): number {
 	let hash = 0;
 	for (let index = 0; index < uid.length; index++) {
 		hash = (hash * 31 + uid.charCodeAt(index)) >>> 0;
 	}
-	return hash % 60_000;
+	return hash % 15_000;
 }
 
-export function invalidateHome(): void {
-	window.dispatchEvent(new Event(INVALIDATION_EVENT));
+function homeRefreshInterval(
+	latest: HomeReadModel | undefined,
+	visible: boolean,
+	online: boolean,
+	safetyJitter: number,
+): number {
+	if (!visible || !online) return 0;
+	const active =
+		!latest ||
+		latest.balance.refreshing ||
+		latest.balance.status !== "fresh" ||
+		latest.operations.status !== "fresh" ||
+		latest.operations.payments.length > 0 ||
+		latest.operations.account.length > 0;
+	return active
+		? ACTIVE_REFRESH_MS
+		: SAFETY_REFRESH_BASE_MS + safetyJitter;
 }
 
-export function useHomeModel(user: User) {
+export function useHomeModel(user: User, previewModel?: HomeReadModel) {
 	const [cachedModel, setCachedModel] = useState<HomeReadModel | null>(null);
 	const cacheRef = useRef<HomeCacheRecord | null>(null);
 	const safetyJitter = stableJitter(user.uid);
 	const key = `${SERVER_URL}/home`;
 
 	const swr = useSWR(
-		key,
+		previewModel ? null : key,
 		async (url: string) => {
 			const result = await fetchHomeModel(
 				user,
@@ -62,33 +77,28 @@ export function useHomeModel(user: User) {
 		},
 		{
 			keepPreviousData: true,
+			// App.tsx already seeds this key and starts the authenticated bootstrap.
+			// Revalidating again on Home mount would duplicate the same /home request.
 			revalidateOnMount: false,
-			revalidateIfStale: false,
+			revalidateIfStale: true,
 			revalidateOnFocus: true,
 			revalidateOnReconnect: true,
 			dedupingInterval: 5_000,
 			refreshWhenHidden: false,
 			refreshWhenOffline: false,
-			refreshInterval: (latest?: HomeReadModel) => {
-				if (pushAlreadyEnabled()) return 0;
-				if (document.visibilityState !== "visible" || !navigator.onLine) return 0;
-				const observedAt = latest?.balance.observedAt;
-				if (!observedAt) {
-					return SAFETY_REFRESH_BASE_MS + safetyJitter;
-				}
-				const age = Date.now() - new Date(observedAt).getTime();
-				return (
-					Math.max(
-						SAFETY_REFRESH_BASE_MS - Math.max(0, age),
-						10_000,
-					) + safetyJitter
-				);
-			},
+			refreshInterval: (latest?: HomeReadModel) =>
+				homeRefreshInterval(
+					latest,
+					document.visibilityState === "visible",
+					navigator.onLine,
+					safetyJitter,
+				),
 		},
 	);
 	const mutateHome = swr.mutate;
 
 	useEffect(() => {
+		if (previewModel) return;
 		let cancelled = false;
 		void loadHomeCache(user.uid, activeNetwork.chainId).then((record) => {
 			if (cancelled || !record) return;
@@ -98,16 +108,17 @@ export function useHomeModel(user: User) {
 		return () => {
 			cancelled = true;
 		};
-	}, [user.uid]);
+	}, [previewModel, user.uid]);
 
 	useEffect(() => {
+		if (previewModel) return;
 		const refresh = () => void mutateHome();
 		window.addEventListener(INVALIDATION_EVENT, refresh);
 
 		const channel =
 			"BroadcastChannel" in window
 				? new BroadcastChannel(
-						`parmelia-home:${user.uid}:${activeNetwork.chainId}`,
+						`gatopago-home:${user.uid}:${activeNetwork.chainId}`,
 					)
 				: null;
 		if (channel) channel.onmessage = refresh;
@@ -116,7 +127,8 @@ export function useHomeModel(user: User) {
 			if (
 				event.data &&
 				typeof event.data === "object" &&
-				event.data.type === "PARMELIA_HOME_INVALIDATE"
+				(event.data.type === "GATOPAGO_HOME_INVALIDATE" ||
+					event.data.type === "PARMELIA_HOME_INVALIDATE")
 			) {
 				refresh();
 				channel?.postMessage({ type: "invalidate" });
@@ -132,11 +144,13 @@ export function useHomeModel(user: User) {
 			);
 			channel?.close();
 		};
-	}, [mutateHome, user.uid]);
+	}, [mutateHome, previewModel, user.uid]);
 
 	return {
 		...swr,
-		data: swr.data ?? cachedModel ?? undefined,
-		fromLocalCache: !swr.data && Boolean(cachedModel),
+		data: previewModel ?? swr.data ?? cachedModel ?? undefined,
+		isLoading: previewModel ? false : swr.isLoading,
+		isValidating: previewModel ? false : swr.isValidating,
+		fromLocalCache: !previewModel && !swr.data && Boolean(cachedModel),
 	};
 }

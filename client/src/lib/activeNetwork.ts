@@ -23,6 +23,7 @@ export const activeNetwork = {
 	key: activeChainKey,
 	chainId: networkDefaults.chainId,
 	name: import.meta.env.VITE_CHAIN_NAME || networkDefaults.name,
+	isTestnet: networkDefaults.isTestnet,
 	nativeTokenSymbol:
 		import.meta.env.VITE_NATIVE_TOKEN_SYMBOL || networkDefaults.nativeTokenSymbol,
 	explorerBaseUrl: trimTrailingSlash(configuredExplorerBaseUrl),

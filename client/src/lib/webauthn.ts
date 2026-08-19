@@ -1,8 +1,10 @@
 // WebAuthn helpers for P256 passkey creation and signing
 
 import i18n from "./i18n";
+import { readMigratedStorage, writeStorage } from "./storageMigration";
 
-const PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
+const PASSKEY_STORAGE_KEY = "gatopago:remembered-passkeys:v1";
+const LEGACY_PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
 
 type RememberedPasskey = {
 	credentialId: string;
@@ -65,7 +67,7 @@ function readRememberedPasskeys(): Record<string, RememberedPasskey> {
 	if (!canUseLocalStorage()) return {};
 
 	try {
-		const raw = window.localStorage.getItem(PASSKEY_STORAGE_KEY);
+		const raw = readMigratedStorage(PASSKEY_STORAGE_KEY, LEGACY_PASSKEY_STORAGE_KEY);
 		if (!raw) return {};
 
 		const parsed = JSON.parse(raw) as Record<string, RememberedPasskey>;
@@ -78,7 +80,7 @@ function readRememberedPasskeys(): Record<string, RememberedPasskey> {
 
 function writeRememberedPasskeys(passkeys: Record<string, RememberedPasskey>) {
 	if (!canUseLocalStorage()) return;
-	window.localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeys));
+	writeStorage(PASSKEY_STORAGE_KEY, JSON.stringify(passkeys));
 }
 
 /**
@@ -175,7 +177,7 @@ export async function createPasskey(
 
 	const credential = (await navigator.credentials.create({
 		publicKey: {
-			rp: { name: "Parmelia", id: rpId },
+			rp: { name: "GatoPago", id: rpId },
 			user: {
 				id: new TextEncoder().encode(userId),
 				name: displayLabel,

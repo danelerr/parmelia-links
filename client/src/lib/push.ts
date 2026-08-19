@@ -5,9 +5,11 @@ import { app, type User } from "./firebase";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { apiFetch } from "./api";
 import { notifySuccess } from "./notify";
+import { readMigratedStorage, writeStorage } from "./storageMigration";
 
 const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
-const PUSH_REGISTERED_KEY = "parmelia:push-registered:v1";
+const PUSH_REGISTERED_KEY = "gatopago:push-registered:v1";
+const LEGACY_PUSH_REGISTERED_KEY = "parmelia:push-registered:v1";
 
 export async function pushSupported(): Promise<boolean> {
 	if (!VAPID_KEY || !("serviceWorker" in navigator) || !("Notification" in window)) {
@@ -25,7 +27,7 @@ export function pushAlreadyEnabled(): boolean {
 	return (
 		"Notification" in window &&
 		Notification.permission === "granted" &&
-		localStorage.getItem(PUSH_REGISTERED_KEY) === "1"
+		readMigratedStorage(PUSH_REGISTERED_KEY, LEGACY_PUSH_REGISTERED_KEY) === "1"
 	);
 }
 
@@ -53,13 +55,13 @@ export async function enablePush(user: User): Promise<boolean> {
 	if (!token) return false;
 
 	await apiFetch("/user/push-token", { user, method: "PUT", body: { token } });
-	localStorage.setItem(PUSH_REGISTERED_KEY, "1");
+	writeStorage(PUSH_REGISTERED_KEY, "1");
 
 	// Foreground messages: show a calm in-app toast instead of an OS banner.
 	onMessage(messaging, (payload) => {
 		// Push carries only an invalidation signal. Home refetches its private,
 		// authenticated aggregate instead of trusting financial data in FCM.
-		window.dispatchEvent(new Event("parmelia:home-invalidate"));
+		window.dispatchEvent(new Event("gatopago:home-invalidate"));
 		const title = payload.notification?.title || payload.data?.title;
 		const body = payload.notification?.body || payload.data?.body;
 		if (title) notifySuccess(title, body);

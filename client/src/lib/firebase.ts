@@ -1,5 +1,10 @@
 import { initializeApp } from "firebase/app";
 import { clearHomeCache } from "./homeData";
+import {
+	readMigratedStorage,
+	removeMigratedStorage,
+	writeStorage,
+} from "./storageMigration";
 
 import {
 	browserLocalPersistence,
@@ -29,7 +34,7 @@ const firebaseConfig = {
 };
 
 export const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+const auth = getAuth(app);
 
 void setPersistence(auth, browserLocalPersistence).catch((error) => {
 	console.error("Failed to set Firebase auth persistence", error);
@@ -92,7 +97,8 @@ export async function signInWithGoogle() {
 
 // ===== Email magic link (passwordless) =====
 
-const EMAIL_STORAGE_KEY = "parmelia:emailForSignIn";
+const EMAIL_STORAGE_KEY = "gatopago:emailForSignIn";
+const LEGACY_EMAIL_STORAGE_KEY = "parmelia:emailForSignIn";
 
 /** Send a sign-in link to `email`. The link returns to /login on this origin. */
 export async function sendEmailLink(email: string) {
@@ -101,7 +107,7 @@ export async function sendEmailLink(email: string) {
 		handleCodeInApp: true,
 	});
 	// Needed to complete sign-in when the user returns via the email link.
-	window.localStorage.setItem(EMAIL_STORAGE_KEY, email);
+	writeStorage(EMAIL_STORAGE_KEY, email);
 }
 
 /** True if the current URL is a Firebase email sign-in link. */
@@ -114,10 +120,10 @@ export function isEmailSignInLink(url: string) {
  * email if the original device's localStorage isn't available (different device).
  */
 export async function completeEmailLink(url: string, fallbackEmail?: string) {
-	const email = window.localStorage.getItem(EMAIL_STORAGE_KEY) || fallbackEmail;
+	const email = readMigratedStorage(EMAIL_STORAGE_KEY, LEGACY_EMAIL_STORAGE_KEY) || fallbackEmail;
 	if (!email) throw new Error("NEED_EMAIL");
 	const result = await signInWithEmailLink(auth, email, url);
-	window.localStorage.removeItem(EMAIL_STORAGE_KEY);
+	removeMigratedStorage(EMAIL_STORAGE_KEY, LEGACY_EMAIL_STORAGE_KEY);
 	return result;
 }
 

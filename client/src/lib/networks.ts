@@ -10,6 +10,7 @@ export type NetworkConfig = {
 	key: SupportedChainKey;
 	chainId: number;
 	name: string;
+	isTestnet: boolean;
 	nativeTokenSymbol: string;
 	explorerBaseUrl: string;
 	faucetUrl: string | null;
@@ -20,11 +21,12 @@ export type NetworkConfig = {
 
 export const DEFAULT_CHAIN_KEY: SupportedChainKey = "arbitrum-sepolia";
 
-export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
+const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 	"base-sepolia": {
 		key: "base-sepolia",
 		chainId: 84532,
 		name: "Base Sepolia",
+		isTestnet: true,
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
 		faucetUrl: "https://faucet.circle.com",
@@ -35,6 +37,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		key: "arbitrum-sepolia",
 		chainId: 421614,
 		name: "Arbitrum Sepolia",
+		isTestnet: true,
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://sepolia.arbiscan.io",
 		faucetUrl: "https://faucet.circle.com",
@@ -45,6 +48,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		key: "arbitrum-one",
 		chainId: 42161,
 		name: "Arbitrum One",
+		isTestnet: false,
 		nativeTokenSymbol: "ETH",
 		explorerBaseUrl: "https://arbiscan.io",
 		faucetUrl: null,

@@ -2,7 +2,7 @@
 // English. That means the fallback is English (a French/German/etc. browser is
 // not "Spanish", so it must land on English — NOT on the source language).
 //
-// The chosen language persists in localStorage ("parmelia:lang"); the manual
+// The chosen language persists in localStorage ("gatopago:lang"); the manual
 // selector in Settings overrides detection. The URL is never touched.
 
 import i18n from "i18next";
@@ -10,6 +10,9 @@ import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 import es from "../locales/es.json";
 import en from "../locales/en.json";
+import { readMigratedStorage } from "./storageMigration";
+
+readMigratedStorage("gatopago:lang", "parmelia:lang");
 
 void i18n
 	.use(LanguageDetector)
@@ -24,7 +27,7 @@ void i18n
 		load: "languageOnly",
 		detection: {
 			order: ["localStorage", "navigator"],
-			lookupLocalStorage: "parmelia:lang",
+			lookupLocalStorage: "gatopago:lang",
 			caches: ["localStorage"],
 		},
 		interpolation: { escapeValue: false },

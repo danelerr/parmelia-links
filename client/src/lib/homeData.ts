@@ -1,7 +1,7 @@
 import type { User } from "./firebase";
 import { fetchWithAuth } from "./authFetch";
 
-export type ReadModelStatus = "fresh" | "stale" | "unavailable";
+type ReadModelStatus = "fresh" | "stale" | "unavailable";
 
 export type HomeReadModel = {
 	schemaVersion: 1;
@@ -64,7 +64,7 @@ export type HomeCacheRecord = {
 	model: HomeReadModel;
 };
 
-const DB_NAME = "parmelia-read-models";
+const DB_NAME = "gatopago-read-models";
 const DB_VERSION = 1;
 const STORE = "home";
 const SCHEMA_VERSION = 1;
@@ -223,8 +223,3 @@ export async function fetchHomeModel(
 	}
 	return { model, etag: response.headers.get("ETag") };
 }
-
-export const __test = {
-	cacheKey,
-	validRecord,
-};

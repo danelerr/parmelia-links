@@ -1,147 +1,171 @@
 @import "tailwindcss";
 
 @theme {
-  /* ===== Brand accents — signature, constant ===== */
-  --color-sky: #a7d4de;
-  --color-pink: #dea6bc;
-  --color-cream: #ded9a6;
+  /* Meli UI — los mismos pigmentos de la landing. */
+  --color-cat-50: #fff0eb;
+  --color-cat-300: #cf3433;
+  --color-cat-500: #f85239;
+  --color-cat-700: #9f292e;
+  --color-cat-900: #601f16;
+  --color-on-cat: #0b0b0f;
 
-  /* Luminous variants — accent text / stroke / gradient on DARK surfaces */
-  --color-glow-sky: #9ce3f4;
-  --color-glow-pink: #f4a9cf;
-  --color-glow-gold: #efe08c;
+  /* El producto vive en Leche/Papel; Ink enmarca y da contraste. */
+  --color-canvas: #fff8f0;
+  --color-canvas-raised: #fffdf9;
+  --color-surface: #fffdf9;
+  --color-surface-2: #eee4d8;
+  --color-surface-3: #e4d7ca;
+  --color-border: #d2c5b9;
+  --color-border-strong: #0b0b0f;
+  --color-text: #0b0b0f;
+  --color-text-muted: #5f5650;
+  --color-text-faint: #6f625b;
 
-  /* Destructive (sign out, remove) */
-  --color-danger: #f0524b;
+  /* Semánticos: comunican estado, no decoran. */
+  --color-growth: #287b55;
+  --color-info: #256aa8;
+  --color-pending: #8a6200;
+  --color-danger: #b62e47;
 
-  /* ===== Dark premium surface system ===== */
-  --color-bg: #0a0a0b;
-  --color-bg-2: #101117;
-  --color-surface: #141417;
-  --color-surface-2: #1a1a1e;
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.16);
+  /* Leche GatoPago — recibos y superficies documentales. */
+  --color-paper: #fff8f0;
+  --color-paper-2: #fffdf9;
+  --color-paper-border: #0b0b0f;
+  --color-paper-text: #0b0b0f;
+  --color-paper-muted: #5f5650;
 
-  /* Text ramp */
-  --color-text: #f5f5f3;
-  --color-text-muted: rgba(245, 245, 243, 0.64);
-  /* Faint is used for informative microcopy (dates, hints, labels), not just
-     decoration — kept at >=0.56 so 12-13px text clears WCAG AA (~5.6:1) on bg. */
-  --color-text-faint: rgba(245, 245, 243, 0.56);
+  --font-sans: "Recursive Variable", "Recursive", system-ui, sans-serif;
+  --font-display: "Recursive Variable", "Recursive", system-ui, sans-serif;
+  --font-mono: "Recursive Variable", "Recursive", ui-monospace, monospace;
 
-  /* Legacy aliases — keep utility classes resolving on screens not yet reworked */
-  --color-parmelia-blue: #a7d4de;
-  --color-parmelia-pink: #dea6bc;
-  --color-parmelia-gold: #ded9a6;
-  --color-background: #0a0a0b;
-  --color-muted: rgba(245, 245, 243, 0.64);
-
-  /* ===== Typography ===== */
-  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
-
-  /* ===== Radii ===== */
-  --radius-sm: 12px;
-  --radius-md: 16px;
-  --radius-lg: 22px;
+  --radius-pixel: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
   --radius-pill: 999px;
+  --radius-control: 0;
+  --radius-card: 0;
+  --radius-dialog: 0;
 
-  /* ===== Elevation ===== */
-  --shadow-e1: 0 8px 24px rgba(0, 0, 0, 0.35);
-  --shadow-e2: 0 18px 50px rgba(0, 0, 0, 0.35);
-  --shadow-e3: 0 30px 90px rgba(0, 0, 0, 0.5);
-  --shadow-glow-sky: 0 0 32px rgba(156, 227, 244, 0.22);
-  --shadow-glow-pink: 0 0 32px rgba(244, 169, 207, 0.2);
-  /* Softer sky glow — for processing/receipt moments where the full glow is too much */
-  --shadow-glow-sky-soft: 0 0 20px rgba(156, 227, 244, 0.12);
-
-  /* ===== Motion ===== */
-  --animate-fade-up: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-  --animate-fade-in: fade-in 0.4s ease both;
-  --animate-sheet-up: sheet-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
-  --animate-pulse-soft: pulse-soft 2.6s ease-in-out infinite;
-  --animate-float-glow: float-glow 5s ease-in-out infinite;
-  --animate-qr-scan: qr-scan 2.6s ease-in-out infinite;
+  --shadow-e1: 4px 4px 0 #d2c5b9;
+  --shadow-e2: 6px 6px 0 #cf3433;
+  --shadow-e3: 12px 12px 0 #cf3433;
+  --shadow-pixel: 4px 4px 0 #cf3433;
+  --animate-fade-up: fade-up 260ms cubic-bezier(.16, 1, .3, 1) both;
+  --animate-fade-in: fade-in 180ms ease-out both;
+  --animate-sheet-up: sheet-up 340ms cubic-bezier(.16, 1, .3, 1) both;
+  --animate-pulse-soft: pulse-soft 2.4s ease-in-out infinite;
+  --animate-qr-scan: qr-scan 2.4s cubic-bezier(.45, 0, .55, 1) infinite;
+  --animate-pixel-in: pixel-in 260ms cubic-bezier(.16, 1, .3, 1) both;
+  --animate-purr: purr 680ms cubic-bezier(.16, 1, .3, 1) both;
+  --animate-packet: packet 1850ms steps(22, end) infinite;
 
   @keyframes fade-up {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translate3d(0, 8px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
   }
   @keyframes fade-in {
     from { opacity: 0; }
     to { opacity: 1; }
   }
-  /* Bottom sheets: more travel than fade-up so the card reads as sliding in
-     from the bottom edge, not just appearing. */
   @keyframes sheet-up {
-    from { opacity: 0; transform: translateY(64px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translate3d(0, 40px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
   }
   @keyframes pulse-soft {
-    0%, 100% { opacity: 0.82; }
+    0%, 100% { opacity: .64; }
     50% { opacity: 1; }
   }
-  /* Compositor-only (transform/opacity): animating `filter` or `top` forces
-     main-thread paints every frame and stutters on low-end phones. */
-  @keyframes float-glow {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-6px); }
+  @keyframes meli-idle {
+    0%, 42%, 58%, 100% { transform: translate3d(0, 0, 0); }
+    50% { transform: translate3d(0, -3px, 0); }
   }
   @keyframes qr-scan {
-    0%, 100% { transform: translateY(0); opacity: 0; }
+    0%, 100% { transform: translate3d(0, 0, 0); opacity: 0; }
     12%, 88% { opacity: 1; }
-    50% { transform: translateY(calc(100% - 2px)); }
+    50% { transform: translate3d(0, calc(100% - 2px), 0); }
   }
+  @keyframes pixel-in {
+    from { opacity: 0; transform: translate3d(0, 8px, 0) scale(.985); }
+    to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  }
+  @keyframes purr {
+    0% { transform: translate3d(0, 4px, 0) scale(.98); }
+    55% { transform: translate3d(0, -2px, 0) scale(1.03); }
+    100% { transform: translate3d(0, 0, 0) scale(1); }
+  }
+  @keyframes packet {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 0, 0);
+    }
+    5% { opacity: 1; }
+    88%, 96% {
+      opacity: 1;
+      transform: translate3d(calc(100cqw - var(--packet-size, 10px)), 0, 0);
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(calc(100cqw - var(--packet-size, 10px)), 0, 0);
+    }
+  }
+}
+
+:root {
+  color-scheme: light;
+  --recursive-linear: "MONO" 0, "CASL" 0, "slnt" 0, "CRSV" .5;
+  --recursive-casual: "MONO" 0, "CASL" 1, "slnt" 0, "CRSV" .5;
+  --recursive-mono: "MONO" 1, "CASL" 0, "slnt" 0, "CRSV" .5;
+  --ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+  --ease-press: cubic-bezier(.2, .8, .2, 1);
 }
 
 html {
-  color-scheme: dark;
-  /* Match the body so overscroll/rubber-band and the dvh gap when the mobile URL
-     bar retracts don't expose the browser's black canvas as a dark strip. */
-  background: var(--color-bg);
+  background: #0b0b0f;
+  color-scheme: light;
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* Sileo toast state colors — Parmelia palette */
-  --sileo-state-success: oklch(0.82 0.06 192); /* sky */
-  --sileo-state-error: oklch(0.76 0.08 350);   /* pink */
-  --sileo-state-warning: oklch(0.86 0.07 90);  /* gold */
-  --sileo-state-info: oklch(0.82 0.06 192);    /* sky */
 }
 
 body {
-  font-family: var(--font-sans);
-  color: var(--color-text);
-  /* Transparent on purpose: the base color lives on <html> (so overscroll/dvh
-     never flash black), and a transparent body lets the body::before gradient
-     show through. An opaque body background here would paint over that gradient
-     (it sits at z-index:-1) and flatten the screen to solid black. */
-  background: transparent;
   min-height: 100dvh;
-  line-height: 1.6;
-	letter-spacing: 0;
+  margin: 0;
+  background: #0b0b0f;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-variation-settings: var(--recursive-linear);
+  font-size: 16px;
+  line-height: 1.55;
+  letter-spacing: -.01em;
 }
 
-/* Brand ambience on a fixed, GPU-composited layer instead of
-   background-attachment: fixed — which forces a full repaint on every scroll
-   frame (mobile jank) and is effectively ignored on iOS Safari. */
-body::before {
+body::before,
+body::after {
   content: "";
   position: fixed;
-  /* Size to the LARGE viewport (lvh), not the default/small one: when the mobile
-     URL bar retracts the viewport grows, and a layer pinned to the small viewport
-     would leave the new bottom strip uncovered (the "black line"). 100lvh always
-     spans the tallest viewport, so the gradient itself covers it. */
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 100vh; /* fallback: vh already maps to the large viewport */
-  height: 100lvh;
-  z-index: -1;
+  inset: 0;
+  min-height: 100vh;
+  min-height: 100lvh;
   pointer-events: none;
+  z-index: -1;
+}
+
+body::before {
   background:
-    radial-gradient(820px circle at 8% -8%, rgba(167, 212, 222, 0.08), transparent 46%),
-    radial-gradient(820px circle at 92% 4%, rgba(222, 166, 188, 0.07), transparent 46%),
-    radial-gradient(720px circle at 50% 112%, rgba(222, 217, 166, 0.05), transparent 52%);
+    radial-gradient(760px circle at 14% -8%, rgb(248 82 57 / .18), transparent 48%),
+    radial-gradient(620px circle at 92% 18%, rgb(207 52 51 / .12), transparent 48%),
+    #0b0b0f;
+}
+
+body::after {
+  opacity: .2;
+  background-image:
+    linear-gradient(90deg, transparent 31px, rgb(248 82 57 / .08) 32px),
+    linear-gradient(transparent 31px, rgb(248 82 57 / .06) 32px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(to bottom, black, transparent 54%);
 }
 
 #root {
@@ -151,248 +175,857 @@ body::before {
   align-items: center;
 }
 
-#root > * {
-  width: 100%;
+#root > * { width: 100%; }
+
+.app-frame {
+  position: relative;
+  isolation: isolate;
+  background: var(--color-canvas);
+  color: var(--color-text);
 }
 
-h1, h2, h3 {
-  font-family: var(--font-display);
-  font-weight: 600;
-	letter-spacing: 0;
-  line-height: 1.05;
+.app-frame::after {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 20px;
+  width: 44px;
+  height: 6px;
+  background: var(--color-cat-500);
+  box-shadow: -14px 0 0 var(--color-cat-700);
+  content: "";
+  pointer-events: none;
 }
 
-button, input, select, textarea {
-  font-family: inherit;
+.app-frame > * { position: relative; z-index: 1; }
+
+@media (min-width: 640px) {
+  .app-frame {
+    border: 2px solid rgb(255 248 240 / 76%);
+    box-shadow: 12px 0 0 rgb(207 52 51 / .72), 24px 0 0 rgb(248 82 57 / .12);
+  }
 }
 
-button {
-  cursor: pointer;
-  border: none;
-  background: none;
-  color: inherit;
+@layer base {
+  h1, h2, h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-variation-settings: var(--recursive-casual);
+    font-weight: 720;
+    letter-spacing: -.035em;
+    line-height: 1.06;
+  }
+
+  p { margin-block: 0; }
+
+  button, input, select, textarea { font: inherit; }
+
+  button {
+    cursor: pointer;
+    border: 0;
+    background: none;
+    color: inherit;
+    touch-action: manipulation;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+    touch-action: manipulation;
+  }
+
+  button, a { -webkit-tap-highlight-color: rgb(248 82 57 / .14); }
 }
 
-:is(button, a, input, select, textarea, [tabindex]):focus-visible {
-	outline: 2px solid #a7d4de;
-	outline-offset: 2px;
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--color-cat-500);
+  outline-offset: 3px;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+:where(button, input, select, textarea):disabled { cursor: not-allowed; }
+
+input, textarea, select {
+  caret-color: var(--color-cat-500);
 }
 
 ::selection {
-  background: rgba(167, 212, 222, 0.28);
-  color: #fff;
+  background: rgb(248 82 57 / .32);
+  color: var(--color-on-cat);
 }
 
-/* ===== Brand helpers ===== */
-
-/* Static glow for the floating logo — the animation itself is transform-only. */
-.animate-float-glow {
-  filter: drop-shadow(0 0 30px rgba(156, 227, 244, 0.24));
-  will-change: transform;
-}
-
-/* Dimmed glow — append alongside .animate-float-glow on quieter moments
-   (e.g. the processing-payment overlay) so the logo doesn't blaze. Defined
-   after .animate-float-glow so its filter wins at equal specificity. */
-.glow-soft.animate-float-glow,
-.glow-soft {
-  filter: drop-shadow(0 0 16px rgba(156, 227, 244, 0.12));
-}
-
-/* Tabular figures for amounts/balances/lists */
+.type-linear { font-variation-settings: var(--recursive-linear); }
+.type-casual { font-variation-settings: var(--recursive-casual); }
+.type-mono,
 .tabular {
-  font-variant-numeric: tabular-nums;
+  font-variation-settings: var(--recursive-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 
-/* ===== Skeleton placeholders =====
-   A neutral block with a sweeping highlight. The sweep is a transform on a
-   pseudo-element, so it stays on the compositor (no per-frame paint) — the same
-   discipline as the rest of the motion here. Set the radius via a utility class;
-   under prefers-reduced-motion the global rule freezes the sweep and the static
-   block remains. */
+.pixel-art,
+.meli-sprite {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.meli-sprite {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  user-select: none;
+  filter: drop-shadow(5px 5px 0 rgb(207 52 51 / .22));
+  transform-origin: 50% 82%;
+}
+
+.cat-glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.cat-glyph .meli-sprite { width: 100%; }
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-variation-settings: var(--recursive-casual);
+  font-weight: 760;
+  letter-spacing: -.035em;
+}
+
+.meli-motion-idle { animation: meli-idle 5.2s ease-in-out infinite; }
+.meli-motion-purr { animation: purr 680ms var(--ease-enter) both; }
+.meli-motion-peek { animation: meli-peek 3.8s ease-in-out infinite; }
+.meli-motion-deliver { animation: meli-deliver 1.7s ease-in-out infinite; }
+
+.meli-motion-idle,
+.meli-motion-purr,
+.meli-motion-peek,
+.meli-motion-deliver { will-change: transform; }
+
+@keyframes meli-peek {
+  0%, 42%, 100% { transform: translate3d(0, 0, 0) rotate(0); }
+  48%, 62% { transform: translate3d(4px, 0, 0) rotate(1deg); }
+}
+
+@keyframes meli-deliver {
+  0%, 100% { transform: translate3d(-2px, 0, 0); }
+  50% { transform: translate3d(4px, 0, 0); }
+}
+
+.interactive-surface,
+.select-menu-option {
+  transition:
+    transform 160ms var(--ease-press),
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease,
+    box-shadow 160ms var(--ease-press);
+}
+
+.interactive-surface:active { transform: translate(2px, 2px); }
+
+@media (hover: hover) and (pointer: fine) {
+  .interactive-surface:hover {
+    transform: translate(-2px, -2px);
+    border-color: var(--color-border-strong);
+  }
+  .select-menu-option:hover { background-color: var(--color-cat-50); }
+}
+
+/* Dinero y superficies */
+.finance-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 2px solid var(--color-text);
+  border-radius: 0;
+  padding: 20px;
+  background: var(--color-surface);
+  box-shadow: 6px 6px 0 var(--color-cat-700);
+}
+
+.finance-panel::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 18px;
+  width: 42px;
+  height: 8px;
+  background: var(--color-cat-500);
+  box-shadow: -12px 0 0 var(--color-cat-700);
+}
+
+.finance-inset {
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  padding: 14px 16px;
+  background: var(--color-paper-2);
+}
+
+.finance-section-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--color-cat-700);
+  font-family: var(--font-mono);
+  font-variation-settings: var(--recursive-mono);
+  font-size: 11px;
+  font-weight: 680;
+  letter-spacing: .1em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.finance-section-label::before {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: currentColor;
+  box-shadow: 3px 3px 0 rgb(11 11 15 / .12);
+  content: "";
+}
+
+.finance-summary-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.finance-summary-row + .finance-summary-row { margin-top: 8px; }
+
+.pixel-corner {
+  clip-path: polygon(0 0, calc(100% - 8px) 0, calc(100% - 8px) 8px, 100% 8px, 100% 100%, 8px 100%, 8px calc(100% - 8px), 0 calc(100% - 8px));
+}
+
+.pixel-rail {
+  --packet-size: 10px;
+  position: relative;
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  height: 16px;
+  container-type: inline-size;
+}
+
+.pixel-rail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 4px;
+  background: repeating-linear-gradient(90deg, var(--color-text) 0 8px, transparent 8px 12px);
+}
+
+.pixel-rail > span {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  width: var(--packet-size);
+  height: var(--packet-size);
+  background: var(--color-cat-500);
+  box-shadow: -12px 0 0 rgb(248 82 57 / .34), -24px 0 0 rgb(248 82 57 / .12);
+}
+
+.pixel-rail-active > span {
+  animation: var(--animate-packet);
+  will-change: transform, opacity;
+}
+.pixel-rail-done::before { background: var(--color-growth); }
+.pixel-rail-done > span {
+  left: calc(100% - var(--packet-size));
+  background: var(--color-growth);
+  box-shadow: -12px 0 0 rgb(40 123 85 / .28);
+}
+.pixel-rail-future::before { opacity: .48; }
+
+/* Skeletons Meli: geometría real, contraste suave y barrido continuo. */
 .skeleton {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
-  background: var(--color-surface-2);
+  border: 1px solid rgb(11 11 15 / .16);
+  background: linear-gradient(90deg, var(--color-surface-2), var(--color-surface-3));
+  box-shadow: inset 3px 0 0 rgb(248 82 57 / .16);
 }
+
 .skeleton::after {
   content: "";
   position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
-  animation: skeleton-sweep 1.4s ease-in-out infinite;
+  inset: 0 auto 0 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, rgb(255 253 249 / .76), rgb(248 82 57 / .12), transparent);
+  transform: translate3d(-120%, 0, 0);
+  animation: skeleton-sweep 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
   will-change: transform;
 }
-@keyframes skeleton-sweep {
-  100% { transform: translateX(100%); }
+
+@keyframes skeleton-sweep { to { transform: translate3d(360%, 0, 0); } }
+
+.skeleton.skeleton-accent {
+  border-color: var(--color-cat-700);
+  background: var(--color-cat-500);
+  box-shadow: 4px 4px 0 var(--color-cat-700);
 }
 
-/* Segmented control — a clearly "selected" pill on a track */
+.skeleton.skeleton-ink {
+  border-color: var(--color-text);
+  background: var(--color-text);
+  box-shadow: 4px 4px 0 var(--color-cat-700);
+}
+
+.skeleton.skeleton-accent::after,
+.skeleton.skeleton-ink::after {
+  background: linear-gradient(90deg, transparent, rgb(255 248 240 / .42), transparent);
+}
+
+/* Controles segmentados */
 .seg-track {
   display: inline-flex;
-  padding: 4px;
   gap: 2px;
-  background: var(--color-bg);
+  padding: 4px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
+  border-radius: 0;
+  background: var(--color-paper-2);
 }
+
 .seg-item {
-  padding: 7px 18px;
-  border-radius: var(--radius-pill);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-muted);
-  transition: background-color 150ms ease, color 150ms ease;
   display: inline-flex;
+  min-height: 40px;
   align-items: center;
   justify-content: center;
+  padding: 7px 18px;
+  border-radius: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 580;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms var(--ease-press);
 }
-.seg-item:hover {
-  color: var(--color-text);
-}
+
 .seg-item[data-active="true"] {
-  background: rgba(156, 227, 244, 0.18);
-  color: var(--color-glow-sky);
-  font-weight: 600;
+  background: var(--color-cat-500);
+  color: var(--color-on-cat);
+  font-weight: 700;
+  box-shadow: inset 0 -3px 0 var(--color-cat-700);
 }
 
-/* Full-width segmented control (e.g. Wallet / Usuario) */
-.seg-track-block {
-  display: flex;
-  width: 100%;
-}
-.seg-track-block .seg-item {
-  flex: 1;
-}
+.seg-track-block { display: flex; width: 100%; }
+.seg-track-block .seg-item { flex: 1; }
 
-/* ===== Buttons (guide §7) =====
-   Primary-action rule (keep the hierarchy legible):
-   - .btn-primary  — the default primary action on a screen: create, save,
-     continue, sign in, share. Solid light pill.
-   - .btn-gradient — RESERVED for the single action that moves the user's money
-     (pay, swap, bridge). The brand gradient marks "this is the moment you commit
-     funds." One per screen, and never for non-money actions (invite, share). */
+/* El botón de la app es exactamente el botón pixel de la landing. */
 .btn {
   display: inline-flex;
+  min-height: 48px;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  height: 52px;
-  padding: 0 24px;
-  border-radius: var(--radius-pill);
+  gap: 10px;
+  padding: 0 20px;
+  border: 2px solid currentColor;
+  border-radius: 0;
   font-family: var(--font-sans);
-  font-weight: 600;
-  font-size: 15px;
+  font-variation-settings: var(--recursive-casual);
+  font-size: 14px;
+  font-weight: 760;
   line-height: 1;
   white-space: nowrap;
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease,
-    border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-}
-.btn:active {
-  transform: scale(0.985);
-}
-.btn:disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-.btn-block {
-  width: 100%;
-}
-.btn-sm {
-  height: 44px;
-  font-size: 14px;
-  padding: 0 20px;
+  transition:
+    transform 150ms var(--ease-press),
+    box-shadow 150ms var(--ease-press),
+    background-color 160ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
 }
 
-/* Primary — light pill */
-.btn-primary {
-  background: var(--color-text);
-  color: var(--color-bg);
-}
-.btn-primary:hover {
-  transform: translateY(-1px);
+.btn-block { width: 100%; }
+.btn-sm { min-height: 42px; height: 42px; padding-inline: 16px; font-size: 13px; }
+
+.btn-primary,
+.btn-gradient,
+.btn-money {
+  border-color: var(--color-cat-500);
+  background: var(--color-cat-500);
+  color: var(--color-on-cat);
+  box-shadow: 4px 4px 0 var(--color-cat-700);
 }
 
-/* Gradient CTA — surface fill + brand gradient border (one protagonist per screen) */
-.btn-gradient {
-  color: var(--color-text);
-  border: 1.5px solid transparent;
-  background:
-    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
-    linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold)) border-box;
-}
-.btn-gradient:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-glow-sky);
+.btn-gradient,
+.btn-money {
+  background: var(--color-cat-500);
+  box-shadow: 4px 4px 0 var(--color-cat-700);
 }
 
-/* Ghost — simple bordered */
 .btn-ghost {
-  background: transparent;
+  border-color: var(--color-text);
+  background: var(--color-surface);
   color: var(--color-text);
-  border: 1px solid var(--color-border-strong);
-}
-.btn-ghost:hover {
-  background: var(--color-surface-2);
+  box-shadow: 4px 4px 0 var(--color-surface-2);
 }
 
-/* Text — tertiary action */
+.btn-danger {
+  border-color: var(--color-text);
+  background: var(--color-danger);
+  color: white;
+  box-shadow: 4px 4px 0 #78162b;
+}
+
 .btn-text {
   display: inline-flex;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
+  padding: 8px 12px;
+  border-radius: 0;
   background: transparent;
   color: var(--color-text-muted);
   font-size: 14px;
-  font-weight: 500;
-  padding: 10px 12px;
-  transition: color 0.15s ease;
+  font-weight: 600;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
-.btn-text:hover {
+
+.btn:disabled {
+  border-color: var(--color-border);
+  background: var(--color-surface-3);
+  color: var(--color-text-faint);
+  box-shadow: none;
+}
+
+.btn:not(:disabled):active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--color-cat-700);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:not(:disabled):hover,
+  .btn-gradient:not(:disabled):hover,
+  .btn-money:not(:disabled):hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--color-cat-700);
+  }
+  .btn-ghost:not(:disabled):hover { border-color: var(--color-text); background: var(--color-cat-50); transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--color-surface-2); }
+  .btn-text:hover { color: var(--color-text); text-decoration: underline; }
+}
+
+.dialog-backdrop {
+  background: rgb(11 11 15 / .76);
+  backdrop-filter: blur(8px);
+}
+
+.dialog-panel {
+  border: 2px solid var(--color-text);
+  border-radius: 0;
+  background: var(--color-surface);
   color: var(--color-text);
+  box-shadow: 12px 12px 0 var(--color-cat-700);
 }
 
-/* Brand gradient on text — one key element per screen */
-.text-brand-gradient {
-  background: linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.sheet-handle {
+  width: 56px;
+  height: 8px;
+  margin-inline: auto;
+  background: var(--color-cat-500);
+  box-shadow: 14px 0 0 var(--color-cat-700);
 }
 
-/* Hairline gradient border (CTA / receipt frame) */
-.border-brand-gradient {
-  border: 1px solid transparent;
+.receipt-paper {
+  color-scheme: light;
+  color: var(--color-paper-text);
+  background: var(--color-paper);
+  border: 2px solid var(--color-paper-border);
+  box-shadow: 8px 8px 0 var(--color-cat-700);
+}
+
+.receipt-rail {
+  background: repeating-linear-gradient(90deg, var(--color-cat-500) 0 16px, var(--color-cat-700) 16px 24px, var(--color-cat-300) 24px 32px);
+}
+
+.scan-line {
+  background: linear-gradient(90deg, transparent, var(--color-cat-700), var(--color-cat-300), transparent);
+  background-size: 100% 2px;
+  background-repeat: no-repeat;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Meli product primitives                                                    */
+/* -------------------------------------------------------------------------- */
+
+.meli-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-cat-700);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variation-settings: var(--recursive-mono);
+  font-weight: 720;
+  letter-spacing: .12em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.meli-kicker::before {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: currentColor;
+  box-shadow: 3px 3px 0 rgb(11 11 15 / .12);
+  content: "";
+}
+
+.meli-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meli-identity {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+}
+
+.meli-avatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-text);
+  background: var(--color-cat-500);
+  color: var(--color-on-cat);
+}
+
+.meli-avatar .meli-sprite { filter: none; }
+
+.meli-login-stage {
+  position: relative;
+  display: grid;
+  width: 100%;
+  max-width: 350px;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid var(--color-text);
   background:
-    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
-    linear-gradient(100deg, var(--color-glow-sky), var(--color-glow-pink) 52%, var(--color-glow-gold)) border-box;
+    linear-gradient(90deg, transparent 31px, rgb(11 11 15 / .045) 32px),
+    linear-gradient(transparent 31px, rgb(11 11 15 / .045) 32px),
+    var(--color-cat-50);
+  background-size: 32px 32px;
+  box-shadow: 8px 8px 0 var(--color-cat-700);
 }
 
-/* ===== Cross-page transitions (View Transitions API) =====
-   Enabled per-navigation via useViewTransitionNavigate. A short opacity
-   cross-fade that layers cleanly over each page's own entrance animation and
-   never fights a transform. Unsupported browsers navigate instantly. */
+.meli-login-stage > span {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 10px;
+  height: 10px;
+  background: var(--color-cat-500);
+  box-shadow: -14px 14px 0 var(--color-pending);
+}
+
+.meli-login-stage .meli-sprite { filter: drop-shadow(5px 5px 0 rgb(207 52 51 / .2)); }
+
+.meli-square-action {
+  position: relative;
+  display: inline-flex;
+  min-width: 42px;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 700;
+  transition: transform 150ms var(--ease-press), box-shadow 150ms var(--ease-press), border-color 140ms ease;
+}
+
+.meli-square-action::after {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  background: var(--color-cat-500);
+  content: "";
+}
+
+.meli-square-action:active { transform: translate(2px, 2px); }
+
+.meli-balance-card-app {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid var(--color-text);
+  background: #0b0b0f;
+  color: #fff8f0;
+  box-shadow: 6px 6px 0 var(--color-cat-500);
+}
+
+.meli-balance-card-app .text-text-muted { color: rgb(255 248 240 / .68); }
+.meli-balance-card-app .text-text-faint { color: rgb(255 248 240 / .48); }
+.meli-balance-card-app .text-text { color: #fff8f0; }
+.meli-balance-card-app .text-cat-300 { color: var(--color-cat-500); }
+.meli-balance-card-app .skeleton { border-color: rgb(255 248 240 / .14); background: rgb(255 248 240 / .1); }
+.meli-balance-card-app .select-menu-trigger {
+  border-color: rgb(255 248 240 / .16);
+  background: rgb(255 248 240 / .08);
+  color: #fff8f0;
+}
+.meli-balance-card-app .select-menu-trigger .text-text { color: #fff8f0; }
+.meli-balance-card-app .select-menu-trigger .text-text-faint { color: rgb(255 248 240 / .5); }
+
+.meli-growth-rail {
+  height: 10px;
+  background: rgb(255 248 240 / .12);
+}
+
+.meli-growth-rail > span {
+  display: block;
+  width: 33%;
+  height: 100%;
+  background: #71d5a1;
+  box-shadow: 4px 0 0 #0b0b0f, 8px 0 0 var(--color-cat-500);
+}
+
+.meli-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.meli-quick-action {
+  display: flex;
+  min-width: 0;
+  min-height: 78px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 10px;
+  font-weight: 740;
+  line-height: 1.15;
+  text-align: center;
+  transition: transform 150ms var(--ease-press), box-shadow 150ms var(--ease-press), border-color 140ms ease, background-color 140ms ease;
+}
+
+.meli-quick-action > span:first-child {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  background: var(--color-cat-500);
+  color: var(--color-on-cat);
+}
+
+.meli-paper-card {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.meli-paper-card--strong {
+  border: 2px solid var(--color-text);
+  box-shadow: 6px 6px 0 var(--color-border);
+}
+
+.meli-ink-card {
+  border: 2px solid var(--color-text);
+  background: #0b0b0f;
+  color: #fff8f0;
+  box-shadow: 6px 6px 0 var(--color-cat-700);
+}
+
+.meli-path-card-app {
+  position: relative;
+  display: grid;
+  min-height: 112px;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 2px solid var(--color-text);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 0 0 var(--color-cat-700);
+  transition: transform 170ms var(--ease-press), box-shadow 170ms var(--ease-press), background-color 140ms ease;
+}
+
+.meli-path-card-app > :first-child {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  background: var(--color-text);
+  color: var(--color-canvas);
+}
+
+.meli-path-card-app:active {
+  background: var(--color-cat-500);
+  box-shadow: 3px 3px 0 var(--color-cat-700);
+  transform: translate(2px, 2px);
+}
+
+.meli-field,
+:where(.app-frame, .dialog-panel) input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+:where(.app-frame, .dialog-panel) textarea,
+:where(.app-frame, .dialog-panel) select {
+  border-radius: 0 !important;
+}
+
+.meli-field {
+  min-height: 52px;
+  width: 100%;
+  border: 2px solid var(--color-text);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding-inline: 14px;
+  transition: box-shadow 150ms var(--ease-press), transform 150ms var(--ease-press);
+}
+
+.meli-chip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variation-settings: var(--recursive-mono);
+  font-weight: 680;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.meli-chip::before {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: currentColor;
+  content: "";
+}
+
+.primary-nav {
+  border-top: 2px solid var(--color-text);
+  background: rgb(255 248 240 / .96);
+  color: var(--color-text);
+  box-shadow: 0 -6px 0 rgb(207 52 51 / .14);
+  backdrop-filter: blur(12px);
+}
+
+.primary-nav__item {
+  border: 1px solid transparent;
+  color: var(--color-text-faint);
+  transition: background-color 140ms ease, color 140ms ease, transform 150ms var(--ease-press);
+}
+
+.primary-nav__item::before {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  background: transparent;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.primary-nav__item.is-active {
+  border-color: var(--color-text);
+  background: var(--color-cat-500);
+  color: var(--color-on-cat);
+  box-shadow: 3px 3px 0 var(--color-cat-700);
+}
+
+.primary-nav__item.is-active::before { background: var(--color-text); }
+
+/* Elimina la geometría blanda legacy dentro del producto. Los únicos círculos
+   que sobreviven se marcan explícitamente como token-icon o keep-round. */
+:where(.app-frame, .dialog-panel) [class*="rounded-"]:not(.token-icon):not(.keep-round) {
+  border-radius: 0 !important;
+}
+
+.token-icon,
+.keep-round { border-radius: 999px !important; }
+
+@media (hover: hover) and (pointer: fine) {
+  .meli-square-action:hover,
+  .meli-quick-action:hover {
+    border-color: var(--color-text);
+    background: var(--color-cat-50);
+    box-shadow: 4px 4px 0 var(--color-cat-700);
+    transform: translate(-2px, -2px);
+  }
+
+  .meli-path-card-app:hover {
+    background: var(--color-cat-500);
+    box-shadow: 7px 7px 0 var(--color-cat-700);
+    transform: translate(-3px, -3px);
+  }
+
+  .meli-path-card-app:hover :where(.text-text-muted, .text-text-faint) {
+    color: var(--color-text);
+  }
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: 0.22s;
-  animation-timing-function: ease;
+  animation-duration: 180ms;
+  animation-timing-function: var(--ease-enter);
+}
+
+[data-exporting="true"],
+[data-exporting="true"] *,
+[data-exporting="true"]::before,
+[data-exporting="true"]::after,
+[data-exporting="true"] *::before,
+[data-exporting="true"] *::after {
+  animation: none !important;
+  caret-color: transparent !important;
+  transition: none !important;
+}
+
+@media (min-width: 720px) {
+  body::after {
+    background-size: 40px 40px;
+    background-image:
+      linear-gradient(90deg, transparent 39px, rgb(248 82 57 / .07) 40px),
+      linear-gradient(transparent 39px, rgb(248 82 57 / .05) 40px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+    animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+    transition-duration: .001ms !important;
   }
-  /* ::view-transition pseudo-elements aren't matched by the * selector above. */
   ::view-transition-old(root),
-  ::view-transition-new(root) {
+  ::view-transition-new(root) { animation: none !important; }
+
+  .pixel-rail-active > span {
+    opacity: 1;
     animation: none !important;
+    transform: translate3d(calc((100cqw - var(--packet-size)) / 2), 0, 0);
   }
 }

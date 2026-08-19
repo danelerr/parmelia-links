@@ -61,6 +61,8 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () =>
 		}
 
 		function handleKeyDown(event: KeyboardEvent) {
+			const openDialogs = Array.from(document.querySelectorAll<HTMLElement>("[role='dialog'][aria-modal='true']"));
+			if (openDialogs.at(-1) !== dialogElement) return;
 			if (event.key === "Escape") {
 				event.preventDefault();
 				onCloseRef.current();
@@ -85,6 +87,8 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () =>
 			}
 		}
 		function keepFocusInside(event: FocusEvent) {
+			const openDialogs = Array.from(document.querySelectorAll<HTMLElement>("[role='dialog'][aria-modal='true']"));
+			if (openDialogs.at(-1) !== dialogElement) return;
 			if (!dialogElement.contains(event.target as Node)) {
 				(focusable()[0] ?? dialogElement).focus({ preventScroll: true });
 			}

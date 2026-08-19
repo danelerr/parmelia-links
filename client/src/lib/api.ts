@@ -7,9 +7,9 @@
 import { fetchWithAuth } from "./authFetch";
 import type { User } from "./firebase";
 import i18n from "./i18n";
+import { SERVER_URL } from "./brand";
 
-export const SERVER_URL =
-	import.meta.env.VITE_SERVER_URL || "https://server.parmelia.workers.dev";
+export { SERVER_URL };
 
 export class ApiError extends Error {
 	/** HTTP status; 0 = network failure (offline, DNS, CORS). */

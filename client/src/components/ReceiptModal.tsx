@@ -1,4 +1,4 @@
-// Receipt modal - a brand piece (gradient bar + glow) with the formal receipt
+// Receipt modal — GatoPago Milk paper with a formal, legible money hierarchy.
 // info at the bottom (fecha, hora, N° de comprobante = tx hash). Portaled to
 // <body> so position:fixed stays viewport-relative under transformed pages.
 
@@ -12,6 +12,7 @@ import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard } from "../lib/exportCard";
 import { useDialog } from "../hooks/useDialog";
 import type { Transaction } from "../lib/transactions";
+import { readMigratedStorage } from "../lib/storageMigration";
 
 function shortHash(hash: string) {
 	return `${hash.slice(0, 10)}…${hash.slice(-8)}`;
@@ -28,16 +29,17 @@ export default function ReceiptModal({
 	const cardRef = useRef<HTMLDivElement>(null);
 	const dialogRef = useDialog<HTMLDivElement>(onClose);
 	const received = tx.type === "received";
+	const swapped = tx.kind === "swap";
 	// The other party: origin wallet on received, destination wallet on sent.
-	const counterparty = received ? tx.from : tx.to;
+	const counterparty = swapped ? null : received ? tx.from : tx.to;
 	const date = new Date(tx.createdAt);
 	const hasDate = !Number.isNaN(date.getTime());
 	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
-	const hideBalance = localStorage.getItem("parmelia:hideBalance") === "1";
+	const hideBalance = readMigratedStorage("gatopago:hideBalance", "parmelia:hideBalance") === "1";
 
 	return createPortal(
 		<div
-			className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center px-5 gap-4 animate-fade-in"
+			className="dialog-backdrop fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 px-5 animate-fade-in"
 			onClick={onClose}
 		>
 			<div
@@ -51,81 +53,65 @@ export default function ReceiptModal({
 			>
 			<div
 				ref={cardRef}
-				className="relative overflow-hidden w-full bg-surface border border-border rounded-[24px] p-8 flex flex-col items-center shadow-e3"
+				className="receipt-paper relative flex w-full flex-col items-center overflow-hidden p-8 animate-pixel-in"
 			>
-				<div
-					className="absolute top-0 left-0 right-0 h-1"
-					style={{ background: "linear-gradient(100deg,#9ce3f4,#f4a9cf 52%,#efe08c)" }}
-				/>
-				<div
-					className="pointer-events-none absolute -top-20 -left-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
-					style={{
-						background: received
-							? "radial-gradient(circle,#9ce3f4,transparent 70%)"
-							: "radial-gradient(circle,#f4a9cf,transparent 70%)",
-					}}
-				/>
+				<div className="receipt-rail absolute inset-x-0 top-0 h-2" />
 
 				<div className="flex items-center gap-2 mb-6 relative z-1">
 					<Logo className="w-6" />
-					<span className="font-display text-[16px]">Parmelia</span>
+					<span className="font-display text-[16px] text-paper-text">GatoPago</span>
 				</div>
-				<div
-					className="w-14 h-14 rounded-full flex items-center justify-center mb-5 relative z-1"
-					style={{
-						background: received ? "rgba(156,227,244,0.16)" : "rgba(244,169,207,0.16)",
-					}}
-				>
-					<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={received ? "#9ce3f4" : "#f4a9cf"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+				<div className="relative z-1 mb-5 flex h-14 w-14 items-center justify-center border-2 border-paper-text bg-growth/25 text-paper-text">
+					<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
 						<polyline points="20 6 9 17 4 12" />
 					</svg>
 				</div>
-				<p id="receipt-title" className="text-[14px] text-text-muted mb-1 relative z-1">
-					{received ? t("receipt.received") : t("receipt.sent")}
+				<p id="receipt-title" className="relative z-1 mb-1 text-[14px] text-paper-muted">
+					{swapped ? t("receipt.swapped") : received ? t("receipt.received") : t("receipt.sent")}
 				</p>
-				<p className="font-display text-[40px] leading-tight mb-4 tabular relative z-1 max-w-full break-words text-center">
+				<p className="type-mono relative z-1 mb-4 max-w-full break-words text-center text-[40px] font-bold leading-tight text-paper-text">
 					{hideBalance ? (
 						"••••"
 					) : (
 						<>
 							{received ? "+" : "−"}
 							{formatAmount(tx.amount, tx.currency)}
-							<span className="text-text-muted text-[20px] ml-1.5">{tx.currency}</span>
+							<span className="ml-1.5 text-[20px] text-paper-muted">{tx.currency}</span>
 						</>
 					)}
 				</p>
 				{counterparty && (
 					<div className="flex items-center justify-center gap-2 mb-1 relative z-1">
-						<span className="text-[11px] uppercase tracking-[0.08em] text-text-faint">
+						<span className="text-[11px] uppercase tracking-[0.08em] text-paper-muted">
 							{received ? t("receipt.from") : t("receipt.to")}
 						</span>
-						<span className="text-[13px] font-mono text-text-muted bg-surface-2 rounded-full px-2.5 py-0.5">
+						<span className="border border-paper-border bg-paper-2 px-2.5 py-0.5 font-mono text-[13px] text-paper-muted">
 							{counterparty.slice(0, 6)}…{counterparty.slice(-4)}
 						</span>
 					</div>
 				)}
 				{tx.reference && (
-					<p className="text-text-muted text-[14px] text-center mb-1 relative z-1">{tx.reference}</p>
+					<p className="relative z-1 mb-1 text-center text-[14px] text-paper-muted">{tx.reference}</p>
 				)}
 
 				{/* Formal receipt info */}
-				<div className="w-full border-t border-border mt-5 pt-4 relative z-1 flex flex-col gap-1.5">
+				<div className="relative z-1 mt-5 flex w-full flex-col gap-1.5 border border-paper-border bg-paper-2 px-4 py-3">
 					{hasDate && (
 						<>
 							<div className="flex items-center justify-between text-[12px]">
-								<span className="text-text-faint">{t("common.date")}</span>
-								<span className="text-text-muted">{formatDate(date)}</span>
+								<span className="text-paper-muted">{t("common.date")}</span>
+								<span className="text-paper-text">{formatDate(date)}</span>
 							</div>
 							<div className="flex items-center justify-between text-[12px]">
-								<span className="text-text-faint">{t("common.time")}</span>
-								<span className="text-text-muted">{formatTime(date)}</span>
+								<span className="text-paper-muted">{t("common.time")}</span>
+								<span className="text-paper-text">{formatTime(date)}</span>
 							</div>
 						</>
 					)}
 					{tx.txHash && (
 						<div className="flex items-center justify-between text-[12px] gap-3">
-							<span className="text-text-faint shrink-0">{t("receipt.receiptNo")}</span>
-							<span className="text-text-muted font-mono truncate">{shortHash(tx.txHash)}</span>
+							<span className="shrink-0 text-paper-muted">{t("receipt.receiptNo")}</span>
+							<span className="truncate font-mono text-paper-text">{shortHash(tx.txHash)}</span>
 						</div>
 					)}
 					{tx.txHash && (
@@ -133,12 +119,12 @@ export default function ReceiptModal({
 							href={getExplorerTxUrl(tx.txHash)}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-text-faint hover:text-text-muted text-[12px] text-center mt-2 transition-colors"
+							className="mt-2 text-center text-[12px] font-semibold text-cat-700 underline underline-offset-2"
 						>
 							{t("receipt.viewOnNetwork")}
 						</a>
 					)}
-					<p className="text-[11px] text-text-faint text-center mt-1">parmelia.me</p>
+					<p className="mt-1 text-center text-[11px] text-paper-muted">GatoPago · Comprobante</p>
 				</div>
 			</div>
 
@@ -146,7 +132,7 @@ export default function ReceiptModal({
 				<button
 					onClick={async () => {
 						try {
-							await downloadCard(cardRef.current, `parmelia-${tx.amount}-${tx.currency}.png`);
+							await downloadCard(cardRef.current, `gatopago-${tx.amount}-${tx.currency}.png`);
 						} catch (err) {
 							notifyError(err, t("receipt.downloadError"));
 						}
