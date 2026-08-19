@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bindings } from "../src/middlewares/auth";
 import {
+	__test,
 	requestBalanceRefresh,
 	requestBalanceRefreshBatch,
 } from "../src/services/balanceReadModel";
@@ -19,7 +20,7 @@ describe("balance refresh event coalescing", () => {
 		});
 		const env = {
 			CHAIN_KEY: "arbitrum-sepolia",
-			PARMELIA_DB: { prepare },
+			GATOPAGO_DB: { prepare },
 			EVENT_JOB_SCHEDULER: {
 				getByName: vi.fn(() => ({ schedule })),
 			},
@@ -60,7 +61,7 @@ describe("balance refresh event coalescing", () => {
 		});
 		const env = {
 			CHAIN_KEY: "arbitrum-sepolia",
-			PARMELIA_DB: { prepare, batch },
+			GATOPAGO_DB: { prepare, batch },
 			EVENT_JOB_SCHEDULER: {
 				getByName: vi.fn(() => ({ schedule })),
 			},
@@ -83,5 +84,36 @@ describe("balance refresh event coalescing", () => {
 			50,
 		]);
 		expect(schedule).toHaveBeenCalledOnce();
+	});
+
+	it("does not let a later safety block delay an urgent confirmed refresh", () => {
+		const address =
+			"0x0101010101010101010101010101010101010101" as const;
+		const safety = {
+			schemaVersion: 1 as const,
+			idempotencyKey: `421614:${address}`,
+			uid: "same-user",
+			accountAddress: address,
+			chainId: 421614,
+			reason: "autonomous_indexer_safety",
+			priority: 1 as const,
+			notBeforeBlock: "2000",
+		};
+		const confirmed = {
+			...safety,
+			reason: "confirmed_user_operation",
+			priority: 0 as const,
+			notBeforeBlock: "1000",
+		};
+
+		expect(
+			__test.coalesceBalanceRefreshMessages(safety, confirmed),
+		).toEqual(confirmed);
+		expect(
+			__test.coalesceBalanceRefreshMessages(confirmed, {
+				...safety,
+				notBeforeBlock: "3000",
+			}),
+		).toEqual(confirmed);
 	});
 });

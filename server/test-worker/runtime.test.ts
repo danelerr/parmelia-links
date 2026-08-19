@@ -45,7 +45,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 	});
 
 	it("applies the complete D1 migration chain", async () => {
-		const applied = await env.PARMELIA_DB.prepare(
+		const applied = await env.GATOPAGO_DB.prepare(
 			"SELECT name FROM d1_migrations ORDER BY id",
 		).all<{ name: string }>();
 
@@ -77,11 +77,13 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0025_asset_projection_audits.sql",
 			"0026_indexer_work_partitions.sql",
 			"0027_indexer_consistency.sql",
+			"0028_card_interest.sql",
+			"0029_gatopago_brand.sql",
 		]);
 	});
 
 	it("preserves strict tables, foreign keys and integrity columns", async () => {
-		const tables = await env.PARMELIA_DB.prepare("PRAGMA table_list").all<{
+		const tables = await env.GATOPAGO_DB.prepare("PRAGMA table_list").all<{
 			name: string;
 			strict: number;
 		}>();
@@ -118,11 +120,12 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"chain_reorg_epoch_guards",
 			"chain_reorg_replay_requests",
 			"indexer_safety_sweep_state",
+			"card_interest",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
 
-		const ledgerColumns = await env.PARMELIA_DB.prepare("PRAGMA table_info(ledger)").all<{
+		const ledgerColumns = await env.GATOPAGO_DB.prepare("PRAGMA table_info(ledger)").all<{
 			name: string;
 		}>();
 		expect(ledgerColumns.results.map((row) => row.name)).toEqual(
@@ -137,22 +140,28 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				"projection_version",
 			]),
 		);
-		const chainBlockColumns = await env.PARMELIA_DB.prepare(
+		const chainBlockColumns = await env.GATOPAGO_DB.prepare(
 			"PRAGMA table_info(chain_blocks)",
 		).all<{ name: string }>();
 		expect(chainBlockColumns.results.map((row) => row.name)).toEqual(
 			expect.arrayContaining(["l1_batch_number", "l1_confirmations"]),
 		);
 
-		const linkColumns = await env.PARMELIA_DB.prepare("PRAGMA table_info(payment_links)").all<{
+		const linkColumns = await env.GATOPAGO_DB.prepare("PRAGMA table_info(payment_links)").all<{
 			name: string;
 		}>();
 		expect(linkColumns.results.map((row) => row.name)).toEqual(
 			expect.arrayContaining(["payment_claim", "payment_claim_expires_at", "payment_claim_tx_hash"]),
 		);
 
+		const crosschainColumns = await env.GATOPAGO_DB.prepare(
+			"PRAGMA table_info(crosschain_operations)",
+		).all<{ name: string }>();
+		expect(crosschainColumns.results.map((row) => row.name)).toContain("gatopago_fee");
+		expect(crosschainColumns.results.map((row) => row.name)).not.toContain("parmelia_fee");
+
 		await expect(
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				"INSERT INTO passkeys (credential_id, uid, qx, qy) VALUES (?, ?, ?, ?)",
 			)
 				.bind("orphan", "missing-user", "1", "2")
@@ -164,7 +173,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const uid = "runtime-balance-event-coalesce";
 		const address = "0x0101010101010101010101010101010101010101";
 		const now = new Date().toISOString();
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -186,7 +195,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			priority: 3,
 		});
 
-		const rows = await env.PARMELIA_DB.prepare(
+		const rows = await env.GATOPAGO_DB.prepare(
 			`SELECT reason FROM balance_refresh_requests
 			 WHERE chain_id = 421614 AND account_address = ?`,
 		)
@@ -194,11 +203,82 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			.all<{ reason: string }>();
 		expect(rows.results).toEqual([{ reason: "first_stale_read" }]);
 
-		await env.PARMELIA_DB.batch([
-			env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
 				"DELETE FROM balance_refresh_requests WHERE uid = ?",
 			).bind(uid),
-			env.PARMELIA_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid),
+			env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid),
+		]);
+	});
+
+	it("lets an urgent confirmed balance refresh preempt a later safety block", async () => {
+		const uid = "runtime-balance-priority-preemption";
+		const address = "0x0202020202020202020202020202020202020202";
+		const now = new Date().toISOString();
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO users (
+				uid, username, wallet_address, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, ?)`,
+		)
+			.bind(uid, uid, address, now, now)
+			.run();
+
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: address,
+			chainId: 421614,
+			reason: "autonomous_indexer_safety",
+			priority: 1,
+			notBeforeBlock: "2000",
+		});
+		await env.GATOPAGO_DB.prepare(
+			`UPDATE balance_refresh_requests
+			 SET attempt_count = 7
+			 WHERE chain_id = 421614 AND account_address = ?`,
+		)
+			.bind(address)
+			.run();
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: address,
+			chainId: 421614,
+			reason: "confirmed_user_operation",
+			priority: 0,
+			notBeforeBlock: "1000",
+		});
+		await requestBalanceRefresh(env, {
+			uid,
+			accountAddress: address,
+			chainId: 421614,
+			reason: "later_safety_sweep",
+			priority: 1,
+			notBeforeBlock: "3000",
+		});
+
+		const row = await env.GATOPAGO_DB.prepare(
+			`SELECT reason, priority, required_block, attempt_count
+			 FROM balance_refresh_requests
+			 WHERE chain_id = 421614 AND account_address = ?`,
+		)
+			.bind(address)
+			.first<{
+				reason: string;
+				priority: number;
+				required_block: number;
+				attempt_count: number;
+			}>();
+		expect(row).toEqual({
+			reason: "confirmed_user_operation",
+			priority: 0,
+			required_block: 1000,
+			attempt_count: 0,
+		});
+
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
+				"DELETE FROM balance_refresh_requests WHERE uid = ?",
+			).bind(uid),
+			env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid),
 		]);
 	});
 
@@ -208,9 +288,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			uid: `runtime-shard-user-${index}`,
 			walletAddress: `0x${"aa".repeat(19)}${(index + 10).toString(16).padStart(2, "0")}`,
 		}));
-		await env.PARMELIA_DB.batch(
+		await env.GATOPAGO_DB.batch(
 			wallets.map((wallet) =>
-				env.PARMELIA_DB.prepare(
+				env.GATOPAGO_DB.prepare(
 					`INSERT INTO users (
 						uid, username, wallet_address, created_at, updated_at
 					 ) VALUES (?, ?, ?, ?, ?)`,
@@ -257,7 +337,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			uid: "runtime-shard-user-added",
 			walletAddress: `0x${"aa".repeat(19)}01`,
 		};
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -273,7 +353,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		});
 		expect(second?.shardId).toBe(2);
 		for (const wallet of wallets) {
-			const row = await env.PARMELIA_DB.prepare(
+			const row = await env.GATOPAGO_DB.prepare(
 				`SELECT shard_id
 				 FROM indexer_wallet_assignments
 				 WHERE chain_id = 421614 AND stream = 'runtime-stable-shards'
@@ -300,7 +380,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const uid = "runtime-ledger-page-user";
 		const address = "0xabababababababababababababababababababab";
 		const createdAt = "2026-07-25T12:00:00.000Z";
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -352,7 +432,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			eventType: "activity.deposit_received",
 			payload: {
 				title: "Deposit received",
-				body: "Open Parmelia to see it.",
+				body: "Open GatoPago to see it.",
 				link: "/",
 			},
 			priority: 1 as const,
@@ -367,7 +447,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				userEvents: [depositEvent],
 			}),
 		).toEqual([false]);
-		const depositEffects = await env.PARMELIA_DB.prepare(
+		const depositEffects = await env.GATOPAGO_DB.prepare(
 			`SELECT COUNT(*) AS count FROM user_event_outbox
 			 WHERE dedupe_key = ?`,
 		)
@@ -389,7 +469,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				},
 			),
 		).rejects.toThrow();
-		const rolledBack = await env.PARMELIA_DB.prepare(
+		const rolledBack = await env.GATOPAGO_DB.prepare(
 			`SELECT COUNT(*) AS count FROM ledger WHERE tx_hash = ?`,
 		)
 			.bind(rolledBackHash)
@@ -406,7 +486,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			errorCode: "RATE_LIMITED",
 			latencyMs: 25,
 		});
-		const opened = await env.PARMELIA_DB.prepare(
+		const opened = await env.GATOPAGO_DB.prepare(
 			`SELECT circuit_state, consecutive_failures, opened_until
 			 FROM rpc_endpoint_health WHERE endpoint_key = ?`,
 		)
@@ -422,7 +502,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		});
 		expect(opened?.opened_until).not.toBeNull();
 
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`UPDATE rpc_endpoint_health SET opened_until = ?
 			 WHERE endpoint_key = ?`,
 		)
@@ -449,7 +529,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const hash200 = `0x${"31".repeat(32)}` as const;
 		const hash201 = `0x${"32".repeat(32)}` as const;
 		const txHash = `0x${"33".repeat(32)}` as const;
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -510,7 +590,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		await projectBalanceDeltas(env, { block, events: [event] });
 		await projectBalanceDeltas(env, { block, events: [event] });
 
-		const projected = await env.PARMELIA_DB.prepare(
+		const projected = await env.GATOPAGO_DB.prepare(
 			`SELECT balance_raw, block_number, block_hash, source
 			 FROM balance_snapshots
 			 WHERE chain_id = ? AND account_address = ? AND asset = 'USDC'`,
@@ -534,7 +614,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const uid = "runtime-reorg-user";
 		const address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 		const now = new Date().toISOString();
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -628,8 +708,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			},
 			events: [],
 		});
-		await env.PARMELIA_DB.batch([
-			env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO sync_state (key, last_block, updated_at)
 				 VALUES (?, ?, ?)`,
 			).bind(
@@ -637,7 +717,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				block101.toString(),
 				now,
 			),
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO sync_state (key, last_block, updated_at)
 				 VALUES (?, ?, ?)`,
 			).bind(
@@ -674,7 +754,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			},
 			events: [baseEvent],
 		});
-		const deltaCount = await env.PARMELIA_DB.prepare(
+		const deltaCount = await env.GATOPAGO_DB.prepare(
 			`SELECT COUNT(*) AS count FROM balance_projection_deltas
 			 WHERE event_id = ?`,
 		)
@@ -731,7 +811,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			affectedStreams: 2,
 			reorgEpoch: 1,
 		});
-		const rewoundStreams = await env.PARMELIA_DB.prepare(
+		const rewoundStreams = await env.GATOPAGO_DB.prepare(
 			`SELECT stream, block_number, block_hash, reorg_epoch
 			 FROM chain_stream_checkpoints
 			 WHERE chain_id = ? AND stream IN (?, ?)
@@ -758,7 +838,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				reorg_epoch: 1,
 			},
 		]);
-		const rewoundCursors = await env.PARMELIA_DB.prepare(
+		const rewoundCursors = await env.GATOPAGO_DB.prepare(
 			`SELECT key, last_block FROM sync_state
 			 WHERE key IN (?, ?) ORDER BY key`,
 		)
@@ -782,7 +862,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				last_block: block100.toString(),
 			},
 		]);
-		const replayRequests = await env.PARMELIA_DB.prepare(
+		const replayRequests = await env.GATOPAGO_DB.prepare(
 			`SELECT stream, common_ancestor_number, reorg_epoch
 			 FROM chain_reorg_replay_requests
 			 WHERE chain_id = ? ORDER BY stream`,
@@ -840,7 +920,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		).rejects.toThrow();
 		expect(await getSyncCursor(env, transferCursorKey)).toBe(block100);
 		expect(await listBalanceSnapshots(env, uid, chainId)).toEqual([]);
-		const orphaned = await env.PARMELIA_DB.prepare(
+		const orphaned = await env.GATOPAGO_DB.prepare(
 			`SELECT canonical FROM ledger
 			 WHERE uid = ? AND tx_hash = ? AND log_index = ?`,
 		)
@@ -894,7 +974,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			projectionVersion: 1,
 			createdAt: now,
 		}]);
-		const replayed = await env.PARMELIA_DB.prepare(
+		const replayed = await env.GATOPAGO_DB.prepare(
 			`SELECT canonical, block_hash FROM ledger
 			 WHERE uid = ? AND tx_hash = ? AND log_index = ?`,
 		)
@@ -904,7 +984,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			canonical: 1,
 			block_hash: newHash101.toLowerCase(),
 		});
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`DELETE FROM chain_reorg_replay_requests WHERE chain_id = ?`,
 		)
 			.bind(chainId)
@@ -918,7 +998,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0xdededededededededededededededededededede" as const;
 		const userOpHash = `0x${"a1".repeat(32)}` as const;
 		const chainId = 421614;
-		await env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.prepare(
 			`INSERT INTO users (
 				uid, username, wallet_address, created_at, updated_at
 			 ) VALUES (?, ?, ?, ?, ?)`,
@@ -1011,7 +1091,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			txHash: `0x${"c1".repeat(32)}`,
 			logIndex: 4,
 		});
-		const queued = await env.PARMELIA_DB.prepare(
+		const queued = await env.GATOPAGO_DB.prepare(
 			`SELECT status, priority
 			 FROM payment_reconcile_requests
 			 WHERE user_op_hash = ?`,
@@ -1021,16 +1101,16 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(queued).toEqual({ status: "pending", priority: 0 });
 
 		// Model a reorg before the same operation is included in a new bundle.
-		await env.PARMELIA_DB.batch([
-			env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
 				`UPDATE chain_events SET canonical = 0
 				 WHERE chain_id = ? AND block_hash = ?`,
 			).bind(chainId, firstBlockHash),
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE chain_blocks SET canonical = 0
 				 WHERE chain_id = ? AND block_hash = ?`,
 			).bind(chainId, firstBlockHash),
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`UPDATE user_operation_receipts SET canonical = 0
 				 WHERE chain_id = ? AND block_hash = ?`,
 			).bind(chainId, firstBlockHash),
@@ -1042,7 +1122,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			txHash: `0x${"c2".repeat(32)}`,
 			logIndex: 2,
 		});
-		const occurrences = await env.PARMELIA_DB.prepare(
+		const occurrences = await env.GATOPAGO_DB.prepare(
 			`SELECT tx_hash, canonical
 			 FROM user_operation_receipts
 			 WHERE chain_id = ? AND user_op_hash = ?
@@ -1096,7 +1176,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			...base,
 			txHash: `0x${"33".repeat(32)}`,
 		})).toBe(false);
-		await env.PARMELIA_DB.prepare("DELETE FROM account_operations WHERE id = ?")
+		await env.GATOPAGO_DB.prepare("DELETE FROM account_operations WHERE id = ?")
 			.bind("runtime-operation-1")
 			.run();
 	});
@@ -1147,11 +1227,11 @@ describe.sequential("Cloudflare Worker runtime", () => {
 
 	it("reads a migrated D1 payment link through the HTTP route", async () => {
 		const now = new Date().toISOString();
-		await env.PARMELIA_DB.batch([
-			env.PARMELIA_DB.prepare(
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
 				"INSERT INTO users (uid, username, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
 			).bind("runtime-user", "runtime_user", "0x0000000000000000000000000000000000000001", now, now),
-			env.PARMELIA_DB.prepare(
+			env.GATOPAGO_DB.prepare(
 				`INSERT INTO payment_links
 				 (id, owner_uid, wallet_address, amount, currency, reference, status, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
@@ -1198,7 +1278,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			attestation: null,
 			token: "USDC",
 			amountIn: "12500000",
-			parmeliaFee: "0",
+			gatoPagoFee: "0",
 			maxFee: "0",
 			minFinalityThreshold: 1000,
 			cctpFeeEstimated: null,
@@ -1237,7 +1317,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			status: "submitted",
 			sourceTxHash: txHash,
 		});
-		const ledger = await env.PARMELIA_DB.prepare(
+		const ledger = await env.GATOPAGO_DB.prepare(
 			"SELECT amount, amount_source FROM ledger WHERE uid = ? AND tx_hash = ?",
 		)
 			.bind("runtime-user", txHash)

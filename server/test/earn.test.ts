@@ -6,6 +6,7 @@ import {
 	buildDepositCalls,
 	buildWithdrawCalls,
 	decodeReserveFlags,
+	isWithdrawAllRequest,
 	rayRateToApyPercent,
 } from "../src/services/earn";
 
@@ -76,5 +77,19 @@ describe("earn call encoding (pins the Aave ABI)", () => {
 		const calls = buildWithdrawCalls(network, ACCOUNT, null);
 		const withdraw = decodeFunctionData({ abi: AAVE_POOL_ABI, data: calls[0].data });
 		expect(withdraw.args).toEqual([network.contracts.usdc, maxUint256, ACCOUNT]);
+	});
+});
+
+describe("withdraw-all request compatibility", () => {
+	it("accepts the current explicit flag with a decimal compatibility amount", () => {
+		expect(isWithdrawAllRequest("withdraw", "10.016407", true)).toBe(true);
+	});
+
+	it("keeps accepting the legacy max sentinel", () => {
+		expect(isWithdrawAllRequest("withdraw", "max", false)).toBe(true);
+	});
+
+	it("does not turn deposits into max withdrawals", () => {
+		expect(isWithdrawAllRequest("deposit", "10", true)).toBe(false);
 	});
 });

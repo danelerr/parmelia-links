@@ -6,7 +6,7 @@ import {
 	type Hex,
 	type Log,
 } from "viem";
-import { getUserOpResult } from "../src/services/settlement";
+import { __test, getUserOpResult } from "../src/services/settlement";
 
 // The exact event the EntryPoint emits per op inside a handleOps bundle.
 const USER_OPERATION_EVENT = parseAbiItem(
@@ -69,5 +69,49 @@ describe("getUserOpResult", () => {
 	it("matches the hash case-insensitively", () => {
 		const upper = OP_HASH.toUpperCase().replace("0X", "0x") as Hex;
 		expect(getUserOpResult([opEventLog(OP_HASH, true)], upper)?.success).toBe(true);
+	});
+});
+
+describe("confirmed balance refresh targets", () => {
+	it("refreshes both sides of an in-app payment in one settlement", () => {
+		expect(
+			__test.confirmedBalanceRefreshTargets(
+				{
+					uid: "sender",
+					senderAddress: "0x1111111111111111111111111111111111111111",
+					wallet: "0x2222222222222222222222222222222222222222",
+					currency: "USDC",
+				},
+				"recipient",
+			),
+		).toEqual([
+			{
+				uid: "sender",
+				accountAddress: "0x1111111111111111111111111111111111111111",
+			},
+			{
+				uid: "recipient",
+				accountAddress: "0x2222222222222222222222222222222222222222",
+			},
+		]);
+	});
+
+	it("does not invent a recipient refresh for self-directed account actions", () => {
+		expect(
+			__test.confirmedBalanceRefreshTargets(
+				{
+					uid: "sender",
+					senderAddress: "0x1111111111111111111111111111111111111111",
+					wallet: "0x2222222222222222222222222222222222222222",
+					currency: "EARN_WITHDRAW",
+				},
+				"recipient",
+			),
+		).toEqual([
+			{
+				uid: "sender",
+				accountAddress: "0x1111111111111111111111111111111111111111",
+			},
+		]);
 	});
 });

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { P256_N, matchOnchainSigner, normalizeLowS, serializeBigInts } from "../src/services/userOp";
+import { hashTypedData, type Hex } from "viem";
+import {
+	PACKED_USER_OPERATION_EIP712_TYPES,
+	P256_N,
+	buildUserOperationSigningPayload,
+	matchOnchainSigner,
+	normalizeLowS,
+	serializeBigInts,
+	type PackedUserOp,
+} from "../src/services/userOp";
 
 function toHex32(value: bigint): string {
 	return "0x" + value.toString(16).padStart(64, "0");
@@ -41,6 +50,53 @@ describe("serializeBigInts", () => {
 		expect(serializeBigInts("hi")).toBe("hi");
 		expect(serializeBigInts(42)).toBe(42);
 		expect(serializeBigInts(null)).toBeNull();
+	});
+});
+
+describe("buildUserOperationSigningPayload", () => {
+	const entryPoint = "0x433709009B8330FDa32311DF1C2AFA402eD8D009";
+	const userOp: PackedUserOp = {
+		sender: "0x1111111111111111111111111111111111111111",
+		nonce: 7n,
+		initCode: "0x",
+		callData: "0x12345678",
+		accountGasLimits: ("0x" + "00".repeat(31) + "01") as Hex,
+		preVerificationGas: 100_000n,
+		gasFees: ("0x" + "00".repeat(31) + "02") as Hex,
+		paymasterAndData: "0xabcdef",
+		signature: "0x",
+	};
+
+	it("returns the canonical ERC-4337 EIP-712 document and digest", () => {
+		const payload = buildUserOperationSigningPayload(userOp, 421_614, entryPoint);
+		const independentDigest = hashTypedData({
+			domain: {
+				name: "ERC4337",
+				version: "1",
+				chainId: 421_614,
+				verifyingContract: entryPoint,
+			},
+			types: PACKED_USER_OPERATION_EIP712_TYPES,
+			primaryType: "PackedUserOperation",
+			message: userOp,
+		});
+
+		expect(payload.standard).toBe("EIP-712");
+		expect(payload.primaryType).toBe("PackedUserOperation");
+		expect(payload.domain.verifyingContract).toBe(entryPoint);
+		expect(payload.message.nonce).toBe("7");
+		expect(payload.digest).toBe(independentDigest);
+	});
+
+	it("binds the digest to the call the user is authorizing", () => {
+		const original = buildUserOperationSigningPayload(userOp, 421_614, entryPoint);
+		const changed = buildUserOperationSigningPayload(
+			{ ...userOp, callData: "0x87654321" },
+			421_614,
+			entryPoint,
+		);
+
+		expect(changed.digest).not.toBe(original.digest);
 	});
 });
 

@@ -21,6 +21,7 @@ import {
 	MAX_FEE_BPS_HARD_CAP,
 	applyFee,
 	applySlippage,
+	resolveSwapAmountInput,
 	resolveFeePolicy,
 } from "../src/services/swap";
 import type { Bindings } from "../src/middlewares/auth";
@@ -39,7 +40,7 @@ function env(overrides: Partial<Bindings> = {}): Bindings {
 		FIREBASE_PROJECT_ID: "",
 		ALLOWED_ORIGINS: "",
 		CHAIN_KEY: "arbitrum-sepolia",
-		PARMELIA_DB: null as unknown as D1Database,
+		GATOPAGO_DB: null as unknown as D1Database,
 		...overrides,
 	};
 }
@@ -52,6 +53,29 @@ function decodeExecute(calldata: `0x${string}`) {
 }
 
 describe("fee & slippage math", () => {
+	it("resolves max to the complete live balance without a gas reserve", () => {
+		const liveBalance = 96_999_054n;
+		expect(resolveSwapAmountInput("max", 6, liveBalance)).toEqual({
+			amountIn: liveBalance,
+			isMax: true,
+		});
+	});
+
+	it("accepts a decimal compatibility amount plus an explicit max flag", () => {
+		const liveBalance = 96_999_054n;
+		expect(resolveSwapAmountInput("96.999054", 6, liveBalance, true)).toEqual({
+			amountIn: liveBalance,
+			isMax: true,
+		});
+	});
+
+	it("keeps manually entered amounts exact", () => {
+		expect(resolveSwapAmountInput("12.34", 6, 99_000_000n)).toEqual({
+			amountIn: 12_340_000n,
+			isMax: false,
+		});
+	});
+
 	it("applyFee splits output", () => {
 		const { feeAmount, netAmount } = applyFee(1_000_000n, 30n); // 0.30%
 		expect(feeAmount).toBe(3000n);
@@ -78,13 +102,13 @@ describe("resolveFeePolicy", () => {
 
 	it("requires explicit enable + treasury", () => {
 		expect(
-			resolveFeePolicy(env({ PARMELIA_FEES_ENABLED: "true", PARMELIA_SWAP_FEE_BPS: "30" })).feeBps,
+			resolveFeePolicy(env({ GATOPAGO_FEES_ENABLED: "true", GATOPAGO_SWAP_FEE_BPS: "30" })).feeBps,
 		).toBe(0n); // no treasury
 		const on = resolveFeePolicy(
 			env({
-				PARMELIA_FEES_ENABLED: "true",
-				PARMELIA_SWAP_FEE_BPS: "30",
-				PARMELIA_TREASURY_ADDRESS: TREASURY,
+				GATOPAGO_FEES_ENABLED: "true",
+				GATOPAGO_SWAP_FEE_BPS: "30",
+				GATOPAGO_TREASURY_ADDRESS: TREASURY,
 			}),
 		);
 		expect(on.feeBps).toBe(30n);
@@ -94,10 +118,10 @@ describe("resolveFeePolicy", () => {
 	it("hard-caps the fee at 1% no matter what env says", () => {
 		const policy = resolveFeePolicy(
 			env({
-				PARMELIA_FEES_ENABLED: "true",
-				PARMELIA_SWAP_FEE_BPS: "5000",
-				PARMELIA_MAX_FEE_BPS: "9999",
-				PARMELIA_TREASURY_ADDRESS: TREASURY,
+				GATOPAGO_FEES_ENABLED: "true",
+				GATOPAGO_SWAP_FEE_BPS: "5000",
+				GATOPAGO_MAX_FEE_BPS: "9999",
+				GATOPAGO_TREASURY_ADDRESS: TREASURY,
 			}),
 		);
 		expect(policy.feeBps).toBe(MAX_FEE_BPS_HARD_CAP);

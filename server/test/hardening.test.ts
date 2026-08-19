@@ -51,7 +51,7 @@ function envFor(chainKey: string, extra: Partial<Bindings> = {}): Bindings {
 		RPC_URL: "http://localhost:1",
 		PRIVATE_KEY: "0x" + "11".repeat(32),
 		FIREBASE_PROJECT_ID: "test",
-		PARMELIA_DB: emptyDb,
+		GATOPAGO_DB: emptyDb,
 		CHAIN_KEY: chainKey as Bindings["CHAIN_KEY"],
 		...extra,
 	};
@@ -125,7 +125,7 @@ function opFor(partial: Partial<CrosschainOpRecord> = {}): CrosschainOpRecord {
 		attestation: null,
 		token: "USDC",
 		amountIn: "1000000",
-		parmeliaFee: "1000",
+		gatoPagoFee: "1000",
 		maxFee: null,
 		minFinalityThreshold: 1000,
 		cctpFeeEstimated: null,
@@ -194,8 +194,8 @@ describe("validateCctpMessage", () => {
 		expect(validateCctpMessage(opFor(), buildCctpMessage({ ...base, hookData: "00" }))).toMatch(/hookData/);
 	});
 
-	it("inbound expects the FULL amountIn (no Parmelia fee skim)", () => {
-		const op = opFor({ direction: "inbound", parmeliaFee: "0" });
+	it("inbound expects the FULL amountIn (no GatoPago fee skim)", () => {
+		const op = opFor({ direction: "inbound", gatoPagoFee: "0" });
 		const msg = buildCctpMessage({
 			sourceDomain: 3,
 			destinationDomain: 6,

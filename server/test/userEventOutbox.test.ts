@@ -7,13 +7,13 @@ describe("durable user event outbox", () => {
 			__test.parseSecurityNotification(
 				JSON.stringify({
 					title: "Recovery requested",
-					body: "Open Parmelia if this was not you.",
+					body: "Open GatoPago if this was not you.",
 					link: "/settings",
 				}),
 			),
 		).toEqual({
 			title: "Recovery requested",
-			body: "Open Parmelia if this was not you.",
+			body: "Open GatoPago if this was not you.",
 			link: "/settings",
 		});
 		expect(__test.parseSecurityNotification("{}")).toBeNull();
