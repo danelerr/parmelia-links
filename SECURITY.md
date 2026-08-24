@@ -31,6 +31,11 @@ operator explicitly rolls back to the previous stable Worker version and checks
 readiness again. D1 recovery remains a separate, explicit action and must never
 be inferred from a Worker rollback.
 
+`/health/live` is public liveness only. `/health` exposes readiness status and
+aggregate counts without internal provider, queue, or error details. The full
+`/health/ops` payload requires a dedicated 32+ character `OPS_HEALTH_TOKEN` in
+the `X-Ops-Token` header and deliberately returns 404 when authentication fails.
+
 ## Credential incident response
 
 If a secret is found in a workspace or artifact:

@@ -3,7 +3,9 @@
 > Arquitectura DeFi de GatoPago sobre Arbitrum. **Swaps (§5) y fees de swap (§6)
 > están implementados**; este documento CIERRA el debate del módulo Earn (§0-§4,
 > §7-§13) y mantiene el veredicto por fases de Corridors (§14). Cross-chain vive
-> en `CROSSCHAIN_DESIGN.md`. Fecha: julio 2026. Changelog en §16.
+> en [su diseño propio](./cross-chain.md). Fecha: julio 2026. Changelog en §16.
+> El código, la configuración de red y la evidencia E2E fechada prevalecen sobre
+> cualquier afirmación de disponibilidad de este diseño.
 >
 > Las decisiones de §2, §3 y §13 no se re-litigan salvo que cambie un hecho
 > externo (Aave sale de Arbitrum, cambia el pricing, cambia el alcance de
@@ -379,4 +381,4 @@ nuevos, fee 0 con gate matemático), invariantes E1-E8, modos de fallo,
 arquitectura de implementación completa y preguntas cerradas. La mecánica LP
 anterior queda archivada en el historial de git y citada como base de la
 eventual Fase 3 "Inversión". Cross-chain movido definitivamente a
-`CROSSCHAIN_DESIGN.md` v2.0.
+[Diseño cross-chain](./cross-chain.md) v2.0.

@@ -5,6 +5,8 @@
 > completo, checkout público, relayer con reconciliación); pendiente de
 > activación operativa — ver §11. Fecha: julio 2026. Historia de versiones al
 > final (§14).
+> El código, la configuración de red y la evidencia E2E fechada prevalecen sobre
+> cualquier afirmación de disponibilidad de este diseño.
 >
 > Este documento CIERRA el debate de arquitectura. Las decisiones de §2, §3 y
 > §13 no se re-litigan salvo que cambie un hecho externo (pricing de Circle,

@@ -192,9 +192,10 @@ nunca replicar ese patrón hacia producción.
 
 ### Reserva de nonce bloqueada
 
-`GET /health` devuelve `503` con `signer_nonce_blocked` si una operación queda
-en `needs_review`. Es intencional: continuar firmando podría reemplazar una
-transacción cuyo nonce ya fue consumido.
+`GET /health` devuelve `503` y `issueCount > 0` si una operación queda en
+`needs_review`. El código `signer_nonce_blocked` se consulta sólo en
+`GET /health/ops` con `X-Ops-Token`. Es intencional: continuar firmando podría
+reemplazar una transacción cuyo nonce ya fue consumido.
 
 1. Consulta la fila en D1 (`id`, `tx_hash`, `signer_address`, `nonce`,
    `raw_transaction`, `last_error`).
@@ -221,6 +222,7 @@ npx wrangler secret put FAUCET_PRIVATE_KEY                 # fondos del faucet (
 npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY      # guardian (mainnet: obligatorio y distinto)
 npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY       # firma sponsorships
 npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY  # firma invoices Flow B
+npx wrangler secret put OPS_HEALTH_TOKEN                   # token aleatorio 32+ caracteres para /health/ops
 # Opcionales en TESTNET (feature-flag). En MAINNET: TURNSTILE es OBLIGATORIO
 # (sin el, /account/create y /account/fund fallan cerrado) y las claves
 # dedicadas de arriba tambien (los fallbacks entre claves estan prohibidos).
@@ -238,8 +240,11 @@ npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY  # 32 bytes base64/hex; ob
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID # ID corto, por ejemplo 2026_07
 ```
 
-`GET /health` devuelve `200` sólo si la configuración es coherente. En mainnet,
-el Worker responde/falla cerrado con `503 SERVICE_UNAVAILABLE` si
+`GET /health/live` comprueba únicamente que el proceso responde. `GET /health`
+devuelve `200` sólo si la configuración es coherente y publica únicamente
+`status`, `network`, `issueCount` y `warningCount`. El diagnóstico completo se
+obtiene desde `GET /health/ops` con `X-Ops-Token`; sin token válido responde 404.
+En mainnet, el Worker responde/falla cerrado con `503 SERVICE_UNAVAILABLE` si
 faltan contratos, CORS HTTPS, Turnstile, APP_URL, cifrado o claves dedicadas. Las
 cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas.
 
@@ -347,7 +352,8 @@ acotado cada dos minutos. En mainnet la validación exige el Custom Webhook.
 
 Consola Firebase (para login por correo/Apple, push y analytics): habilitar
 Email link (y Apple si aplica), activar account-linking "same email", generar la
-VAPID y el service account, y habilitar GA4. Detalle paso a paso en `INTEGRACIONES.md`.
+VAPID y el service account, y habilitar GA4. Detalle paso a paso en
+[`docs/operations/integrations.md`](./docs/operations/integrations.md).
 
 ## 7. Desplegar el Worker manualmente (registra DO y consumers)
 
@@ -387,7 +393,7 @@ pnpm --filter server exec wrangler deploy --minify --keep-vars --strict `
 
 # 7. Exigir readiness saludable.
 $health = Invoke-RestMethod -Uri "https://server.parmelia.workers.dev/health"
-if ($health.status -ne "ok" -or $health.issues.Count -ne 0) {
+if ($health.status -ne "ok" -or $health.issueCount -ne 0) {
   throw "El Worker desplegado no está saludable"
 }
 ```
@@ -582,7 +588,8 @@ entre sí. Después:
 
 > CCTP v2 (verificado): TokenMessengerV2 `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`,
 > MessageTransmitterV2 `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` (mismas en
-> Arbitrum y Base Sepolia). Dominios: Arbitrum 3, Base 6. Detalle en `CROSSCHAIN_DESIGN.md` §11.
+> Arbitrum y Base Sepolia). Dominios: Arbitrum 3, Base 6. Detalle en
+> [`docs/design/cross-chain.md` §11](./docs/design/cross-chain.md).
 
 ### 12.3 Verificación (opcional, Sourcify)
 

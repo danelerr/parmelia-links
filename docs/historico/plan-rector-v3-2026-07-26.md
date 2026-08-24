@@ -2,7 +2,11 @@
 
 > Fecha de corte: 2026-07-26
 >
-> Estado: arquitectura promovida a Arbitrum Sepolia; Alchemy Notify permanece
+> Estado: **histórico y reemplazado**. Para el sistema vigente consultar
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md) y el
+> [roadmap técnico](../roadmap.md).
+>
+> En este corte, la arquitectura se había promovido a Arbitrum Sepolia y Alchemy Notify permanecía
 > apagado hasta rotar la credencial expuesta y cargar sus secretos independientes
 >
 > Operación: despliegue manual; no depende de GitHub Actions
@@ -408,10 +412,10 @@ comprado recursos o desplegado componentes ociosos.
 
 ## 12. Referencias
 
-- [Arquitectura](ARCHITECTURE.md)
-- [Deploy manual](DEPLOY.md)
-- [Runbook RPC/indexación](docs/runbooks/rpc-operations.md)
-- [Runbook capacidad Home](docs/runbooks/home-capacity.md)
+- [Arquitectura](../../ARCHITECTURE.md)
+- [Deploy manual](../../DEPLOY.md)
+- [Runbook RPC/indexación](../runbooks/rpc-operations.md)
+- [Runbook capacidad Home](../runbooks/home-capacity.md)
 - [Cloudflare Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
 - [Cloudflare Durable Objects rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)
 - [Cloudflare Durable Objects WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)

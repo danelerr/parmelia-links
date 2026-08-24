@@ -2,7 +2,7 @@
 
 **Tus dólares ya saben moverse.**
 
-Non-custodial stablecoin payments on Arbitrum — as simple as sending a message.
+Programmable onchain account for stablecoin payments, guided DeFi, and developer APIs on Arbitrum.
 
 GatoPago lets anyone receive, request, and swap USDC through payment links, QR
 codes, usernames, and a mobile PWA — secured by **WebAuthn passkeys** and
@@ -11,13 +11,14 @@ codes, usernames, and a mobile PWA — secured by **WebAuthn passkeys** and
 - **Live app:** https://app.parmelia.me
 - **Landing:** https://parmelia.me
 - **Landing repo:** https://github.com/danelerr/parmelia-landing
+- **Product, strategy, and brand documentation:** https://github.com/danelerr/parmelia-landing/tree/main/documentacion
+- **Technical documentation:** [docs/README.md](docs/README.md)
 - **Chain:** Arbitrum Sepolia (configuration ready for Arbitrum One)
 
-> Submitted to the **Arbitrum Open House London Buildathon**. GatoPago existed
-> before the event as a portable payment-link prototype; during the buildathon it
-> became an Arbitrum-native payments product (V2 smart-account stack deployed and
-> verified on Arbitrum Sepolia, sponsored gas, swaps, full rebrand, PWA). See
-> [BUILDATHON_FORM.md](BUILDATHON_FORM.md) for the submission details.
+> GatoPago existed before the Arbitrum Open House London Buildathon as a portable
+> payment-link prototype. During the event it became an Arbitrum-native payments
+> product with its V2 smart-account stack deployed and verified on Arbitrum
+> Sepolia, sponsored gas, swaps, rebranding, and a PWA.
 
 ---
 
@@ -190,10 +191,11 @@ merchant dashboard and signed webhooks) and **cross-chain USDC via CCTP v2**
 (code complete, pending deploy). Designed as the next phases: a **GatoPago
 card** and **local bank-QR settlement** so people can spend their stablecoin
 balance in the real world, and **Earn** on idle balances. The DeFi direction is
-written up in [DEFI_DESIGN.md](DEFI_DESIGN.md), the API direction in
-[API_DESIGN.md](API_DESIGN.md), cross-chain in
-[CROSSCHAIN_DESIGN.md](CROSSCHAIN_DESIGN.md), and the current audit +
-implementation plan in [CLAUDE_REVIEW_FABLE.md](CLAUDE_REVIEW_FABLE.md).
+written up in [the DeFi design](docs/design/defi.md), the API direction in
+[the API design](docs/design/api.md), and cross-chain in
+[the cross-chain design](docs/design/cross-chain.md). The dated evidence is in
+[the current technical audit](docs/audits/2026-08-23.md), while actionable work
+lives only in the [technical roadmap](docs/roadmap.md).
 
 ## Repository layout
 
@@ -204,7 +206,7 @@ dashboard/   Merchant dashboard (React; API keys, payments, webhooks, sandbox)
 contracts/   Foundry: AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
              ParmeliaPaymentRouter, ParmeliaCrosschainRouter, verifier
 shared/      Network config, ABIs, error contract (source of truth)
-docs/        Public API reference (api.md + openapi.yaml)
+docs/        Technical index, designs, API reference, operations, audits and runbooks
 ```
 
 Landing page lives in a separate repo:

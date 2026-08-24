@@ -4,10 +4,13 @@
 > cobros stablecoin con liquidación local**: "Stripe/MercadoPago para dólares
 > digitales on-chain". El objeto central es el **Payment Intent**.
 >
-> GatoPago ya está en producción sobre Arbitrum (no es un MVP): esta es una
-> evolución del producto existente, no un arranque de cero. El doc marca fases
-> **Ahora / Siguiente / Horizonte**, no "MVP vs después".
-> Fecha: junio 2026. Relacionado: `ARCHITECTURE.md`, `DEFI_DESIGN.md`.
+> GatoPago tiene una alpha pública sobre Arbitrum Sepolia: esta propuesta parte
+> de una implementación existente, pero no acredita producción, mainnet ni
+> disponibilidad comercial. El documento marca fases **Ahora / Siguiente /
+> Horizonte**.
+> Fecha: junio 2026. Relacionado: [`ARCHITECTURE.md`](../../ARCHITECTURE.md) y
+> [diseño DeFi](./defi.md). El código y [`openapi.yaml`](../openapi.yaml)
+> prevalecen ante cualquier diferencia.
 >
 > **Estado de implementación (jul-2026):** Flujo A (lazo cerrado) y Flujo B
 > (PaymentRouter) **construidos y operativos en test mode**: merchants, API keys
@@ -18,8 +21,9 @@
 > `payInvoiceWithPermit` llega con el próximo redeploy, feature-flagged), su
 > firma de autorización, el indexer que reconcilia `InvoicePaid`, y el
 > **dashboard de comerciantes** (keys, pagos con paginación, webhooks con
-> reenvío, sandbox). Referencia pública: `docs/api.md` + `docs/openapi.yaml`.
-> Estado vivo: `CLAUDE_REVIEW_FABLE.md`.
+> reenvío, sandbox). Referencia pública: [`api.md`](../api.md) +
+> [`openapi.yaml`](../openapi.yaml). Estado posterior: [auditoría fechada](../audits/2026-08-23.md)
+> y [roadmap técnico](../roadmap.md).
 
 ---
 
@@ -399,7 +403,7 @@ webhook_endpoints, events, webhook_deliveries).
 - **Política de finalidad** — definir tramos de monto y confirmaciones.
 - **Custodia del barrido** — quién controla las direcciones de depósito y cómo se
   barre sin introducir un punto único de robo (relacionado con la separación de
-  claves de `DEPLOY.md §11`).
+  claves de [`DEPLOY.md` §11](../../DEPLOY.md)).
 - **Auth máquina-a-máquina** — subsistema nuevo (keys, hashing, scopes, rotación).
 - **Entrega de webhooks** — outbox D1 + Queue/alarma sólo mientras haya trabajo.
 

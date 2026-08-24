@@ -1,9 +1,10 @@
 # Contrato de errores de la API
 
 > Referencia de los códigos de error de la API de GatoPago. Fuente de verdad en
-> código: [`shared/errors.ts`](shared/errors.ts) (`ERR` + `ERROR_HTTP_STATUS`).
+> código: [`shared/errors.ts`](../../shared/errors.ts) (`ERR` + `ERROR_HTTP_STATUS`).
 > El test `server/test/errors.test.ts` impide que un código quede sin status.
-> Fecha: julio 2026. Relacionado: `ARCHITECTURE.md`, `API_DESIGN.md`.
+> Fecha: julio 2026. Relacionado: [`ARCHITECTURE.md`](../../ARCHITECTURE.md) y
+> [diseño de la API](../design/api.md).
 
 ## Forma de la respuesta
 

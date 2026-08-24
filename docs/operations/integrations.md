@@ -5,8 +5,8 @@
 > Todo el código está hecho con feature-flags: sin la key configurada, la app
 > sigue funcionando exactamente como hoy.
 >
-> **Estado (jun-2026):** Turnstile (1), Email link (2), FCM push (3) y Analytics
-> GA4 (4) están **implementados y en vivo** (secrets/consola configurados; FCM
+> **Snapshot (jun-2026; verificar antes de operar):** Turnstile (1), Email link
+> (2), FCM push (3) y Analytics GA4 (4) estaban configurados (FCM
 > verificado con depósitos externos desde MetaMask). **Login con Apple: descartado
 > por decisión** (no se integrará). Queues (5) NO se implementó: requiere plan pago.
 > Verificar que `VITE_FIREBASE_MEASUREMENT_ID` esté también en Vercel (no solo local).

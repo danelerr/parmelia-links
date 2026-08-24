@@ -1,8 +1,10 @@
 # GatoPago - Arquitectura del Proyecto
 
-> Actualizado: julio 2026. Complementos: `CLAUDE_REVIEW_FABLE.md` (auditoría y
-> estado), `CROSSCHAIN_DESIGN.md` (cross-chain), `docs/api.md` (API pública `/v1`),
-> `contracts/AUDIT.md` (contratos), `DEPLOY.md` (runbook).
+> Actualizado: julio 2026. Índice y precedencia: [`docs/README.md`](./docs/README.md).
+> Complementos: [diseño cross-chain](./docs/design/cross-chain.md),
+> [`docs/api.md`](./docs/api.md) (API pública `/v1`),
+> [`contracts/AUDIT.md`](./contracts/AUDIT.md) (contratos) y
+> [`DEPLOY.md`](./DEPLOY.md) (runbook).
 
 ## Resumen
 
@@ -39,9 +41,14 @@ El backend prepara y transmite UserOperations, pero **no custodia la clave de fi
 
 ```text
 gatopago/
-├── ARCHITECTURE.md / DEPLOY.md / CROSSCHAIN_DESIGN.md / DEFI_DESIGN.md / API_DESIGN.md
-├── MEJORAS_PENDIENTES.md / CLAUDE_REVIEW_FABLE.md / ERROR_CODES.md / INTEGRACIONES.md
-├── docs/                    # referencia pública de la API /v1 (api.md + openapi.yaml)
+├── README.md / ARCHITECTURE.md / SECURITY.md / DEPLOY.md
+├── docs/                    # índice, diseños, API, operaciones, auditorías y runbooks
+│   ├── README.md / roadmap.md / api.md / openapi.yaml
+│   ├── design/              # API, cross-chain y DeFi
+│   ├── operations/          # integraciones
+│   ├── reference/           # contratos técnicos auxiliares
+│   ├── audits/              # evidencia fechada + histórico
+│   └── runbooks/            # procedimientos operativos
 ├── package.json / pnpm-workspace.yaml
 ├── client/                  # SPA React (Vercel build desde esta carpeta)
 │   ├── public/
@@ -80,7 +87,7 @@ gatopago/
 │   └── script/Deploy.s.sol       # deploy determinista CREATE2
 └── shared/
     ├── index.ts                  # ABIs (compiladas) + erc20Abi
-    ├── errors.ts                 # contrato de errores: ERR + ERROR_HTTP_STATUS (ver ERROR_CODES.md)
+    ├── errors.ts                 # contrato de errores: ERR + ERROR_HTTP_STATUS (ver docs/reference/error-codes.md)
     └── networks.ts               # fuente de verdad: redes, tokens, Uniswap, CCTP, direcciones, guards
 ```
 
@@ -200,7 +207,7 @@ GatoPago **relaya** todas las operaciones de la app, así que las conoce al ocur
 - `/user/transactions` no toca RPC/explorer en cada request: lee solo D1.
 
 ### 6. Cross-chain (CCTP v2)
-Diseño completo en `CROSSCHAIN_DESIGN.md`. Outbound: la op se registra en D1
+Diseño completo en [`docs/design/cross-chain.md`](./docs/design/cross-chain.md). Outbound: la op se registra en D1
 **antes** de firmar el burn; esa transición despierta el relayer, que consulta
 Iris sólo mientras haya una op en vuelo y se apaga al llegar a un estado
 terminal. Antes de gastar gas valida el mensaje CCTP contra la op
@@ -340,7 +347,7 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 - **Política de claves (least privilege, `services/keys.ts`):** roles separados (relayer / paymaster signer / router signer). En testnet, una clave puede cubrir varios roles por fallback; **en mainnet los fallbacks están prohibidos** (falla cerrado).
 - **Gates fail-closed en mainnet:** Turnstile obligatorio en create/fund; `TODO_DEPLOY` inoperable; gas-gating del relayer CCTP rechaza rutas no verificadas.
 - **Anti-abuso:** Turnstile + rate limiter D1 (por IP en endpoints públicos, por uid en el faucet) + reglas de zona Cloudflare como capa fuerte al tener dominio.
-- Todo error público lleva `error_code` estable (`shared/errors.ts`, ver `ERROR_CODES.md`); el cliente es dueño del texto (i18n).
+- Todo error público lleva `error_code` estable (`shared/errors.ts`, ver [`docs/reference/error-codes.md`](./docs/reference/error-codes.md)); el cliente es dueño del texto (i18n).
 - Firmas P256 normalizadas a low-s. Monedas y rutas de swap validadas server-side contra whitelist. CORS por allowlist.
 - Secrets nunca en el repo: van por `wrangler secret` / `.dev.vars` (gitignored; plantilla en `.dev.vars.example`).
 
@@ -399,4 +406,4 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 - API de cobros `/v1` (test mode) + dashboard de comerciantes con webhooks firmados.
 - Historial servido desde el `ledger` (D1) + ingestión push/backfill bajo demanda; sin RPC por tab ni dependencia obligatoria de un indexador pago.
 - Login Google/correo, Turnstile, push FCM multi-dispositivo y analytics — feature-flagged (fail-closed en mainnet donde aplica).
-- Pendiente para producción: ver la lista de gates y acciones del operador en `CLAUDE_REVIEW_FABLE.md` §8 y `MEJORAS_PENDIENTES.md`.
+- Pendiente para producción: consultar el único [roadmap técnico](./docs/roadmap.md) y exigir evidencia fechada antes de cerrar cada gate.
