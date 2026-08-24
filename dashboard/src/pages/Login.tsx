@@ -1,14 +1,12 @@
-import { useEffect, useState } from "react";
-import { sileo } from "../lib/notify";
-import {
-	completeEmailLink,
-	isEmailSignInLink,
-	sendEmailLink,
-	signInWithGoogle,
-} from "../lib/firebase";
+import { useState } from "react";
 import Logo from "../components/Logo";
+import Turnstile from "../components/Turnstile";
+import { turnstileReady, type TurnstileState } from "../components/turnstileState";
+import { requestEmailCode, verifyEmailCode } from "../lib/authApi";
+import { signInWithEmailCodeToken, signInWithGoogle } from "../lib/firebase";
 
-type Mode = "buttons" | "email" | "sent" | "completing" | "need-email";
+type Mode = "buttons" | "email" | "code";
+type Busy = "google" | "send" | "verify" | null;
 
 function GoogleIcon() {
 	return (
@@ -22,131 +20,156 @@ function GoogleIcon() {
 }
 
 export default function Login() {
-	const [mode, setMode] = useState<Mode>(() =>
-		isEmailSignInLink(window.location.href) ? "completing" : "buttons",
-	);
+	const [mode, setMode] = useState<Mode>("buttons");
 	const [email, setEmail] = useState("");
-	const [busy, setBusy] = useState(false);
+	const [code, setCode] = useState("");
+	const [busy, setBusy] = useState<Busy>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [challengeRevision, setChallengeRevision] = useState(0);
+	const [turnstile, setTurnstile] = useState<TurnstileState>({ status: "loading", token: null });
 
-	useEffect(() => {
-		if (!isEmailSignInLink(window.location.href)) return;
-		completeEmailLink(window.location.href)
-			.then(() => window.history.replaceState({}, "", "/"))
-			.catch((err) => {
-				if (err instanceof Error && err.message === "NEED_EMAIL") setMode("need-email");
-				else {
-					sileo.error({ title: "No pudimos completar el inicio de sesión" });
-					setMode("buttons");
-				}
-			});
-	}, []);
+	function resetChallenge() {
+		setTurnstile({ status: "loading", token: null });
+		setChallengeRevision((value) => value + 1);
+	}
+
+	function openEmail() {
+		setError(null);
+		resetChallenge();
+		setMode("email");
+	}
 
 	async function handleGoogle() {
+		setError(null);
+		setBusy("google");
 		try {
 			await signInWithGoogle();
 		} catch {
-			sileo.error({ title: "No pudimos iniciar sesión" });
+			setError("No pudimos iniciar sesión. Intenta de nuevo.");
+		} finally {
+			setBusy(null);
 		}
 	}
 
 	async function handleSend() {
-		const value = email.trim().toLowerCase();
-		if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
-			sileo.error({ title: "Escribe un correo válido" });
+		const normalized = email.trim().toLowerCase();
+		if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized) || normalized.length > 254) {
+			setError("Escribe un correo válido.");
 			return;
 		}
-		setBusy(true);
+		if (!turnstileReady(turnstile)) return;
+		const turnstileToken = turnstile.token;
+		if (turnstileToken === null) return;
+		setError(null);
+		setBusy("send");
 		try {
-			await sendEmailLink(value);
-			setMode("sent");
-		} catch {
-			sileo.error({ title: "No pudimos enviar el enlace" });
+			await requestEmailCode({ email: normalized, turnstileToken });
+			setEmail(normalized);
+			setCode("");
+			setMode("code");
+		} catch (sendError) {
+			setError(sendError instanceof Error ? sendError.message : "No pudimos enviar el código.");
+			// Turnstile tokens are single-use even when the downstream request fails.
+			resetChallenge();
 		} finally {
-			setBusy(false);
+			setBusy(null);
 		}
 	}
 
-	async function handleComplete() {
-		setBusy(true);
+	async function handleVerify() {
+		if (!/^\d{6}$/.test(code)) {
+			setError("Escribe los 6 dígitos del código.");
+			return;
+		}
+		setError(null);
+		setBusy("verify");
 		try {
-			await completeEmailLink(window.location.href, email.trim().toLowerCase());
-			window.history.replaceState({}, "", "/");
-		} catch {
-			sileo.error({ title: "No pudimos completar el inicio de sesión" });
+			const result = await verifyEmailCode({ email, code });
+			await signInWithEmailCodeToken(result.customToken);
+		} catch (verifyError) {
+			setError(verifyError instanceof Error ? verifyError.message : "No pudimos verificar el código.");
 		} finally {
-			setBusy(false);
+			setBusy(null);
 		}
 	}
 
 	return (
-		<div className="min-h-dvh flex items-center justify-center px-5">
+		<div className="flex min-h-dvh items-center justify-center px-5">
 			<div className="w-full max-w-[380px] text-center animate-fade-up">
-				<Logo className="w-14 mx-auto mb-6" />
-				<h1 className="font-display text-[26px] mb-2">
+				<Logo className="mx-auto mb-6 w-14" />
+				<h1 className="mb-2 font-display text-[26px]">
 					Panel de <span className="text-brand-gradient">negocios</span>
 				</h1>
-				<p className="text-[14px] text-text-muted mb-8">
+				<p className="mb-8 text-[14px] text-text-muted">
 					Administra tus cobros: API keys, webhooks, pagos y eventos.
 				</p>
 
-				{mode === "completing" && <p role="status" className="text-[14px] text-text-muted">Iniciando sesión…</p>}
-
-				{mode === "sent" && (
-					<div className="card p-6">
-						<p className="text-[15px] mb-1">Revisa tu correo</p>
-						<p className="text-[13px] text-text-muted leading-relaxed">
-							Enviamos un enlace de acceso a <span className="text-text">{email}</span>. Ábrelo en este
-							dispositivo.
-						</p>
-						<button onClick={() => setMode("buttons")} className="btn-text mt-3">Usar otro método</button>
-					</div>
-				)}
-
-				{mode === "need-email" && (
-					<form
-						onSubmit={(event) => {
-							event.preventDefault();
-							void handleComplete();
-						}}
-						className="flex flex-col gap-3"
-					>
-						<p className="text-[13px] text-text-muted">Confirma el correo al que enviamos el enlace.</p>
-						<input aria-label="Correo electrónico" className="field text-center" type="email" name="email" inputMode="email" autoComplete="email" value={email}
-							onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" />
-						<button type="submit" disabled={busy} className="btn btn-primary btn-block">
-							{busy ? "Entrando…" : "Entrar"}
-						</button>
-					</form>
-				)}
-
-				{mode === "buttons" && (
+				{mode === "buttons" ? (
 					<div className="flex flex-col gap-3">
-						<button onClick={handleGoogle} className="btn btn-primary btn-block">
-							<GoogleIcon /> Continuar con Google
+						<button type="button" onClick={() => void handleGoogle()} disabled={busy !== null} aria-busy={busy === "google"} className="btn btn-primary btn-block">
+							<GoogleIcon /> {busy === "google" ? "Entrando…" : "Continuar con Google"}
 						</button>
-						<button onClick={() => setMode("email")} className="btn btn-ghost btn-block">
+						<button type="button" onClick={openEmail} disabled={busy !== null} className="btn btn-ghost btn-block">
 							Continuar con correo
 						</button>
-						<p className="text-[12px] text-text-faint mt-1">Misma cuenta que tu app GatoPago.</p>
+						<p className="mt-1 text-[12px] text-text-faint">Misma cuenta que tu app GatoPago.</p>
 					</div>
-				)}
+				) : null}
 
-				{mode === "email" && (
-					<form
-						onSubmit={(event) => {
-							event.preventDefault();
-							void handleSend();
-						}}
-						className="flex flex-col gap-3"
-					>
-						<input aria-label="Correo electrónico" className="field text-center" type="email" name="email" inputMode="email" autoComplete="email" value={email}
-							onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" />
-						<button type="submit" disabled={busy} className="btn btn-primary btn-block">
-							{busy ? "Enviando…" : "Enviarme un enlace"}
+				{mode === "email" ? (
+					<form onSubmit={(event) => { event.preventDefault(); void handleSend(); }} className="flex flex-col gap-3">
+						<label className="text-left text-[13px] text-text-muted">
+							<span className="mb-2 block">Correo electrónico</span>
+							<input
+								className="field text-center"
+								type="email"
+								name="email"
+								inputMode="email"
+								autoComplete="email"
+								autoCapitalize="none"
+								spellCheck={false}
+								value={email}
+								onChange={(event) => setEmail(event.target.value)}
+								placeholder="tu@correo.com"
+							/>
+						</label>
+						<Turnstile key={challengeRevision} onStateChange={setTurnstile} />
+						<button type="submit" disabled={busy !== null || !turnstileReady(turnstile)} aria-busy={busy === "send"} className="btn btn-primary btn-block">
+							{busy === "send" ? "Enviando…" : "Enviarme un código"}
 						</button>
 						<button type="button" onClick={() => setMode("buttons")} className="btn-text">Volver</button>
 					</form>
-				)}
+				) : null}
+
+				{mode === "code" ? (
+					<form onSubmit={(event) => { event.preventDefault(); void handleVerify(); }} className="flex flex-col gap-3">
+						<p className="text-[13px] leading-relaxed text-text-muted">
+							Enviamos un código de 6 dígitos a <span className="text-text">{email}</span>.
+						</p>
+						<label className="text-left text-[13px] text-text-muted">
+							<span className="mb-2 block">Código de 6 dígitos</span>
+							<input
+								className="field text-center font-display text-[20px] tracking-[0.3em]"
+								type="text"
+								name="one-time-code"
+								inputMode="numeric"
+								autoComplete="one-time-code"
+								autoCapitalize="none"
+								spellCheck={false}
+								pattern="[0-9]{6}"
+								value={code}
+								onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+								placeholder="123456"
+							/>
+						</label>
+						<button type="submit" disabled={busy !== null || code.length !== 6} aria-busy={busy === "verify"} className="btn btn-primary btn-block">
+							{busy === "verify" ? "Verificando…" : "Verificar y entrar"}
+						</button>
+						<button type="button" onClick={openEmail} className="btn-text">Enviar otro código o cambiar correo</button>
+					</form>
+				) : null}
+
+				{error ? <p role="alert" className="mt-4 text-[13px] leading-relaxed text-danger">{error}</p> : null}
 			</div>
 		</div>
 	);

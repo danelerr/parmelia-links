@@ -4,11 +4,9 @@ import {
 	getAuth,
 	getRedirectResult,
 	GoogleAuthProvider,
-	isSignInWithEmailLink,
 	onAuthStateChanged,
-	sendSignInLinkToEmail,
 	setPersistence,
-	signInWithEmailLink,
+	signInWithCustomToken,
 	signInWithPopup,
 	signInWithRedirect,
 	signOut,
@@ -48,35 +46,9 @@ export async function signInWithGoogle() {
 	}
 }
 
-const EMAIL_KEY = "gatopago:dash:emailForSignIn";
-const LEGACY_EMAIL_KEY = "parmelia:dash:emailForSignIn";
-
-function readEmail(): string | null {
-	const current = window.localStorage.getItem(EMAIL_KEY);
-	if (current) return current;
-	const legacy = window.localStorage.getItem(LEGACY_EMAIL_KEY);
-	if (legacy) window.localStorage.setItem(EMAIL_KEY, legacy);
-	return legacy;
-}
-
-export async function sendEmailLink(email: string) {
-	await sendSignInLinkToEmail(auth, email, {
-		url: `${window.location.origin}/login`,
-		handleCodeInApp: true,
-	});
-	window.localStorage.setItem(EMAIL_KEY, email);
-}
-
-export function isEmailSignInLink(url: string) {
-	return isSignInWithEmailLink(auth, url);
-}
-
-export async function completeEmailLink(url: string, fallbackEmail?: string) {
-	const email = readEmail() || fallbackEmail;
-	if (!email) throw new Error("NEED_EMAIL");
-	const result = await signInWithEmailLink(auth, email, url);
-	window.localStorage.removeItem(EMAIL_KEY);
-	window.localStorage.removeItem(LEGACY_EMAIL_KEY);
+export async function signInWithEmailCodeToken(customToken: string) {
+	const result = await signInWithCustomToken(auth, customToken);
+	await result.user.getIdToken(true);
 	return result;
 }
 
