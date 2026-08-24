@@ -502,13 +502,67 @@ describe("runtime configuration", () => {
 
 	it("exposes readiness and blocks invalid mainnet traffic", async () => {
 		const context = {} as ExecutionContext;
+		const healthToken = "health-test-token-that-is-longer-than-32-characters";
+		const testnetEnv = envFor("arbitrum-sepolia", { OPS_HEALTH_TOKEN: healthToken });
+		const liveness = await worker.fetch(
+			new Request("https://worker.example/health/live"),
+			testnetEnv,
+			context,
+		);
+		expect(liveness.status).toBe(200);
+		expect(liveness.headers.get("Cache-Control")).toBe("no-store");
+		expect(liveness.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+		expect(liveness.headers.get("Cross-Origin-Resource-Policy")).toBe("cross-origin");
+		expect(liveness.headers.get("Referrer-Policy")).toBe("no-referrer");
+		expect(liveness.headers.get("Strict-Transport-Security")).toBe(
+			"max-age=31536000; includeSubDomains",
+		);
+		expect(liveness.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(liveness.headers.get("X-Frame-Options")).toBe("DENY");
+		expect(await liveness.json()).toEqual({ status: "ok" });
+
 		const testnetHealth = await worker.fetch(
 			new Request("https://worker.example/health"),
-			envFor("arbitrum-sepolia"),
+			testnetEnv,
 			context,
 		);
 		expect(testnetHealth.status).toBe(200);
-		expect(await testnetHealth.json()).toMatchObject({ status: "ok", issues: [] });
+		expect(testnetHealth.headers.get("Cache-Control")).toBe("no-store");
+		expect(await testnetHealth.json()).toEqual({
+			status: "ok",
+			network: "arbitrum-sepolia",
+			issueCount: 0,
+			warningCount: 0,
+		});
+
+		const hiddenOpsHealth = await worker.fetch(
+			new Request("https://worker.example/health/ops"),
+			testnetEnv,
+			context,
+		);
+		expect(hiddenOpsHealth.status).toBe(404);
+		const wrongOpsHealth = await worker.fetch(
+			new Request("https://worker.example/health/ops", {
+				headers: { "X-Ops-Token": `${healthToken}-wrong` },
+			}),
+			testnetEnv,
+			context,
+		);
+		expect(wrongOpsHealth.status).toBe(404);
+		const detailedOpsHealth = await worker.fetch(
+			new Request("https://worker.example/health/ops", {
+				headers: { "X-Ops-Token": healthToken },
+			}),
+			testnetEnv,
+			context,
+		);
+		expect(detailedOpsHealth.status).toBe(200);
+		expect(await detailedOpsHealth.json()).toMatchObject({
+			status: "ok",
+			issues: [],
+			warnings: [],
+			rpc: [],
+		});
 
 		const mainnetEnv = envFor("arbitrum-one");
 		const mainnetHealth = await worker.fetch(new Request("https://worker.example/health"), mainnetEnv, context);

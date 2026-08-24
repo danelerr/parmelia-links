@@ -1,12 +1,11 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
+import { secureHeaders } from "hono/secure-headers";
 import { AppContext, authMiddleware, type Bindings } from "./middlewares/auth";
-import { hasAccountOperationNeedsReview } from "./services/storage";
 import { getRequestId, logError, logInfo, logWarn } from "./services/logger";
 import {
 	consumeWorkerQueue,
-	recoverEventJobs,
 	type WorkerQueueMessage,
 	wakeUserEventDeliveryIfPending,
 } from "./services/eventJobs";
@@ -32,15 +31,43 @@ import merchantRoutes from "./routes/merchant.routes";
 import homeRoutes from "./routes/home.routes";
 import cardRoutes from "./routes/card.routes";
 import ingestRoutes from "./routes/ingest.routes";
-import { getRpcHealthSummary, type RpcRoleName } from "./services/rpcControlPlane";
-import { getRpcUrls } from "./services/clients";
 import {
-	getOperationalHealth,
-	type OperationalHealthSummary,
-} from "./services/operationalHealth";
+	collectHealthSnapshot,
+	healthStatusCode,
+	publicReadiness,
+	validOpsHealthToken,
+} from "./services/health";
 
 const app = new Hono<AppContext>();
 const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// API responses are consumed cross-origin by the two Vercel SPAs, so CORP must
+// remain cross-origin while every browser-only capability stays disabled. CSP
+// is intentionally strict because this Worker never serves executable HTML.
+app.use(
+	"*",
+	secureHeaders({
+		contentSecurityPolicy: {
+			defaultSrc: ["'none'"],
+			baseUri: ["'none'"],
+			formAction: ["'none'"],
+			frameAncestors: ["'none'"],
+		},
+		crossOriginOpenerPolicy: false,
+		crossOriginResourcePolicy: "cross-origin",
+		originAgentCluster: false,
+		referrerPolicy: "no-referrer",
+		strictTransportSecurity: "max-age=31536000; includeSubDomains",
+		xFrameOptions: "DENY",
+		permissionsPolicy: {
+			camera: false,
+			geolocation: false,
+			microphone: false,
+			payment: false,
+			usb: false,
+		},
+	}),
+);
 
 app.use("*", async (c, next) => {
 	const startedAt = Date.now();
@@ -89,9 +116,8 @@ function mustFailClosed(env: Bindings): boolean {
 }
 
 let lastConfigWarning = "";
-let eventRecoveryLastAttemptAt = 0;
 app.use("*", async (c, next) => {
-	if (new URL(c.req.url).pathname === "/health") return next();
+	if (["/health", "/health/live", "/health/ops"].includes(new URL(c.req.url).pathname)) return next();
 	const issues = validateRuntimeConfig(c.env);
 	if (mustFailClosed(c.env) && issues.length > 0) {
 		const signature = issues.map((entry) => entry.code).sort().join(",");
@@ -151,94 +177,32 @@ app.use(
 	}),
 );
 
+app.get("/health/live", (c) => {
+	c.header("Cache-Control", "no-store");
+	return c.json({ status: "ok" as const });
+});
+
 app.get("/health", async (c) => {
-	const issueCodes = validateRuntimeConfig(c.env).map((entry) => entry.code);
-	const warnings: string[] = [];
-	let rpcHealth: Awaited<ReturnType<typeof getRpcHealthSummary>> = [];
-	let operationalHealth: OperationalHealthSummary | null = null;
-	try {
-		if (await hasAccountOperationNeedsReview(c.env)) issueCodes.push("signer_nonce_blocked");
-		rpcHealth = await getRpcHealthSummary(c.env);
-		const now = Date.now();
-		const roles: RpcRoleName[] = [
-			"read",
-			"write",
-			"indexer",
-			"archive",
-			"bundler",
-		];
-		for (const role of roles) {
-			const configuredCount = getRpcUrls(c.env, role).length;
-			const observed = rpcHealth.filter((entry) => entry.role === role);
-			const allConfiguredEndpointsOpen =
-				configuredCount > 0 &&
-				observed.length >= configuredCount &&
-				observed.every(
-					(entry) =>
-						entry.circuitState === "open" &&
-						Boolean(
-							entry.openedUntil &&
-								new Date(entry.openedUntil).getTime() > now,
-						),
-				);
-			if (!allConfiguredEndpointsOpen) continue;
-			if (
-				role === "read" ||
-				role === "write" ||
-				(role === "bundler" && c.env.RELAYER_MODE === "bundler")
-			) {
-				issueCodes.push(`rpc_${role}_unavailable`);
-			} else {
-				warnings.push(`rpc_${role}_degraded`);
-			}
-		}
-		const operational = await getOperationalHealth(c.env);
-		operationalHealth = operational.summary;
-		warnings.push(...operational.warnings);
-		if (
-			Date.now() - eventRecoveryLastAttemptAt >= 60_000 &&
-			[
-				operational.summary.queues.paymentReconcileActive,
-				operational.summary.queues.userEventActive,
-				operational.summary.queues.balanceRefreshActive,
-				operational.summary.queues.accountOperationActive,
-				operational.summary.queues.crosschainActive,
-				operational.summary.queues.webhookDeliveryActive,
-				operational.summary.queues.routerIntentActive,
-				operational.summary.queues.indexerRegistryActive,
-				operational.summary.queues.providerSubscriptionActive,
-				operational.summary.queues.reorgReplayActive,
-				operational.summary.queues.indexerActiveShards,
-			].some((value) => value > 0)
-		) {
-			eventRecoveryLastAttemptAt = Date.now();
-			c.executionCtx.waitUntil(
-				recoverEventJobs(c.env).catch((error) => {
-					eventRecoveryLastAttemptAt = 0;
-					logError("event_job_recovery_failed", error, {
-						requestId: c.get("requestId"),
-					});
-				}),
-			);
-		}
-	} catch (error) {
-		issueCodes.push("d1_unavailable");
-		logError("health_operational_check_failed", error, { requestId: c.get("requestId") });
+	c.header("Cache-Control", "no-store");
+	const snapshot = await collectHealthSnapshot(
+		c.env,
+		(promise) => c.executionCtx.waitUntil(promise),
+		c.get("requestId"),
+	);
+	return c.json(publicReadiness(snapshot), healthStatusCode(snapshot));
+});
+
+app.get("/health/ops", async (c) => {
+	c.header("Cache-Control", "no-store");
+	if (!(await validOpsHealthToken(c.req.header("X-Ops-Token"), c.env.OPS_HEALTH_TOKEN))) {
+		return c.json({ error: "Not found" }, 404);
 	}
-	const payload = {
-		status:
-			issueCodes.length > 0
-				? "not_ready"
-				: warnings.length > 0
-					? "degraded"
-					: "ok",
-		network: c.env.CHAIN_KEY ?? null,
-		issues: issueCodes,
-		warnings,
-		rpc: rpcHealth,
-		operations: operationalHealth,
-	};
-	return issueCodes.length === 0 ? c.json(payload, 200) : c.json(payload, 503);
+	const snapshot = await collectHealthSnapshot(
+		c.env,
+		(promise) => c.executionCtx.waitUntil(promise),
+		c.get("requestId"),
+	);
+	return c.json(snapshot, healthStatusCode(snapshot));
 });
 
 app.use(authMiddleware);

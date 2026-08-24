@@ -1,4 +1,4 @@
-// Earn (Modo Ahorro): Aave v3 USDC supply. Design: DEFI_DESIGN.md v2.0.
+// Earn (Modo Ahorro): Aave v3 USDC supply. Design: docs/design/defi.md v2.0.
 //
 //   GET  /earn/config  → enabled/canDeposit/canWithdraw + live APY + balances
 //   POST /earn/prepare → builds the sponsored UserOp (deposit or withdraw);

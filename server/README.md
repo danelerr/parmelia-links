@@ -112,8 +112,8 @@ y presupuesto, mientras `needs_review` bloquea otro envío del mismo tipo. El
 mismo lease `chainId + signer` coordina `handleOps`, mints CCTP y operaciones de
 cuenta; una reserva raw `prepared/needs_review` bloquea el firmante completo
 hasta reconciliar, evitando reemplazos silenciosos de nonce. `/health` devuelve
-503 con `signer_nonce_blocked` mientras exista una ambigüedad y
-`d1_unavailable` si no puede comprobar D1.
+503 y un contador de incidencias mientras exista una ambigüedad o no pueda
+comprobar D1; los códigos concretos sólo aparecen en `/health/ops` autenticado.
 
 ## Secrets y variables
 
@@ -134,6 +134,7 @@ npx wrangler secret put FAUCET_PRIVATE_KEY                # EOA con presupuesto 
 npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY     # guardian dedicado (obligatorio y distinto en mainnet)
 npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY      # firma sponsorships del paymaster
 npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY # firma autorizaciones de PaymentRouter (Flow B)
+npx wrangler secret put OPS_HEALTH_TOKEN                  # 32+ caracteres; protege /health/ops
 npx wrangler secret put TURNSTILE_SECRET_KEY              # anti-abuso (testnet: opcional; MAINNET: obligatorio, sin él create/fund fallan cerrado)
 npx wrangler secret put FCM_SERVICE_ACCOUNT               # JSON del service account, 1 línea (opcional; sin definir = sin push)
 npx wrangler secret put CCTP_RPC_URLS                     # opcional: JSON chainId->RPC para destinos cross-chain (si no, públicos)
@@ -161,7 +162,7 @@ Un mismo `RPC_INDEXER_URLS` puede contener endpoints con rangos diferentes:
 el span y `RPC_ADMISSION` aplica la concurrencia entre todas las instancias. No
 hay reglas de plan por hostname. Ver `docs/runbooks/rpc-operations.md`.
 
-**Política de claves (least privilege, `services/keys.ts` + `runtimeConfig.ts`):** en testnet, si falta una clave dedicada se cae a la más amplia (una sola EOA sirve para dev). En **mainnet los fallbacks están prohibidos** y las cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas. El faucet usa su propio signer y lease de nonce; si está desactivado no exige una clave ociosa. `GET /health` expone únicamente códigos de checks, nunca secretos; cualquier configuración mainnet incompleta bloquea requests con 503. Ver `DEPLOY.md` §11.
+**Política de claves (least privilege, `services/keys.ts` + `runtimeConfig.ts`):** en testnet, si falta una clave dedicada se cae a la más amplia (una sola EOA sirve para dev). En **mainnet los fallbacks están prohibidos** y las cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas. El faucet usa su propio signer y lease de nonce; si está desactivado no exige una clave ociosa. `GET /health/live` sólo prueba liveness, `GET /health` expone estado y contadores sin detalles internos y `GET /health/ops` devuelve el diagnóstico completo únicamente con `X-Ops-Token`. Cualquier configuración mainnet incompleta bloquea requests con 503. Ver `DEPLOY.md` §11.
 
 Los secretos de webhook nuevos usan `enc:v2:<key-id>` con AES-GCM y AAD. El job
 de rotación recifra plaintext, `v1` y IDs anteriores mientras sus claves aparezcan en

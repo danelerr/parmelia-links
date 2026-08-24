@@ -14,20 +14,20 @@
     "typecheck:worker-runtime": "tsc --noEmit --project test-worker/tsconfig.json"
   },
   "dependencies": {
-    "hono": "^4.13.1",
-    "jose": "^6.2.8",
-    "viem": "^2.55.13"
+    "hono": "^4.13.2",
+    "jose": "^6.2.9",
+    "viem": "^2.55.17"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.21.1",
+    "@cloudflare/vitest-pool-workers": "0.21.3",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.3",
     "eslint": "^10.8.1",
-    "globals": "^17.10.0",
+    "globals": "^17.11.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.10",
-    "wrangler": "4.121.0",
+    "wrangler": "4.123.0",
     "yaml": "^2.9.0"
   }
 }

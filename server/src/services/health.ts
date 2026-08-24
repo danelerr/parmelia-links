@@ -1,0 +1,154 @@
+import type { Bindings } from "../middlewares/auth";
+import { hasAccountOperationNeedsReview } from "./storage";
+import { recoverEventJobs } from "./eventJobs";
+import { logError } from "./logger";
+import { getOperationalHealth, type OperationalHealthSummary } from "./operationalHealth";
+import { getRpcUrls } from "./clients";
+import { getRpcHealthSummary, type RpcRoleName } from "./rpcControlPlane";
+import { validateRuntimeConfig } from "./runtimeConfig";
+
+type HealthStatus = "ok" | "degraded" | "not_ready";
+
+export type HealthSnapshot = {
+	status: HealthStatus;
+	network: string | null;
+	issues: string[];
+	warnings: string[];
+	rpc: Awaited<ReturnType<typeof getRpcHealthSummary>>;
+	operations: OperationalHealthSummary | null;
+};
+
+export type PublicReadiness = {
+	status: HealthStatus;
+	network: string | null;
+	issueCount: number;
+	warningCount: number;
+};
+
+// Cross-request state is limited to throttling an idempotent recovery wakeup;
+// it never stores request or user data.
+let eventRecoveryLastAttemptAt = 0;
+
+function shouldWakeRecovery(summary: OperationalHealthSummary): boolean {
+	return [
+		summary.queues.paymentReconcileActive,
+		summary.queues.userEventActive,
+		summary.queues.balanceRefreshActive,
+		summary.queues.accountOperationActive,
+		summary.queues.crosschainActive,
+		summary.queues.webhookDeliveryActive,
+		summary.queues.routerIntentActive,
+		summary.queues.indexerRegistryActive,
+		summary.queues.providerSubscriptionActive,
+		summary.queues.reorgReplayActive,
+		summary.queues.indexerActiveShards,
+	].some((value) => value > 0);
+}
+
+export async function collectHealthSnapshot(
+	env: Bindings,
+	waitUntil: (promise: Promise<unknown>) => void,
+	requestId: string,
+): Promise<HealthSnapshot> {
+	const issueCodes = validateRuntimeConfig(env).map((entry) => entry.code);
+	const warnings: string[] = [];
+	let rpcHealth: HealthSnapshot["rpc"] = [];
+	let operationalHealth: OperationalHealthSummary | null = null;
+
+	try {
+		if (await hasAccountOperationNeedsReview(env)) issueCodes.push("signer_nonce_blocked");
+		rpcHealth = await getRpcHealthSummary(env);
+		const now = Date.now();
+		const roles: RpcRoleName[] = ["read", "write", "indexer", "archive", "bundler"];
+		for (const role of roles) {
+			const configuredCount = getRpcUrls(env, role).length;
+			const observed = rpcHealth.filter((entry) => entry.role === role);
+			const allConfiguredEndpointsOpen =
+				configuredCount > 0 &&
+				observed.length >= configuredCount &&
+				observed.every(
+					(entry) =>
+						entry.circuitState === "open" &&
+						Boolean(entry.openedUntil && new Date(entry.openedUntil).getTime() > now),
+				);
+			if (!allConfiguredEndpointsOpen) continue;
+			if (
+				role === "read" ||
+				role === "write" ||
+				(role === "bundler" && env.RELAYER_MODE === "bundler")
+			) {
+				issueCodes.push(`rpc_${role}_unavailable`);
+			} else {
+				warnings.push(`rpc_${role}_degraded`);
+			}
+		}
+
+		const operational = await getOperationalHealth(env);
+		operationalHealth = operational.summary;
+		warnings.push(...operational.warnings);
+		if (
+			Date.now() - eventRecoveryLastAttemptAt >= 60_000 &&
+			shouldWakeRecovery(operational.summary)
+		) {
+			eventRecoveryLastAttemptAt = Date.now();
+			waitUntil(
+				recoverEventJobs(env).catch((error) => {
+					eventRecoveryLastAttemptAt = 0;
+					logError("event_job_recovery_failed", error, { requestId });
+				}),
+			);
+		}
+	} catch (error) {
+		issueCodes.push("d1_unavailable");
+		logError("health_operational_check_failed", error, { requestId });
+	}
+
+	const issues = [...new Set(issueCodes)];
+	const uniqueWarnings = [...new Set(warnings)];
+	return {
+		status: issues.length > 0 ? "not_ready" : uniqueWarnings.length > 0 ? "degraded" : "ok",
+		network: env.CHAIN_KEY ?? null,
+		issues,
+		warnings: uniqueWarnings,
+		rpc: rpcHealth,
+		operations: operationalHealth,
+	};
+}
+
+export function publicReadiness(snapshot: HealthSnapshot): PublicReadiness {
+	return {
+		status: snapshot.status,
+		network: snapshot.network,
+		issueCount: snapshot.issues.length,
+		warningCount: snapshot.warnings.length,
+	};
+}
+
+export function healthStatusCode(snapshot: HealthSnapshot): 200 | 503 {
+	return snapshot.status === "not_ready" ? 503 : 200;
+}
+
+async function sha256(value: string): Promise<ArrayBuffer> {
+	return crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+}
+
+function equalDigest(left: ArrayBuffer, right: ArrayBuffer): boolean {
+	const leftBytes = new Uint8Array(left);
+	const rightBytes = new Uint8Array(right);
+	if (leftBytes.byteLength !== rightBytes.byteLength) return false;
+	let mismatch = 0;
+	for (let index = 0; index < leftBytes.byteLength; index += 1) {
+		mismatch |= leftBytes[index] ^ rightBytes[index];
+	}
+	return mismatch === 0;
+}
+
+/** Authenticate the detailed operations endpoint without leaking token length. */
+export async function validOpsHealthToken(
+	provided: string | undefined,
+	expected: string | undefined,
+): Promise<boolean> {
+	if (!provided || !expected || expected.length < 32) return false;
+	const [providedHash, expectedHash] = await Promise.all([sha256(provided), sha256(expected)]);
+	return equalDigest(providedHash, expectedHash);
+}

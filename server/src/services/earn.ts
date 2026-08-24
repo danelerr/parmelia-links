@@ -1,6 +1,6 @@
 // Earn (Modo Ahorro): Aave v3 USDC supply, direct from the user's smart account.
 //
-// Design: DEFI_DESIGN.md v2.0. No GatoPago contracts, no custody — the batch is
+// Design: docs/design/defi.md v2.0. No GatoPago contracts, no custody — the batch is
 // [approve(Pool, exact), Pool.supply(USDC, amount, account, 0)] (deposit) or
 // [Pool.withdraw(USDC, amount | max, account)] (withdraw), signed with the
 // passkey and relayed through the standard /pay/submit lifecycle. The aToken

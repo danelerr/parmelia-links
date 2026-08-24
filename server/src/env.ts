@@ -3,6 +3,7 @@
 // explicitly by runtimeConfig before mainnet traffic is accepted.
 type OptionalBindingKey =
 	| "ALLOWED_ORIGINS"
+	| "OPS_HEALTH_TOKEN"
 	| "FAUCET_PRIVATE_KEY"
 	| "RECOVERY_GUARDIAN_PRIVATE_KEY"
 	| "PAYMASTER_SIGNER_PRIVATE_KEY"

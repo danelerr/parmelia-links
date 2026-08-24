@@ -1167,10 +1167,14 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		)).rejects.toBeInstanceOf(SignerLeaseBusyError);
 		const blockedHealth = await exports.default.fetch(new Request("https://worker.test/health"));
 		expect(blockedHealth.status).toBe(503);
-		expect(await blockedHealth.json()).toMatchObject({
+		const blockedHealthPayload = await blockedHealth.json<Record<string, unknown>>();
+		expect(blockedHealthPayload).toMatchObject({
 			status: "not_ready",
-			issues: expect.arrayContaining(["signer_nonce_blocked"]),
+			issueCount: expect.any(Number),
 		});
+		expect(blockedHealthPayload).not.toHaveProperty("issues");
+		expect(blockedHealthPayload).not.toHaveProperty("rpc");
+		expect(Number(blockedHealthPayload.issueCount)).toBeGreaterThan(0);
 		expect(await createAccountOperation(env, {
 			id: "runtime-operation-3",
 			...base,
@@ -1182,10 +1186,27 @@ describe.sequential("Cloudflare Worker runtime", () => {
 	});
 
 	it("serves readiness and enforces authentication through workerd", async () => {
+		const live = await exports.default.fetch(new Request("https://worker.test/health/live"));
+		expect(live.status).toBe(200);
+		expect(live.headers.get("Cache-Control")).toBe("no-store");
+		expect(live.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+		expect(live.headers.get("Cross-Origin-Resource-Policy")).toBe("cross-origin");
+		expect(live.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(live.headers.get("X-Frame-Options")).toBe("DENY");
+		expect(await live.json()).toEqual({ status: "ok" });
+
 		const health = await exports.default.fetch(new Request("https://worker.test/health"));
 		expect(health.status).toBe(200);
 		expect(health.headers.get("X-Request-Id")).toMatch(/^[0-9a-f-]{36}$/);
-		expect(await health.json()).toMatchObject({ status: "ok", network: "arbitrum-sepolia", issues: [] });
+		expect(health.headers.get("Cache-Control")).toBe("no-store");
+		expect(await health.json()).toEqual({
+			status: "ok",
+			network: "arbitrum-sepolia",
+			issueCount: 0,
+			warningCount: 0,
+		});
+		const opsHealth = await exports.default.fetch(new Request("https://worker.test/health/ops"));
+		expect(opsHealth.status).toBe(404);
 
 		const protectedResponse = await exports.default.fetch(
 			new Request("https://worker.test/user/profile", {

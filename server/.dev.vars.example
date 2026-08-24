@@ -1,6 +1,10 @@
 # Local dev secrets (copy to server/.dev.vars — gitignored). Production uses
 # `wrangler secret put` for each of these; see server/README.md.
 
+# Token aleatorio de al menos 32 caracteres para GET /health/ops. Si falta o es
+# corto, el endpoint detallado responde 404; /health y /health/live no lo usan.
+OPS_HEALTH_TOKEN=
+
 # Compatibilidad/base: RPC del chain activo; acepta URLs separadas por coma.
 RPC_URL=
 

@@ -31,7 +31,7 @@
 //
 // When you add a code: (1) add it to ERR, (2) add its status to
 // ERROR_HTTP_STATUS, (3) add the `err.<CODE>` key in client/src/locales/{es,en}.json,
-// (4) document it in ERROR_CODES.md. The server test `errors.test.ts` asserts (2).
+// (4) document it in docs/reference/error-codes.md. The server test `errors.test.ts` asserts (2).
 
 export const ERR = {
 	// ---- 400 Bad Request: invalid / missing / malformed input ----

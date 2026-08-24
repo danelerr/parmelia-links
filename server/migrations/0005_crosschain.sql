@@ -1,5 +1,5 @@
 -- Cross-chain operations (CCTP v2). Separate from pending_payments: multi-step,
--- multi-chain, hours-long lifecycle with attestation polling. See CROSSCHAIN_DESIGN.md.
+-- multi-chain, hours-long lifecycle with attestation polling. See docs/design/cross-chain.md.
 --
 -- A row is created at quote/submit time (status 'quoted'/'submitted'); the relayer
 -- advances it through waiting_attestation -> minting -> completed. `message_nonce`

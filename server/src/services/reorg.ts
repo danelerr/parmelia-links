@@ -65,12 +65,11 @@ function watcherShardId(
 	prefix: "recovery" | "userops",
 	chainId: number,
 ): number | null {
-	const match = new RegExp(
-		`^${prefix}:${chainId}:shard:(\\d+)$`,
-		"u",
-	).exec(stream);
-	if (!match) return null;
-	const shardId = Number(match[1]);
+	const expectedPrefix = `${prefix}:${chainId}:shard:`;
+	if (!stream.startsWith(expectedPrefix)) return null;
+	const rawShardId = stream.slice(expectedPrefix.length);
+	if (!/^\d+$/u.test(rawShardId)) return null;
+	const shardId = Number(rawShardId);
 	return Number.isSafeInteger(shardId) && shardId >= 0 ? shardId : null;
 }
 
