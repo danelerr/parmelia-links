@@ -12,6 +12,9 @@ See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the system overview and
 | `AccountFactoryV2.sol` | Deploys account proxies. `predictAddress(initData)` gives the deterministic (CREATE2) address; `createAccount(initData)` deploys it. |
 | `ParmeliaPaymaster.sol` | Verifying paymaster. Sponsors gas for UserOperations signed by a trusted backend signer, bound to a `[validAfter, validUntil]` window so a signed-but-unsubmitted op cannot be replayed. `Ownable2Step`; `postOp` is the hook for future fees. |
 | `ERC7913WebAuthnVerifier.sol` | Stateless WebAuthn/P256 signature verifier referenced by the account's signers (uses RIP-7212 where available). |
+| `ParmeliaPaymentRouterV2.sol` | USDC-only same-chain checkout. EIP-712 binds payer, intent, attempt, merchant, net settlement, fee and expiry. |
+| `ParmeliaCctpPaymentRouter.sol` | Base/Avalanche USDC checkout into the Arbitrum home chain through CCTP v2. Destination and recovery semantics are immutable. |
+| `ParmeliaCrosschainRouter.sol` | Hardened outbound CCTP rail for GatoPago accounts, with replay and destination-domain guards. |
 
 ## Design notes (relevant to "smart contract quality")
 
@@ -34,17 +37,22 @@ See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the system overview and
 
 | Contract | Address |
 |---|---|
-| ERC7913WebAuthnVerifier | [`0xb7fA10dEe75042D6973676A7d7882e4621B806d6`](https://sepolia.arbiscan.io/address/0xb7fA10dEe75042D6973676A7d7882e4621B806d6) |
-| AccountWebAuthnV2 (impl) | [`0xa450bc49a0dA738FA348445980b542d78A22527e`](https://sepolia.arbiscan.io/address/0xa450bc49a0dA738FA348445980b542d78A22527e) |
-| AccountFactoryV2 | [`0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB`](https://sepolia.arbiscan.io/address/0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB) |
-| ParmeliaPaymaster | [`0x31f357a64cF5899da21337f0D9e28ef8D6385753`](https://sepolia.arbiscan.io/address/0x31f357a64cF5899da21337f0D9e28ef8D6385753) |
+| ERC7913WebAuthnVerifier | [`0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886`](https://sepolia.arbiscan.io/address/0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886) |
+| AccountWebAuthnV2 (impl) | [`0xDFA9df7d6CCc3b92F8a8e245D6E9760c3346184C`](https://sepolia.arbiscan.io/address/0xDFA9df7d6CCc3b92F8a8e245D6E9760c3346184C) |
+| AccountFactoryV2 | [`0xb97E923E27CB258012081446e4b436afd3974108`](https://sepolia.arbiscan.io/address/0xb97E923E27CB258012081446e4b436afd3974108) |
+| ParmeliaPaymaster | [`0x913a1B51c4f5b1a458A56D0d700c956834cc1d15`](https://sepolia.arbiscan.io/address/0x913a1B51c4f5b1a458A56D0d700c956834cc1d15) |
+| ParmeliaPaymentRouterV2 | [`0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4`](https://sourcify.dev/server/v2/contract/421614/0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4) |
+| ParmeliaCrosschainRouter | [`0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c`](https://sourcify.dev/server/v2/contract/421614/0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c) |
 | EntryPoint v0.9 (canonical) | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
 
 ## Build, test, deploy
 
+Use Foundry `v1.7.1`, the same stable release pinned in CI.
+
 ```bash
+foundryup -i v1.7.1
 forge build
-forge test           # 32 tests (account, factory, paymaster, verifier)
+forge test
 
 # Deterministic deploy (see ../DEPLOY.md for the full flow). --sender is required.
 forge script script/Deploy.s.sol:DeployV2 \
@@ -52,6 +60,11 @@ forge script script/Deploy.s.sol:DeployV2 \
   --account <keystore> --sender <your-eoa> --broadcast
 ```
 
-Optimizer settings in `foundry.toml` are fixed (`via_ir`, `optimizer_runs`) so
+Compiler and optimizer settings in `foundry.toml` are fixed (Solidity 0.8.34,
+`via_ir`, `optimizer_runs`) so
 CREATE2 yields the same addresses across Arbitrum Sepolia and Arbitrum One — do
 not change them between deployments.
+
+Universal Checkout deployment facts are frozen in
+`script/NetworkDeploymentConfig.sol`; generated manifests and their schema live
+in `deployments/`. A dry-run does not qualify as a deployment manifest.

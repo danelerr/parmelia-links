@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import {ERC7913WebAuthnVerifier as OZWebAuthnVerifier} from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
+import {
+    ERC7913WebAuthnVerifier as OZWebAuthnVerifier
+} from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 
 /**
  * @title ERC7913WebAuthnVerifier

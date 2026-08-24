@@ -82,10 +82,7 @@ contract AccountWebAuthnV2 is
     ///      We must pass a valid signer + threshold to MultiSignerERC7913's constructor
     ///      because the library requires threshold > 0 and signer count >= threshold.
     ///      The implementation's state is irrelevant - proxies get fresh storage via initialize().
-    constructor()
-        EIP712("AccountWebAuthnV2", "2")
-        MultiSignerERC7913(_dummySigners(), 1)
-    {
+    constructor() EIP712("AccountWebAuthnV2", "2") MultiSignerERC7913(_dummySigners(), 1) {
         _disableInitializers();
     }
 
@@ -106,11 +103,7 @@ contract AccountWebAuthnV2 is
      * @param threshold_ Minimum signatures required (typically 1 for single-user).
      * @param guardian_ Address that can propose recovery (address(0) to disable).
      */
-    function initialize(
-        bytes[] memory signers_,
-        uint64 threshold_,
-        address guardian_
-    ) public initializer {
+    function initialize(bytes[] memory signers_, uint64 threshold_, address guardian_) public initializer {
         _addSigners(signers_);
         _setThreshold(threshold_);
         if (guardian_ != address(0)) {
@@ -133,9 +126,7 @@ contract AccountWebAuthnV2 is
      * @notice Remove signers (passkeys) from this account.
      * @dev Only callable by EntryPoint (via UserOp) or by the account itself.
      */
-    function removeSigners(
-        bytes[] memory signers_
-    ) public onlyEntryPointOrSelf {
+    function removeSigners(bytes[] memory signers_) public onlyEntryPointOrSelf {
         _removeSigners(signers_);
     }
 
@@ -182,25 +173,25 @@ contract AccountWebAuthnV2 is
      * @param newSigners The new signers to set after the timelock.
      * @param newThreshold The new threshold to set after the timelock.
      */
-    function proposeRecovery(
-        bytes[] memory newSigners,
-        uint64 newThreshold
-    ) external {
+    function proposeRecovery(bytes[] memory newSigners, uint64 newThreshold) external {
         if (guardian == address(0)) revert NoGuardianSet();
         if (msg.sender != guardian) revert OnlyGuardian();
         if (recoveryExecutableAfter != 0) revert RecoveryAlreadyProposed();
 
         uint256 count = newSigners.length;
-        if (count == 0 || count > MAX_RECOVERY_SIGNERS)
+        if (count == 0 || count > MAX_RECOVERY_SIGNERS) {
             revert InvalidRecoveryProposal();
-        if (newThreshold == 0 || newThreshold > count)
+        }
+        if (newThreshold == 0 || newThreshold > count) {
             revert InvalidRecoveryProposal();
+        }
         for (uint256 i = 0; i < count; i++) {
             // ERC-7913 signer bytes are at least a 20-byte verifier/EOA address.
             if (newSigners[i].length < 20) revert InvalidRecoveryProposal();
             for (uint256 j = i + 1; j < count; j++) {
-                if (keccak256(newSigners[i]) == keccak256(newSigners[j]))
+                if (keccak256(newSigners[i]) == keccak256(newSigners[j])) {
                     revert InvalidRecoveryProposal();
+                }
             }
         }
 
@@ -250,8 +241,11 @@ contract AccountWebAuthnV2 is
      */
     function executeRecovery() external {
         if (recoveryExecutableAfter == 0) revert RecoveryNotProposed();
-        if (block.timestamp < recoveryExecutableAfter)
+        // Chain time is the intended clock for this 48-hour on-chain timelock.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < recoveryExecutableAfter) {
             revert RecoveryNotReady();
+        }
 
         // Snapshot current signers before modification
         uint256 count = getSignerCount();
@@ -295,11 +289,7 @@ contract AccountWebAuthnV2 is
     function getPendingRecovery()
         public
         view
-        returns (
-            uint256 executeAfter,
-            bytes[] memory newSigners,
-            uint64 newThreshold
-        )
+        returns (uint256 executeAfter, bytes[] memory newSigners, uint64 newThreshold)
     {
         return (recoveryExecutableAfter, _pendingSigners, _pendingThreshold);
     }
@@ -310,22 +300,19 @@ contract AccountWebAuthnV2 is
      * @dev Only the account itself (via UserOp) can authorize upgrades.
      *      This ensures that only a valid signer can upgrade the implementation.
      */
-    function _authorizeUpgrade(
-        address
-    ) internal override onlyEntryPointOrSelf {}
+    function _authorizeUpgrade(address) internal override onlyEntryPointOrSelf {}
 
     // ========== ERC7821 Executor Authorization ==========
 
     /**
      * @dev Allow the EntryPoint to execute batched calls via ERC-7821.
      */
-    function _erc7821AuthorizedExecutor(
-        address caller,
-        bytes32 mode,
-        bytes calldata executionData
-    ) internal view override returns (bool) {
-        return
-            caller == address(entryPoint()) ||
-            super._erc7821AuthorizedExecutor(caller, mode, executionData);
+    function _erc7821AuthorizedExecutor(address caller, bytes32 mode, bytes calldata executionData)
+        internal
+        view
+        override
+        returns (bool)
+    {
+        return caller == address(entryPoint()) || super._erc7821AuthorizedExecutor(caller, mode, executionData);
     }
 }

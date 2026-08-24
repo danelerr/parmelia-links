@@ -52,9 +52,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         authorizationSigner = vm.addr(AUTHORIZATION_SIGNER_KEY);
         payer = vm.addr(PAYER_KEY);
         usdc = new MockCheckoutUSDC();
-        router = new ParmeliaPaymentRouterV2(
-            owner, IERC20(address(usdc)), treasury, authorizationSigner, pauseGuardian
-        );
+        router = new ParmeliaPaymentRouterV2(owner, IERC20(address(usdc)), treasury, authorizationSigner, pauseGuardian);
         usdc.mint(payer, 1_000 * ONE_USDC);
         vm.prank(payer);
         usdc.approve(address(router), type(uint256).max);
@@ -92,8 +90,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__AttemptAlreadyUsed.selector,
-                authorization.attemptId
+                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__AttemptAlreadyUsed.selector, authorization.attemptId
             )
         );
         router.pay(authorization, signature);
@@ -123,9 +120,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         vm.prank(attacker);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__UnauthorizedPayer.selector,
-                attacker,
-                payer
+                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__UnauthorizedPayer.selector, attacker, payer
             )
         );
         router.pay(authorization, signature);
@@ -162,17 +157,16 @@ contract ParmeliaPaymentRouterV2Test is Test {
     }
 
     function test_pay_rejectsSignatureForAnotherChainAndRouter() public {
+        vm.chainId(31337);
         ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization = _authorization("domain");
         bytes memory signature = _sign(authorization, AUTHORIZATION_SIGNER_KEY);
 
-        uint256 originalChainId = block.chainid;
-        vm.chainId(originalChainId + 1);
+        vm.chainId(31338);
         _expectInvalidAuthorization(authorization, signature);
-        vm.chainId(originalChainId);
+        vm.chainId(31337);
 
-        ParmeliaPaymentRouterV2 anotherRouter = new ParmeliaPaymentRouterV2(
-            owner, IERC20(address(usdc)), treasury, authorizationSigner, pauseGuardian
-        );
+        ParmeliaPaymentRouterV2 anotherRouter =
+            new ParmeliaPaymentRouterV2(owner, IERC20(address(usdc)), treasury, authorizationSigner, pauseGuardian);
         vm.prank(payer);
         vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAuthorization.selector);
         anotherRouter.pay(authorization, signature);
@@ -204,8 +198,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__AuthorizationExpired.selector,
-                authorization.validUntil
+                ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__AuthorizationExpired.selector, authorization.validUntil
             )
         );
         router.pay(authorization, signature);
@@ -241,15 +234,11 @@ contract ParmeliaPaymentRouterV2Test is Test {
         ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization = _authorization("guards");
 
         authorization.intentId = bytes32(0);
-        _expectRawRevert(
-            authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidIntentId.selector
-        );
+        _expectRawRevert(authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidIntentId.selector);
 
         authorization = _authorization("guards-attempt");
         authorization.attemptId = bytes32(0);
-        _expectRawRevert(
-            authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAttemptId.selector
-        );
+        _expectRawRevert(authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAttemptId.selector);
 
         authorization = _authorization("guards-payer");
         authorization.payer = address(0);
@@ -257,9 +246,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
 
         authorization = _authorization("guards-merchant");
         authorization.merchant = address(0);
-        _expectRawRevert(
-            authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidMerchant.selector
-        );
+        _expectRawRevert(authorization, ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidMerchant.selector);
 
         authorization = _authorization("guards-amount");
         authorization.settlementAmount = 0;
@@ -289,12 +276,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
 
         vm.prank(payer);
         router.payWithPermit(
-            authorization,
-            authorizationSignature,
-            block.timestamp + 10 minutes,
-            27,
-            bytes32(0),
-            bytes32(0)
+            authorization, authorizationSignature, block.timestamp + 10 minutes, 27, bytes32(0), bytes32(0)
         );
 
         assertEq(usdc.balanceOf(merchant), authorization.settlementAmount);
@@ -306,9 +288,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         assertTrue(router.paused());
 
         vm.prank(pauseGuardian);
-        vm.expectRevert(
-            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, pauseGuardian)
-        );
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, pauseGuardian));
         router.unpause();
 
         vm.prank(owner);
@@ -358,9 +338,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         vm.startPrank(owner);
         vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidTreasury.selector);
         router.setTreasury(address(0));
-        vm.expectRevert(
-            ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAuthorizationSigner.selector
-        );
+        vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAuthorizationSigner.selector);
         router.setAuthorizationSigner(address(0));
         vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidPauseGuardian.selector);
         router.setPauseGuardian(address(0));
@@ -383,13 +361,9 @@ contract ParmeliaPaymentRouterV2Test is Test {
         new ParmeliaPaymentRouterV2(owner, IERC20(address(0)), treasury, authorizationSigner, pauseGuardian);
 
         vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidTreasury.selector);
-        new ParmeliaPaymentRouterV2(
-            owner, IERC20(address(usdc)), address(0), authorizationSigner, pauseGuardian
-        );
+        new ParmeliaPaymentRouterV2(owner, IERC20(address(usdc)), address(0), authorizationSigner, pauseGuardian);
 
-        vm.expectRevert(
-            ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAuthorizationSigner.selector
-        );
+        vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidAuthorizationSigner.selector);
         new ParmeliaPaymentRouterV2(owner, IERC20(address(usdc)), treasury, address(0), pauseGuardian);
 
         vm.expectRevert(ParmeliaPaymentRouterV2.ParmeliaPaymentRouterV2__InvalidPauseGuardian.selector);
@@ -457,10 +431,7 @@ contract ParmeliaPaymentRouterV2Test is Test {
         return vm.sign(PAYER_KEY, digest);
     }
 
-    function _pay(
-        ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization,
-        bytes memory signature
-    ) internal {
+    function _pay(ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization, bytes memory signature) internal {
         vm.prank(payer);
         router.pay(authorization, signature);
     }
@@ -474,10 +445,9 @@ contract ParmeliaPaymentRouterV2Test is Test {
         router.pay(authorization, signature);
     }
 
-    function _expectRawRevert(
-        ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization,
-        bytes4 selector
-    ) internal {
+    function _expectRawRevert(ParmeliaPaymentRouterV2.PaymentAuthorization memory authorization, bytes4 selector)
+        internal
+    {
         vm.prank(payer);
         vm.expectRevert(selector);
         router.pay(authorization, new bytes(65));

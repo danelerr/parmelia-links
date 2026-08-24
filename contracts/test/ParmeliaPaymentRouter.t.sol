@@ -12,14 +12,26 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("Mock USDC", "USDC") {}
-    function mint(address to, uint256 amount) external { _mint(to, amount); }
-    function decimals() public pure override returns (uint8) { return 6; }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
 }
 
 contract MockUSDCPermit is ERC20, ERC20Permit {
     constructor() ERC20("Mock USDC", "USDC") ERC20Permit("Mock USDC") {}
-    function mint(address to, uint256 amount) external { _mint(to, amount); }
-    function decimals() public pure override returns (uint8) { return 6; }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
 }
 
 contract ParmeliaPaymentRouterTest is Test {
@@ -283,8 +295,9 @@ contract ParmeliaPaymentRouterTest is Test {
         uint256 value,
         uint256 permitDeadline
     ) internal view returns (uint8 v, bytes32 r, bytes32 s) {
-        bytes32 typeHash =
-            keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+        bytes32 typeHash = keccak256(
+            "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+        );
         bytes32 structHash =
             keccak256(abi.encode(typeHash, ownerAddr, spender, value, token.nonces(ownerAddr), permitDeadline));
         bytes32 d = MessageHashUtils.toTypedDataHash(token.DOMAIN_SEPARATOR(), structHash);
@@ -344,7 +357,9 @@ contract ParmeliaPaymentRouterTest is Test {
         bytes memory sig = _signInvoice(address(ptoken), id, amount, 0, deadline);
 
         vm.prank(p);
-        router.payInvoiceWithPermit(id, ptoken, amount, merchant, 0, deadline, sig, bytes(""), deadline, 27, bytes32(0), bytes32(0));
+        router.payInvoiceWithPermit(
+            id, ptoken, amount, merchant, 0, deadline, sig, bytes(""), deadline, 27, bytes32(0), bytes32(0)
+        );
 
         assertEq(ptoken.balanceOf(merchant), amount);
         assertTrue(router.invoicePaid(id));
@@ -476,7 +491,9 @@ contract ParmeliaPaymentRouterTest is Test {
         uint256 deadline = block.timestamp + 600;
         vm.prank(payer);
         vm.expectRevert(ParmeliaPaymentRouter.InvalidToken.selector);
-        router.payInvoice(keccak256("pi_zt"), IERC20(address(0)), 10 * ONE, merchant, 0, deadline, new bytes(65), bytes(""));
+        router.payInvoice(
+            keccak256("pi_zt"), IERC20(address(0)), 10 * ONE, merchant, 0, deadline, new bytes(65), bytes("")
+        );
     }
 
     function test_payInvoice_revertsZeroAmount() public {

@@ -47,10 +47,7 @@ library NetworkDeploymentConfig {
 
     error NetworkDeploymentConfig__UnsupportedChain(uint256 chainId);
     error NetworkDeploymentConfig__CodehashMismatch(
-        bytes32 component,
-        address target,
-        bytes32 expected,
-        bytes32 actual
+        bytes32 component, address target, bytes32 expected, bytes32 actual
     );
     error NetworkDeploymentConfig__NotHomeChain(uint256 chainId);
     error NetworkDeploymentConfig__HomeChainCannotUseInboundRouter(uint256 chainId);

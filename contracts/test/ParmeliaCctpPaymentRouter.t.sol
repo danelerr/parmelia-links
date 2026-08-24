@@ -6,6 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ParmeliaCctpPaymentRouter} from "src/ParmeliaCctpPaymentRouter.sol";
@@ -24,6 +25,8 @@ contract MockCctpCheckoutUSDC is ERC20, ERC20Permit {
 }
 
 contract MockCheckoutTokenMessengerV2 is ITokenMessengerV2 {
+    using SafeERC20 for IERC20;
+
     uint256 public totalBurned;
     uint256 public lastAmount;
     uint32 public lastDestinationDomain;
@@ -43,7 +46,7 @@ contract MockCheckoutTokenMessengerV2 is ITokenMessengerV2 {
         uint256 maxFee,
         uint32 minFinalityThreshold
     ) external {
-        IERC20(burnToken).transferFrom(msg.sender, address(this), amount);
+        IERC20(burnToken).safeTransferFrom(msg.sender, address(this), amount);
         totalBurned += amount;
         lastAmount = amount;
         lastDestinationDomain = destinationDomain;
@@ -144,36 +147,34 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__AttemptAlreadyUsed.selector,
-                first.attemptId
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__AttemptAlreadyUsed.selector, first.attemptId
             )
         );
         router.pay(first, signature);
 
         ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory second = _authorization("replay");
         second.attemptId = keccak256("second-attempt");
+        bytes memory secondSignature = _sign(router, second, AUTHORIZATION_SIGNER_KEY);
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__IntentAlreadyPaid.selector,
-                first.intentId
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__IntentAlreadyPaid.selector, first.intentId
             )
         );
-        router.pay(second, _sign(router, second, AUTHORIZATION_SIGNER_KEY));
+        router.pay(second, secondSignature);
     }
 
     function test_pay_rejectsDifferentCallerWithoutConsumingAttempt() public {
         ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory authorization = _authorization("payer");
+        bytes memory signature = _sign(router, authorization, AUTHORIZATION_SIGNER_KEY);
 
         vm.prank(attacker);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__UnauthorizedPayer.selector,
-                attacker,
-                payer
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__UnauthorizedPayer.selector, attacker, payer
             )
         );
-        router.pay(authorization, _sign(router, authorization, AUTHORIZATION_SIGNER_KEY));
+        router.pay(authorization, signature);
 
         assertFalse(router.usedAttempt(authorization.attemptId));
     }
@@ -181,12 +182,11 @@ contract ParmeliaCctpPaymentRouterTest is Test {
     function test_pay_rejectsWrongDestinationChainAndDomain() public {
         ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory authorization = _authorization("destination");
         authorization.settlementChainId = 42161;
+        uint32 arbitrumDomain = router.ARBITRUM_DOMAIN();
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidDestination.selector,
-                42161,
-                router.ARBITRUM_DOMAIN()
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidDestination.selector, 42161, arbitrumDomain
             )
         );
         router.pay(authorization, new bytes(65));
@@ -196,9 +196,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidDestination.selector,
-                ARBITRUM_SEPOLIA,
-                6
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidDestination.selector, ARBITRUM_SEPOLIA, 6
             )
         );
         router.pay(authorization, new bytes(65));
@@ -225,10 +223,11 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         authorization.platformFee = 0;
         authorization.grossPayerAmount -= ONE_USDC / 2;
         authorization.minFinalityThreshold = avalancheRouter.FAST_FINALITY();
+        bytes memory fastSignature = _sign(avalancheRouter, authorization, AUTHORIZATION_SIGNER_KEY);
 
         vm.prank(payer);
         vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__FastTransferUnavailable.selector);
-        avalancheRouter.pay(authorization, _sign(avalancheRouter, authorization, AUTHORIZATION_SIGNER_KEY));
+        avalancheRouter.pay(authorization, fastSignature);
 
         authorization = _authorization("avax-standard");
         authorization.platformFee = 0;
@@ -245,8 +244,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidFinalityThreshold.selector,
-                1500
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidFinalityThreshold.selector, 1500
             )
         );
         router.pay(authorization, new bytes(65));
@@ -293,9 +291,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         vm.prank(payer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__CctpFeeTooHigh.selector,
-                burnAmount,
-                burnAmount
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__CctpFeeTooHigh.selector, burnAmount, burnAmount
             )
         );
         router.pay(authorization, new bytes(65));
@@ -318,6 +314,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
     }
 
     function test_pay_rejectsTamperedAuthorizationAndCrossChainReplay() public {
+        vm.chainId(31337);
         ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory original = _authorization("signature");
         bytes memory signature = _sign(router, original, AUTHORIZATION_SIGNER_KEY);
 
@@ -334,10 +331,9 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         changed.metadataHash = keccak256("changed");
         _expectInvalidAuthorization(router, changed, signature);
 
-        uint256 originalChainId = block.chainid;
-        vm.chainId(originalChainId + 1);
+        vm.chainId(31338);
         _expectInvalidAuthorization(router, _authorization("signature"), signature);
-        vm.chainId(originalChainId);
+        vm.chainId(31337);
 
         _pay(router, _authorization("signature"), signature);
     }
@@ -389,6 +385,22 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         assertEq(usdc.allowance(payer, address(router)), 0);
     }
 
+    function test_payWithPermit_toleratesConsumedPermitWhenAllowanceExists() public {
+        ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory authorization = _authorization("permit-fallback");
+        bytes memory signature = _sign(router, authorization, AUTHORIZATION_SIGNER_KEY);
+        uint256 permitDeadline = block.timestamp + 10 minutes;
+        (uint8 v, bytes32 r, bytes32 s) = _signPermit(router, authorization.grossPayerAmount, permitDeadline);
+
+        vm.prank(attacker);
+        usdc.permit(payer, address(router), authorization.grossPayerAmount, permitDeadline, v, r, s);
+
+        vm.prank(payer);
+        router.payWithPermit(authorization, signature, permitDeadline, v, r, s);
+
+        assertEq(messenger.lastAmount(), authorization.grossPayerAmount - authorization.platformFee);
+        assertEq(usdc.allowance(payer, address(router)), 0);
+    }
+
     function test_pauseGuardianCanStopButNotResumePayments() public {
         vm.prank(pauseGuardian);
         router.pause();
@@ -400,9 +412,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         router.pay(authorization, signature);
 
         vm.prank(pauseGuardian);
-        vm.expectRevert(
-            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, pauseGuardian)
-        );
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, pauseGuardian));
         router.unpause();
 
         vm.prank(owner);
@@ -431,6 +441,76 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0);
     }
 
+    function test_adminGuardsRejectInvalidRolesPauseAndRescueInputs() public {
+        vm.startPrank(owner);
+        vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidTreasury.selector);
+        router.setTreasury(address(0));
+        vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAuthorizationSigner.selector);
+        router.setAuthorizationSigner(address(0));
+        vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidPauseGuardian.selector);
+        router.setPauseGuardian(address(0));
+        vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidToken.selector);
+        router.rescueToken(IERC20(address(0)), owner, 1);
+        vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidRescueRecipient.selector);
+        router.rescueToken(IERC20(address(usdc)), address(0), 1);
+        router.pause();
+        router.unpause();
+        vm.stopPrank();
+
+        vm.prank(attacker);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__UnauthorizedPause.selector, attacker
+            )
+        );
+        router.pause();
+    }
+
+    function test_pay_revertsInvalidIdentifiersAddressesAmountsAndWindow() public {
+        ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory authorization = _authorization("guards");
+        authorization.intentId = bytes32(0);
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidIntentId.selector);
+
+        authorization = _authorization("guards");
+        authorization.attemptId = bytes32(0);
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAttemptId.selector);
+
+        authorization = _authorization("guards");
+        authorization.payer = address(0);
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidPayer.selector);
+
+        authorization = _authorization("guards");
+        authorization.merchant = address(0);
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidMerchant.selector);
+
+        authorization = _authorization("guards");
+        authorization.settlementAmount = 0;
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAmount.selector);
+
+        authorization = _authorization("guards");
+        authorization.grossPayerAmount = 0;
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAmount.selector);
+
+        authorization = _authorization("guards");
+        authorization.validUntil = 0;
+        _expectRawRevert(
+            authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAuthorizationWindow.selector
+        );
+
+        authorization = _authorization("guards");
+        authorization.validAfter = authorization.validUntil + 1;
+        _expectRawRevert(
+            authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAuthorizationWindow.selector
+        );
+
+        authorization = _authorization("guards");
+        authorization.settlementAmount = 100;
+        authorization.grossPayerAmount = 1;
+        authorization.platformFee = 1;
+        authorization.maxCctpFee = 0;
+        _expectRawRevert(authorization, ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAmount.selector);
+    }
+
     function test_constructorRejectsInvalidConfiguration() public {
         vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidToken.selector);
         new ParmeliaCctpPaymentRouter(
@@ -442,6 +522,35 @@ contract ParmeliaCctpPaymentRouterTest is Test {
             pauseGuardian,
             ARBITRUM_SEPOLIA,
             true,
+            0
+        );
+
+        _expectInvalidConstructor(
+            ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidTreasury.selector,
+            address(0),
+            authorizationSigner,
+            pauseGuardian,
+            ARBITRUM_SEPOLIA
+        );
+        _expectInvalidConstructor(
+            ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAuthorizationSigner.selector,
+            treasury,
+            address(0),
+            pauseGuardian,
+            ARBITRUM_SEPOLIA
+        );
+        _expectInvalidConstructor(
+            ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidPauseGuardian.selector,
+            treasury,
+            authorizationSigner,
+            address(0),
+            ARBITRUM_SEPOLIA
+        );
+        _expectInvalidConstructor(
+            ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidSettlementChain.selector,
+            treasury,
+            authorizationSigner,
+            pauseGuardian,
             0
         );
 
@@ -460,8 +569,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidPlatformFeeCap.selector,
-                101
+                ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidPlatformFeeCap.selector, 101
             )
         );
         new ParmeliaCctpPaymentRouter(
@@ -489,6 +597,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
             true,
             0
         );
+        vm.chainId(31337);
     }
 
     function testFuzz_payConservesGrossAndGuaranteesSettlement(
@@ -524,10 +633,7 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0);
     }
 
-    function _deployRouter(bool fastEnabled, uint16 feeCap)
-        internal
-        returns (ParmeliaCctpPaymentRouter deployed)
-    {
+    function _deployRouter(bool fastEnabled, uint16 feeCap) internal returns (ParmeliaCctpPaymentRouter deployed) {
         deployed = new ParmeliaCctpPaymentRouter(
             owner,
             IERC20(address(usdc)),
@@ -607,5 +713,34 @@ contract ParmeliaCctpPaymentRouterTest is Test {
         vm.prank(payer);
         vm.expectRevert(ParmeliaCctpPaymentRouter.ParmeliaCctpPaymentRouter__InvalidAuthorization.selector);
         target.pay(authorization, signature);
+    }
+
+    function _expectRawRevert(ParmeliaCctpPaymentRouter.CctpPaymentAuthorization memory authorization, bytes4 selector)
+        internal
+    {
+        vm.prank(payer);
+        vm.expectRevert(selector);
+        router.pay(authorization, new bytes(65));
+    }
+
+    function _expectInvalidConstructor(
+        bytes4 selector,
+        address initialTreasury,
+        address initialAuthorizationSigner,
+        address initialPauseGuardian,
+        uint256 settlementChainId
+    ) internal {
+        vm.expectRevert(selector);
+        new ParmeliaCctpPaymentRouter(
+            owner,
+            IERC20(address(usdc)),
+            ITokenMessengerV2(address(messenger)),
+            initialTreasury,
+            initialAuthorizationSigner,
+            initialPauseGuardian,
+            settlementChainId,
+            true,
+            0
+        );
     }
 }

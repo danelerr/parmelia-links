@@ -99,6 +99,33 @@ contract AccountWebAuthnV2Test is Test {
         assertEq(first, second, "should return same address on second call");
     }
 
+    function test_factory_thirdPartyCanOnlyDeployThePreinitializedAccount() public {
+        bytes[] memory signers = new bytes[](1);
+        signers[0] = _buildSigner(QX, QY);
+        bytes memory initData = _buildInitData(signers, 1, guardian);
+        address predicted = factory.predictAddress(initData);
+
+        vm.prank(attacker);
+        AccountWebAuthnV2 account = AccountWebAuthnV2(payable(factory.createAccount(initData)));
+
+        assertEq(address(account), predicted);
+        assertTrue(account.isSigner(signers[0]));
+        assertEq(account.guardian(), guardian);
+
+        bytes[] memory attackerSigner = new bytes[](1);
+        attackerSigner[0] = _buildSigner(QX2, QY2);
+        vm.prank(attacker);
+        vm.expectRevert();
+        account.addSigners(attackerSigner);
+
+        vm.prank(attacker);
+        vm.expectRevert();
+        account.setGuardian(attacker);
+
+        assertFalse(account.isSigner(attackerSigner[0]));
+        assertEq(account.guardian(), guardian);
+    }
+
     function test_factory_differentSigners_differentAddresses() public {
         bytes[] memory signers1 = new bytes[](1);
         signers1[0] = _buildSigner(QX, QY);

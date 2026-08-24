@@ -37,9 +37,8 @@ abstract contract GatoPagoDeploymentScript is Script {
     function _routerRoles(address deployer) internal view returns (RouterRoles memory roles) {
         roles.owner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
         roles.treasury = vm.envOr("GATOPAGO_TREASURY", vm.envOr("PARMELIA_TREASURY", deployer));
-        roles.authorizationSigner = vm.envOr(
-            "GATOPAGO_PAYMENT_ROUTER_SIGNER", vm.envOr("PARMELIA_PAYMENT_ROUTER_SIGNER", deployer)
-        );
+        roles.authorizationSigner =
+            vm.envOr("GATOPAGO_PAYMENT_ROUTER_SIGNER", vm.envOr("PARMELIA_PAYMENT_ROUTER_SIGNER", deployer));
         roles.pauseGuardian = vm.envOr("GATOPAGO_PAUSE_GUARDIAN", roles.owner);
     }
 
@@ -62,8 +61,7 @@ contract DeployV2 is GatoPagoDeploymentScript {
 
         address deployer = msg.sender;
         address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
-        address sponsorSigner =
-            vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
+        address sponsorSigner = vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
         bool deployPaymaster = vm.envOr("GATOPAGO_DEPLOY_PAYMASTER", config.isHomeChain);
 
         DeploymentRoles.validateBroadcaster(deployer);
@@ -96,8 +94,7 @@ contract DeployV2 is GatoPagoDeploymentScript {
             if (sponsorSigner != deployer) paymaster.setSponsorSigner(sponsorSigner);
 
             uint256 stake = vm.envOr("GATOPAGO_PAYMASTER_STAKE", config.paymasterStake);
-            uint256 unstakeDelay =
-                vm.envOr("GATOPAGO_PAYMASTER_UNSTAKE_DELAY", uint256(config.paymasterUnstakeDelay));
+            uint256 unstakeDelay = vm.envOr("GATOPAGO_PAYMASTER_UNSTAKE_DELAY", uint256(config.paymasterUnstakeDelay));
             uint256 deposit = vm.envOr("GATOPAGO_PAYMASTER_DEPOSIT", config.paymasterDeposit);
             uint256 maxSponsoredGasCost =
                 vm.envOr("GATOPAGO_PAYMASTER_MAX_SPONSORED_GAS_COST", config.maxSponsoredGasCost);
@@ -137,8 +134,7 @@ contract DeployPaymasterV2 is GatoPagoDeploymentScript {
 
         address deployer = msg.sender;
         address finalOwner = vm.envOr("GATOPAGO_CONTRACT_OWNER", vm.envOr("PARMELIA_CONTRACT_OWNER", deployer));
-        address sponsorSigner =
-            vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
+        address sponsorSigner = vm.envOr("GATOPAGO_PAYMASTER_SIGNER", vm.envOr("PARMELIA_PAYMASTER_SIGNER", deployer));
         DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
 
         IEntryPoint entryPoint = IEntryPoint(config.entryPoint);
@@ -151,11 +147,9 @@ contract DeployPaymasterV2 is GatoPagoDeploymentScript {
         if (sponsorSigner != deployer) paymaster.setSponsorSigner(sponsorSigner);
 
         uint256 stake = vm.envOr("GATOPAGO_PAYMASTER_STAKE", config.paymasterStake);
-        uint256 unstakeDelay =
-            vm.envOr("GATOPAGO_PAYMASTER_UNSTAKE_DELAY", uint256(config.paymasterUnstakeDelay));
+        uint256 unstakeDelay = vm.envOr("GATOPAGO_PAYMASTER_UNSTAKE_DELAY", uint256(config.paymasterUnstakeDelay));
         uint256 deposit = vm.envOr("GATOPAGO_PAYMASTER_DEPOSIT", config.paymasterDeposit);
-        uint256 maxSponsoredGasCost =
-            vm.envOr("GATOPAGO_PAYMASTER_MAX_SPONSORED_GAS_COST", config.maxSponsoredGasCost);
+        uint256 maxSponsoredGasCost = vm.envOr("GATOPAGO_PAYMASTER_MAX_SPONSORED_GAS_COST", config.maxSponsoredGasCost);
         if (unstakeDelay > type(uint32).max) revert Deploy__ValueDoesNotFitUint32(unstakeDelay);
 
         if (stake > 0) paymaster.addStake{value: stake}(SafeCast.toUint32(unstakeDelay));
@@ -182,32 +176,17 @@ contract DeployPaymentRouter is GatoPagoDeploymentScript {
         address deployer = msg.sender;
         RouterRoles memory roles = _routerRoles(deployer);
         DeploymentRoles.validatePaymentRouterV2(
-            block.chainid,
-            deployer,
-            roles.owner,
-            roles.treasury,
-            roles.authorizationSigner,
-            roles.pauseGuardian
+            block.chainid, deployer, roles.owner, roles.treasury, roles.authorizationSigner, roles.pauseGuardian
         );
 
         bytes memory creationCode = abi.encodePacked(
             type(ParmeliaPaymentRouterV2).creationCode,
-            abi.encode(
-                roles.owner,
-                IERC20(config.usdc),
-                roles.treasury,
-                roles.authorizationSigner,
-                roles.pauseGuardian
-            )
+            abi.encode(roles.owner, IERC20(config.usdc), roles.treasury, roles.authorizationSigner, roles.pauseGuardian)
         );
 
         vm.startBroadcast();
         ParmeliaPaymentRouterV2 router = new ParmeliaPaymentRouterV2{salt: SALT}(
-            roles.owner,
-            IERC20(config.usdc),
-            roles.treasury,
-            roles.authorizationSigner,
-            roles.pauseGuardian
+            roles.owner, IERC20(config.usdc), roles.treasury, roles.authorizationSigner, roles.pauseGuardian
         );
         _assertPredicted(SALT, creationCode, address(router));
         vm.stopBroadcast();
@@ -234,12 +213,7 @@ contract DeployCctpPaymentRouter is GatoPagoDeploymentScript {
         address deployer = msg.sender;
         RouterRoles memory roles = _routerRoles(deployer);
         DeploymentRoles.validatePaymentRouterV2(
-            block.chainid,
-            deployer,
-            roles.owner,
-            roles.treasury,
-            roles.authorizationSigner,
-            roles.pauseGuardian
+            block.chainid, deployer, roles.owner, roles.treasury, roles.authorizationSigner, roles.pauseGuardian
         );
 
         uint256 configuredFeeCap = vm.envOr("GATOPAGO_CCTP_PLATFORM_FEE_CAP_BPS", uint256(0));
@@ -304,22 +278,12 @@ contract DeployCrosschainRouter is GatoPagoDeploymentScript {
 
         bytes memory creationCode = abi.encodePacked(
             type(ParmeliaCrosschainRouter).creationCode,
-            abi.encode(
-                finalOwner,
-                IERC20(config.usdc),
-                ITokenMessengerV2(config.tokenMessenger),
-                treasury,
-                domains
-            )
+            abi.encode(finalOwner, IERC20(config.usdc), ITokenMessengerV2(config.tokenMessenger), treasury, domains)
         );
 
         vm.startBroadcast();
         ParmeliaCrosschainRouter router = new ParmeliaCrosschainRouter{salt: SALT}(
-            finalOwner,
-            IERC20(config.usdc),
-            ITokenMessengerV2(config.tokenMessenger),
-            treasury,
-            domains
+            finalOwner, IERC20(config.usdc), ITokenMessengerV2(config.tokenMessenger), treasury, domains
         );
         _assertPredicted(SALT, creationCode, address(router));
         vm.stopBroadcast();

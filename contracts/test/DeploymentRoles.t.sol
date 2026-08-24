@@ -16,6 +16,17 @@ contract DeploymentRolesHarness {
         DeploymentRoles.validatePaymentRouter(chainId, deployer, owner, treasury, signer);
     }
 
+    function validatePaymentRouterV2(
+        uint256 chainId,
+        address deployer,
+        address owner,
+        address treasury,
+        address signer,
+        address pauseGuardian
+    ) external pure {
+        DeploymentRoles.validatePaymentRouterV2(chainId, deployer, owner, treasury, signer, pauseGuardian);
+    }
+
     function validateCrosschainRouter(uint256 chainId, address deployer, address owner, address treasury)
         external
         pure
@@ -27,18 +38,25 @@ contract DeploymentRolesHarness {
 contract DeploymentRolesTest is Test {
     uint256 internal constant ARBITRUM_ONE = 42161;
     uint256 internal constant ARBITRUM_SEPOLIA = 421614;
+    uint256 internal constant BASE = 8453;
+    uint256 internal constant BASE_SEPOLIA = 84532;
+    uint256 internal constant AVALANCHE = 43114;
+    uint256 internal constant AVALANCHE_FUJI = 43113;
     address internal constant FOUNDRY_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
 
     address internal constant DEPLOYER = address(0xD1);
     address internal constant OWNER = address(0xA11CE);
     address internal constant TREASURY = address(0x7EE);
     address internal constant SIGNER = address(0x516E2);
+    address internal constant PAUSE_GUARDIAN = address(0x600D);
 
     bytes32 internal constant ROLE_DEPLOYER = "deployer";
     bytes32 internal constant ROLE_OWNER = "owner";
     bytes32 internal constant ROLE_TREASURY = "treasury";
     bytes32 internal constant ROLE_PAYMASTER_SIGNER = "paymasterSigner";
     bytes32 internal constant ROLE_INVOICE_SIGNER = "invoiceSigner";
+    bytes32 internal constant ROLE_AUTHORIZATION_SIGNER = "authorizationSigner";
+    bytes32 internal constant ROLE_PAUSE_GUARDIAN = "pauseGuardian";
 
     DeploymentRolesHarness internal harness;
 
@@ -63,12 +81,25 @@ contract DeploymentRolesTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(DeploymentRoles.MissingDeploymentRole.selector, ROLE_INVOICE_SIGNER));
         harness.validatePaymentRouter(ARBITRUM_SEPOLIA, DEPLOYER, OWNER, TREASURY, address(0));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(DeploymentRoles.MissingDeploymentRole.selector, ROLE_AUTHORIZATION_SIGNER)
+        );
+        harness.validatePaymentRouterV2(ARBITRUM_SEPOLIA, DEPLOYER, OWNER, TREASURY, address(0), PAUSE_GUARDIAN);
+
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRoles.MissingDeploymentRole.selector, ROLE_PAUSE_GUARDIAN));
+        harness.validatePaymentRouterV2(ARBITRUM_SEPOLIA, DEPLOYER, OWNER, TREASURY, SIGNER, address(0));
     }
 
     function test_testnetAllowsIntentionalRoleReuse() public view {
         harness.validatePaymaster(ARBITRUM_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER);
         harness.validatePaymentRouter(ARBITRUM_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER, DEPLOYER);
+        harness.validatePaymentRouterV2(ARBITRUM_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER, DEPLOYER, DEPLOYER);
         harness.validateCrosschainRouter(ARBITRUM_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER);
+
+        harness.validatePaymaster(BASE_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER);
+        harness.validatePaymentRouterV2(BASE_SEPOLIA, DEPLOYER, DEPLOYER, DEPLOYER, DEPLOYER, DEPLOYER);
+        harness.validateCrosschainRouter(AVALANCHE_FUJI, DEPLOYER, DEPLOYER, DEPLOYER);
     }
 
     function test_mainnetPaymasterAcceptsSeparatedRoles() public view {
@@ -88,6 +119,29 @@ contract DeploymentRolesTest is Test {
 
     function test_mainnetPaymentRouterAcceptsSeparatedRoles() public view {
         harness.validatePaymentRouter(ARBITRUM_ONE, DEPLOYER, OWNER, TREASURY, SIGNER);
+    }
+
+    function test_mainnetPaymentRouterV2AcceptsSeparatedRolesOnAllProductionChains() public view {
+        harness.validatePaymentRouterV2(ARBITRUM_ONE, DEPLOYER, OWNER, TREASURY, SIGNER, PAUSE_GUARDIAN);
+        harness.validatePaymentRouterV2(BASE, DEPLOYER, OWNER, TREASURY, SIGNER, PAUSE_GUARDIAN);
+        harness.validatePaymentRouterV2(AVALANCHE, DEPLOYER, OWNER, TREASURY, SIGNER, PAUSE_GUARDIAN);
+    }
+
+    function test_mainnetPaymentRouterV2RejectsEveryRoleCollision() public {
+        bytes32[5] memory roles =
+            [ROLE_DEPLOYER, ROLE_OWNER, ROLE_TREASURY, ROLE_AUTHORIZATION_SIGNER, ROLE_PAUSE_GUARDIAN];
+        address[5] memory baseline = [DEPLOYER, OWNER, TREASURY, SIGNER, PAUSE_GUARDIAN];
+
+        for (uint256 i; i < baseline.length; ++i) {
+            for (uint256 j = i + 1; j < baseline.length; ++j) {
+                address[5] memory accounts = [DEPLOYER, OWNER, TREASURY, SIGNER, PAUSE_GUARDIAN];
+                accounts[j] = accounts[i];
+                _expectCollision(roles[i], roles[j], accounts[i]);
+                harness.validatePaymentRouterV2(
+                    ARBITRUM_ONE, accounts[0], accounts[1], accounts[2], accounts[3], accounts[4]
+                );
+            }
+        }
     }
 
     function test_mainnetPaymentRouterRejectsEveryRoleCollision() public {
@@ -123,6 +177,17 @@ contract DeploymentRolesTest is Test {
 
         _expectCollision(ROLE_OWNER, ROLE_TREASURY, OWNER);
         harness.validateCrosschainRouter(ARBITRUM_ONE, DEPLOYER, OWNER, OWNER);
+    }
+
+    function test_baseAndAvalancheMainnetDoNotBypassRoleSeparation() public {
+        _expectCollision(ROLE_DEPLOYER, ROLE_OWNER, DEPLOYER);
+        harness.validatePaymaster(BASE, DEPLOYER, DEPLOYER, SIGNER);
+
+        _expectCollision(ROLE_DEPLOYER, ROLE_TREASURY, DEPLOYER);
+        harness.validateCrosschainRouter(AVALANCHE, DEPLOYER, OWNER, DEPLOYER);
+
+        _expectCollision(ROLE_DEPLOYER, ROLE_AUTHORIZATION_SIGNER, DEPLOYER);
+        harness.validatePaymentRouterV2(BASE, DEPLOYER, OWNER, TREASURY, DEPLOYER, PAUSE_GUARDIAN);
     }
 
     function _expectCollision(bytes32 firstRole, bytes32 secondRole, address account) internal {

@@ -72,11 +72,7 @@ contract ParmeliaCrosschainRouterTest is Test {
         usdc = new MockUSDC();
         messenger = new MockTokenMessengerV2();
         router = new ParmeliaCrosschainRouter(
-            owner,
-            IERC20(address(usdc)),
-            ITokenMessengerV2(address(messenger)),
-            treasury,
-            _initialDomains()
+            owner, IERC20(address(usdc)), ITokenMessengerV2(address(messenger)), treasury, _initialDomains()
         );
         usdc.mint(user, 1000 * ONE);
         vm.prank(user);
@@ -147,9 +143,7 @@ contract ParmeliaCrosschainRouterTest is Test {
     function test_bridge_revertsWhenMaxCctpFeeConsumesBurn() public {
         uint256 amount = 10 * ONE;
         vm.prank(user);
-        vm.expectRevert(
-            abi.encodeWithSelector(ParmeliaCrosschainRouter.MaxCctpFeeTooHigh.selector, amount, amount)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ParmeliaCrosschainRouter.MaxCctpFeeTooHigh.selector, amount, amount));
         router.bridgeUSDC(keccak256("max-fee"), amount, 0, BASE_DOMAIN, recipient, amount, FAST);
     }
 
@@ -159,6 +153,20 @@ contract ParmeliaCrosschainRouterTest is Test {
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(ParmeliaCrosschainRouter.FeeTooHigh.selector, fee, ONE));
         router.bridgeUSDC(keccak256("op4"), amount, fee, BASE_DOMAIN, recipient, 13_000, FAST);
+    }
+
+    function test_feeCapRoundsDownAtAtomicUnitBoundary() public {
+        uint256 amountBelowOneFeeUnit = 99;
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(ParmeliaCrosschainRouter.FeeTooHigh.selector, 1, 0));
+        router.bridgeUSDC(keccak256("fee-rounds-down"), amountBelowOneFeeUnit, 1, BASE_DOMAIN, recipient, 0, FAST);
+
+        uint256 amountAtOneFeeUnit = 100;
+        _bridge(keccak256("fee-boundary"), amountAtOneFeeUnit, 1, 0);
+
+        assertEq(usdc.balanceOf(treasury), 1, "the exact floored cap is accepted");
+        assertEq(messenger.lastAmount(), 99, "the remainder is burned");
+        assertEq(usdc.balanceOf(address(router)), 0, "router retains no rounding dust");
     }
 
     function test_revert_zeroAmount() public {

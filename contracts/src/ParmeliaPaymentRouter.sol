@@ -105,8 +105,13 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         emit TokenSupportUpdated(token, supported, minimum);
     }
 
-    function pause() external onlyOwner { _pause(); }
-    function unpause() external onlyOwner { _unpause(); }
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
 
     /// @notice Recover tokens sent here by mistake (the router never holds funds in normal flow).
     function emergencyWithdraw(address token, address to, uint256 amount) external onlyOwner {
@@ -132,9 +137,7 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         // Keep the signed payload explicit and auditable; this path is not a
         // transaction hot loop, so the assembly-only gas saving is not worth it.
         // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256(
-            abi.encode(block.chainid, address(this), invoiceId, token, amount, merchant, feeBps, deadline)
-        );
+        return keccak256(abi.encode(block.chainid, address(this), invoiceId, token, amount, merchant, feeBps, deadline));
     }
 
     // ─── Core ───────────────────────────────────────────────────────────────────
@@ -196,6 +199,8 @@ contract ParmeliaPaymentRouter is Ownable2Step, Pausable, ReentrancyGuard {
         bytes calldata signature,
         bytes calldata metadata
     ) private {
+        // Signed authorization deadlines are deliberately enforced against chain time.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > deadline) revert AuthorizationExpired();
         if (invoiceId == bytes32(0)) revert InvalidInvoiceId();
         if (merchant == address(0)) revert InvalidMerchant();

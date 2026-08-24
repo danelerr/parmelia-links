@@ -173,9 +173,9 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
         bytes32 r,
         bytes32 s
     ) external nonReentrant whenNotPaused {
-        try IERC20Permit(address(USDC)).permit(
-            msg.sender, address(this), authorization.grossPayerAmount, permitDeadline, v, r, s
-        ) {} catch {}
+        try IERC20Permit(address(USDC))
+            .permit(msg.sender, address(this), authorization.grossPayerAmount, permitDeadline, v, r, s) {}
+            catch {}
         _burnForSettlement(authorization, signature);
     }
 
@@ -231,6 +231,17 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
         digest = _authorizationDigest(authorization);
     }
 
+    /// @notice Returns the chain-independent struct hash used by EIP-712.
+    /// @dev Shared Solidity/TypeScript fixtures assert this value to prevent
+    ///      field-order or integer-width drift at the authorization boundary.
+    function authorizationStructHash(CctpPaymentAuthorization calldata authorization)
+        external
+        pure
+        returns (bytes32 structHash)
+    {
+        structHash = _authorizationStructHash(authorization);
+    }
+
     /*//////////////////////////////////////////////////////////////
                     INTERNAL STATE-CHANGING FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -242,9 +253,9 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
         paidIntent[authorization.intentId] = true;
 
         if (authorization.platformFee > 0) {
-            USDC.safeTransferFrom(authorization.payer, treasury, authorization.platformFee);
+            USDC.safeTransferFrom(msg.sender, treasury, authorization.platformFee);
         }
-        USDC.safeTransferFrom(authorization.payer, address(this), burnAmount);
+        USDC.safeTransferFrom(msg.sender, address(this), burnAmount);
         USDC.forceApprove(address(TOKEN_MESSENGER), burnAmount);
         TOKEN_MESSENGER.depositForBurn(
             burnAmount,
@@ -296,8 +307,7 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
             revert ParmeliaCctpPaymentRouter__UnauthorizedPayer(msg.sender, authorization.payer);
         }
         if (
-            authorization.settlementChainId != SETTLEMENT_CHAIN_ID
-                || authorization.destinationDomain != ARBITRUM_DOMAIN
+            authorization.settlementChainId != SETTLEMENT_CHAIN_ID || authorization.destinationDomain != ARBITRUM_DOMAIN
         ) {
             revert ParmeliaCctpPaymentRouter__InvalidDestination(
                 authorization.settlementChainId, authorization.destinationDomain
@@ -307,26 +317,24 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
             authorization.minFinalityThreshold != FAST_FINALITY
                 && authorization.minFinalityThreshold != STANDARD_FINALITY
         ) {
-            revert ParmeliaCctpPaymentRouter__InvalidFinalityThreshold(
-                authorization.minFinalityThreshold
-            );
+            revert ParmeliaCctpPaymentRouter__InvalidFinalityThreshold(authorization.minFinalityThreshold);
         }
         if (authorization.minFinalityThreshold == FAST_FINALITY && !FAST_TRANSFER_ENABLED) {
             revert ParmeliaCctpPaymentRouter__FastTransferUnavailable();
         }
+        // Signed authorization windows are deliberately enforced against chain time.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < authorization.validAfter) {
             revert ParmeliaCctpPaymentRouter__AuthorizationNotActive(authorization.validAfter);
         }
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > authorization.validUntil) {
             revert ParmeliaCctpPaymentRouter__AuthorizationExpired(authorization.validUntil);
         }
 
-        uint256 maximumPlatformFee =
-            Math.mulDiv(authorization.settlementAmount, MAX_PLATFORM_FEE_BPS, BPS_DENOMINATOR);
+        uint256 maximumPlatformFee = Math.mulDiv(authorization.settlementAmount, MAX_PLATFORM_FEE_BPS, BPS_DENOMINATOR);
         if (authorization.platformFee > maximumPlatformFee) {
-            revert ParmeliaCctpPaymentRouter__PlatformFeeTooHigh(
-                authorization.platformFee, maximumPlatformFee
-            );
+            revert ParmeliaCctpPaymentRouter__PlatformFeeTooHigh(authorization.platformFee, maximumPlatformFee);
         }
         if (authorization.platformFee >= authorization.grossPayerAmount) {
             revert ParmeliaCctpPaymentRouter__InvalidAmount();
@@ -348,9 +356,9 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
             revert ParmeliaCctpPaymentRouter__IntentAlreadyPaid(authorization.intentId);
         }
 
-        (address recovered, ECDSA.RecoverError error,) =
+        (address recovered, ECDSA.RecoverError error, bytes32 errorArgument) =
             ECDSA.tryRecoverCalldata(_authorizationDigest(authorization), signature);
-        if (error != ECDSA.RecoverError.NoError || recovered != authorizationSigner) {
+        if (error != ECDSA.RecoverError.NoError || errorArgument != bytes32(0) || recovered != authorizationSigner) {
             revert ParmeliaCctpPaymentRouter__InvalidAuthorization();
         }
     }
@@ -360,8 +368,16 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
         view
         returns (bytes32 digest)
     {
+        digest = _hashTypedDataV4(_authorizationStructHash(authorization));
+    }
+
+    function _authorizationStructHash(CctpPaymentAuthorization calldata authorization)
+        private
+        pure
+        returns (bytes32 structHash)
+    {
         // forge-lint: disable-next-line(asm-keccak256)
-        bytes32 structHash = keccak256(
+        structHash = keccak256(
             abi.encode(
                 CCTP_PAYMENT_AUTHORIZATION_TYPEHASH,
                 authorization.intentId,
@@ -380,6 +396,5 @@ contract ParmeliaCctpPaymentRouter is EIP712, Ownable2Step, Pausable, Reentrancy
                 authorization.metadataHash
             )
         );
-        digest = _hashTypedDataV4(structHash);
     }
 }

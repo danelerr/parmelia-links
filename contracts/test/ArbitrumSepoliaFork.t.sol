@@ -49,7 +49,9 @@ interface IATokenDeployment {
     function UNDERLYING_ASSET_ADDRESS() external view returns (address);
 }
 
-/** Live deployment smoke test. Unit runs skip it unless the RPC variable is set. */
+/**
+ *  Live deployment smoke test. Unit runs skip it unless the RPC variable is set.
+ */
 contract ArbitrumSepoliaForkTest is Test {
     address private constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
     address private constant FACTORY = 0xb97E923E27CB258012081446e4b436afd3974108;
@@ -120,15 +122,8 @@ contract ArbitrumSepoliaForkTest is Test {
         deal(USDC, address(this), amount);
         IERC20Deployment(USDC).approve(CROSSCHAIN_ROUTER, amount);
 
-        ICrosschainRouterDeployment(CROSSCHAIN_ROUTER).bridgeUSDC(
-            keccak256("fork-smoke"),
-            amount,
-            0,
-            6,
-            bytes32(uint256(uint160(address(this)))),
-            0,
-            2000
-        );
+        ICrosschainRouterDeployment(CROSSCHAIN_ROUTER)
+            .bridgeUSDC(keccak256("fork-smoke"), amount, 0, 6, bytes32(uint256(uint160(address(this)))), 0, 2000);
 
         assertEq(IERC20Deployment(USDC).balanceOf(address(this)), 0);
         assertEq(IERC20Deployment(USDC).balanceOf(CROSSCHAIN_ROUTER), 0);

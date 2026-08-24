@@ -135,9 +135,8 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
         bytes32 s
     ) external nonReentrant whenNotPaused {
         uint256 totalPayerAmount = authorization.settlementAmount + authorization.platformFee;
-        try IERC20Permit(address(USDC)).permit(
-            msg.sender, address(this), totalPayerAmount, permitDeadline, v, r, s
-        ) {} catch {}
+        try IERC20Permit(address(USDC)).permit(msg.sender, address(this), totalPayerAmount, permitDeadline, v, r, s) {}
+            catch {}
         _settle(authorization, signature);
     }
 
@@ -193,6 +192,17 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
         digest = _authorizationDigest(authorization);
     }
 
+    /// @notice Returns the chain-independent struct hash used by EIP-712.
+    /// @dev Exposed so backend/client fixtures can detect any encoding drift
+    ///      before an authorization capable of moving funds is issued.
+    function authorizationStructHash(PaymentAuthorization calldata authorization)
+        external
+        pure
+        returns (bytes32 structHash)
+    {
+        structHash = _authorizationStructHash(authorization);
+    }
+
     /*//////////////////////////////////////////////////////////////
                     INTERNAL STATE-CHANGING FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -203,9 +213,9 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
         usedAttempt[authorization.attemptId] = true;
         paidIntent[authorization.intentId] = true;
 
-        USDC.safeTransferFrom(authorization.payer, authorization.merchant, authorization.settlementAmount);
+        USDC.safeTransferFrom(msg.sender, authorization.merchant, authorization.settlementAmount);
         if (authorization.platformFee > 0) {
-            USDC.safeTransferFrom(authorization.payer, treasury, authorization.platformFee);
+            USDC.safeTransferFrom(msg.sender, treasury, authorization.platformFee);
         }
 
         emit PaymentSettled(
@@ -238,19 +248,19 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
         if (msg.sender != authorization.payer) {
             revert ParmeliaPaymentRouterV2__UnauthorizedPayer(msg.sender, authorization.payer);
         }
+        // Signed authorization windows are deliberately enforced against chain time.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < authorization.validAfter) {
             revert ParmeliaPaymentRouterV2__AuthorizationNotActive(authorization.validAfter);
         }
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > authorization.validUntil) {
             revert ParmeliaPaymentRouterV2__AuthorizationExpired(authorization.validUntil);
         }
 
-        uint256 maximumPlatformFee =
-            Math.mulDiv(authorization.settlementAmount, MAX_PLATFORM_FEE_BPS, BPS_DENOMINATOR);
+        uint256 maximumPlatformFee = Math.mulDiv(authorization.settlementAmount, MAX_PLATFORM_FEE_BPS, BPS_DENOMINATOR);
         if (authorization.platformFee > maximumPlatformFee) {
-            revert ParmeliaPaymentRouterV2__PlatformFeeTooHigh(
-                authorization.platformFee, maximumPlatformFee
-            );
+            revert ParmeliaPaymentRouterV2__PlatformFeeTooHigh(authorization.platformFee, maximumPlatformFee);
         }
         if (usedAttempt[authorization.attemptId]) {
             revert ParmeliaPaymentRouterV2__AttemptAlreadyUsed(authorization.attemptId);
@@ -259,16 +269,24 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
             revert ParmeliaPaymentRouterV2__IntentAlreadyPaid(authorization.intentId);
         }
 
-        (address recovered, ECDSA.RecoverError error,) =
+        (address recovered, ECDSA.RecoverError error, bytes32 errorArgument) =
             ECDSA.tryRecoverCalldata(_authorizationDigest(authorization), signature);
-        if (error != ECDSA.RecoverError.NoError || recovered != authorizationSigner) {
+        if (error != ECDSA.RecoverError.NoError || errorArgument != bytes32(0) || recovered != authorizationSigner) {
             revert ParmeliaPaymentRouterV2__InvalidAuthorization();
         }
     }
 
     function _authorizationDigest(PaymentAuthorization calldata authorization) private view returns (bytes32 digest) {
+        digest = _hashTypedDataV4(_authorizationStructHash(authorization));
+    }
+
+    function _authorizationStructHash(PaymentAuthorization calldata authorization)
+        private
+        pure
+        returns (bytes32 structHash)
+    {
         // forge-lint: disable-next-line(asm-keccak256)
-        bytes32 structHash = keccak256(
+        structHash = keccak256(
             abi.encode(
                 PAYMENT_AUTHORIZATION_TYPEHASH,
                 authorization.intentId,
@@ -282,6 +300,5 @@ contract ParmeliaPaymentRouterV2 is EIP712, Ownable2Step, Pausable, ReentrancyGu
                 authorization.metadataHash
             )
         );
-        digest = _hashTypedDataV4(structHash);
     }
 }
