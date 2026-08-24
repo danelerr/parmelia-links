@@ -1,24 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.27;
+pragma solidity 0.8.34;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-/// @dev Minimal interface to Circle's CCTP v2 TokenMessenger.
-interface ITokenMessengerV2 {
-    function depositForBurn(
-        uint256 amount,
-        uint32 destinationDomain,
-        bytes32 mintRecipient,
-        address burnToken,
-        bytes32 destinationCaller,
-        uint256 maxFee,
-        uint32 minFinalityThreshold
-    ) external;
-}
+import {ITokenMessengerV2} from "src/interfaces/ITokenMessengerV2.sol";
 
 /**
  * @title ParmeliaCrosschainRouter
@@ -30,11 +18,12 @@ interface ITokenMessengerV2 {
  *         Why a router (vs. the account batching the calls itself): it enforces a
  *         hard fee cap on-chain (protects the user from a backend bug overcharging)
  *         and emits one `opId`-indexed event so the relayer can reconcile the burn
- *         to a GatoPago operation deterministically. See CROSSCHAIN_DESIGN.md.
+ *         to a GatoPago operation deterministically. See docs/design/cross-chain.md.
  *
  *         v1 is USDC-only and always passes `destinationCaller = bytes32(0)` so
  *         `receiveMessage` on the destination stays permissionless (anyone, incl.
  *         the user, can complete the mint - a burn can never be stranded).
+ * @custom:security-contact https://github.com/danelerr/parmelia-links/security/advisories/new
  */
 contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -42,6 +31,8 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Hard cap on the GatoPago fee, enforced regardless of the input.
     uint256 public constant MAX_FEE_BPS = 100; // 1%
     uint256 private constant BPS_DENOMINATOR = 10_000;
+    uint32 public constant FAST_FINALITY = 1000;
+    uint32 public constant STANDARD_FINALITY = 2000;
     /// @dev v1: keep receiveMessage permissionless (enables manual_complete).
     bytes32 private constant ANY_CALLER = bytes32(0);
 
@@ -49,15 +40,24 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
     ITokenMessengerV2 public immutable TOKEN_MESSENGER;
     address public treasury;
 
+    mapping(bytes32 opId => bool used) public usedOpId;
+    mapping(uint32 domain => bool supported) public supportedDestinationDomain;
+
     error InvalidToken();
     error InvalidMessenger();
     error InvalidTreasury();
     error InvalidRecipient();
     error InvalidAmount();
     error InvalidOpId();
+    error OpIdAlreadyUsed(bytes32 opId);
+    error EmptyDestinationDomainList();
+    error UnsupportedDestinationDomain(uint32 domain);
+    error InvalidFinalityThreshold(uint32 threshold);
+    error MaxCctpFeeTooHigh(uint256 maxFee, uint256 burnAmount);
     error FeeTooHigh(uint256 fee, uint256 maxAllowed);
 
     event TreasuryUpdated(address indexed previous, address indexed current);
+    event DestinationDomainSupportUpdated(uint32 indexed domain, bool supported);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
     event CrosschainSent(
         bytes32 indexed opId,
@@ -71,16 +71,25 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         uint32 minFinalityThreshold
     );
 
-    constructor(address initialOwner, IERC20 usdc, ITokenMessengerV2 messenger, address initialTreasury)
-        Ownable(initialOwner)
-    {
+    constructor(
+        address initialOwner,
+        IERC20 usdc,
+        ITokenMessengerV2 messenger,
+        address initialTreasury,
+        uint32[] memory initialDestinationDomains
+    ) Ownable(initialOwner) {
         if (address(usdc).code.length == 0) revert InvalidToken();
         if (address(messenger).code.length == 0) revert InvalidMessenger();
         if (initialTreasury == address(0)) revert InvalidTreasury();
+        if (initialDestinationDomains.length == 0) revert EmptyDestinationDomainList();
         USDC = usdc;
         TOKEN_MESSENGER = messenger;
         treasury = initialTreasury;
         emit TreasuryUpdated(address(0), initialTreasury);
+
+        for (uint256 i; i < initialDestinationDomains.length; ++i) {
+            _setDestinationDomain(initialDestinationDomains[i], true);
+        }
     }
 
     // ─── Owner administration ─────────────────────────────────────────────────
@@ -89,6 +98,11 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         if (newTreasury == address(0)) revert InvalidTreasury();
         emit TreasuryUpdated(treasury, newTreasury);
         treasury = newTreasury;
+    }
+
+    /// @notice Enables or disables a Circle destination domain.
+    function setDestinationDomain(uint32 domain, bool supported) external onlyOwner {
+        _setDestinationDomain(domain, supported);
     }
 
     function pause() external onlyOwner {
@@ -137,11 +151,21 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         if (opId == bytes32(0)) revert InvalidOpId();
         if (amount == 0) revert InvalidAmount();
         if (mintRecipient == bytes32(0)) revert InvalidRecipient();
+        if (!supportedDestinationDomain[destinationDomain]) {
+            revert UnsupportedDestinationDomain(destinationDomain);
+        }
+        if (minFinalityThreshold != FAST_FINALITY && minFinalityThreshold != STANDARD_FINALITY) {
+            revert InvalidFinalityThreshold(minFinalityThreshold);
+        }
+        if (usedOpId[opId]) revert OpIdAlreadyUsed(opId);
 
         uint256 maxAllowed = (amount * MAX_FEE_BPS) / BPS_DENOMINATOR;
         if (fee > maxAllowed) revert FeeTooHigh(fee, maxAllowed);
 
         uint256 net = amount - fee;
+        if (maxFee >= net) revert MaxCctpFeeTooHigh(maxFee, net);
+
+        usedOpId[opId] = true;
 
         // Effects/interactions: pull fee + net, then burn the net via CCTP.
         if (fee > 0) USDC.safeTransferFrom(msg.sender, treasury, fee);
@@ -154,5 +178,12 @@ contract ParmeliaCrosschainRouter is Ownable2Step, Pausable, ReentrancyGuard {
         emit CrosschainSent(
             opId, msg.sender, destinationDomain, mintRecipient, amount, fee, net, maxFee, minFinalityThreshold
         );
+    }
+
+    // ─── Internal ─────────────────────────────────────────────────────────────
+
+    function _setDestinationDomain(uint32 domain, bool supported) private {
+        supportedDestinationDomain[domain] = supported;
+        emit DestinationDomainSupportUpdated(domain, supported);
     }
 }

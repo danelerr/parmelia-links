@@ -3,11 +3,13 @@ src = "src"
 out = "out"
 libs = ["lib"]
 remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
-# Pin the exact compiler: every CREATE2 address in shared/networks.ts derives
-# from this bytecode. A drifting solc version silently changes all predicted
-# addresses across chains.
-solc = "0.8.28"
+# Pin the exact compiler: every future CREATE2 address derives from this
+# bytecode. The testnet addresses produced with 0.8.28 remain historical
+# deployments; changing this value requires a new manifest and redeploy.
+# 0.8.34 is the first release containing the via-IR transient-storage fix.
+solc = "0.8.34"
 via_ir = true
+evm_version = "cancun"
 optimizer = true
 # The optimizer MUST stay ON: without it AccountWebAuthnV2 compiles to 24,988
 # bytes, over the 24,576-byte EIP-170 limit (enforced on Arbitrum and every chain
