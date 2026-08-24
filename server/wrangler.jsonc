@@ -13,10 +13,8 @@
       "../contracts/src"
     ],
   },
-  "compatibility_date": "2026-07-26",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["nodejs_compat"],
   "dev": {
     "port": 8787,
   },
@@ -24,6 +22,7 @@
     // Non-sensitive runtime config only. Secrets like PRIVATE_KEY and RPC_URL
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
+    "AUTH_EMAIL_FROM": "acceso@parmelia.me",
     "CHAIN_KEY": "arbitrum-sepolia",
     // Provider-neutral reconciliation defaults. Endpoint-specific plan limits
     // can be declared with the RPC_PROVIDER_CAPABILITIES secret/config.
@@ -101,6 +100,12 @@
       "database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "migrations_dir": "migrations",
     },
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": ["acceso@parmelia.me"]
+    }
   ],
   "queues": {
     "producers": [

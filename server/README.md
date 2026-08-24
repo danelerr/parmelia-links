@@ -79,7 +79,8 @@ Toda la data de la app vive en D1 (binding `GATOPAGO_DB`): usuarios/usernames, w
 
 - Lo que la app relaya (pagos, swaps, faucet) se escribe al confirmar - ambos lados en transferencias internas.
 - Los **depósitos externos** entrantes los ingiere una sola vez el watcher
-  particionado (`services/indexer.ts`) en rangos adaptativos, los guarda con
+  particionado (`services/indexer.ts`; watchers especializados en `services/indexer/`)
+  mediante rangos adaptativos, los guarda con
   bloque/hash/posición en el journal y proyecta el ledger idempotentemente.
 - Alchemy Address Activity entrega depósitos de wallets registradas; cada
   payload sólo despierta los shards afectados; el pool RPC vuelve a leer la
@@ -98,7 +99,7 @@ npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
-`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0027_indexer_consistency.sql` ANTES de desplegar el Worker que las usa.
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0032_recovery_step_up.sql` ANTES de desplegar el Worker que las usa.
 
 **Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente). El **watcher compartido** resuelve todos los `UserOperationEvent` mediante rangos acotados del indexador —no hace una búsqueda histórica por pago— y el reconciliador durable consulta esa proyección en D1. Sólo entonces liquida o marca `failed`, repara el hand-off CCTP y expira lo que ya no puede aterrizar. `GET /pay/status/:userOpHash` expone el estado para polling.
 

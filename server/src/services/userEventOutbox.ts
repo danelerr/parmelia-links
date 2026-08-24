@@ -1,13 +1,29 @@
 import type { Bindings } from "../middlewares/auth";
+import {
+	FirebaseAccountDisabledError,
+	FirebaseVerifiedEmailUnavailableError,
+	getVerifiedFirebaseEmailForUid,
+} from "./googleServiceAccount";
 import { logError, logInfo, logWarn } from "./logger";
 import { invalidateUserHome, notifyUser } from "./push";
+import {
+	sendSecurityAlertEmail,
+	type SecurityEmailEvent,
+} from "./transactionalEmail";
 
 const LEASE_MS = 60_000;
 const MAX_ATTEMPTS = 12;
 const NOTIFICATION_EVENT_TYPES = new Set([
 	"security.recovery_proposed",
+	"security.recovery_executed",
+	"security.recovery_cancelled",
 	"activity.deposit_received",
 	"activity.payment_received",
+]);
+const SECURITY_EVENT_TYPES = new Set<SecurityEmailEvent>([
+	"security.recovery_proposed",
+	"security.recovery_executed",
+	"security.recovery_cancelled",
 ]);
 
 type OutboxRow = {
@@ -49,6 +65,10 @@ function parseSecurityNotification(value: string): SecurityNotificationPayload |
 	} catch {
 		return null;
 	}
+}
+
+function isSecurityEventType(value: string): value is SecurityEmailEvent {
+	return SECURITY_EVENT_TYPES.has(value as SecurityEmailEvent);
 }
 
 async function listDue(env: Bindings, limit: number): Promise<OutboxRow[]> {
@@ -225,13 +245,45 @@ export async function drainUserEventOutbox(
 				failed++;
 				continue;
 			}
-			const result = await notifyUser(env, row.uid, payload);
-			if (!result.configured || result.failed > 0) {
+			let deliveredByEmail = false;
+			if (isSecurityEventType(row.event_type)) {
+				try {
+					const email = await getVerifiedFirebaseEmailForUid(env, row.uid);
+					await sendSecurityAlertEmail(env, {
+						to: email,
+						eventType: row.event_type,
+						link: payload.link,
+					});
+					deliveredByEmail = true;
+				} catch (error) {
+					if (
+						!(error instanceof FirebaseVerifiedEmailUnavailableError) &&
+						!(error instanceof FirebaseAccountDisabledError)
+					) {
+						throw error;
+					}
+				}
+			}
+
+			let result: Awaited<ReturnType<typeof notifyUser>> | null = null;
+			try {
+				result = await notifyUser(env, row.uid, payload);
+			} catch (error) {
+				if (!deliveredByEmail) throw error;
+				logWarn("security_push_delivery_failed_after_email", {
+					eventType: row.event_type,
+					errorName: error instanceof Error ? error.name : "unknown",
+				});
+			}
+			if (
+				!deliveredByEmail &&
+				(!result?.configured || result.failed > 0)
+			) {
 				await fail(
 					env,
 					row,
 					owner,
-					result.configured ? "PUSH_TRANSIENT" : "PUSH_NOT_CONFIGURED",
+					result?.configured ? "PUSH_TRANSIENT" : "PUSH_NOT_CONFIGURED",
 				);
 				failed++;
 				continue;

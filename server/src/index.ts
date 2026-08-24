@@ -31,6 +31,7 @@ import merchantRoutes from "./routes/merchant.routes";
 import homeRoutes from "./routes/home.routes";
 import cardRoutes from "./routes/card.routes";
 import ingestRoutes from "./routes/ingest.routes";
+import authRoutes from "./routes/auth.routes";
 import {
 	collectHealthSnapshot,
 	healthStatusCode,
@@ -165,6 +166,7 @@ app.use(
 			"If-None-Match",
 			"If-Match",
 			"X-Request-Id",
+			"X-Step-Up-Token",
 		],
 		exposeHeaders: ["X-Request-Id", "ETag", "X-State-Version"],
 	}),
@@ -216,6 +218,7 @@ app.route("/user", userRoutes);
 app.route("/home", homeRoutes);
 app.route("/card", cardRoutes);
 app.route("/ingest", ingestRoutes);
+app.route("/auth", authRoutes);
 app.route("/account", accountRoutes);
 app.route("/links", linksRoutes);
 app.route("/pay", payRoutes);

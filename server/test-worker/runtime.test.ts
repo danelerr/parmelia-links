@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	acquireLease,
 	claimPendingForSubmit,
@@ -35,6 +35,126 @@ import {
 } from "../src/services/balanceReadModel";
 import { verifyAndRecoverStream } from "../src/services/reorg";
 import { __test as rpcControlTest } from "../src/services/rpcControlPlane";
+import {
+	finalizeWebAuthnRegistration,
+	InvalidWebAuthnRegistrationError,
+	issueWebAuthnRegistration,
+	validWebAuthnRegistrationOrigin,
+} from "../src/services/webauthnRegistration";
+import {
+	__test as emailOtpTest,
+	consumeRecoveryStepUp,
+	emailOtpRateLimitKeys,
+	InvalidEmailCodeError,
+	validateRecoveryStepUp,
+	verifyEmailStepUpCode,
+} from "../src/services/emailOtp";
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
+function stubUnavailableRpc(): void {
+	vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+		jsonrpc: "2.0",
+		id: 1,
+		error: { code: -32_000, message: "Runtime test RPC unavailable" },
+	}), {
+		status: 200,
+		headers: { "content-type": "application/json" },
+	})));
+}
+
+function bytes(...parts: Uint8Array[]): Uint8Array {
+	const total = parts.reduce((sum, part) => sum + part.length, 0);
+	const output = new Uint8Array(total);
+	let offset = 0;
+	for (const part of parts) {
+		output.set(part, offset);
+		offset += part.length;
+	}
+	return output;
+}
+
+function base64url(value: Uint8Array): string {
+	let binary = "";
+	for (const byte of value) binary += String.fromCharCode(byte);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+}
+
+function cborBytes(value: Uint8Array): Uint8Array {
+	if (value.length < 24) return bytes(new Uint8Array([0x40 + value.length]), value);
+	if (value.length < 256) return bytes(new Uint8Array([0x58, value.length]), value);
+	return bytes(
+		new Uint8Array([0x59, value.length >> 8, value.length & 0xff]),
+		value,
+	);
+}
+
+async function registrationFixture(input: {
+	challenge: string;
+	origin: string;
+	credentialLabel: string;
+	qxByte?: number;
+	qyByte?: number;
+}) {
+	const encoder = new TextEncoder();
+	const credentialIdBytes = encoder.encode(input.credentialLabel);
+	const credentialId = base64url(credentialIdBytes);
+	const x = new Uint8Array(32).fill(input.qxByte ?? 0x11);
+	const y = new Uint8Array(32).fill(input.qyByte ?? 0x22);
+	const rpIdHash = new Uint8Array(
+		await crypto.subtle.digest(
+			"SHA-256",
+			encoder.encode(new URL(input.origin).hostname),
+		),
+	);
+	const credentialLength = new Uint8Array([
+		credentialIdBytes.length >> 8,
+		credentialIdBytes.length & 0xff,
+	]);
+	// COSE EC2 key: { 1: 2, 3: -7, -1: 1, -2: x, -3: y }.
+	const coseKey = bytes(
+		new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21]),
+		cborBytes(x),
+		new Uint8Array([0x22]),
+		cborBytes(y),
+	);
+	const authData = bytes(
+		rpIdHash,
+		new Uint8Array([0x45, 0, 0, 0, 0]), // UP + UV + attested credential data
+		new Uint8Array(16),
+		credentialLength,
+		credentialIdBytes,
+		coseKey,
+	);
+	const attestationObject = bytes(
+		new Uint8Array([0xa3, 0x63]),
+		encoder.encode("fmt"),
+		new Uint8Array([0x64]),
+		encoder.encode("none"),
+		new Uint8Array([0x67]),
+		encoder.encode("attStmt"),
+		new Uint8Array([0xa0, 0x68]),
+		encoder.encode("authData"),
+		cborBytes(authData),
+	);
+	const clientData = encoder.encode(JSON.stringify({
+		type: "webauthn.create",
+		challenge: input.challenge,
+		origin: input.origin,
+		crossOrigin: false,
+	}));
+	return {
+		credentialId,
+		qx: `0x${[...x].map((value) => value.toString(16).padStart(2, "0")).join("")}`,
+		qy: `0x${[...y].map((value) => value.toString(16).padStart(2, "0")).join("")}`,
+		clientDataJSON: base64url(clientData),
+		attestationObject: base64url(attestationObject),
+		clientExtensionResults: {},
+		authenticatorAttachment: "platform" as const,
+	};
+}
 
 describe.sequential("Cloudflare Worker runtime", () => {
 	it("does not load developer secrets", () => {
@@ -79,6 +199,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0027_indexer_consistency.sql",
 			"0028_card_interest.sql",
 			"0029_gatopago_brand.sql",
+			"0030_email_otp.sql",
+			"0031_webauthn_registration.sql",
+			"0032_recovery_step_up.sql",
 		]);
 	});
 
@@ -121,6 +244,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"chain_reorg_replay_requests",
 			"indexer_safety_sweep_state",
 			"card_interest",
+			"auth_email_codes",
+			"webauthn_registration_challenges",
+			"auth_step_up_sessions",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -159,6 +285,22 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		).all<{ name: string }>();
 		expect(crosschainColumns.results.map((row) => row.name)).toContain("gatopago_fee");
 		expect(crosschainColumns.results.map((row) => row.name)).not.toContain("parmelia_fee");
+		const passkeyColumns = await env.GATOPAGO_DB.prepare(
+			"PRAGMA table_info(passkeys)",
+		).all<{ name: string }>();
+		expect(passkeyColumns.results.map((row) => row.name)).toEqual(
+			expect.arrayContaining(["name", "registration_source", "transports_json", "revoked_at"]),
+		);
+		const emailCodeColumns = await env.GATOPAGO_DB.prepare(
+			"PRAGMA table_info(auth_email_codes)",
+		).all<{ name: string }>();
+		expect(emailCodeColumns.results.map((row) => row.name)).toContain("subject_uid");
+		const registrationColumns = await env.GATOPAGO_DB.prepare(
+			"PRAGMA table_info(webauthn_registration_challenges)",
+		).all<{ name: string }>();
+		expect(registrationColumns.results.map((row) => row.name)).toContain(
+			"verification_attempts",
+		);
 
 		await expect(
 			env.GATOPAGO_DB.prepare(
@@ -167,6 +309,194 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				.bind("orphan", "missing-user", "1", "2")
 				.run(),
 		).rejects.toThrow();
+	});
+
+	it("turns a six-digit recovery code into one one-time step-up proof", async () => {
+		const uid = "runtime-step-up-user";
+		const email = "runtime-step-up@example.com";
+		const code = "271828";
+		const id = crypto.randomUUID();
+		const keys = await emailOtpRateLimitKeys(env, email, "127.0.0.1");
+		const codeHash = await emailOtpTest.hmacHex(
+			"p".repeat(32),
+			`code:${id}:${keys.email}:${code}`,
+		);
+		const now = new Date();
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO auth_email_codes (
+				id, email_hash, code_hash, purpose, locale, ip_hash,
+				subject_uid, attempts, max_attempts, expires_at, created_at
+			 ) VALUES (?, ?, ?, 'step_up', 'es', ?, ?, 0, 5, ?, ?)`,
+		).bind(
+			id,
+			keys.email,
+			codeHash,
+			keys.ip,
+			uid,
+			new Date(now.getTime() + 10 * 60_000).toISOString(),
+			now.toISOString(),
+		).run();
+
+		const verified = await verifyEmailStepUpCode(env, { email, code, uid });
+		expect(verified.stepUpToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(await validateRecoveryStepUp(env, {
+			uid,
+			token: verified.stepUpToken,
+		})).toBe(true);
+		expect(await validateRecoveryStepUp(env, {
+			uid: `${uid}-other`,
+			token: verified.stepUpToken,
+		})).toBe(false);
+		expect(await consumeRecoveryStepUp(env, {
+			uid,
+			token: verified.stepUpToken,
+		})).toBe(true);
+		expect(await consumeRecoveryStepUp(env, {
+			uid,
+			token: verified.stepUpToken,
+		})).toBe(false);
+		expect(await validateRecoveryStepUp(env, {
+			uid,
+			token: verified.stepUpToken,
+		})).toBe(false);
+		await expect(
+			verifyEmailStepUpCode(env, { email, code, uid }),
+		).rejects.toBeInstanceOf(InvalidEmailCodeError);
+	});
+
+	it("enforces the OTP attempt budget atomically across parallel guesses", async () => {
+		const uid = "runtime-step-up-race-user";
+		const email = "runtime-step-up-race@example.com";
+		const actualCode = "314159";
+		const id = crypto.randomUUID();
+		const keys = await emailOtpRateLimitKeys(env, email, "127.0.0.2");
+		const codeHash = await emailOtpTest.hmacHex(
+			"p".repeat(32),
+			`code:${id}:${keys.email}:${actualCode}`,
+		);
+		const now = new Date();
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO auth_email_codes (
+				id, email_hash, code_hash, purpose, locale, ip_hash,
+				subject_uid, attempts, max_attempts, expires_at, created_at
+			 ) VALUES (?, ?, ?, 'step_up', 'es', ?, ?, 0, 5, ?, ?)`,
+		).bind(
+			id,
+			keys.email,
+			codeHash,
+			keys.ip,
+			uid,
+			new Date(now.getTime() + 10 * 60_000).toISOString(),
+			now.toISOString(),
+		).run();
+
+		const attempts = await Promise.allSettled(
+			Array.from({ length: 20 }, (_, index) =>
+				verifyEmailStepUpCode(env, {
+					email,
+					code: String(index).padStart(6, "0"),
+					uid,
+				}),
+			),
+		);
+		expect(attempts.every((attempt) => attempt.status === "rejected")).toBe(true);
+		const row = await env.GATOPAGO_DB.prepare(
+			"SELECT attempts FROM auth_email_codes WHERE id = ?",
+		).bind(id).first<{ attempts: number }>();
+		expect(row?.attempts).toBe(5);
+		await expect(
+			verifyEmailStepUpCode(env, { email, code: actualCode, uid }),
+		).rejects.toBeInstanceOf(InvalidEmailCodeError);
+	});
+
+	it("binds WebAuthn registration to one server challenge and origin", async () => {
+		const uid = "runtime-webauthn-user";
+		const origin = "https://app.parmelia.me";
+		expect(validWebAuthnRegistrationOrigin(env, origin)).toBe(origin);
+		expect(validWebAuthnRegistrationOrigin(env, "https://evil.example")).toBeNull();
+		const issued = await issueWebAuthnRegistration(env, {
+			uid,
+			purpose: "passkey_add",
+			expectedOrigin: origin,
+		});
+		const credential = {
+			registrationId: issued.registrationId,
+			...(await registrationFixture({
+				challenge: issued.challenge,
+				origin,
+				credentialLabel: "runtime_credential_123",
+			})),
+			name: "Runtime key",
+			transports: ["internal"],
+		};
+		const finalized = await finalizeWebAuthnRegistration(env, {
+			uid,
+			purpose: "passkey_add",
+			credential,
+		});
+		expect(finalized).toMatchObject({
+			registrationId: issued.registrationId,
+			credentialId: credential.credentialId,
+			name: "Runtime key",
+			transports: ["internal"],
+		});
+		await expect(finalizeWebAuthnRegistration(env, {
+			uid,
+			purpose: "passkey_add",
+			credential,
+		})).resolves.toEqual(finalized);
+		await expect(finalizeWebAuthnRegistration(env, {
+			uid,
+			purpose: "passkey_add",
+			credential: { ...credential, credentialId: "different_credential" },
+		})).rejects.toBeInstanceOf(InvalidWebAuthnRegistrationError);
+	});
+
+	it("persists passkey addition and revocation only from confirmed settlement", async () => {
+		const uid = "runtime-passkey-lifecycle";
+		const wallet = "0x1212121212121212121212121212121212121212";
+		const credentialId = "runtime-passkey-credential";
+		const now = new Date().toISOString();
+		await env.GATOPAGO_DB.prepare(
+			"INSERT INTO users (uid, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?)",
+		).bind(uid, wallet, now, now).run();
+		const pending = (currency: string, meta: Record<string, unknown>): PendingPaymentRecord => ({
+			userOpHash: `0x${(currency === "PASSKEY_ADD" ? "71" : "72").repeat(32)}`,
+			uid,
+			linkId: null,
+			wallet,
+			senderAddress: wallet,
+			amount: "0",
+			currency,
+			userOp: {},
+			meta,
+			status: "submitted",
+			submittedTxHash: null,
+			submissionTransport: "self",
+			submittedAt: now,
+			submissionAttemptCount: 1,
+			lastSubmissionErrorCode: null,
+			createdAt: now,
+			expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		});
+		await settlePayment(env, pending("PASSKEY_ADD", {
+			credentialId,
+			qx: `0x${"31".repeat(32)}`,
+			qy: `0x${"32".repeat(32)}`,
+			name: "Backup phone",
+			transports: ["internal"],
+		}), `0x${"81".repeat(32)}`);
+		const active = await env.GATOPAGO_DB.prepare(
+			"SELECT name, registration_source, revoked_at FROM passkeys WHERE credential_id = ?",
+		).bind(credentialId).first<{ name: string; registration_source: string; revoked_at: string | null }>();
+		expect(active).toEqual({ name: "Backup phone", registration_source: "backup", revoked_at: null });
+
+		await settlePayment(env, pending("PASSKEY_REMOVE", { credentialId }), `0x${"82".repeat(32)}`);
+		const revoked = await env.GATOPAGO_DB.prepare(
+			"SELECT revoked_at FROM passkeys WHERE credential_id = ?",
+		).bind(credentialId).first<{ revoked_at: string | null }>();
+		expect(revoked?.revoked_at).toBeTypeOf("string");
+		await env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid).run();
 	});
 
 	it("coalesces an equivalent balance wakeup in real D1", async () => {
@@ -1200,10 +1530,10 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(health.headers.get("X-Request-Id")).toMatch(/^[0-9a-f-]{36}$/);
 		expect(health.headers.get("Cache-Control")).toBe("no-store");
 		expect(await health.json()).toEqual({
-			status: "ok",
+			status: "degraded",
 			network: "arbitrum-sepolia",
 			issueCount: 0,
-			warningCount: 0,
+			warningCount: 1,
 		});
 		const opsHealth = await exports.default.fetch(new Request("https://worker.test/health/ops"));
 		expect(opsHealth.status).toBe(404);
@@ -1278,6 +1608,10 @@ describe.sequential("Cloudflare Worker runtime", () => {
 	});
 
 	it("repairs a CCTP hand-off stranded after broadcast", async () => {
+		// Settlement must remain durable when the optional immediate balance read
+		// fails. Use a controlled JSON-RPC error instead of leaking test traffic to
+		// an invalid hostname (workerd reports those as uncaught internal errors).
+		stubUnavailableRpc();
 		const now = new Date().toISOString();
 		const opId = `0x${"42".repeat(32)}`;
 		const txHash = `0x${"24".repeat(32)}`;

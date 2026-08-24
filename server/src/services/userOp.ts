@@ -9,7 +9,13 @@ import {
 	parseAbiParameters,
 	toHex,
 } from "viem";
-import { assertContractsDeployed, entryPointAbi, getNetworkConfig } from "../../../shared";
+import {
+	assertContractsDeployed,
+	entryPointAbi,
+	getNetworkConfig,
+	PACKED_USER_OPERATION_EIP712_TYPES,
+	type UserOperationSigningPayload,
+} from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
 import { getPaymasterSignerKey } from "./keys";
@@ -113,46 +119,8 @@ export type PackedUserOp = {
 	signature: Hex;
 };
 
-/**
- * EntryPoint v0.9 signs PackedUserOperation as EIP-712 typed data. Keep the
- * canonical field order here: changing it changes the digest and must fail the
- * comparison with EntryPoint.getUserOpHash below.
- */
-export const PACKED_USER_OPERATION_EIP712_TYPES = {
-	PackedUserOperation: [
-		{ name: "sender", type: "address" },
-		{ name: "nonce", type: "uint256" },
-		{ name: "initCode", type: "bytes" },
-		{ name: "callData", type: "bytes" },
-		{ name: "accountGasLimits", type: "bytes32" },
-		{ name: "preVerificationGas", type: "uint256" },
-		{ name: "gasFees", type: "bytes32" },
-		{ name: "paymasterAndData", type: "bytes" },
-	],
-} as const;
-
-export type UserOperationSigningPayload = {
-	standard: "EIP-712";
-	domain: {
-		name: "ERC4337";
-		version: "1";
-		chainId: number;
-		verifyingContract: Address;
-	};
-	types: typeof PACKED_USER_OPERATION_EIP712_TYPES;
-	primaryType: "PackedUserOperation";
-	message: {
-		sender: Address;
-		nonce: string;
-		initCode: Hex;
-		callData: Hex;
-		accountGasLimits: Hex;
-		preVerificationGas: string;
-		gasFees: Hex;
-		paymasterAndData: Hex;
-	};
-	digest: Hex;
-};
+export { PACKED_USER_OPERATION_EIP712_TYPES };
+export type { UserOperationSigningPayload };
 
 /** Build the exact EIP-712 document authenticated by EntryPoint v0.9. */
 export function buildUserOperationSigningPayload(

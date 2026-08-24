@@ -14,20 +14,21 @@
     "typecheck:worker-runtime": "tsc --noEmit --project test-worker/tsconfig.json"
   },
   "dependencies": {
-    "hono": "^4.13.2",
-    "jose": "^6.2.9",
-    "viem": "^2.55.17"
+    "@simplewebauthn/server": "13.3.2",
+    "hono": "^4.13.3",
+    "jose": "^6.2.10",
+    "viem": "^2.55.19"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@cloudflare/vitest-pool-workers": "0.22.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.3",
-    "eslint": "^10.8.1",
+    "eslint": "^10.9.0",
     "globals": "^17.11.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.67.0",
-    "vitest": "^4.1.10",
-    "wrangler": "4.123.0",
+    "vitest": "^4.1.11",
+    "wrangler": "4.125.0",
     "yaml": "^2.9.0"
   }
 }

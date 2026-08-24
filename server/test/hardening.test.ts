@@ -503,7 +503,19 @@ describe("runtime configuration", () => {
 	it("exposes readiness and blocks invalid mainnet traffic", async () => {
 		const context = {} as ExecutionContext;
 		const healthToken = "health-test-token-that-is-longer-than-32-characters";
-		const testnetEnv = envFor("arbitrum-sepolia", { OPS_HEALTH_TOKEN: healthToken });
+		const testnetEnv = envFor("arbitrum-sepolia", {
+			OPS_HEALTH_TOKEN: healthToken,
+			AUTH_CODE_PEPPER: "p".repeat(32),
+			FIREBASE_WEB_API_KEY: "test-key",
+			FIREBASE_SERVICE_ACCOUNT: JSON.stringify({
+				project_id: "test",
+				client_email: "test@example.iam.gserviceaccount.com",
+				private_key: "test-only",
+				token_uri: "https://oauth2.googleapis.com/token",
+			}),
+			AUTH_EMAIL_FROM: "test@example.com",
+			EMAIL: { send: async () => undefined } as unknown as NonNullable<Bindings["EMAIL"]>,
+		});
 		const liveness = await worker.fetch(
 			new Request("https://worker.example/health/live"),
 			testnetEnv,

@@ -16,7 +16,6 @@
 import {
 	formatUnits,
 	parseAbiItem,
-	parseUnits,
 	type Address,
 	type Hex,
 } from "viem";
@@ -29,17 +28,12 @@ import {
 	getServerAccount,
 } from "./clients";
 import {
-	getMerchantById,
-	getPaymentIntentByOnchainId,
 	getSyncCursor,
-	getUserByUid,
 	listUsersByWalletAddresses,
-	markPaymentIntentPaidWithOutbox,
 	setSyncCursor,
 	writeLedgerEntries,
 	type LedgerEntry,
 } from "./storage";
-import { prepareEventOutbox } from "./webhooks";
 import { logError, logInfo } from "./logger";
 import {
 	getIndexerScanHead,
@@ -51,8 +45,6 @@ import {
 	journalBlockEvents,
 	type ChainConsistencyLevel,
 	type JournalEvent,
-	type JournalUserEvent,
-	type JournalUserOperationReceipt,
 } from "./chainJournal";
 import {
 	balanceProjectionAccountKey,
@@ -64,32 +56,30 @@ import { listWalletsForIndexerShard } from "./indexerShards";
 import { getArbitrumBlockEvidence } from "./arbitrumFinality";
 import { getChainReorgEpoch } from "./chainEpoch";
 import {
-	recoveryAssignmentStream,
 	transferAssignmentStream,
 	transferJournalStream,
 	transferSyncCursorKey,
 	type TransferIndexerPartition,
-	userOperationAssignmentStream,
 } from "./indexerPartitions";
 
 const TRANSFER_EVENT = parseAbiItem(
 	"event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 
-const INVOICE_PAID_EVENT = parseAbiItem(
+export const INVOICE_PAID_EVENT = parseAbiItem(
 	"event InvoicePaid(bytes32 indexed invoiceId, address indexed payer, address indexed merchant, address token, uint256 amount, uint256 fee, bytes metadata)",
 );
 
-const RECOVERY_PROPOSED_EVENT = parseAbiItem(
+export const RECOVERY_PROPOSED_EVENT = parseAbiItem(
 	"event RecoveryProposed(address indexed guardian, uint256 executeAfter)",
 );
 
-const USER_OPERATION_EVENT = parseAbiItem(
+export const USER_OPERATION_EVENT = parseAbiItem(
 	"event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)",
 );
 
 /** First run only scans this far back (then the cursor takes over). */
-const BACKFILL_BLOCKS = 5000n;
+export const BACKFILL_BLOCKS = 5000n;
 /**
  * Hard cap of blocks scanned per Queue delivery. Without it, a cursor that
  * falls behind makes every delivery retry an ever-growing range until the Worker's
@@ -136,7 +126,7 @@ type TransferLog = {
 	removed?: boolean;
 };
 
-type InvoicePaidLog = {
+export type InvoicePaidLog = {
 	address: Address;
 	args: {
 		invoiceId?: Hex;
@@ -156,7 +146,7 @@ type InvoicePaidLog = {
 	removed?: boolean;
 };
 
-type RecoveryProposedLog = {
+export type RecoveryProposedLog = {
 	address: Address;
 	args: {
 		guardian?: Address;
@@ -171,7 +161,7 @@ type RecoveryProposedLog = {
 	removed?: boolean;
 };
 
-type UserOperationLog = {
+export type UserOperationLog = {
 	address: Address;
 	args: {
 		userOpHash?: Hex;
@@ -202,7 +192,7 @@ function boundedConfigInteger(
 	return Math.min(max, Math.max(min, value));
 }
 
-function logRangeConfig(
+export function logRangeConfig(
 	env: Bindings,
 	providerMaximum: bigint,
 ): { min: bigint; max: bigint } {
@@ -218,7 +208,7 @@ function logRangeConfig(
 	return { min: min > max ? max : min, max };
 }
 
-function maxLogCallsPerJob(env: Bindings): number {
+export function maxLogCallsPerJob(env: Bindings): number {
 	return boundedConfigInteger(
 		env.INDEXER_MAX_RPC_CALLS_PER_JOB,
 		DEFAULT_MAX_LOG_SCAN_REQUESTS_PER_JOB,
@@ -227,7 +217,7 @@ function maxLogCallsPerJob(env: Bindings): number {
 	);
 }
 
-function maxBlocksPerJob(env: Bindings): bigint {
+export function maxBlocksPerJob(env: Bindings): bigint {
 	return BigInt(
 		boundedConfigInteger(
 			env.INDEXER_MAX_BLOCKS_PER_JOB,
@@ -238,7 +228,7 @@ function maxBlocksPerJob(env: Bindings): bigint {
 	);
 }
 
-function maxEventBlocksPerJob(env: Bindings): number {
+export function maxEventBlocksPerJob(env: Bindings): number {
 	return boundedConfigInteger(
 		env.INDEXER_MAX_EVENT_BLOCKS_PER_JOB,
 		DEFAULT_MAX_EVENT_BLOCKS_PER_JOB,
@@ -247,7 +237,7 @@ function maxEventBlocksPerJob(env: Bindings): number {
 	);
 }
 
-function journalConsistency(
+export function journalConsistency(
 	finalitySource: IndexerScanHead["finalitySource"],
 ): ChainConsistencyLevel {
 	return finalitySource === "safe" ? "safe" : "sequenced";
@@ -735,930 +725,4 @@ export function internalTransferSenderAddresses(env: Bindings): Set<string> {
 		addresses.add(getFaucetAccount(env).address.toLowerCase());
 	}
 	return addresses;
-}
-
-/**
- * Flow B reconciliation: scan PaymentRouter `InvoicePaid` events, attribute each
- * to its payment intent by `invoiceId` (= onchain_id), validate the destination
- * and amount against the intent, mark it paid, and fire payment.paid. Queue-driven
- * and idempotent (markPaymentIntentPaid only acts on `awaiting_payment`).
- */
-export async function runRouterWatcher(
-	env: Bindings,
-	targetBlock?: bigint,
-): Promise<ChainIndexRunResult | null> {
-	try {
-		const network = getNetworkConfig(env.CHAIN_KEY);
-		const router = network.contracts.paymentRouter as Address;
-		if (
-			!router ||
-			router === "0x0000000000000000000000000000000000000000" ||
-			getRpcUrls(env, "indexer").length === 0
-		) return null;
-
-		const providerPool = getIndexerProviderPool(env);
-		const publicClient = providerPool.pointClient;
-		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
-		const cursorKey = `router:${network.chainId}`;
-		await verifyAndRecoverStream(env, publicClient, {
-			chainId: network.chainId,
-			stream: cursorKey,
-		});
-		const expectedReorgEpoch = await getChainReorgEpoch(
-			env,
-			network.chainId,
-		);
-		const cursor = await getSyncCursor(env, cursorKey);
-		const fromBlock =
-			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		const desiredTarget =
-			targetBlock !== undefined && targetBlock > scanHead
-				? targetBlock
-				: scanHead;
-		if (fromBlock > scanHead) {
-			return {
-				cursor: cursor ?? scanHead,
-				targetBlock: desiredTarget,
-				scanHead,
-				caughtUp: (cursor ?? scanHead) >= desiredTarget,
-			};
-		}
-		const range = logRangeConfig(env, providerPool.maxLogRange);
-		const maxCalls = maxLogCallsPerJob(env);
-		const scanEnd = boundedScanWindowEnd(
-			fromBlock,
-			scanHead,
-			range.max,
-			1,
-			maxCalls,
-			maxBlocksPerJob(env),
-		);
-
-		let confirmed = 0;
-		const blockTimestamps = new Map<bigint, bigint>();
-		const routerLogs: InvoicePaidLog[] = [];
-		const scanStats = await scanLogsAdaptive({
-			fromBlock,
-			toBlock: scanEnd,
-			minBlockSpan: range.min,
-			maxBlockSpan: range.max,
-			maxCalls,
-			fetchRange: (rangeFrom, rangeTo) =>
-				providerPool.requestLogs<InvoicePaidLog>(
-					rangeFrom,
-					rangeTo,
-					async (logClient) =>
-						(await logClient.getLogs({
-							address: router,
-							event: INVOICE_PAID_EVENT,
-							fromBlock: rangeFrom,
-							toBlock: rangeTo,
-						})) as InvoicePaidLog[],
-				),
-			onRange: (logs) => {
-				routerLogs.push(...logs);
-			},
-		});
-		const committedScanEnd = boundedEvidenceWindowEnd(
-			scanEnd,
-			routerLogs,
-			maxEventBlocksPerJob(env),
-		);
-
-		const validRouterLogs = routerLogs.filter(
-			(log) =>
-				Boolean(log.transactionHash) &&
-				log.logIndex !== null &&
-				log.blockNumber !== null &&
-				Boolean(log.blockHash) &&
-				log.blockNumber! <= committedScanEnd,
-		);
-		const routerByBlock = new Map<string, InvoicePaidLog[]>();
-		for (const log of validRouterLogs) {
-			const key = `${log.blockNumber}:${log.blockHash!.toLowerCase()}`;
-			const values = routerByBlock.get(key) ?? [];
-			values.push(log);
-			routerByBlock.set(key, values);
-		}
-		let evidenceRpcCalls = 0;
-		for (const logs of [...routerByBlock.values()].sort((left, right) =>
-			left[0].blockNumber! < right[0].blockNumber! ? -1 : 1,
-		)) {
-			const first = logs[0];
-			const blockNumber = first.blockNumber!;
-			const blockHash = first.blockHash!;
-			const block = await publicClient.getBlock({
-				blockHash,
-				includeTransactions: false,
-			});
-			evidenceRpcCalls++;
-			if (
-				!block.hash ||
-				block.hash.toLowerCase() !== blockHash.toLowerCase() ||
-				block.number !== blockNumber
-			) {
-				throw new Error("InvoicePaid log block evidence did not match its header");
-			}
-			blockTimestamps.set(blockNumber, block.timestamp);
-			const finalityEvidence = await getArbitrumBlockEvidence(
-				env,
-				publicClient,
-				{ blockNumber, blockHash },
-			);
-			evidenceRpcCalls += finalityEvidence.rpcCalls;
-			const observedAt = new Date().toISOString();
-			await journalBlockEvents(env, {
-				stream: cursorKey,
-				block: {
-					chainId: network.chainId,
-					blockNumber,
-					blockHash,
-					parentHash: block.parentHash,
-					timestamp: block.timestamp,
-					consistencyLevel:
-						finalityEvidence.source === "node_interface"
-							? finalityEvidence.consistencyLevel
-							: journalConsistency(finalitySource),
-					source: "rpc_log_poller",
-					observedAt,
-					l1BatchNumber: finalityEvidence.l1BatchNumber,
-					l1Confirmations: finalityEvidence.l1Confirmations,
-				},
-				events: logs.map((log) => ({
-					txHash: log.transactionHash!,
-					logIndex: log.logIndex!,
-					eventKind: "payment.InvoicePaid",
-					blockNumber,
-					blockHash,
-					transactionIndex: log.transactionIndex,
-					contractAddress: log.address,
-					topic0: log.topics[0] ?? null,
-					payload: {
-						invoiceId: log.args.invoiceId ?? null,
-						payer: log.args.payer ?? null,
-						merchant: log.args.merchant ?? null,
-						token: log.args.token ?? null,
-						amount: log.args.amount?.toString() ?? null,
-						fee: log.args.fee?.toString() ?? null,
-						metadata: log.args.metadata ?? null,
-					},
-					source: "rpc_log_poller",
-					observedAt,
-				})),
-				expectedReorgEpoch,
-			});
-		}
-
-		for (const log of validRouterLogs) {
-				const invoiceId = (log.args.invoiceId ?? "") as string;
-				const merchant = ((log.args.merchant ?? "") as string).toLowerCase();
-				const token = ((log.args.token ?? "") as string).toLowerCase();
-				const amount = log.args.amount ?? 0n;
-				if (!invoiceId || !log.transactionHash || log.blockNumber === null) continue;
-				const logBlockNumber = log.blockNumber;
-
-				const intent = await getPaymentIntentByOnchainId(env, invoiceId);
-				if (!intent || intent.status !== "awaiting_payment") continue;
-
-				// Validate the on-chain payment matches what the intent expects: same
-				// token, same amount, and the funds went to THIS merchant's wallet.
-				// A mismatch (e.g. a payer who forged a different destination) is not
-				// credited — the legit merchant only gets paid on an exact match.
-				const merchantRec = await getMerchantById(env, intent.merchantId);
-				const owner = merchantRec ? await getUserByUid(env, merchantRec.ownerUid) : null;
-				const expectedMerchant = owner?.walletAddress?.toLowerCase();
-				const expectedAmount = parseUnits(intent.amount, network.contracts.usdcDecimals);
-				if (
-					!expectedMerchant ||
-					merchant !== expectedMerchant ||
-					token !== network.contracts.usdc.toLowerCase() ||
-					amount !== expectedAmount
-				) {
-					logError("router_invoice_mismatch", new Error("on-chain payment did not match intent"), {
-						intentId: intent.id,
-					});
-					continue;
-				}
-				if (intent.expiresAt) {
-					let paidAt = blockTimestamps.get(logBlockNumber);
-					if (paidAt === undefined) {
-						paidAt = (await publicClient.getBlock({ blockNumber: logBlockNumber })).timestamp;
-						blockTimestamps.set(logBlockNumber, paidAt);
-					}
-					if (paidAt * 1000n > BigInt(new Date(intent.expiresAt).getTime())) {
-						logError("router_invoice_after_expiry", new Error("invoice was paid after intent expiry"), {
-							intentId: intent.id,
-						});
-						continue;
-					}
-				}
-
-				const paidOutbox = await prepareEventOutbox(env, {
-					merchantId: intent.merchantId,
-					mode: intent.mode,
-					type: "payment.paid",
-					objectId: intent.id,
-					data: {
-						id: intent.id,
-						object: "payment_intent",
-						status: "paid",
-						amount: intent.amount,
-						currency: intent.currency,
-						reference: intent.reference,
-						metadata: intent.metadata ?? {},
-						tx_hash: log.transactionHash,
-						mode: intent.mode,
-					},
-				});
-				if (
-					await markPaymentIntentPaidWithOutbox(
-						env,
-						intent.id,
-						log.transactionHash,
-						new Date(
-							Number(blockTimestamps.get(logBlockNumber)!) * 1_000,
-						).toISOString(),
-						paidOutbox,
-					)
-				) confirmed++;
-		}
-
-		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: committedScanEnd,
-			includeTransactions: false,
-		});
-		evidenceRpcCalls++;
-		if (!scanEndBlock.hash) {
-			throw new Error("Router checkpoint block did not include a hash");
-		}
-		const checkpointEvidence = await getArbitrumBlockEvidence(
-			env,
-			publicClient,
-			{
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-			},
-		);
-		evidenceRpcCalls += checkpointEvidence.rpcCalls;
-		await journalBlockEvents(env, {
-			stream: cursorKey,
-			block: {
-				chainId: network.chainId,
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-				parentHash: scanEndBlock.parentHash,
-				timestamp: scanEndBlock.timestamp,
-				consistencyLevel:
-					checkpointEvidence.source === "node_interface"
-						? checkpointEvidence.consistencyLevel
-						: journalConsistency(finalitySource),
-				source: "rpc_log_poller",
-				observedAt: new Date().toISOString(),
-				l1BatchNumber: checkpointEvidence.l1BatchNumber,
-				l1Confirmations: checkpointEvidence.l1Confirmations,
-			},
-			events: [],
-			expectedReorgEpoch,
-		});
-		await setSyncCursor(env, cursorKey, committedScanEnd, {
-			chainId: network.chainId,
-			expectedReorgEpoch,
-		});
-		logInfo("router_watch_run", {
-			chainId: network.chainId,
-			fromBlock: fromBlock.toString(),
-			toBlock: committedScanEnd.toString(),
-			requestedToBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - committedScanEnd).toString(),
-			unconfirmedBlocks: (latest - scanHead).toString(),
-			finalitySource,
-			confirmed,
-			rpcCalls: scanStats.calls + evidenceRpcCalls,
-			rpcRetries: scanStats.retries,
-			configuredMaxBlockRange: range.max.toString(),
-		});
-		return {
-			cursor: committedScanEnd,
-			targetBlock: desiredTarget,
-			scanHead,
-			caughtUp: committedScanEnd >= desiredTarget,
-		};
-	} catch (error) {
-		logError("router_watch_failed", error, {});
-		throw error;
-	}
-}
-
-/**
- * Security watcher: scan our accounts for `RecoveryProposed` events and push the
- * owner so they can cancel within the 48h timelock if it wasn't them. Mitigates
- * the shared-guardian risk (audit M-1): a compromised guardian can start a
- * recovery, but the owner is alerted and can veto it. Queue-driven and retryable.
- * Filters logs to our own wallet addresses, so it only sees our accounts.
- */
-export async function runRecoveryWatcher(
-	env: Bindings,
-	shardId: number,
-	targetBlock?: bigint,
-): Promise<ChainIndexRunResult | null> {
-	try {
-		const network = getNetworkConfig(env.CHAIN_KEY);
-		if (getRpcUrls(env, "indexer").length === 0) return null;
-		const assignmentStream = recoveryAssignmentStream(network.chainId);
-		const wallets = await listWalletsForIndexerShard(env, {
-			chainId: network.chainId,
-			stream: assignmentStream,
-			shardId,
-		});
-		if (wallets.length === 0) return null;
-		const byWallet = new Map(wallets.map((w) => [w.walletAddress.toLowerCase(), w.uid]));
-
-		const providerPool = getIndexerProviderPool(env);
-		const publicClient = providerPool.pointClient;
-		const { latest, scanHead, finalitySource } = await getIndexerScanHead(publicClient);
-		const cursorKey = `recovery:${network.chainId}:shard:${shardId}`;
-		await verifyAndRecoverStream(env, publicClient, {
-			chainId: network.chainId,
-			stream: cursorKey,
-		});
-		const expectedReorgEpoch = await getChainReorgEpoch(
-			env,
-			network.chainId,
-		);
-		const cursor = await getSyncCursor(env, cursorKey);
-		const fromBlock =
-			cursor !== null ? cursor + 1n : scanHead > BACKFILL_BLOCKS ? scanHead - BACKFILL_BLOCKS : 0n;
-		const desiredTarget =
-			targetBlock !== undefined && targetBlock > scanHead
-				? targetBlock
-				: scanHead;
-		if (fromBlock > scanHead) {
-			return {
-				cursor: cursor ?? scanHead,
-				targetBlock: desiredTarget,
-				scanHead,
-				caughtUp: (cursor ?? scanHead) >= desiredTarget,
-			};
-		}
-		const range = logRangeConfig(env, providerPool.maxLogRange);
-		const maxCalls = maxLogCallsPerJob(env);
-		const scanEnd = boundedScanWindowEnd(
-			fromBlock,
-			scanHead,
-			range.max,
-			1,
-			maxCalls,
-			maxBlocksPerJob(env),
-		);
-
-		let alerted = 0;
-		let rpcCalls = 0;
-		let rpcRetries = 0;
-		const recoveryByOccurrence = new Map<string, RecoveryProposedLog>();
-		const walletAddresses = wallets.map(
-			(wallet) => wallet.walletAddress as Address,
-		);
-		const recoveryLogs: RecoveryProposedLog[] = [];
-		const stats = await scanLogsAdaptive({
-			fromBlock,
-			toBlock: scanEnd,
-			minBlockSpan: range.min,
-			maxBlockSpan: range.max,
-			maxCalls,
-			fetchRange: (rangeFrom, rangeTo) =>
-				providerPool.requestLogs<RecoveryProposedLog>(
-					rangeFrom,
-					rangeTo,
-					async (logClient) =>
-						(await logClient.getLogs({
-							address: walletAddresses,
-							event: RECOVERY_PROPOSED_EVENT,
-							fromBlock: rangeFrom,
-							toBlock: rangeTo,
-						})) as RecoveryProposedLog[],
-				),
-			onRange: (logs) => {
-				recoveryLogs.push(...logs);
-			},
-		});
-		rpcCalls += stats.calls;
-		rpcRetries += stats.retries;
-		const committedScanEnd = boundedEvidenceWindowEnd(
-			scanEnd,
-			recoveryLogs,
-			maxEventBlocksPerJob(env),
-		);
-
-		for (const log of recoveryLogs) {
-			if (
-				!log.transactionHash ||
-				log.logIndex === null ||
-				!log.blockHash ||
-				log.blockNumber === null ||
-				log.blockNumber > committedScanEnd
-			) continue;
-			recoveryByOccurrence.set(
-				`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
-				log,
-			);
-		}
-
-		const byBlock = new Map<string, RecoveryProposedLog[]>();
-		for (const log of recoveryByOccurrence.values()) {
-			const key = `${log.blockNumber}:${log.blockHash!.toLowerCase()}`;
-			const values = byBlock.get(key) ?? [];
-			values.push(log);
-			byBlock.set(key, values);
-		}
-		for (const logs of [...byBlock.values()].sort((left, right) =>
-			left[0].blockNumber! < right[0].blockNumber! ? -1 : 1,
-		)) {
-			const first = logs[0];
-			const blockNumber = first.blockNumber!;
-			const blockHash = first.blockHash!;
-			const block = await publicClient.getBlock({
-				blockHash,
-				includeTransactions: false,
-			});
-			rpcCalls++;
-			if (
-				!block.hash ||
-				block.hash.toLowerCase() !== blockHash.toLowerCase() ||
-				block.number !== blockNumber
-			) {
-				throw new Error("Recovery log block evidence did not match its header");
-			}
-			const finalityEvidence = await getArbitrumBlockEvidence(
-				env,
-				publicClient,
-				{ blockNumber, blockHash },
-			);
-			rpcCalls += finalityEvidence.rpcCalls;
-			const consistencyLevel =
-				finalityEvidence.source === "node_interface"
-					? finalityEvidence.consistencyLevel
-					: journalConsistency(finalitySource);
-			const observedAt = new Date().toISOString();
-			const events: JournalEvent[] = [];
-			const userEvents: JournalUserEvent[] = [];
-			for (const log of logs) {
-				const account = log.address.toLowerCase();
-				const uid = byWallet.get(account);
-				if (!uid || !log.transactionHash || log.logIndex === null) continue;
-				const eventKind = "account.RecoveryProposed";
-				const eventId = chainEventId(
-					network.chainId,
-					log.transactionHash,
-					log.logIndex,
-					eventKind,
-				);
-				events.push({
-					txHash: log.transactionHash,
-					logIndex: log.logIndex,
-					eventKind,
-					blockNumber,
-					blockHash,
-					transactionIndex: log.transactionIndex,
-					contractAddress: log.address,
-					topic0: log.topics[0] ?? null,
-					payload: {
-						guardian: log.args.guardian ?? null,
-						executeAfter: log.args.executeAfter?.toString() ?? null,
-					},
-					source: "rpc_log_poller",
-					observedAt,
-					accounts: [{
-						uid,
-						accountAddress: log.address,
-						asset: "ACCOUNT",
-						role: "account",
-						deltaRaw: null,
-					}],
-				});
-				userEvents.push({
-					dedupeKey: `${eventId}:security.recovery_proposed`,
-					uid,
-					eventType: "security.recovery_proposed",
-					priority: 0,
-					payload: {
-						title: "Solicitud de recuperación iniciada",
-						body:
-							"Si no fuiste tú, entra a GatoPago y cancélala antes de 48 horas.",
-						link: "/settings",
-					},
-				});
-			}
-			if (events.length === 0) continue;
-			const journalResult = await journalBlockEvents(env, {
-				stream: cursorKey,
-				block: {
-					chainId: network.chainId,
-					blockNumber,
-					blockHash,
-					parentHash: block.parentHash,
-					timestamp: block.timestamp,
-					consistencyLevel,
-					source: "rpc_log_poller",
-					observedAt,
-					l1BatchNumber: finalityEvidence.l1BatchNumber,
-					l1Confirmations: finalityEvidence.l1Confirmations,
-				},
-				events,
-				userEvents,
-				expectedReorgEpoch,
-			});
-			alerted += journalResult.enqueuedUserEvents;
-		}
-
-		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: committedScanEnd,
-			includeTransactions: false,
-		});
-		rpcCalls++;
-		if (!scanEndBlock.hash) {
-			throw new Error("Recovery checkpoint block did not include a hash");
-		}
-		const checkpointEvidence = await getArbitrumBlockEvidence(
-			env,
-			publicClient,
-			{
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-			},
-		);
-		rpcCalls += checkpointEvidence.rpcCalls;
-		await journalBlockEvents(env, {
-			stream: cursorKey,
-			block: {
-				chainId: network.chainId,
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-				parentHash: scanEndBlock.parentHash,
-				timestamp: scanEndBlock.timestamp,
-				consistencyLevel:
-					checkpointEvidence.source === "node_interface"
-						? checkpointEvidence.consistencyLevel
-						: journalConsistency(finalitySource),
-				source: "rpc_log_poller",
-				observedAt: new Date().toISOString(),
-				l1BatchNumber: checkpointEvidence.l1BatchNumber,
-				l1Confirmations: checkpointEvidence.l1Confirmations,
-			},
-			events: [],
-			expectedReorgEpoch,
-		});
-
-		await setSyncCursor(env, cursorKey, committedScanEnd, {
-			chainId: network.chainId,
-			expectedReorgEpoch,
-		});
-		logInfo("recovery_watch_run", {
-			chainId: network.chainId,
-			fromBlock: fromBlock.toString(),
-			toBlock: committedScanEnd.toString(),
-			requestedToBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - committedScanEnd).toString(),
-			unconfirmedBlocks: (latest - scanHead).toString(),
-			finalitySource,
-			alerted,
-			shardId,
-			rpcCalls,
-			rpcRetries,
-			configuredMaxBlockRange: range.max.toString(),
-		});
-		return {
-			cursor: committedScanEnd,
-			targetBlock: desiredTarget,
-			scanHead,
-			caughtUp: committedScanEnd >= desiredTarget,
-		};
-	} catch (error) {
-		logError("recovery_watch_failed", error, {});
-		throw error;
-	}
-}
-
-/**
- * Canonical ERC-4337 receipt stream for GatoPago accounts. This replaces the
- * old per-payment 300k-block `eth_getLogs` lookup with one bounded, adaptive
- * scan per wallet shard. Reconciliation then becomes a D1 lookup (or a point
- * bundler receipt call) regardless of how many users are waiting.
- */
-export async function runUserOperationWatcher(
-	env: Bindings,
-	shardId: number,
-	targetBlock?: bigint,
-): Promise<ChainIndexRunResult | null> {
-	try {
-		const network = getNetworkConfig(env.CHAIN_KEY);
-		if (getRpcUrls(env, "indexer").length === 0) return null;
-		const wallets = await listWalletsForIndexerShard(env, {
-			chainId: network.chainId,
-			stream: userOperationAssignmentStream(network.chainId),
-			shardId,
-		});
-		if (wallets.length === 0) return null;
-
-		const byWallet = new Map(
-			wallets.map((wallet) => [
-				wallet.walletAddress.toLowerCase(),
-				wallet.uid,
-			]),
-		);
-		const providerPool = getIndexerProviderPool(env);
-		const publicClient = providerPool.pointClient;
-		const { latest, scanHead, finalitySource } =
-			await getIndexerScanHead(publicClient);
-		const cursorKey = `userops:${network.chainId}:shard:${shardId}`;
-		await verifyAndRecoverStream(env, publicClient, {
-			chainId: network.chainId,
-			stream: cursorKey,
-		});
-		const expectedReorgEpoch = await getChainReorgEpoch(
-			env,
-			network.chainId,
-		);
-
-		const cursor = await getSyncCursor(env, cursorKey);
-		const fromBlock =
-			cursor !== null
-				? cursor + 1n
-				: scanHead > BACKFILL_BLOCKS
-					? scanHead - BACKFILL_BLOCKS
-					: 0n;
-		const desiredTarget =
-			targetBlock !== undefined && targetBlock > scanHead
-				? targetBlock
-				: scanHead;
-		if (fromBlock > scanHead) {
-			return {
-				cursor: cursor ?? scanHead,
-				targetBlock: desiredTarget,
-				scanHead,
-				caughtUp: (cursor ?? scanHead) >= desiredTarget,
-			};
-		}
-		const range = logRangeConfig(env, providerPool.maxLogRange);
-		const maxCalls = maxLogCallsPerJob(env);
-		const scanEnd = boundedScanWindowEnd(
-			fromBlock,
-			scanHead,
-			range.max,
-			1,
-			maxCalls,
-			maxBlocksPerJob(env),
-		);
-
-		const occurrenceMap = new Map<string, UserOperationLog>();
-		let rpcCalls = 0;
-		let rpcRetries = 0;
-		const senders = wallets.map(
-			(wallet) => wallet.walletAddress as Address,
-		);
-		const stats = await scanLogsAdaptive<UserOperationLog>({
-			fromBlock,
-			toBlock: scanEnd,
-			minBlockSpan: range.min,
-			maxBlockSpan: range.max,
-			maxCalls,
-			fetchRange: (rangeFrom, rangeTo) =>
-				providerPool.requestLogs<UserOperationLog>(
-					rangeFrom,
-					rangeTo,
-					async (logClient) =>
-						(await logClient.getLogs({
-							address: network.contracts.entryPoint,
-							event: USER_OPERATION_EVENT,
-							args: { sender: senders },
-							fromBlock: rangeFrom,
-							toBlock: rangeTo,
-						})) as UserOperationLog[],
-				),
-			onRange: (logs) => {
-				for (const log of logs) {
-					if (
-						!log.transactionHash ||
-						log.logIndex === null ||
-						!log.blockHash
-					) continue;
-					occurrenceMap.set(
-						`${log.transactionHash.toLowerCase()}:${log.logIndex}:${log.blockHash.toLowerCase()}`,
-						log,
-					);
-				}
-			},
-		});
-		rpcCalls += stats.calls;
-		rpcRetries += stats.retries;
-		const committedScanEnd = boundedEvidenceWindowEnd(
-			scanEnd,
-			[...occurrenceMap.values()],
-			maxEventBlocksPerJob(env),
-		);
-
-		const byBlock = new Map<string, UserOperationLog[]>();
-		for (const log of occurrenceMap.values()) {
-			if (
-				log.blockNumber === null ||
-				!log.blockHash ||
-				log.blockNumber > committedScanEnd
-			) continue;
-			const key = `${log.blockNumber}:${log.blockHash.toLowerCase()}`;
-			const values = byBlock.get(key) ?? [];
-			values.push(log);
-			byBlock.set(key, values);
-		}
-
-		let projected = 0;
-		for (const logs of [...byBlock.values()].sort((left, right) =>
-			left[0].blockNumber! < right[0].blockNumber! ? -1 : 1,
-		)) {
-			const first = logs[0];
-			const blockNumber = first.blockNumber!;
-			const blockHash = first.blockHash!;
-			const block = await publicClient.getBlock({
-				blockHash,
-				includeTransactions: false,
-			});
-			rpcCalls++;
-			if (
-				!block.hash ||
-				block.hash.toLowerCase() !== blockHash.toLowerCase() ||
-				block.number !== blockNumber
-			) {
-				throw new Error(
-					"UserOperation log block evidence did not match its header",
-				);
-			}
-			const finalityEvidence = await getArbitrumBlockEvidence(
-				env,
-				publicClient,
-				{ blockNumber, blockHash },
-			);
-			rpcCalls += finalityEvidence.rpcCalls;
-			const consistencyLevel =
-				finalityEvidence.source === "node_interface"
-					? finalityEvidence.consistencyLevel
-					: journalConsistency(finalitySource);
-			const observedAt = new Date().toISOString();
-			const events: JournalEvent[] = [];
-			const receipts: JournalUserOperationReceipt[] = [];
-			for (const log of logs) {
-				const {
-					userOpHash,
-					sender,
-					paymaster,
-					nonce,
-					success,
-					actualGasCost,
-					actualGasUsed,
-				} = log.args;
-				if (
-					!userOpHash ||
-					!sender ||
-					nonce === undefined ||
-					success === undefined ||
-					actualGasCost === undefined ||
-					actualGasUsed === undefined ||
-					!log.transactionHash ||
-					log.logIndex === null
-				) continue;
-				const uid = byWallet.get(sender.toLowerCase());
-				if (!uid) continue;
-				const eventKind = "entrypoint.UserOperationEvent" as const;
-				events.push({
-					txHash: log.transactionHash,
-					logIndex: log.logIndex,
-					eventKind,
-					blockNumber,
-					blockHash,
-					transactionIndex: log.transactionIndex,
-					contractAddress: log.address,
-					topic0: log.topics[0] ?? null,
-					payload: {
-						userOpHash,
-						sender,
-						paymaster: paymaster ?? null,
-						nonce: nonce.toString(),
-						success,
-						actualGasCost: actualGasCost.toString(),
-						actualGasUsed: actualGasUsed.toString(),
-					},
-					source: "rpc_log_poller",
-					observedAt,
-					accounts: [
-						{
-							uid,
-							accountAddress: sender,
-							asset: "ACCOUNT",
-							role: "account",
-						},
-					],
-				});
-				receipts.push({
-					userOpHash,
-					txHash: log.transactionHash,
-					logIndex: log.logIndex,
-					eventKind,
-					blockNumber,
-					blockHash,
-					transactionIndex: log.transactionIndex,
-					sender,
-					nonce,
-					success,
-					actualGasCost,
-					actualGasUsed,
-					source: "rpc_log_poller",
-					observedAt,
-				});
-			}
-			if (events.length === 0) continue;
-			const result = await journalBlockEvents(env, {
-				stream: cursorKey,
-				block: {
-					chainId: network.chainId,
-					blockNumber,
-					blockHash,
-					parentHash: block.parentHash,
-					timestamp: block.timestamp,
-					consistencyLevel,
-					source: "rpc_log_poller",
-					observedAt,
-					l1BatchNumber: finalityEvidence.l1BatchNumber,
-					l1Confirmations: finalityEvidence.l1Confirmations,
-				},
-				events,
-				userOperationReceipts: receipts,
-				expectedReorgEpoch,
-			});
-			projected += result.projectedUserOperations;
-		}
-
-		const scanEndBlock = await publicClient.getBlock({
-			blockNumber: committedScanEnd,
-			includeTransactions: false,
-		});
-		rpcCalls++;
-		if (!scanEndBlock.hash) {
-			throw new Error(
-				"UserOperation checkpoint block did not include a hash",
-			);
-		}
-		const checkpointEvidence = await getArbitrumBlockEvidence(
-			env,
-			publicClient,
-			{
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-			},
-		);
-		rpcCalls += checkpointEvidence.rpcCalls;
-		await journalBlockEvents(env, {
-			stream: cursorKey,
-			block: {
-				chainId: network.chainId,
-				blockNumber: committedScanEnd,
-				blockHash: scanEndBlock.hash,
-				parentHash: scanEndBlock.parentHash,
-				timestamp: scanEndBlock.timestamp,
-				consistencyLevel:
-					checkpointEvidence.source === "node_interface"
-						? checkpointEvidence.consistencyLevel
-						: journalConsistency(finalitySource),
-				source: "rpc_log_poller",
-				observedAt: new Date().toISOString(),
-				l1BatchNumber: checkpointEvidence.l1BatchNumber,
-				l1Confirmations: checkpointEvidence.l1Confirmations,
-			},
-			events: [],
-			expectedReorgEpoch,
-		});
-		await setSyncCursor(env, cursorKey, committedScanEnd, {
-			chainId: network.chainId,
-			expectedReorgEpoch,
-		});
-		logInfo("user_operation_watch_run", {
-			chainId: network.chainId,
-			fromBlock: fromBlock.toString(),
-			toBlock: committedScanEnd.toString(),
-			requestedToBlock: scanEnd.toString(),
-			behindBlocks: (scanHead - committedScanEnd).toString(),
-			unconfirmedBlocks: (latest - scanHead).toString(),
-			finalitySource,
-			shardId,
-			projected,
-			rpcCalls,
-			rpcRetries,
-			configuredMaxBlockRange: range.max.toString(),
-		});
-		return {
-			cursor: committedScanEnd,
-			targetBlock: desiredTarget,
-			scanHead,
-			caughtUp: committedScanEnd >= desiredTarget,
-		};
-	} catch (error) {
-		logError("user_operation_watch_failed", error, {});
-		throw error;
-	}
 }

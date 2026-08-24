@@ -95,7 +95,7 @@ WEBHOOK_SECRET_ENCRYPTION_KEY=
 WEBHOOK_SECRET_ENCRYPTION_KEY_ID=2026_07
 # Durante una rotación: JSON {"id_anterior":"clave_anterior"}. Vaciar después
 # de que el job de rotación haya recifrado todas las filas con el ID activo.
-WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS=
+WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS={}
 
 CHAIN_KEY=arbitrum-sepolia
 
@@ -110,6 +110,17 @@ FAUCET_DAILY_BUDGET_USDC=500
 
 # JSON del service account de FCM en 1 linea (opcional; sin definir = sin push).
 FCM_SERVICE_ACCOUNT=
+
+# Autenticacion por codigo de 6 digitos. FIREBASE_SERVICE_ACCOUNT puede usar la
+# misma cuenta de servicio que FCM, pero se mantiene separado para rotacion y
+# minimo privilegio. FIREBASE_WEB_API_KEY es la clave publica del SDK web.
+FIREBASE_SERVICE_ACCOUNT=
+FIREBASE_WEB_API_KEY=
+# Secreto aleatorio de al menos 32 caracteres; HMAC de emails y codigos en D1.
+# Ejemplo: openssl rand -base64 48
+AUTH_CODE_PEPPER=
+# Debe pertenecer a un dominio dado de alta en Cloudflare Email Sending.
+AUTH_EMAIL_FROM=acceso@parmelia.me
 
 # URL publica del cliente usada para links de checkout.
 APP_URL=https://app.parmelia.me

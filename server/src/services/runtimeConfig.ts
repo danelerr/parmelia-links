@@ -77,6 +77,48 @@ function validOptionalInteger(
 	return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max;
 }
 
+/** Dependencies required by sign-in OTP, recovery step-up and security email. */
+export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[] {
+	const issues: RuntimeConfigIssue[] = [];
+	if (!env.AUTH_CODE_PEPPER?.trim() || env.AUTH_CODE_PEPPER.trim().length < 32) {
+		issues.push(issue("AUTH_CODE_PEPPER_INVALID", "AUTH_CODE_PEPPER must contain at least 32 characters"));
+	}
+	const rawServiceAccount = env.FIREBASE_SERVICE_ACCOUNT?.trim() || env.FCM_SERVICE_ACCOUNT?.trim();
+	if (!rawServiceAccount) {
+		issues.push(issue("FIREBASE_ADMIN_MISSING", "FIREBASE_SERVICE_ACCOUNT is required for email-code authentication"));
+	} else {
+		try {
+			const account = JSON.parse(rawServiceAccount) as Record<string, unknown>;
+			if (
+				account.project_id !== env.FIREBASE_PROJECT_ID ||
+				typeof account.client_email !== "string" ||
+				!account.client_email ||
+				typeof account.private_key !== "string" ||
+				!account.private_key ||
+				account.token_uri !== "https://oauth2.googleapis.com/token"
+			) {
+				throw new Error("invalid");
+			}
+		} catch {
+			issues.push(issue("FIREBASE_ADMIN_INVALID", "Firebase service-account JSON must match FIREBASE_PROJECT_ID"));
+		}
+	}
+	if (!env.FIREBASE_WEB_API_KEY?.trim()) {
+		issues.push(issue("FIREBASE_WEB_API_KEY_MISSING", "FIREBASE_WEB_API_KEY is required for email-code authentication"));
+	}
+	if (!env.EMAIL) {
+		issues.push(issue("EMAIL_BINDING_MISSING", "The Cloudflare Email Sending binding is required"));
+	}
+	if (
+		!env.AUTH_EMAIL_FROM?.trim() ||
+		!/^\S+@\S+\.\S+$/.test(env.AUTH_EMAIL_FROM.trim()) ||
+		env.AUTH_EMAIL_FROM.trim().length > 254
+	) {
+		issues.push(issue("AUTH_EMAIL_FROM_INVALID", "AUTH_EMAIL_FROM must be a valid allowed sender"));
+	}
+	return issues;
+}
+
 /** Validate configuration without exposing any secret values. */
 export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	const issues: RuntimeConfigIssue[] = [];
@@ -330,6 +372,7 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	if (!env.TURNSTILE_SECRET_KEY?.trim()) {
 		issues.push(issue("TURNSTILE_MISSING", "TURNSTILE_SECRET_KEY is required on mainnet"));
 	}
+	issues.push(...validateEmailSecurityConfig(env));
 
 	const requiredContracts = ["factory", "paymaster", "verifier", "paymentRouter", "crosschainRouter"] as const;
 	for (const name of requiredContracts) {

@@ -4,6 +4,7 @@ import type { Bindings } from "../middlewares/auth";
 import {
 	claimFaucet,
 	createAccountOperation,
+	enqueueUserEvent,
 	ensureReferralCode,
 	finishAccountOperation,
 	getAccountOperationById,
@@ -35,6 +36,7 @@ import {
 } from "./clients";
 import { extractErrorMessage, logError, logInfo, logWarn } from "./logger";
 import { SignerLeaseBusyError, withSignerLease } from "./signerLease";
+import { scheduleEventJob } from "./eventScheduler";
 
 const OPERATION_TTL_MS = 24 * 60 * 60_000;
 const FAUCET_AMOUNT_USDC = 5;
@@ -277,6 +279,34 @@ function requiredString(metadata: Record<string, unknown>, key: string): string 
 	return value;
 }
 
+function optionalString(metadata: Record<string, unknown>, key: string): string | null {
+	const value = metadata[key];
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function optionalStringArray(metadata: Record<string, unknown>, key: string): string[] {
+	const value = metadata[key];
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string")
+		: [];
+}
+
+async function enqueueAccountSecurityEvent(
+	env: Bindings,
+	effect: Parameters<typeof enqueueUserEvent>[1],
+): Promise<void> {
+	await enqueueUserEvent(env, effect);
+	await scheduleEventJob(env, "user_event_delivery", {
+		delayMs: 1_000,
+		reason: "account_security_event",
+	}).catch((error) => {
+		logError("account_security_event_wakeup_failed", error, {
+			eventType: effect.eventType,
+			uid: effect.uid,
+		});
+	});
+}
+
 async function finalizeAccountOperation(env: Bindings, operation: AccountOperationRecord): Promise<void> {
 	const metadata = operation.metadata;
 	if (operation.kind === "account_create") {
@@ -285,7 +315,15 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 		const qx = requiredString(metadata, "qx");
 		const qy = requiredString(metadata, "qy");
 		await saveUser(env, { uid: operation.uid, walletAddress, credentialId });
-		await savePasskey(env, { uid: operation.uid, credentialId, qx, qy });
+		await savePasskey(env, {
+			uid: operation.uid,
+			credentialId,
+			qx,
+			qy,
+			name: optionalString(metadata, "passkeyName"),
+			registrationSource: "onboarding",
+			transports: optionalStringArray(metadata, "passkeyTransports"),
+		});
 		await ensureReferralCode(env, operation.uid).catch(() => null);
 
 		const ref = typeof metadata.ref === "string" ? metadata.ref.trim() : "";
@@ -333,7 +371,39 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 		const qx = requiredString(metadata, "qx");
 		const qy = requiredString(metadata, "qy");
 		await saveUser(env, { uid: operation.uid, credentialId });
-		await savePasskey(env, { uid: operation.uid, credentialId, qx, qy });
+		await savePasskey(env, {
+			uid: operation.uid,
+			credentialId,
+			qx,
+			qy,
+			registrationSource: "recovery",
+		});
+		await enqueueAccountSecurityEvent(env, {
+			dedupeKey: `account-operation:${operation.id}:security.recovery_executed`,
+			uid: operation.uid,
+			eventType: "security.recovery_executed",
+			priority: 0,
+			payload: {
+				title: "Recuperación completada",
+				body: "Tu llave nueva reemplazó las llaves anteriores. Si no fuiste tú, contacta soporte de inmediato.",
+				link: "/security",
+			},
+		});
+		return;
+	}
+
+	if (operation.kind === "recovery_cancel") {
+		await enqueueAccountSecurityEvent(env, {
+			dedupeKey: `account-operation:${operation.id}:security.recovery_cancelled`,
+			uid: operation.uid,
+			eventType: "security.recovery_cancelled",
+			priority: 0,
+			payload: {
+				title: "Recuperación cancelada",
+				body: "La solicitud pendiente fue cancelada y tus llaves actuales no cambiaron.",
+				link: "/security",
+			},
+		});
 	}
 }
 

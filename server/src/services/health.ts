@@ -5,7 +5,10 @@ import { logError } from "./logger";
 import { getOperationalHealth, type OperationalHealthSummary } from "./operationalHealth";
 import { getRpcUrls } from "./clients";
 import { getRpcHealthSummary, type RpcRoleName } from "./rpcControlPlane";
-import { validateRuntimeConfig } from "./runtimeConfig";
+import {
+	validateEmailSecurityConfig,
+	validateRuntimeConfig,
+} from "./runtimeConfig";
 
 type HealthStatus = "ok" | "degraded" | "not_ready";
 
@@ -52,6 +55,9 @@ export async function collectHealthSnapshot(
 ): Promise<HealthSnapshot> {
 	const issueCodes = validateRuntimeConfig(env).map((entry) => entry.code);
 	const warnings: string[] = [];
+	if (validateEmailSecurityConfig(env).length > 0) {
+		warnings.push("email_security_unconfigured");
+	}
 	let rpcHealth: HealthSnapshot["rpc"] = [];
 	let operationalHealth: OperationalHealthSummary | null = null;
 

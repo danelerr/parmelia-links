@@ -123,8 +123,7 @@ async function sendToToken(
 			payload.kind === "notification"
 				? {
 						notification: {
-							icon: "/gatopago.svg",
-							badge: "/badge-96.png",
+							icon: "/icon-192.png",
 						},
 						fcm_options: { link: payload.link ?? "/" },
 					}

@@ -10,6 +10,10 @@ type OptionalBindingKey =
 	| "PAYMENT_ROUTER_SIGNER_PRIVATE_KEY"
 	| "TURNSTILE_SECRET_KEY"
 	| "FCM_SERVICE_ACCOUNT"
+	| "FIREBASE_SERVICE_ACCOUNT"
+	| "FIREBASE_WEB_API_KEY"
+	| "AUTH_CODE_PEPPER"
+	| "AUTH_EMAIL_FROM"
 	| "APP_URL"
 	| "GATOPAGO_FEES_ENABLED"
 	| "GATOPAGO_SWAP_FEE_BPS"
@@ -68,7 +72,8 @@ type StringBindingKey = {
 type OptionalInfrastructureBindings =
 	| "SCHEDULED_JOBS_QUEUE"
 	| "EVENT_JOB_SCHEDULER"
-	| "RPC_ADMISSION";
+	| "RPC_ADMISSION"
+	| "EMAIL";
 
 export type Bindings = Omit<CloudflareBindings, StringBindingKey | OptionalInfrastructureBindings> &
 	Record<Exclude<StringBindingKey, OptionalBindingKey>, string> &

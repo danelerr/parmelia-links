@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
 	submitAccountOperation: vi.fn(),
 	reconcileAccountOperation: vi.fn(),
 	rateLimitConsume: vi.fn(),
+	consumeRecoveryStepUp: vi.fn(),
+	validateRecoveryStepUp: vi.fn(),
+	finalizeWebAuthnRegistration: vi.fn(),
 }));
 
 vi.mock("../src/middlewares/auth", () => ({
@@ -30,6 +33,20 @@ vi.mock("../src/services/storage", () => ({
 	getActiveAccountOperation: mocks.getActiveAccountOperation,
 	getAccountOperationById: mocks.getAccountOperationById,
 	rateLimitConsume: mocks.rateLimitConsume,
+}));
+
+vi.mock("../src/services/emailOtp", () => ({
+	consumeRecoveryStepUp: mocks.consumeRecoveryStepUp,
+	validateRecoveryStepUp: mocks.validateRecoveryStepUp,
+}));
+
+vi.mock("../src/services/webauthnRegistration", () => ({
+	InvalidWebAuthnRegistrationError: class InvalidWebAuthnRegistrationError extends Error {},
+	deleteExpiredWebAuthnRegistrations: vi.fn(),
+	finalizeWebAuthnRegistration: mocks.finalizeWebAuthnRegistration,
+	getFinalizedWebAuthnRegistration: vi.fn(),
+	issueWebAuthnRegistration: vi.fn(),
+	validWebAuthnRegistrationOrigin: vi.fn(() => "https://app.parmelia.me"),
 }));
 
 vi.mock("../src/services/clients", () => ({
@@ -74,12 +91,14 @@ const QY = ("0x" + "22".repeat(32)) as Hex;
 const OTHER_QX = ("0x" + "33".repeat(32)) as Hex;
 const PROPOSED_SIGNER = (OLD_VERIFIER + QX.slice(2) + QY.slice(2)) as Hex;
 
-function post(path: string, body?: unknown) {
+function post(path: string, body?: unknown, stepUpToken: string | null = "test-step-up-token") {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (stepUpToken) headers["X-Step-Up-Token"] = stepUpToken;
 	return accountRoutes.request(
 		path,
 		{
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers,
 			body: JSON.stringify(body ?? {}),
 		},
 		ENV,
@@ -116,6 +135,16 @@ beforeEach(() => {
 		operation: storedOperation({ kind: input.kind, metadata: input.metadata }),
 	}));
 	mocks.rateLimitConsume.mockResolvedValue(true);
+	mocks.consumeRecoveryStepUp.mockResolvedValue(true);
+	mocks.validateRecoveryStepUp.mockResolvedValue(true);
+	mocks.finalizeWebAuthnRegistration.mockResolvedValue({
+		registrationId: "registration-1",
+		credentialId: "credential-1",
+		qx: QX,
+		qy: QY,
+		name: "Recovery key",
+		transports: ["internal"],
+	});
 });
 
 async function jsonBody(response: Response): Promise<Record<string, unknown>> {
@@ -189,6 +218,36 @@ describe("POST /recovery/execute", () => {
 			.toBe("executeRecovery");
 	});
 
+	it("403 STEP_UP_REQUIRED before a ready recovery can execute", async () => {
+		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+
+		const res = await post(
+			"/recovery/execute",
+			{ credentialId: "cred-1", qx: QX, qy: QY },
+			null,
+		);
+
+		expect(res.status).toBe(403);
+		expect((await jsonBody(res)).error_code).toBe("STEP_UP_REQUIRED");
+		expect(mocks.consumeRecoveryStepUp).not.toHaveBeenCalled();
+		expect(mocks.submitAccountOperation).not.toHaveBeenCalled();
+	});
+
+	it("403 STEP_UP_INVALID for a consumed or expired proof", async () => {
+		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+		mocks.consumeRecoveryStepUp.mockResolvedValueOnce(false);
+
+		const res = await post("/recovery/execute", {
+			credentialId: "cred-1",
+			qx: QX,
+			qy: QY,
+		});
+
+		expect(res.status).toBe(403);
+		expect((await jsonBody(res)).error_code).toBe("STEP_UP_INVALID");
+		expect(mocks.submitAccountOperation).not.toHaveBeenCalled();
+	});
+
 	it("409 RECOVERY_SIGNER_MISMATCH when the key is not the proposed one; nothing executes", async () => {
 		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
 
@@ -215,6 +274,57 @@ describe("POST /recovery/execute", () => {
 		const res = await post("/recovery/execute", { credentialId: "cred-1", qx: QX, qy: QY });
 		expect(res.status).toBe(409);
 		expect((await jsonBody(res)).error_code).toBe("RECOVERY_NONE");
+	});
+});
+
+describe("POST /recovery/propose", () => {
+	const registrationBody = {
+		registrationId: "registration-1",
+		credentialId: "credential-1",
+		qx: QX,
+		qy: QY,
+		clientDataJSON: "client-data",
+		attestationObject: "attestation",
+	};
+
+	function recoveryAvailable() {
+		mocks.readContract
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce("0x00000000000000000000000000000000000000aa");
+	}
+
+	it("requires step-up on the mutation even after WebAuthn was finalized", async () => {
+		recoveryAvailable();
+		const res = await post("/recovery/propose", registrationBody, null);
+
+		expect(res.status).toBe(403);
+		expect((await jsonBody(res)).error_code).toBe("STEP_UP_REQUIRED");
+		expect(mocks.finalizeWebAuthnRegistration).not.toHaveBeenCalled();
+		expect(mocks.submitAccountOperation).not.toHaveBeenCalled();
+	});
+
+	it("consumes the proof before creating the durable recovery proposal", async () => {
+		recoveryAvailable();
+		const res = await post("/recovery/propose", registrationBody);
+
+		expect(res.status).toBe(202);
+		expect(mocks.finalizeWebAuthnRegistration).toHaveBeenCalledOnce();
+		expect(mocks.consumeRecoveryStepUp).toHaveBeenCalledWith(
+			ENV,
+			{ uid: "user-1", token: "test-step-up-token" },
+		);
+		expect(mocks.submitAccountOperation).toHaveBeenCalledOnce();
+	});
+
+	it("rejects a replay when its proof was consumed or expired", async () => {
+		recoveryAvailable();
+		mocks.consumeRecoveryStepUp.mockResolvedValueOnce(false);
+		const res = await post("/recovery/propose", registrationBody);
+
+		expect(res.status).toBe(403);
+		expect((await jsonBody(res)).error_code).toBe("STEP_UP_INVALID");
+		expect(mocks.finalizeWebAuthnRegistration).toHaveBeenCalledOnce();
+		expect(mocks.submitAccountOperation).not.toHaveBeenCalled();
 	});
 });
 

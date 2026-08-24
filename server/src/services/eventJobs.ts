@@ -13,10 +13,10 @@ import {
 import {
 	type ChainIndexRunResult,
 	runIndexer,
-	runRecoveryWatcher,
-	runRouterWatcher,
-	runUserOperationWatcher,
 } from "./indexer";
+import { runRecoveryWatcher } from "./indexer/recoveryWatcher";
+import { runRouterWatcher } from "./indexer/routerWatcher";
+import { runUserOperationWatcher } from "./indexer/userOperationWatcher";
 import {
 	drainIndexerWalletRegistry,
 	parseShardPartition,

@@ -114,4 +114,18 @@ describe("confirmed balance refresh targets", () => {
 			},
 		]);
 	});
+
+	it("skips asset refreshes for passkey-only signer changes", () => {
+		expect(
+			__test.confirmedBalanceRefreshTargets(
+				{
+					uid: "sender",
+					senderAddress: "0x1111111111111111111111111111111111111111",
+					wallet: "0x1111111111111111111111111111111111111111",
+					currency: "PASSKEY_ADD",
+				},
+				null,
+			),
+		).toEqual([]);
+	});
 });

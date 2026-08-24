@@ -26,8 +26,10 @@ import {
 	getPendingPaymentAnyState,
 	getUserByWallet,
 	listDuePaymentReconcileRequests,
+	markPasskeyRevoked,
 	releasePaymentLinkClaim,
 	reschedulePaymentReconcileRequest,
+	savePasskey,
 	settlePaymentLinkWithOutbox,
 	setPendingPaymentStatus,
 	sweepRateLimits,
@@ -49,10 +51,19 @@ import { refreshWalletBalancesLatestBatch } from "./balanceReconciler";
 // the same sign+submit pipeline but must not be recorded as transfers.
 export const NON_PAYMENT_CURRENCIES = new Set([
 	"PASSKEY_ADD",
+	"PASSKEY_REMOVE",
 	"SWAP",
 	"CROSSCHAIN",
 	"EARN_DEPOSIT",
 	"EARN_WITHDRAW",
+]);
+
+// Signer-management operations spend gas but do not move any user asset. A
+// balance read after each passkey change adds RPC latency and load without
+// changing a value the UI can display.
+const BALANCE_NEUTRAL_CURRENCIES = new Set([
+	"PASSKEY_ADD",
+	"PASSKEY_REMOVE",
 ]);
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -73,7 +84,9 @@ function confirmedBalanceRefreshTargets(
 		targets.set(accountAddress, { uid, accountAddress });
 	};
 
-	add(pending.uid, pending.senderAddress);
+	if (!BALANCE_NEUTRAL_CURRENCIES.has(pending.currency)) {
+		add(pending.uid, pending.senderAddress);
+	}
 	if (
 		recipientUid &&
 		recipientUid !== pending.uid &&
@@ -226,6 +239,32 @@ export async function settlePayment(
 		if (typeof meta.quoteId === "string") {
 			await updateSwapQuoteStatus(env, meta.quoteId, "executed");
 		}
+	} else if (pending.currency === "PASSKEY_ADD") {
+		const meta = pending.meta ?? {};
+		if (
+			typeof meta.credentialId !== "string" ||
+			typeof meta.qx !== "string" ||
+			typeof meta.qy !== "string"
+		) {
+			throw new Error("Confirmed passkey operation is missing registration metadata");
+		}
+		await savePasskey(env, {
+			uid,
+			credentialId: meta.credentialId,
+			qx: meta.qx,
+			qy: meta.qy,
+			name: typeof meta.name === "string" ? meta.name : null,
+			registrationSource: "backup",
+			transports: Array.isArray(meta.transports)
+				? meta.transports.filter((item): item is string => typeof item === "string")
+				: [],
+		});
+	} else if (pending.currency === "PASSKEY_REMOVE") {
+		const credentialId = pending.meta?.credentialId;
+		if (typeof credentialId !== "string") {
+			throw new Error("Confirmed passkey removal is missing credential metadata");
+		}
+		await markPasskeyRevoked(env, { uid, credentialId, revokedAt: createdAt });
 	} else if (pending.currency === "CROSSCHAIN") {
 		const meta = pending.meta ?? {};
 		const opId = typeof meta.opId === "string" ? meta.opId : null;

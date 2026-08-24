@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	acquireLease: vi.fn(),
 	claimFaucet: vi.fn(),
 	createAccountOperation: vi.fn(),
+	enqueueUserEvent: vi.fn(),
 	ensureReferralCode: vi.fn(),
 	finishAccountOperation: vi.fn(),
 	getAccountOperationById: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../src/services/storage", () => ({
 	acquireLease: mocks.acquireLease,
 	claimFaucet: mocks.claimFaucet,
 	createAccountOperation: mocks.createAccountOperation,
+	enqueueUserEvent: mocks.enqueueUserEvent,
 	ensureReferralCode: mocks.ensureReferralCode,
 	finishAccountOperation: mocks.finishAccountOperation,
 	getAccountOperationById: mocks.getAccountOperationById,
@@ -126,6 +128,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	persisted = null;
 	mocks.acquireLease.mockResolvedValue("lease-owner");
+	mocks.enqueueUserEvent.mockResolvedValue(true);
 	mocks.releaseLease.mockResolvedValue(undefined);
 	mocks.getActiveAccountOperation.mockResolvedValue(null);
 	mocks.getSignerBlockingAccountOperation.mockResolvedValue(null);
@@ -206,6 +209,7 @@ describe("durable account operations", () => {
 			credentialId: "credential-1",
 			qx: "0x11",
 			qy: "0x22",
+			registrationSource: "recovery",
 		});
 		expect(result?.status).toBe("confirmed");
 	});

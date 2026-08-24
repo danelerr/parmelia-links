@@ -20,6 +20,16 @@ export default defineConfig({
 				bindings: {
 					RPC_URL: "https://rpc.example.invalid",
 					PRIVATE_KEY: `0x${"01".repeat(32)}`,
+					AUTH_CODE_PEPPER: "p".repeat(32),
+					FIREBASE_PROJECT_ID: "runtime-test",
+					FIREBASE_SERVICE_ACCOUNT: JSON.stringify({
+						project_id: "runtime-test",
+						client_email: "runtime-test@example.iam.gserviceaccount.com",
+						private_key: "runtime-test-only",
+						token_uri: "https://oauth2.googleapis.com/token",
+					}),
+					FIREBASE_WEB_API_KEY: "runtime-test-key",
+					AUTH_EMAIL_FROM: "runtime@example.com",
 					TEST_MIGRATIONS: await readD1Migrations(`${serverRoot}migrations`),
 				},
 			},
