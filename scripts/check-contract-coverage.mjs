@@ -9,9 +9,11 @@ const reportPath = resolve(contractsDir, "lcov.info");
 const thresholds = {
   "src/AccountFactoryV2.sol": { lines: 80, branches: 80, functions: 100 },
   "src/AccountWebAuthnV2.sol": { lines: 85, branches: 80, functions: 90 },
+  "src/ParmeliaCctpPaymentRouter.sol": { lines: 90, branches: 80, functions: 90 },
   "src/ParmeliaCrosschainRouter.sol": { lines: 90, branches: 80, functions: 90 },
   "src/ParmeliaPaymaster.sol": { lines: 85, branches: 80, functions: 90 },
   "src/ParmeliaPaymentRouter.sol": { lines: 90, branches: 80, functions: 90 },
+  "src/ParmeliaPaymentRouterV2.sol": { lines: 90, branches: 80, functions: 90 },
 };
 
 execFileSync(
@@ -24,6 +26,11 @@ execFileSync(
     "--report-file",
     reportPath,
     "--exclude-tests",
+    // Invariants run at their full depth in the later `forge test` gate. Unit
+    // and fuzz tests already exercise every coverage branch, so instrumenting
+    // the 128,000-call state-machine campaigns here only duplicates work.
+    "--no-match-test",
+    "invariant_",
     "--no-match-coverage",
     "script/",
   ],

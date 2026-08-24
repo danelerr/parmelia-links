@@ -1,14 +1,13 @@
-# Integraciones - Runbook de configuración (Turnstile, Login, FCM, Analytics, Queues)
+# Integraciones - Runbook de configuración (Turnstile, login, correo, FCM, Analytics y Queues)
 
-> Para cada integración: **Parte A** = pasos de consola (los haces tú),
-> **Parte B** = qué valores entregar, y con eso se implementa el código.
-> Todo el código está hecho con feature-flags: sin la key configurada, la app
-> sigue funcionando exactamente como hoy.
+> Para cada integración: **Parte A** = pasos de consola; **Parte B** = secretos o
+> variables que debe recibir el despliegue. La ausencia de una integración
+> sensible degrada testnet y falla cerrado en mainnet.
 >
-> **Snapshot (jun-2026; verificar antes de operar):** Turnstile (1), Email link
-> (2), FCM push (3) y Analytics GA4 (4) estaban configurados (FCM
-> verificado con depósitos externos desde MetaMask). **Login con Apple: descartado
-> por decisión** (no se integrará). Queues (5) NO se implementó: requiere plan pago.
+> **Código del 24-ago-2026; verificar consola antes de operar:** Turnstile,
+> acceso con código de 6 dígitos, FCM, Analytics, Queues y Email Sending están
+> integrados. Este documento no confirma que sus credenciales remotas sigan
+> vigentes. **Login con Apple está descartado.**
 > Verificar que `VITE_FIREBASE_MEASUREMENT_ID` esté también en Vercel (no solo local).
 
 ---
@@ -37,29 +36,46 @@ cd server && npx wrangler secret put TURNSTILE_SECRET_KEY
 Me avisas "Turnstile listo" + me pasas la **site key** (la secret no - esa ya quedó en wrangler).
 
 ### Qué implemento yo después
-- Cliente: widget de Turnstile en **Onboarding** (antes de crear la cuenta) y en el **faucet** de Settings; el token viaja en el body.
-- Server: verificación del token contra `https://challenges.cloudflare.com/turnstile/v0/siteverify` en `/account/create` y `/account/fund`. Sin `TURNSTILE_SECRET_KEY` configurada → se omite (dev sigue fluido).
+- Cliente: widget de Turnstile en onboarding, faucet y solicitud de código de acceso; el token se renueva tras cada intento porque es de un solo uso.
+- Server: verificación contra Siteverify. En testnet sin secret se permite desarrollo local; en mainnet la configuración incompleta falla cerrado.
 
 ---
 
-## 2. Login con Email (magic link) - Firebase Auth, cero cambios de server
+## 2. Login por correo con código de 6 dígitos
 
-> **Apple: descartado por decisión** (no se integrará). El código de Apple se
-> eliminó del cliente; el login es Google + magic link por correo.
+> El login es Google o código numérico. El correo nunca contiene un enlace de
+> acceso y Firebase no genera el código: lo genera y valida el Worker.
 
-### Parte A - Email link (~5 min, gratis)
+### Parte A - Firebase y Cloudflare
 1. https://console.firebase.google.com → proyecto **proyecto-prueba-push-firebase**.
-2. **Authentication → Sign-in method → Add new provider → Email/Password** → habilítalo **y activa el toggle "Email link (passwordless sign-in)"** → Save.
-3. **Authentication → Settings → Authorized domains:** verifica que estén `parmelia.me` y `localhost`.
-4. **Authentication → Settings → User account linking:** selecciona **"Link accounts that use the same email"** (así Google y magic link del mismo correo = misma cuenta = misma wallet).
-5. (Opcional, recomendado) **Authentication → Templates →** edita la plantilla del email: idioma **español**, nombre del remitente **GatoPago**.
+2. **Authentication → Sign-in method:** habilita Google. No habilites acceso por enlace de correo.
+3. **Authentication → Settings → Authorized domains:** verifica `app.parmelia.me`, `parmelia.me` y `localhost`.
+4. **Project settings → Service accounts:** crea una cuenta de servicio dedicada al Worker y conserva el JSON fuera del repo/OneDrive.
+5. En Cloudflare Email Sending valida el remitente `acceso@parmelia.me`; el binding `EMAIL` ya está declarado en `server/wrangler.jsonc`.
 
-### Parte B - Qué entregar
-Solo el aviso: "Email link habilitado". No hay keys que pasarme - el cliente ya tiene la config de Firebase.
+### Parte B - Configuración del Worker
 
-### Estado
-- Login: botón **"Continuar con correo"** → input → `sendSignInLinkToEmail` → pantalla "Revisa tu correo"; al volver por el link, la app detecta `isSignInWithEmailLink` y completa la sesión. **Implementado.**
-- Server: **cero cambios** (mismo JWT de Firebase).
+```powershell
+cd server
+pnpm exec wrangler secret put FIREBASE_SERVICE_ACCOUNT
+pnpm exec wrangler secret put FIREBASE_WEB_API_KEY
+pnpm exec wrangler secret put AUTH_CODE_PEPPER
+```
+
+`FIREBASE_SERVICE_ACCOUNT` es el JSON completo; `FIREBASE_WEB_API_KEY` es la
+clave pública usada para canjear el Custom Token; `AUTH_CODE_PEPPER` debe ser un
+valor aleatorio de al menos 32 caracteres. No los prefijes con `VITE_`.
+
+### Flujo implementado
+
+1. El cliente resuelve Turnstile y llama `POST /auth/email-code/request`.
+2. El Worker genera seis dígitos con Web Crypto, persiste solo HMAC + TTL + intentos y envía el correo mediante el binding `EMAIL`.
+3. `POST /auth/email-code/verify` consume el código atómicamente y devuelve un Firebase Custom Token.
+4. El cliente llama `signInWithCustomToken`; desde ahí usa el mismo Firebase ID token que el login Google.
+
+Los códigos expiran en 10 minutos, tienen cinco intentos totales y son de un
+solo uso. Recovery exige otro código ligado al UID y entrega un proof distinto,
+también de un solo uso; nunca se acepta un correo elegido por el cliente.
 
 ---
 
@@ -97,20 +113,24 @@ cd server && npx wrangler secret put FCM_SERVICE_ACCOUNT
 - **Alternativa server-side** (después): Workers Analytics Engine para métricas de negocio (pagos/día, volumen) escritas desde el propio Worker - sin JS de tracking. Verificar disponibilidad en el plan antes de comprometerse.
 - Lo que NO haría: meter un tercero más (Mixpanel/Amplitude) - GA4 cubre el 90% gratis y ya estamos en Firebase.
 
-## 5. Queues - qué podemos hacer
+## 5. Queues - estado actual
 
-**Qué es el cambio:** hoy `/pay/submit` espera el recibo on-chain dentro del request (~1-3 s colgado). Con Queues: submit envía la tx, **encola** `{userOpHash, txHash}` y responde al instante; un consumer procesa el recibo, escribe el ledger y dispara el push; el cliente consulta `/pay/status/:userOpHash`. Implementa de una vez los items #15 y #16 del backlog (más resiliencia: si el Worker muere a mitad, la cola reintenta - escrituras ya idempotentes).
+El Worker ya declara `SCHEDULED_JOBS_QUEUE`, su DLQ y un Durable Object
+particionado. Los requests registran primero el estado durable en D1; la Queue
+despierta reconciliación, liquidación, webhooks, notificaciones y alertas de
+seguridad. No se usa GitHub Actions como runtime: Actions sirve como CI efímero,
+no ofrece latencia, disponibilidad ni semántica de reintento para tráfico de la app.
 
-**Decisión previa (tuya):** requiere **Workers Paid ($5/mes)** en la cuenta de Cloudflare (dash → Workers & Pages → Plans). 
-
-**Mi recomendación honesta:** no urge en testnet - el flujo síncrono actual funciona y el polling ya está tuneado para Arbitrum. Actívalo cuando (a) pases a mainnet con usuarios reales, o (b) implementemos FCM (push + cola se complementan perfecto: la cola garantiza que el "te pagaron" salga aunque el request original muera). Si decides pagar el plan, avísame y lo implemento junto con un `/pay/status` para el cliente.
+Antes de desplegar confirma que ambas queues existen y que el plan de Cloudflare
+las admite. La ausencia de la infraestructura remota no queda probada por el
+código local.
 
 ---
 
 ## Orden sugerido de ejecución
 
-1. **Turnstile** (5 min de consola, gratis) → me pasas site key → implemento.
-2. **Email link** (5 min, gratis) → me avisas → implemento Login nuevo.
-3. **FCM** (5 min de consola) → me pasas VAPID + secret configurado → implemento push.
-4. **GA4** (1 clic) → implemento eventos.
-5. **Queues** → decisión de plan; implementación cuando haya volumen o junto a FCM.
+1. Aplicar todas las migraciones D1 hasta `0032_recovery_step_up.sql`.
+2. Validar Turnstile, Email Sending y los tres secretos de Firebase/OTP.
+3. Validar FCM (VAPID + service account) y GA4 si se mantiene Analytics.
+4. Confirmar Queue, DLQ y migraciones del Durable Object.
+5. Ejecutar `pnpm verify:all`, dry-run del Worker y pruebas reales en preview antes de producción.

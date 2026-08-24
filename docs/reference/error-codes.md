@@ -59,6 +59,9 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `UNSUPPORTED_CURRENCY` | Moneda fuera de la whitelist de la red. |
 | `INVALID_USERNAME` | Username fuera de `^[a-z0-9_-]{3,30}$`. |
 | `INVALID_CURSOR` | Cursor opaco de paginación ausente, alterado o malformado. |
+| `INVALID_EMAIL` | El correo de acceso no tiene un formato válido. |
+| `AUTH_CODE_INVALID` | El código de 6 dígitos es incorrecto, expiró o agotó sus intentos. |
+| `WEBAUTHN_REGISTRATION_INVALID` | La ceremonia de alta no coincide con challenge, origen, RP, algoritmo o clave esperados. |
 | `INVALID_PROFILE` | `displayName`/`socialUrl` fuera del formato aceptado (largo, allowlist de redes). |
 | `USERNAME_RESERVED` | Username en la lista de reservados (rutas, traps). |
 | `INVALID_TOKEN` | Token de push inválido. |
@@ -100,6 +103,10 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `QUOTE_WRONG_ACCOUNT` | La cotización no pertenece a la cuenta del llamante. |
 | `WRONG_ACCOUNT` | El recurso direccionado (p. ej. un pago preparado) pertenece a otra cuenta. |
 | `FAUCET_DISABLED` | El faucet está deshabilitado para la red activa. |
+| `AUTH_ACCOUNT_DISABLED` | Firebase marca la cuenta como deshabilitada. |
+| `STEP_UP_REQUIRED` | La operación sensible necesita un proof de código de correo. |
+| `STEP_UP_INVALID` | El proof de seguridad expiró, ya fue consumido o no pertenece al usuario. |
+| `STEP_UP_UNAVAILABLE` | La cuenta no tiene un correo Firebase verificado para confirmar la operación. |
 | `PAYLOAD_TOO_LARGE` | El cuerpo de la solicitud supera 64 KiB. |
 | `SERVICE_UNAVAILABLE` | La configuración del despliegue está incompleta; reintentar cuando el servicio esté listo. |
 | `BUNDLER_UNAVAILABLE` | Los endpoints ERC-4337 configurados no están disponibles temporalmente. |
@@ -115,6 +122,7 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `INTENT_NOT_FOUND` | Payment intent / operación cross-chain inexistente. |
 | `EVENT_NOT_FOUND` | Evento inexistente. *(API `/v1`)* |
 | `OPERATION_NOT_FOUND` | Operación durable de cuenta inexistente. |
+| `PASSKEY_NOT_FOUND` | La passkey no existe o no está activa para la cuenta. |
 | `PENDING_NOT_FOUND` | El UserOp preparado a enviar no existe (expiró o nunca se preparó). |
 | `NO_ROUTE` | No hay ruta de swap para el par. *(En `/swap/prepare` se devuelve como **409** cuando una ruta ya cotizada desapareció.)* |
 
@@ -137,6 +145,8 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `INTENT_NOT_PAYABLE` | El intent no está pagable (ya pagado/cancelado/**expirado** — `expires_at` se aplica en pago, autorización on-chain y simulate). |
 | `TX_ALREADY_REGISTERED` | El tx de burn ya está registrado en otra operación cross-chain. |
 | `PAYMENT_IN_PROGRESS` | El mismo pago preparado ya fue enviado (request duplicado; el claim atómico bloquea el doble submit). |
+| `LAST_PASSKEY` | No se puede quitar el último signer WebAuthn activo. |
+| `PASSKEY_ALREADY_REGISTERED` | El credential ID ya está registrado. |
 
 ### 429 — Too Many Requests
 

@@ -116,13 +116,15 @@ En `NETWORKS["arbitrum-sepolia"].contracts` reemplaza los `TODO_DEPLOY`:
 > | factory   | `0xb97E923E27CB258012081446e4b436afd3974108` |
 > | paymaster | `0x913a1B51c4f5b1a458A56D0d700c956834cc1d15` |
 > | paymentRouter | `0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f` (con permit; USDC habilitado, min 1 USDC) |
-> | crosschainRouter | `0x88Ae8A42d004934cD72b534bd362A49e7E4ad3a1` |
+> | crosschainRouter | `0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c` (outbound endurecido, 24-ago-2026) |
 >
 > Generación anterior (jun-2026, cuentas existentes siguen operativas):
 > verifier `0xb7fA10dE…06d6`, impl `0xa450bc49…527e`, factory
 > `0x75c7761d…EDEB`, paymaster `0x31f357a6…5753` (stake hundido; el
 > depósito de gas es recuperable con `withdrawTo`), paymentRouter
-> `0x607fF0c2…975A`, crosschainRouter `0x0816d133…D777`.
+> `0x607fF0c2…975A`, crosschainRouter `0x0816d133…D777`. El outbound
+> `0x88Ae8A42…3a1` (jul-2026) fue reemplazado por el router endurecido indicado
+> arriba.
 >
 > La `impl` no va en `networks.ts` (la factory ya la referencia); solo se usó para
 > verificar. Si re-despliegas con distinto bytecode (cambio de `foundry.toml` o de
@@ -179,13 +181,15 @@ npx wrangler d1 migrations apply GATOPAGO_DB --remote
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
 `npx wrangler d1 migrations list GATOPAGO_DB --remote` y aplica, en orden, todo
-lo que falte hasta `0026_indexer_work_partitions.sql`. El Worker actual requiere
+lo que falte hasta `0032_recovery_step_up.sql`. El Worker actual requiere
 la cadena completa: además del hardening y los ciclos durables originales,
 `0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
 rollback de reorg, shards del indexador, suscripciones de proveedor, control
 plane RPC, finality de Arbitrum, outboxes, ciclo durable de UserOperations,
 paginación del ledger, cache durable de capacidades del bundler, cola de
-reconciliación, auditorías de balance y registro incremental de wallets.
+reconciliación, auditorías de balance y registro incremental de wallets. `0027`
+a `0032` agregan consistencia del indexador, marca, códigos de correo con consumo
+atómico, registro WebAuthn ligado al servidor y step-up de recuperación.
 REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
 El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
 nunca replicar ese patrón hacia producción.
@@ -228,6 +232,9 @@ npx wrangler secret put OPS_HEALTH_TOKEN                   # token aleatorio 32+
 # dedicadas de arriba tambien (los fallbacks entre claves estan prohibidos).
 npx wrangler secret put TURNSTILE_SECRET_KEY           # anti-abuso en crear cuenta + faucet
 Get-Content -Raw ..\<service-account>.json | npx wrangler secret put FCM_SERVICE_ACCOUNT  # push
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT       # JSON de service account para Custom Tokens/Admin API
+npx wrangler secret put FIREBASE_WEB_API_KEY            # API key publica de Firebase Web Auth
+npx wrangler secret put AUTH_CODE_PEPPER                # aleatorio, minimo 32 caracteres; HMAC de correo/codigo/proofs
 npx wrangler secret put CCTP_RPC_URLS                  # opcional: RPCs dedicados cross-chain
 npx wrangler secret put ALCHEMY_WEBHOOK_ID             # Address Activity
 npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK        # red exacta del webhook
@@ -240,13 +247,19 @@ npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY  # 32 bytes base64/hex; ob
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID # ID corto, por ejemplo 2026_07
 ```
 
+El binding `EMAIL` y `AUTH_EMAIL_FROM` están declarados en `server/wrangler.jsonc`.
+Antes de publicar, valida en Cloudflare Email Sending que
+`acceso@parmelia.me` sea un remitente permitido. No guardes el JSON de Firebase
+ni `AUTH_CODE_PEPPER` en archivos sincronizados, variables `VITE_*` o GitHub.
+
 `GET /health/live` comprueba únicamente que el proceso responde. `GET /health`
 devuelve `200` sólo si la configuración es coherente y publica únicamente
 `status`, `network`, `issueCount` y `warningCount`. El diagnóstico completo se
 obtiene desde `GET /health/ops` con `X-Ops-Token`; sin token válido responde 404.
 En mainnet, el Worker responde/falla cerrado con `503 SERVICE_UNAVAILABLE` si
-faltan contratos, CORS HTTPS, Turnstile, APP_URL, cifrado o claves dedicadas. Las
-cuentas activas de relayer, faucet, paymaster, invoices y guardian deben ser distintas.
+faltan contratos, CORS HTTPS, Turnstile, APP_URL, Email Sending, la configuración
+Firebase/OTP, cifrado o claves dedicadas. Las cuentas activas de relayer, faucet,
+paymaster, invoices y guardian deben ser distintas.
 
 ### Rotación de la clave de webhooks
 
@@ -350,9 +363,10 @@ conservador. En testnet
 puede quedar apagado; sólo mientras exista un invoice activo habrá un fallback
 acotado cada dos minutos. En mainnet la validación exige el Custom Webhook.
 
-Consola Firebase (para login por correo/Apple, push y analytics): habilitar
-Email link (y Apple si aplica), activar account-linking "same email", generar la
-VAPID y el service account, y habilitar GA4. Detalle paso a paso en
+Consola Firebase (para Google, Custom Tokens, push y analytics): habilitar Google,
+autorizar `app.parmelia.me`, generar una cuenta de servicio de mínimo privilegio,
+generar la VAPID y habilitar GA4. El acceso por correo lo emite el Worker mediante
+códigos de 6 dígitos; no se habilita el proveedor de enlaces por correo. Detalle en
 [`docs/operations/integrations.md`](./docs/operations/integrations.md).
 
 ## 7. Desplegar el Worker manualmente (registra DO y consumers)
@@ -444,9 +458,9 @@ Ese comando actualiza `app.parmelia.me`; no debe crear ni enlazar otro proyecto.
 ## 9. Smoke test (en orden)
 
 ```bash
-pnpm --filter server test:unit           # 165 tests Node
-pnpm --filter server test:worker-runtime # 17 tests workerd + D1 real
-cd contracts && forge test       # 124 tests unitarios
+pnpm --filter server test:unit           # 229 tests Node
+pnpm --filter server test:worker-runtime # 22 tests workerd + D1 real
+cd contracts && forge test               # 191 pasan; 4 forks requieren RPC
 pnpm --filter server exec wrangler tail server # dejar abierto para ver logs
 ```
 
@@ -536,76 +550,133 @@ Pasos:
 - **Depósito del paymaster:** el script deja 0.01 ETH; recargar según volumen real.
 - **Mismo `foundry.toml`** (solc + optimizer) entre testnet y mainnet para que CREATE2 dé las mismas direcciones.
 
-## 12. Routers opcionales (Payments API Flow B + Cross-chain)
+## 12. Universal Checkout v1: routers y testnets
 
-> Scripts en `contracts/script/Deploy.s.sol`: **`DeployPaymentRouter`** y
-> **`DeployCrosschainRouter`**. Son independientes del deploy base (§2); el resto
-> de la app funciona sin ellos (los endpoints quedan deshabilitados hasta que la
-> dirección esté en `shared/networks.ts`). Ambos usan CREATE2 con salt fijo y la
-> política fail-closed de roles.
+Los scripts leen direcciones oficiales y codehashes desde
+`contracts/script/NetworkDeploymentConfig.sol`. No aceptan overrides de USDC,
+CCTP ni EntryPoint y no leen claves privadas: la firma se entrega con
+`--account`/keystore. `PAYMENT_NETWORKS` conserva cada source flag apagado hasta
+que exista deploy, verificación, manifest y smoke real. Las tres testnets ya
+pasaron esos gates; las entradas mainnet permanecen apagadas.
 
-### 12.1 PaymentRouter (Payments API, Flow B - paga cualquier wallet externa)
+### 12.1 Preflight y dry-run obligatorio
 
-```bash
+```powershell
 cd contracts
-forge script script/Deploy.s.sol:DeployPaymentRouter \
-  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
-  --account wallet-0x75 \
-  --sender 0x75464f762bc50d0A0B127ab5a085504BF102Bb88 \
-  --broadcast
+$sender = "<DEPLOYER_ADDRESS>"
+
+forge script script/Deploy.s.sol:DeployPaymentRouter `
+  --rpc-url $env:ARBITRUM_SEPOLIA_RPC_URL --sender $sender -vv
+forge script script/Deploy.s.sol:DeployCctpPaymentRouter `
+  --rpc-url $env:BASE_SEPOLIA_RPC_URL --sender $sender -vv
+forge script script/Deploy.s.sol:DeployCctpPaymentRouter `
+  --rpc-url $env:AVALANCHE_FUJI_RPC_URL --sender $sender -vv
 ```
 
-En testnet el deployer queda como `owner = treasury = invoiceSigner`. En mainnet
-define las cuatro variables `GATOPAGO_*` de §11 antes de ejecutar. Después:
-1. `cast send <PAYMENT_ROUTER> "setTokenSupported(address,bool,uint256)" <USDC> true <MIN> --account wallet-0x75` (p. ej. `MIN = 1000000` = 1 USDC).
-2. Rellenar `contracts.paymentRouter` en `shared/networks.ts` (arbitrum-sepolia).
-3. Secrets del worker: `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` (= la EOA del `invoiceSigner`) y `GATOPAGO_PAYMENT_FEE_BPS`.
+Cada simulación valida chain ID, codehash de USDC/CCTP, CREATE2 deployer,
+capabilities Fast/Standard y dirección predicha. Base admite Fast/Standard;
+Fuji solo Standard. La fee de plataforma CCTP queda en `0` durante el piloto.
 
-### 12.2 CrosschainRouter (cross-chain Flow B outbound - CCTP v2)
+### 12.2 Broadcast y verificación de source
 
-Necesita dos env vars: la **USDC** local y el **TokenMessengerV2** de CCTP v2.
+Repite cada comando anterior con la cuenta Foundry y verificación Sourcify:
 
-```bash
+```powershell
+$account = "<KEYSTORE_ACCOUNT>"
+$passwordFile = "<ABSOLUTE_TEMP_PASSWORD_FILE_OUTSIDE_REPO>"
+
+forge script script/Deploy.s.sol:DeployPaymentRouter `
+  --rpc-url $env:ARBITRUM_SEPOLIA_RPC_URL `
+  --account $account --password-file $passwordFile --sender $sender `
+  --broadcast --verify --verifier sourcify
+```
+
+Usa `DeployCctpPaymentRouter` para Base Sepolia y Fuji. Usa además
+`DeployCrosschainRouter` en Arbitrum Sepolia para reemplazar el outbound antiguo
+por la versión con replay, allowlist de dominios y finality estricta. Nunca
+agregues `--resume` sin comparar primero `run-latest.json`, la dirección
+predicha y el código ya presente. El password file es temporal, vive fuera del
+repositorio y se elimina al terminar; nunca se copia a un manifest o log.
+
+Hay dos deployments distintos en Arbitrum y ambos escriben bajo
+`broadcast/Deploy.s.sol/421614`. Conserva el `run-<timestamp>.json` de cada uno y
+úsalo en su manifest; no permitas que un `run-latest.json` posterior reemplace la
+evidencia que todavía no se procesó.
+
+### 12.3 Manifest por contrato
+
+Después de confirmar la verificación pública, genera el manifest desde la raíz:
+
+```powershell
+node scripts/write-contract-deployment-manifest.mjs `
+  --broadcast contracts/broadcast/Deploy.s.sol/421614/run-<timestamp>.json `
+  --rpc-url $env:ARBITRUM_SEPOLIA_RPC_URL `
+  --output contracts/deployments/421614/payment-router-v2.json `
+  --contract ParmeliaPaymentRouterV2 --chain-id 421614 `
+  --owner $owner --treasury $treasury `
+  --authorization-signer $authorizationSigner `
+  --pause-guardian $pauseGuardian `
+  --verification-url <EXPLORER_OR_SOURCIFY_URL>
+```
+
+El generador consulta el RPC y falla si no coinciden receipt, chain, runtime
+bytecode, owner, treasury, signer, pause guardian o aceptación de ownership. El
+schema versionado vive en `contracts/deployments/manifest.schema.json`.
+
+Solo después de esos gates **y** de los smokes de §12.4 se rellenan las
+direcciones y se activa `paymentSource` para las tres testnets en
+`shared/networks.ts`. No se habilita ninguna mainnet en esta fase.
+
+### 12.4 Smokes reales de cierre
+
+Un broadcast no cierra la fase. Con `GATOPAGO_SMOKE_AMOUNT` omitido cada smoke
+mueve `0.1 USDC` testnet y comprueba la configuración inmutable antes de firmar.
+Ejecuta los cuatro rails, conservando el hash de cada transacción:
+
+```powershell
 cd contracts
-# Arbitrum Sepolia: USDC + CCTP v2 TokenMessenger (verificados, deterministas)
-export USDC_ADDRESS=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d
-export CCTP_TOKEN_MESSENGER=0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
-forge script script/Deploy.s.sol:DeployCrosschainRouter \
-  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
-  --account wallet-0x75 \
-  --sender 0x75464f762bc50d0A0B127ab5a085504BF102Bb88 \
-  --broadcast
+$env:GATOPAGO_SMOKE_ROUTER = "<ARBITRUM_LOCAL_ROUTER>"
+forge script script/SmokeUniversalCheckout.s.sol:SmokePaymentRouter `
+  --rpc-url $env:ARBITRUM_SEPOLIA_RPC_URL `
+  --account $account --password-file $passwordFile --sender $sender --broadcast -vv
+
+$env:GATOPAGO_SMOKE_ROUTER = "<BASE_CCTP_ROUTER>"
+forge script script/SmokeUniversalCheckout.s.sol:SmokeCctpPaymentRouter `
+  --rpc-url $env:BASE_SEPOLIA_RPC_URL `
+  --account $account --password-file $passwordFile --sender $sender --broadcast -vv
+
+$env:GATOPAGO_SMOKE_ROUTER = "<FUJI_CCTP_ROUTER>"
+forge script script/SmokeUniversalCheckout.s.sol:SmokeCctpPaymentRouter `
+  --rpc-url $env:AVALANCHE_FUJI_RPC_URL `
+  --account $account --password-file $passwordFile --sender $sender --broadcast -vv
+
+$env:GATOPAGO_SMOKE_ROUTER = "<ARBITRUM_OUTBOUND_ROUTER>"
+forge script script/SmokeUniversalCheckout.s.sol:SmokeCrosschainRouter `
+  --rpc-url $env:ARBITRUM_SEPOLIA_RPC_URL `
+  --account $account --password-file $passwordFile --sender $sender --broadcast -vv
 ```
 
-> En PowerShell, en vez de `export`: `$env:USDC_ADDRESS="0x75fa..."; $env:CCTP_TOKEN_MESSENGER="0x8FE6..."`.
+Los dos primeros tipos de router deben terminar con `usedAttempt = true` y
+`paidIntent = true`; el outbound endurecido debe terminar con `usedOpId = true`.
+Los cuatro deben conservar saldo USDC cero. Los burns usan finality Standard y
+`destinationCaller = bytes32(0)`. Verifica esos valores otra vez mediante RPC y
+receipt después del broadcast: los asserts que corren durante `forge script`
+prueban la simulación, no sustituyen la lectura posterior de la testnet.
 
-En testnet el deployer queda como `owner = treasury`. En mainnet define al menos
-`GATOPAGO_CONTRACT_OWNER` y `GATOPAGO_TREASURY`, distintas del broadcaster y
-entre sí. Después:
-1. Rellenar `contracts.crosschainRouter` en `shared/networks.ts` (arbitrum-sepolia).
-2. Secret del worker: `GATOPAGO_CROSSCHAIN_FEE_BPS` (ya existe en `auth.ts`).
-3. No hay whitelist de tokens: la USDC es inmutable en el constructor.
+### 12.5 Cierre de fase 1 en testnet (24-ago-2026)
 
-> CCTP v2 (verificado): TokenMessengerV2 `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`,
-> MessageTransmitterV2 `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` (mismas en
-> Arbitrum y Base Sepolia). Dominios: Arbitrum 3, Base 6. Detalle en
-> [`docs/design/cross-chain.md` §11](./docs/design/cross-chain.md).
+| Rail | Router | Source tx | Destination tx |
+|---|---|---|---|
+| Arbitrum local | `0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4` | `0x27c3261d…09fe0` | misma transacción |
+| Base → Arbitrum | `0x961C08Bd5a11EFB7264B06d7f14a44FB4d9958Ba` | `0xe7bb8727…bc071` | `0x849df136…e3e2` |
+| Fuji → Arbitrum | `0xd8289B87b155e8691Da192b12E12E2b592fE7D1E` | `0x8b692d55…ccea0` | `0x441bc801…268a` |
+| Arbitrum → Fuji | `0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c` | `0xa4741fd8…2364` | `0x7bb5b422…aa44` |
 
-### 12.3 Verificación (opcional, Sourcify)
-
-```bash
-# PaymentRouter - constructor(address owner, address treasury, address signer)
-forge verify-contract <PAYMENT_ROUTER> src/ParmeliaPaymentRouter.sol:ParmeliaPaymentRouter \
-  --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
-  --constructor-args $(cast abi-encode "constructor(address,address,address)" <OWNER> <TREASURY> <INVOICE_SIGNER>)
-
-# CrosschainRouter - constructor(address owner, address usdc, address messenger, address treasury)
-forge verify-contract <CROSSCHAIN_ROUTER> src/ParmeliaCrosschainRouter.sol:ParmeliaCrosschainRouter \
-  --chain 421614 --rpc-url https://sepolia-rollup.arbitrum.io/rpc --watch \
-  --constructor-args $(cast abi-encode "constructor(address,address,address,address)" \
-    <OWNER> 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA <TREASURY>)
-```
-
-En testnet, `<OWNER>`, `<TREASURY>` e `<INVOICE_SIGNER>` son el deployer salvo
-que hayas definido las variables opcionales. En mainnet deben coincidir con los
-valores `GATOPAGO_*` usados durante el broadcast.
+Los cuatro sources terminaron con receipt exitoso, IDs consumidos y saldo cero
+en el router. Los tres mensajes CCTP v2 llegaron a `complete`, se ejecutó
+`receiveMessage` en destino y `usedNonces` quedó en `1`. Los cuatro deployments
+tienen `exact_match` en Sourcify. La evidencia completa y los hashes sin abreviar
+están en `contracts/deployments/testnet-smoke-evidence.json`; las direcciones y
+roles están en los cuatro manifests por contrato. Solo después de este cierre se
+activaron Arbitrum Sepolia, Base Sepolia y Fuji en `PAYMENT_NETWORKS`. No se
+desplegó ni habilitó ninguna mainnet.

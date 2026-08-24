@@ -67,17 +67,20 @@ The backend relays UserOperations and sponsors gas, but **cannot move user funds
 | Contract | Address |
 |---|---|
 | EntryPoint v0.9 (canonical) | [`0x433709009B8330FDa32311DF1C2AFA402eD8D009`](https://sepolia.arbiscan.io/address/0x433709009B8330FDa32311DF1C2AFA402eD8D009) |
-| ERC7913WebAuthnVerifier | [`0xb7fA10dEe75042D6973676A7d7882e4621B806d6`](https://sepolia.arbiscan.io/address/0xb7fA10dEe75042D6973676A7d7882e4621B806d6) |
-| AccountWebAuthnV2 (impl) | [`0xa450bc49a0dA738FA348445980b542d78A22527e`](https://sepolia.arbiscan.io/address/0xa450bc49a0dA738FA348445980b542d78A22527e) |
-| AccountFactoryV2 | [`0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB`](https://sepolia.arbiscan.io/address/0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB) |
-| ParmeliaPaymaster | [`0x31f357a64cF5899da21337f0D9e28ef8D6385753`](https://sepolia.arbiscan.io/address/0x31f357a64cF5899da21337f0D9e28ef8D6385753) |
-| ParmeliaPaymentRouter (Flow B) | [`0x607fF0c2eE5E4ae9a7bD2F7E343ea53a1992975A`](https://sepolia.arbiscan.io/address/0x607fF0c2eE5E4ae9a7bD2F7E343ea53a1992975A) |
-| ParmeliaCrosschainRouter (CCTP) | [`0x0816d13337C3A7a03Df639F40993e88B771dD777`](https://sepolia.arbiscan.io/address/0x0816d13337C3A7a03Df639F40993e88B771dD777) |
+| ERC7913WebAuthnVerifier | [`0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886`](https://sepolia.arbiscan.io/address/0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886) |
+| AccountWebAuthnV2 (impl) | [`0xDFA9df7d6CCc3b92F8a8e245D6E9760c3346184C`](https://sepolia.arbiscan.io/address/0xDFA9df7d6CCc3b92F8a8e245D6E9760c3346184C) |
+| AccountFactoryV2 | [`0xb97E923E27CB258012081446e4b436afd3974108`](https://sepolia.arbiscan.io/address/0xb97E923E27CB258012081446e4b436afd3974108) |
+| ParmeliaPaymaster | [`0x913a1B51c4f5b1a458A56D0d700c956834cc1d15`](https://sepolia.arbiscan.io/address/0x913a1B51c4f5b1a458A56D0d700c956834cc1d15) |
+| ParmeliaPaymentRouter (Flow B) | [`0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f`](https://sepolia.arbiscan.io/address/0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f) |
+| ParmeliaCrosschainRouter (CCTP outbound) | [`0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c`](https://sourcify.dev/server/v2/contract/421614/0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c) |
+| ParmeliaPaymentRouterV2 (Universal Checkout local) | [`0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4`](https://sourcify.dev/server/v2/contract/421614/0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4) |
 
-Contract sources have moved ahead of these deployments in some places (e.g.
-`payInvoiceWithPermit`, recovery-proposal validation, the paymaster gas-cost
-cap): those improvements take effect on the next redeploy and are feature-flagged
-off until then. See [contracts/AUDIT.md](contracts/AUDIT.md).
+Universal Checkout also accepts testnet USDC through the exact-match verified
+CCTP routers on [Base Sepolia](https://sourcify.dev/server/v2/contract/84532/0x961C08Bd5a11EFB7264B06d7f14a44FB4d9958Ba)
+and [Avalanche Fuji](https://sourcify.dev/server/v2/contract/43113/0xd8289B87b155e8691Da192b12E12E2b592fE7D1E),
+settling on Arbitrum Sepolia. Deployment and end-to-end smoke evidence lives in
+[`contracts/deployments`](contracts/deployments/README.md). No mainnet payment
+source is enabled.
 
 ## Why Arbitrum
 
@@ -119,6 +122,9 @@ documented in
 
 See [DEPLOY.md](DEPLOY.md) for the full runbook. Quick start:
 
+The reproducible toolchain is Node `24.19.0`, pnpm `11.23.0` and Foundry
+`v1.7.1`; use those versions locally to match CI.
+
 ```bash
 pnpm install
 pnpm --filter client dev      # web app
@@ -135,9 +141,10 @@ pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
 
 ## Tests
 
-- Contracts: `cd contracts && forge test` — 124 unit tests passing (Foundry: account +
-  recovery hardening, paymaster + gas-cost cap, payment router incl. permit,
-  crosschain router, upgrade-path storage regression).
+- Contracts: `cd contracts && forge test` — 191 local tests/invariants passing;
+  four fork proofs are skipped unless their testnet RPC variables are present.
+  Coverage includes account recovery, paymaster gas caps, permit payments,
+  cross-chain settlement and the upgrade-path storage regression.
 - `pnpm verify:all` enforces append-only contract storage layouts and
   per-contract coverage floors. Current branch coverage is 88.24% for
   `AccountWebAuthnV2` and 100% for Factory, Paymaster, PaymentRouter and
@@ -146,7 +153,7 @@ pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
   broadcaster and signing roles before broadcast; testnet retains simple defaults.
 - Server: `pnpm --filter server test` — Node tests plus tests inside
   `workerd` with a real isolated D1 binding. Coverage includes OpenAPI drift,
-  key rotation, production readiness, all eleven migrations, schema constraints,
+  key rotation, production readiness, every versioned D1 migration, schema constraints,
   authentication, body limits, Web Crypto, event coalescing and lease ownership, in addition to swap encoding,
   fee/slippage math, validation, UserOperation serialization, error contract,
   CCTP message validation, key policy, durable account operations and faucet/turnstile fail-closed).

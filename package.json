@@ -1,7 +1,7 @@
 {
   "name": "gatopago",
   "private": true,
-  "packageManager": "pnpm@11.22.0",
+  "packageManager": "pnpm@11.23.0",
   "scripts": {
     "preverify": "pnpm build:contracts",
     "dev:client": "pnpm --filter client dev",
@@ -10,6 +10,7 @@
     "build:client": "pnpm --filter client build",
     "build:dashboard": "pnpm --filter dashboard build",
     "build:contracts": "cd contracts && forge build",
+    "deployment:manifest": "node scripts/write-contract-deployment-manifest.mjs",
     "build": "pnpm build:client && pnpm build:dashboard",
     "typecheck:server": "pnpm --filter server cf-typegen:check && pnpm --filter server exec tsc --noEmit && pnpm --filter server typecheck:worker-runtime",
     "test:server": "pnpm --filter server test",
@@ -44,7 +45,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
-    "@redocly/cli": "2.46.1",
+    "@redocly/cli": "2.47.0",
     "knip": "^6.32.2"
   }
 }

@@ -1,6 +1,6 @@
 # GatoPago - Arquitectura del Proyecto
 
-> Actualizado: julio 2026. Índice y precedencia: [`docs/README.md`](./docs/README.md).
+> Actualizado: agosto 2026. Índice y precedencia: [`docs/README.md`](./docs/README.md).
 > Complementos: [diseño cross-chain](./docs/design/cross-chain.md),
 > [`docs/api.md`](./docs/api.md) (API pública `/v1`),
 > [`contracts/AUDIT.md`](./contracts/AUDIT.md) (contratos) y
@@ -12,7 +12,7 @@
 
 El producto combina:
 
-- **Firebase Auth** para identidad: **Google** y **enlace mágico por correo** (passwordless). Apple se descartó por decisión.
+- **Firebase Auth** para identidad: **Google** y **código de 6 dígitos por correo**. El Worker valida el código y entrega un Firebase Custom Token; no hay contraseñas ni enlaces de acceso.
 - **Passkeys WebAuthn (P256)** para firmar operaciones de la wallet en el dispositivo.
 - **Smart accounts `AccountWebAuthnV2`** (MultiSigner ERC-7913 + UUPS + recovery con guardian) desplegadas por factory.
 - **Cloudflare Worker + D1** para API, orquestación de pagos, persistencia y relaying de UserOperations.
@@ -28,9 +28,9 @@ El backend prepara y transmite UserOperations, pero **no custodia la clave de fi
 | Capa      | Tecnología                                                                                                                          |
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Contratos | Solidity (solc pineado `0.8.28`), Foundry, OpenZeppelin v5 (ERC-7913 / ERC-7821 / UUPS)                                             |
-| Cliente   | React 19, TypeScript 5.9, Vite 7, Tailwind CSS v4, react-i18next, Firebase (Auth + Messaging + Analytics), SWR, react-router-dom, qrcode.react, jsqr (lazy), html-to-image, sileo, Turnstile |
+| Cliente   | React 19, TypeScript 6, Vite 7, Tailwind CSS v4, react-i18next, Firebase (Auth + Messaging + Analytics), SWR, react-router-dom, qrcode.react, jsqr (lazy), html-to-image, sileo, Turnstile |
 | Dashboard | React 19, Vite, SWR (`useSWRInfinite` para paginación), Firebase Auth — panel del comerciante para la API `/v1`                     |
-| Servidor  | Hono, Cloudflare Workers + Queues + Durable Objects, viem, jose, **Cloudflare D1 (SQLite)**                                        |
+| Servidor  | Hono, Cloudflare Workers + Queues + Durable Objects + Email Sending, viem, jose, SimpleWebAuthn, **Cloudflare D1 (SQLite)**           |
 | Shared    | Módulo TypeScript compartido: ABIs, redes/direcciones, tokens, config Uniswap/CCTP y **contrato de errores** (`errors.ts`)          |
 | Red       | Arbitrum Sepolia (421614) - testnet activa. Arbitrum One (42161) - producción (contratos aún no desplegados). Base Sepolia - destino CCTP / legacy. |
 | Deploy    | Cliente y dashboard en Vercel, servidor en Cloudflare Workers                                                                        |
@@ -69,7 +69,7 @@ gatopago/
 ├── dashboard/               # panel de comerciantes (API keys, pagos, webhooks, sandbox)
 │   └── src/pages/                # Login, Overview, Payments, PaymentDetail, ApiKeys, Webhooks, Events, Sandbox
 ├── server/                  # Cloudflare Worker (Hono)
-│   ├── migrations/               # 0001..0007 (ver "Modelo de Datos")
+│   ├── migrations/               # 0001..0032 (ver "Modelo de Datos")
 │   └── src/
 │       ├── index.ts              # middlewares + rutas + consumers de Queue
 │       ├── chain.ts              # chainKey -> viem Chain
@@ -117,21 +117,24 @@ Para agregar una cadena:
 | USDC (Arbitrum One)     | `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` (native Circle)    |
 | USDC (Arbitrum Sepolia) | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` (Circle testnet)   |
 | WBTC (Arbitrum One)     | `0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f` (8 dec)            |
-| Verifier (Arb Sepolia)  | `0xb7fA10dEe75042D6973676A7d7882e4621B806d6` (V2)               |
-| Factory (Arb Sepolia)   | `0x75c7761dcED5F8eCc708E750bDe5CA7d4557EDEB` (V2)               |
-| Paymaster (Arb Sepolia) | `0x31f357a64cF5899da21337f0D9e28ef8D6385753` (V2)               |
-| PaymentRouter (Arb Sepolia) | `0x607fF0c2eE5E4ae9a7bD2F7E343ea53a1992975A` (Flow B; sin `payInvoiceWithPermit` hasta redeploy) |
-| CrosschainRouter (Arb Sepolia) | `0x0816d13337C3A7a03Df639F40993e88B771dD777` (CCTP outbound) |
+| Verifier (Arb Sepolia)  | `0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886` (V2)               |
+| Factory (Arb Sepolia)   | `0xb97E923E27CB258012081446e4b436afd3974108` (V2)               |
+| Paymaster (Arb Sepolia) | `0x913a1B51c4f5b1a458A56D0d700c956834cc1d15` (V2)               |
+| PaymentRouter (Arb Sepolia) | `0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f` (Flow B con permit) |
+| Universal local router (Arb Sepolia) | `0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4` |
+| Universal CCTP router (Base Sepolia) | `0x961C08Bd5a11EFB7264B06d7f14a44FB4d9958Ba` |
+| Universal CCTP router (Avalanche Fuji) | `0xd8289B87b155e8691Da192b12E12E2b592fE7D1E` |
+| CrosschainRouter (Arb Sepolia) | `0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c` (CCTP outbound endurecido) |
 | Contratos (Arb One)     | _TODO: desplegar V2 y rellenar `shared/networks.ts`_            |
 
-Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos obtienen la **misma dirección en toda cadena** si el bytecode es idéntico → cada usuario conserva **la misma dirección de wallet** entre cadenas. Nota: las fuentes de los contratos avanzaron respecto de lo desplegado (permit del router, validación de recovery, caps y stake del paymaster) — esos endurecimientos rigen tras el próximo redeploy; ver `contracts/AUDIT.md`.
+Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos obtienen la **misma dirección en toda cadena** si el bytecode es idéntico → cada usuario conserva **la misma dirección de wallet** entre cadenas. Universal Checkout mantiene la cuenta en Arbitrum y usa Base/Fuji solo como rails de aceptación durante la fase 1; las tres mainnets siguen desactivadas.
 
 ---
 
 ## Arquitectura Lógica
 
 ### 1. Cliente (React/Vite)
-- Sesión vía Firebase: Google o enlace mágico por correo.
+- Sesión vía Firebase: Google o código de 6 dígitos. El código es de un solo uso, expira en 10 minutos y se canjea en el Worker por un Firebase Custom Token.
 - Onboarding obligatorio cuando hay login pero aún no hay wallet; verificación **Turnstile** antes de crear cuenta.
 - Crea passkeys (`createPasskey`) y firma UserOps (`signWithPasskey`).
 - Consume la API con la capa tipada **`lib/api.ts`** (`apiFetch` → `ApiError` con `error_code`) y centraliza avisos en **`lib/notify.ts`** (mapea `error_code → t("err."+code)`).
@@ -240,7 +243,10 @@ Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables 
 - `userOp.ts`: `buildSponsoredUserOp` (con guard de contratos desplegados), `encodeExecuteBatch` (ERC-7821), `serializeBigInts`, `normalizeLowS`.
 - `paymaster.ts`: firma del sponsorship. `keys.ts`: **política de claves least-privilege** (fallbacks solo en testnet; mainnet exige claves dedicadas).
 - `settlement.ts`: liquidación idempotente + `getUserOpResult` (parser del `UserOperationEvent`) + reconciliador dirigido por eventos.
-- `storage.ts`: acceso tipado a D1 (todas las tablas) + claims atómicos (faucet, submit, webhooks, leases) + productores de jobs + rate limiter de ventana fija.
+- `storage.ts` es la fachada de acceso tipado a D1; `storage/` separa por dominio
+  ledger, merchants/webhooks, passkeys, cross-chain, operaciones de cuenta,
+  leases, cursores y features de usuario. Las transacciones y claims atómicos se
+  mantienen dentro del módulo que posee cada estado.
 - `eventScheduler.ts` / `eventJobs.ts`: agenda particionada con alarmas,
   compactación, dispatch por Queue, continuaciones basadas en D1 y recuperación.
 - `indexerPartitions.ts` / `indexerShards.ts`: registro incremental de wallets,
@@ -249,7 +255,7 @@ Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables 
 - `crosschainRelayer.ts`: relayer CCTP (atestaciones Iris, mint en destino, validación de mensaje, gas-gating tri-estado fail-closed).
 - `webhooks.ts`: outbox firmado (HMAC estilo Stripe) con claim + concurrencia limitada. `apiKeys.ts`: generación/verificación de claves `sk_`.
 - `earn.ts`: Ahorro sobre Aave v3 (APY on-chain desde `currentLiquidityRate`, flags del reserve fail-closed, batches approve+supply / withdraw; el aToken en la cuenta del usuario es la única fuente de verdad — nada en D1).
-- `validation.ts`, `swap.ts` + `uniswap.ts`, `bridge.ts` (Across legacy, solo cotización), `push.ts` (FCM HTTP v1, multi-dispositivo), `turnstile.ts` (fail-closed en mainnet), `indexer.ts` (3 watchers), `apiError.ts`, `logger.ts`.
+- `validation.ts`, `swap.ts` + `uniswap.ts`, `bridge.ts` (Across legacy, solo cotización), `push.ts` (FCM HTTP v1, multi-dispositivo), `turnstile.ts` (fail-closed en mainnet), `indexer.ts` (núcleo de transferencias) + `indexer/` (watchers de router, recovery y ERC-4337), `apiError.ts`, `logger.ts`.
 
 ### Rutas API (resumen)
 
@@ -258,6 +264,8 @@ Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables 
 | GET    | `/`                         | NO   | Healthcheck                                                        |
 | GET/PUT | `/user/*`                  | SÍ   | Perfil, username, balance, push-token, historial (ledger)         |
 | GET    | `/user/:username`           | NO   | Resuelve username público                                          |
+| POST   | `/auth/email-code/*`        | NO   | Solicita/verifica código de acceso de 6 dígitos (Turnstile + rate limits) |
+| POST   | `/auth/step-up/*`           | SÍ   | Código de un solo uso para confirmar recuperación sensible         |
 | POST   | `/account/create`           | SÍ   | Crea wallet V2 (Turnstile + rate limit por IP + referido + auto-fund con claim atómico) |
 | GET/PUT/POST | `/account/passkey*`   | SÍ   | Estado de passkeys/recovery · calldata/UserOp `addSigners`        |
 | GET/POST | `/account/fund`           | SÍ   | Faucet (Turnstile + rate limit por uid + claim atómico + receipt verificado) |
@@ -287,8 +295,17 @@ Migraciones en `server/migrations/` (aplicar SIEMPRE antes de desplegar el Worke
 - `0005_crosschain.sql` — crosschain_operations. `0006_hardening.sql` — rebuild STRICT/FK/CHECK de 0004-0005 + columnas de operabilidad del relayer + dedupe de burn tx + índices FK.
 - `0007_payment_lifecycle.sql` — máquina de estados de pending_payments + rate_limits.
 - `0008_earn.sql` — kind `'earn'` en el ledger (movimientos de Ahorro/Aave).
+- `0009`–`0026` — perfil, integridad, operaciones durables de cuenta, journal,
+  read models, evidencia de finality/reorg, shards, control RPC y outboxes.
 - `0027_indexer_consistency.sql` — epoch chain-wide de reorg, guards atómicos y
   outbox durable para reproducir todos los streams afectados.
+- `0028`–`0029` — interés de tarjeta y migración de marca.
+- `0030_email_otp.sql` — códigos de correo con hash HMAC, expiración, intentos y
+  consumo atómico; nunca almacena el código en claro.
+- `0031_webauthn_registration.sql` — ceremonias de alta WebAuthn ligadas a
+  challenge, usuario, RP y origen del servidor.
+- `0032_recovery_step_up.sql` — proof de seguridad de un solo uso para recovery,
+  límite de intentos de registro y vínculo UID de los códigos.
 
 | Tabla              | Contenido                                                                                              |
 | ------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -306,6 +323,9 @@ Migraciones en `server/migrations/` (aplicar SIEMPRE antes de desplegar el Worke
 | `webhook_endpoints` / `events` / `webhook_deliveries` | outbox firmado con reintentos/backoff y claim atómico            |
 | `crosschain_operations` | ops CCTP (STRICT/FK/CHECK; `attempt_count`, `last_error`, dedupe único de `source_tx_hash`)       |
 | `rate_limits`      | contadores de ventana fija del rate limiter in-Worker                                                   |
+| `auth_email_codes` | códigos de acceso/step-up con digest HMAC, TTL, intentos y consumo atómico                              |
+| `auth_step_up_sessions` | proofs opacos de un solo uso, ligados al UID y almacenados únicamente como HMAC                    |
+| `webauthn_registration_challenges` | challenges de alta ligados al servidor; máximo cinco verificaciones                    |
 
 ---
 
@@ -333,10 +353,10 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 
 ## WebAuthn y Passkeys
 
-- Creación: `platform`, `residentKey: required`, `userVerification: required`, P256. `createPasskey(userId, label)` usa el `uid` estable como id de credencial y muestra email/nombre en el diálogo del SO. Se extraen `qx`/`qy`.
+- Creación: `platform`, `residentKey: required`, `userVerification: required`, P256. El servidor emite el challenge y valida origen, RP ID, presencia y verificación de usuario, algoritmo ES256, attestation `none` y vínculo del credential ID. `qx`/`qy` se derivan de la clave COSE validada; los valores del cliente nunca son la autoridad.
 - Firma: intenta `allowCredentials` con el `credentialId` conocido; si no, flujo discoverable. La cancelación del prompt NO reintenta automáticamente.
 - Múltiples passkeys en la **misma dirección** vía `addSigners` (firmado como UserOp). `qx/qy` persistidos server-side (tabla `passkeys`) para resolución multi-dispositivo.
-- Recuperación: guardian (EOA del servidor) propone (`proposeRecovery`, timelock 48h, propuesta validada on-chain) y luego `executeRecovery`. El dueño puede cancelar (alertado por push vía watcher); el guardian también puede cancelar su propia propuesta. El guardian no mueve fondos ni firma pagos.
+- Recuperación: un código de correo autenticado confirma por separado la propuesta y la ejecución; cada proof dura 10 minutos y se consume una sola vez. Después el guardian propone (`proposeRecovery`, timelock 48h, propuesta validada on-chain) y ejecuta `executeRecovery`. Propuesta, ejecución y cancelación generan un evento durable con alerta por correo y push. El guardian no mueve fondos ni firma pagos.
 
 ---
 

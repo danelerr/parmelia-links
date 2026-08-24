@@ -66,6 +66,42 @@ assert.equal(skippedWaiting, true, "a complete install may activate immediately"
 
 const fetchHandler = listeners.get("fetch");
 assert.equal(typeof fetchHandler, "function", "service worker must register fetch");
+
+for (const authPath of ["/__/auth/iframe", "/__/auth/handler", "/__/firebase/init.json"]) {
+	let intercepted = false;
+	fetchHandler({
+		request: {
+			url: `https://app.example${authPath}`,
+			method: "GET",
+			mode: "navigate",
+		},
+		respondWith: () => { intercepted = true; },
+	});
+	assert.equal(intercepted, false, `${authPath} must bypass the service worker`);
+}
+
+let navigationCacheWrites = 0;
+cachePut = async () => { navigationCacheWrites += 1; };
+fetchResponse = new Response("app", {
+	status: 200,
+	headers: { "Content-Type": "text/html" },
+});
+let navigationResponsePromise;
+fetchHandler({
+	request: {
+		url: "https://app.example/settings",
+		method: "GET",
+		mode: "navigate",
+	},
+	respondWith: (promise) => { navigationResponsePromise = promise; },
+});
+assert.equal((await navigationResponsePromise).status, 200);
+assert.equal(
+	navigationCacheWrites,
+	0,
+	"successful navigations must never overwrite the atomically installed shell",
+);
+
 let resolveAssetPut;
 cachePut = () => new Promise((resolve) => { resolveAssetPut = resolve; });
 fetchResponse = new Response("asset", { status: 200 });

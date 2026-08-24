@@ -330,7 +330,11 @@ PAYMENT_SOURCE_DISABLED_CHAIN_IDS=
 No guardar direcciones de contratos o USDC solo en env: deben vivir en el
 registry tipado y validarse contra codehash/config al iniciar.
 
-### 5.2 Datos — migración propuesta `0030_payment_attempts.sql`
+### 5.2 Datos — migración propuesta de payment attempts
+
+Usar el siguiente número libre al implementarla (actualmente
+`0033_payment_attempts.sql`). `0030`–`0032` ya pertenecen al acceso por código,
+registro WebAuthn y step-up de recuperación, respectivamente.
 
 Extender `payment_intents`:
 
@@ -578,7 +582,7 @@ con checkout debe justificar por qué amplía el alcance.
 | Backend | nuevos servicios de §5.3 | Policy/quote/auth/reconciliation por responsabilidad. |
 | Backend | `server/src/services/crosschainRelayer.ts` | Enlazar CCTP con attempt/intent y validar el nuevo sender router. |
 | Backend | `server/src/services/eventJobs.ts`, `eventScheduler.ts` | Watcher particionado por source chain con checkpoints. |
-| Datos | nuevo `server/migrations/0030_payment_attempts.sql` | Intents enriquecidos, attempts y relación CCTP. |
+| Datos | nueva migración (siguiente número libre; actualmente `0033_payment_attempts.sql`) | Intents enriquecidos, attempts y relación CCTP. |
 | API | `shared/errors.ts`, `docs/openapi.yaml`, `docs/api.md` | Errores estables, endpoints públicos, objetos y webhooks nuevos. |
 | Frontend | `client/src/pages/PayPage.tsx` | Reducirlo a composición; no añadir otra máquina de estados inline. |
 | Frontend | nuevo `client/src/features/checkout/*` | Métodos, quote, review, progreso y resume. |

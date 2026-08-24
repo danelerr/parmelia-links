@@ -1,14 +1,16 @@
-title = "Parmelia Gitleaks configuration"
+title = "GatoPago secret scanning"
+minVersion = "v8.25.0"
 
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Generated or vendored trees"
-paths = [
-  '''(^|[\\/])\.git([\\/])''',
-  '''(^|[\\/])\.agents([\\/])''',
-  '''(^|[\\/])node_modules([\\/])''',
-  '''(^|[\\/])contracts[\\/]lib([\\/])''',
-  '''(^|[\\/])(dist|out|cache|\.wrangler|test-results|playwright-report)([\\/])''',
+description = "Known public USDC and Circle TokenMessenger EVM addresses"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?i)\b0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d\b''',
+  '''(?i)\b0xaf88d065e77c8cc2239327c5edb3a432268e5831\b''',
+  '''(?i)\b0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa\b''',
+  '''(?i)\b0x28b5a0e9c621a5badaa536219b3a228c8168cf5d\b''',
 ]

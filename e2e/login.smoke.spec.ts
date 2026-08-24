@@ -79,15 +79,42 @@ test("login respects each product focus treatment and stays keyboard-operable", 
 	expect(inputFocusStyle).not.toBe("none");
 });
 
-test("dashboard notifications are accessible and dismissible", async ({ page }, testInfo) => {
-	test.skip(!testInfo.project.name.startsWith("dashboard"), "Dashboard-only notification surface");
+test("email login accepts a six-digit code without navigation links", async ({ page }, testInfo) => {
+	await page.route("**/auth/email-code/request", async (route) => {
+		expect(route.request().method()).toBe("POST");
+		expect(route.request().postDataJSON()).toMatchObject({
+			email: "qa@example.com",
+		});
+		await route.fulfill({
+			status: 202,
+			contentType: "application/json",
+			body: JSON.stringify({
+				sent: true,
+				expiresInSeconds: 600,
+				resendAfterSeconds: 60,
+			}),
+		});
+	});
+
+	await openLogin(page, testInfo);
+	await page.getByRole("button", { name: /correo|email/i }).first().click();
+	await page.getByRole("textbox", { name: /correo|email/i }).fill("qa@example.com");
+	await page.getByRole("button", { name: /código|code/i }).click();
+
+	const code = page.getByRole("textbox", { name: /código|code/i });
+	await expect(code).toBeVisible();
+	await expect(code).toHaveAttribute("autocomplete", "one-time-code");
+	await code.fill("12ab3456");
+	await expect(code).toHaveValue("123456");
+});
+
+test("dashboard exposes invalid email errors through an alert", async ({ page }, testInfo) => {
+	test.skip(!testInfo.project.name.startsWith("dashboard"), "Dashboard-only validation surface");
 	await openLogin(page, testInfo);
 	await page.getByRole("button", { name: /correo/i }).click();
 	await page.getByRole("textbox", { name: /correo/i }).fill("qa@example");
-	await page.getByRole("button", { name: /enviarme un enlace/i }).click();
+	await page.getByRole("button", { name: /enviarme un código/i }).click();
 
 	const alert = page.getByRole("alert");
 	await expect(alert).toContainText("Escribe un correo válido");
-	await alert.getByRole("button", { name: /cerrar notificación/i }).click();
-	await expect(alert).toHaveCount(0);
 });

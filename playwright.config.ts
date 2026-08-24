@@ -19,12 +19,14 @@ export default defineConfig({
 		{
 			command: "pnpm --filter client dev --host 127.0.0.1 --port 4173 --strictPort",
 			url: "http://127.0.0.1:4173/login",
+			env: { VITE_TURNSTILE_SITE_KEY: "" },
 			reuseExistingServer: !process.env.CI,
 			timeout: 120_000,
 		},
 		{
 			command: "pnpm --filter dashboard dev --host 127.0.0.1 --port 4174 --strictPort",
 			url: "http://127.0.0.1:4174",
+			env: { VITE_TURNSTILE_SITE_KEY: "" },
 			reuseExistingServer: !process.env.CI,
 			timeout: 120_000,
 		},
