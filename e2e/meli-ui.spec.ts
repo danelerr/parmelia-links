@@ -109,3 +109,25 @@ test("nested card form keeps text inputs and custom selectors interactive", asyn
 	await expect(country).toHaveValue("Bolivia, La Paz");
 	await expectNoWcagViolations(page);
 });
+
+test("profile name and social fields preserve user input across renders", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "profile");
+
+	const displayName = page.getByRole("textbox", { name: /Nombre para mostrar|Display name/i });
+	const socialUrl = page.getByRole("textbox", { name: /Red social|Social link/i });
+	await expect(displayName).toBeVisible();
+	await expect(socialUrl).toBeVisible();
+
+	await displayName.fill("Daniel QA");
+	await socialUrl.fill("https://example.com/daniel");
+	await expect(displayName).toHaveValue("Daniel QA");
+	await expect(socialUrl).toHaveValue("https://example.com/daniel");
+
+	// A second state update catches effects that recreate profile data and reset
+	// controlled fields after every keystroke.
+	await displayName.fill("Daniel QA 2");
+	await expect(displayName).toHaveValue("Daniel QA 2");
+	await expect(socialUrl).toHaveValue("https://example.com/daniel");
+	await expect(page.getByRole("button", { name: /Guardar|Save/i }).first()).toBeEnabled();
+	await expectNoWcagViolations(page);
+});

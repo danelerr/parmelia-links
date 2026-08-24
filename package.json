@@ -1,7 +1,7 @@
 {
   "name": "gatopago",
   "private": true,
-  "packageManager": "pnpm@11.21.0",
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "preverify": "pnpm build:contracts",
     "dev:client": "pnpm --filter client dev",
@@ -16,6 +16,9 @@
     "test:fork": "cd contracts && forge test --match-path test/ArbitrumSepoliaFork.t.sol -vv",
     "test:e2e": "playwright test",
     "check:bundle": "node scripts/check-bundle-size.mjs",
+    "check:service-worker": "node scripts/check-service-worker.mjs",
+    "check:dead-code": "knip",
+    "check:cycles": "knip --cycles",
     "check:rpc-indexer": "node scripts/check-rpc-indexer.mjs",
     "check:openapi": "redocly lint gatopago@v1",
     "check:home-no-rpc": "node scripts/check-home-no-rpc.mjs",
@@ -28,7 +31,8 @@
     "d1:backup": "node scripts/d1-backup.mjs --remote",
     "load:home": "node scripts/load-home.mjs",
     "audit:prod": "pnpm audit --prod",
-    "verify": "pnpm lint && pnpm check:server-console && pnpm check:openapi && pnpm check:rpc-indexer && pnpm check:home-no-rpc && pnpm check:router-rsc && pnpm typecheck:server && pnpm test:server && pnpm build && pnpm check:bundle",
+    "verify": "pnpm lint && pnpm check:server-console && pnpm check:openapi && pnpm check:rpc-indexer && pnpm check:home-no-rpc && pnpm check:router-rsc && pnpm check:service-worker && pnpm check:dead-code && pnpm check:cycles && pnpm typecheck:server && pnpm test:server && pnpm build && pnpm check:bundle",
+    "verify:ci": "pnpm build:contracts && pnpm lint && pnpm check:server-console && pnpm check:openapi && pnpm check:home-no-rpc && pnpm check:router-rsc && pnpm check:service-worker && pnpm check:dead-code && pnpm check:cycles && pnpm typecheck:server && pnpm test:server && pnpm build && pnpm check:bundle && pnpm audit:prod && pnpm check:release-artifact && pnpm check:d1:restore && pnpm check:contracts:storage && pnpm check:contracts:coverage && cd contracts && forge build --sizes && forge lint --severity high med low --deny warnings && forge test",
     "verify:all": "pnpm verify && pnpm audit:prod && pnpm test:e2e && pnpm check:release-artifact && pnpm check:d1:restore && pnpm check:contracts:storage && pnpm check:contracts:coverage && cd contracts && forge build --sizes && forge lint --severity high med low --deny warnings && forge test",
     "lint": "pnpm --filter client lint && pnpm --filter dashboard lint && pnpm --filter server lint",
     "test": "pnpm --filter server test && cd contracts && forge test",
@@ -40,6 +44,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
-    "@redocly/cli": "2.46.1"
+    "@redocly/cli": "2.46.1",
+    "knip": "^6.32.2"
   }
 }

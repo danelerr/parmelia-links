@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "treatConfigHintsAsErrors": true,
+  "workspaces": {
+    ".": {
+      "project": [
+        "e2e/**/*.ts",
+        "scripts/**/*.mjs"
+      ],
+      "ignoreBinaries": [
+        "forge"
+      ]
+    },
+    "client": {
+      "entry": [
+        "public/sw.js"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx,css}"
+      ]
+    },
+    "dashboard": {
+      "project": [
+        "src/**/*.{ts,tsx,css}"
+      ]
+    },
+    "server": {
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "test-worker/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "cloudflare"
+      ]
+    },
+    "shared": {
+      "project": [
+        "**/*.ts"
+      ]
+    }
+  }
+}

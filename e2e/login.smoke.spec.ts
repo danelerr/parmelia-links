@@ -78,3 +78,16 @@ test("login respects each product focus treatment and stays keyboard-operable", 
 	const inputFocusStyle = await emailInput.evaluate((element) => getComputedStyle(element).outlineStyle);
 	expect(inputFocusStyle).not.toBe("none");
 });
+
+test("dashboard notifications are accessible and dismissible", async ({ page }, testInfo) => {
+	test.skip(!testInfo.project.name.startsWith("dashboard"), "Dashboard-only notification surface");
+	await openLogin(page, testInfo);
+	await page.getByRole("button", { name: /correo/i }).click();
+	await page.getByRole("textbox", { name: /correo/i }).fill("qa@example");
+	await page.getByRole("button", { name: /enviarme un enlace/i }).click();
+
+	const alert = page.getByRole("alert");
+	await expect(alert).toContainText("Escribe un correo válido");
+	await alert.getByRole("button", { name: /cerrar notificación/i }).click();
+	await expect(alert).toHaveCount(0);
+});
