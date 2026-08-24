@@ -55,10 +55,6 @@ html {
   background: var(--color-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --sileo-state-success: oklch(0.82 0.06 192);
-  --sileo-state-error: oklch(0.76 0.08 350);
-  --sileo-state-warning: oklch(0.86 0.07 90);
-  --sileo-state-info: oklch(0.82 0.06 192);
 }
 
 body {

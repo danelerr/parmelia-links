@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import useSWR from "swr";
 import { Link, useParams } from "react-router";
 import { QRCodeSVG } from "qrcode.react";
-import { sileo } from "sileo";
+import { sileo } from "../lib/notify";
 import { ApiError, apiFetch } from "../lib/api";
 import type { User } from "../lib/firebase";
 import ErrorState from "../components/ErrorState";

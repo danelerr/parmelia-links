@@ -1,6 +1,6 @@
 import { useState } from "react";
 import useSWRInfinite from "swr/infinite";
-import { sileo } from "sileo";
+import { sileo } from "../lib/notify";
 import { apiFetch } from "../lib/api";
 import type { User } from "../lib/firebase";
 import ErrorState from "../components/ErrorState";

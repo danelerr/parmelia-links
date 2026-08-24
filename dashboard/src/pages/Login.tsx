@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { sileo } from "sileo";
+import { sileo } from "../lib/notify";
 import {
 	completeEmailLink,
 	isEmailSignInLink,

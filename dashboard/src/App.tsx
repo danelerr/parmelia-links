@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
-import { Toaster } from "sileo";
+import ToastViewport from "./components/ToastViewport";
 import { onAuthChange, type User } from "./lib/firebase";
 import Logo from "./components/Logo";
 import Layout from "./components/Layout";
@@ -30,11 +30,7 @@ export default function App() {
 
 	return (
 		<BrowserRouter>
-			<Toaster
-				position="top-center"
-				theme="dark"
-				options={{ fill: "#1a1a1e", roundness: 12 }}
-			/>
+			<ToastViewport />
 			<Suspense fallback={<Splash />}>
 				{loading ? (
 					<Splash />

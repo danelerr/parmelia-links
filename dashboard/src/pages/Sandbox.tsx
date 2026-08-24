@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { sileo } from "sileo";
+import { sileo } from "../lib/notify";
 import { apiFetch } from "../lib/api";
 import { docsUrl } from "../lib/docs";
 import type { User } from "../lib/firebase";
