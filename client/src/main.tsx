@@ -3,7 +3,12 @@ import { createRoot } from 'react-dom/client'
 import '@fontsource-variable/recursive'
 import './index.css'
 import './lib/i18n'
+import { initPwaInstall } from './lib/pwaInstall'
 import App from './App.tsx'
+
+// Capture the browser's one-shot install event before authenticated routes
+// finish loading. Home can then trigger it from its own install control.
+initPwaInstall()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

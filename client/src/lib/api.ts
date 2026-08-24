@@ -38,6 +38,8 @@ type ApiOptions = {
 	user?: User | null;
 	method?: string;
 	body?: unknown;
+	/** Additional request headers for scoped proofs such as one-time step-up tokens. */
+	headers?: Record<string, string>;
 };
 
 export async function apiFetch<T = Record<string, unknown>>(
@@ -47,9 +49,10 @@ export async function apiFetch<T = Record<string, unknown>>(
 	const url = path.startsWith("http") ? path : `${SERVER_URL}${path}`;
 	const init: RequestInit = {
 		method: opts.method ?? (opts.body !== undefined ? "POST" : "GET"),
+		headers: opts.headers,
 	};
 	if (opts.body !== undefined) {
-		init.headers = { "Content-Type": "application/json" };
+		init.headers = { ...opts.headers, "Content-Type": "application/json" };
 		init.body = JSON.stringify(opts.body);
 	}
 

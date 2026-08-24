@@ -9,182 +9,24 @@ import { QRCodeSVG } from "qrcode.react";
 import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
-import i18n from "../lib/i18n";
 import { activeNetwork } from "../lib/activeNetwork";
 import { parseQrPayload, type ParsedQrPayload } from "../lib/qrPayload";
 import { useAccountProfile } from "../hooks/useAccountProfile";
 import NoticeCard from "../components/NoticeCard";
 import { MoneyPanel, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
 import { APP_URL } from "../lib/brand";
-
-type FocusCapabilities = MediaTrackCapabilities & {
-  focusMode?: string[];
-};
-
-type FocusConstraintSet = MediaTrackConstraintSet & {
-  focusMode?: string;
-};
-
-type DetectableSource =
-  | HTMLCanvasElement
-  | HTMLImageElement
-  | HTMLVideoElement
-  | ImageBitmap
-  | ImageData;
-
-type DetectedBarcodeLike = {
-  rawValue?: string;
-};
-
-type BarcodeDetectorLike = {
-  detect: (source: DetectableSource) => Promise<DetectedBarcodeLike[]>;
-};
-
-type BarcodeDetectorConstructorLike = {
-  new (options?: { formats?: string[] }): BarcodeDetectorLike;
-  getSupportedFormats?: () => Promise<string[]>;
-};
-
-type WindowWithBarcodeDetector = Window & {
-  BarcodeDetector?: BarcodeDetectorConstructorLike;
-};
-
-const SCAN_INTERVAL_MS = 180;
-// jsQR cost grows ~quadratically with width and it runs on the main thread -
-// keep live analysis small so it never starves rendering. QR codes at arm's
-// length decode reliably at 640px; imported images get the full-quality pass.
-const MAX_LIVE_ANALYSIS_WIDTH = 640;
-const MAX_IMAGE_ANALYSIS_WIDTH = 1600;
-const QR_SCAN_CROP_RATIOS = [1, 0.72] as const;
-
-type InversionAttempts = "dontInvert" | "onlyInvert" | "attemptBoth" | "invertFirst";
-
-// jsQR (~50 KB) is only a FALLBACK for browsers without a native BarcodeDetector.
-// Load it on demand and cache the promise, so devices with native detection
-// (most phones) never download it. The camera pipeline is independent of jsQR.
-type JsQRFn = typeof import("jsqr")["default"];
-let jsQRPromise: Promise<JsQRFn> | null = null;
-function loadJsQR() {
-  if (!jsQRPromise) {
-    jsQRPromise = import("jsqr").then((m) => m.default);
-  }
-  return jsQRPromise;
-}
-
-async function decodeWithJsQR(
-  source: CanvasImageSource,
-  sourceWidth: number,
-  sourceHeight: number,
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D,
-  maxAnalysisWidth: number,
-  inversionAttempts: InversionAttempts = "attemptBoth",
-) {
-  const jsQR = await loadJsQR();
-  for (const cropRatio of QR_SCAN_CROP_RATIOS) {
-    const cropWidth = Math.max(1, Math.floor(sourceWidth * cropRatio));
-    const cropHeight = Math.max(1, Math.floor(sourceHeight * cropRatio));
-    const sx = Math.max(0, Math.floor((sourceWidth - cropWidth) / 2));
-    const sy = Math.max(0, Math.floor((sourceHeight - cropHeight) / 2));
-    const scale = Math.min(1, maxAnalysisWidth / cropWidth);
-    const targetWidth = Math.max(1, Math.floor(cropWidth * scale));
-    const targetHeight = Math.max(1, Math.floor(cropHeight * scale));
-
-    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-    }
-
-    ctx.drawImage(
-      source,
-      sx,
-      sy,
-      cropWidth,
-      cropHeight,
-      0,
-      0,
-      targetWidth,
-      targetHeight,
-    );
-
-    const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-    const code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts,
-    });
-
-    if (code?.data) {
-      return code.data;
-    }
-  }
-
-  return null;
-}
-
-async function createBarcodeDetector() {
-  const BarcodeDetectorCtor = (window as WindowWithBarcodeDetector)
-    .BarcodeDetector;
-
-  if (!BarcodeDetectorCtor) {
-    return null;
-  }
-
-  try {
-    const supportedFormats =
-      typeof BarcodeDetectorCtor.getSupportedFormats === "function"
-        ? await BarcodeDetectorCtor.getSupportedFormats()
-        : null;
-
-    if (supportedFormats && !supportedFormats.includes("qr_code")) {
-      return null;
-    }
-
-    return new BarcodeDetectorCtor({ formats: ["qr_code"] });
-  } catch {
-    try {
-      return new BarcodeDetectorCtor({ formats: ["qr_code"] });
-    } catch {
-      return null;
-    }
-  }
-}
-
-async function detectWithBarcodeDetector(
-  detector: BarcodeDetectorLike | null,
-  source: DetectableSource,
-) {
-  if (!detector) {
-    return null;
-  }
-
-  try {
-    const barcodes = await detector.detect(source);
-    const rawValue = barcodes.find((barcode) => barcode.rawValue?.trim())
-      ?.rawValue;
-
-    return rawValue?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function loadImageFromFile(file: File) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(image);
-    };
-
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error(i18n.t("scan.imgLoadError")));
-    };
-
-    image.src = objectUrl;
-  });
-}
+import {
+  createBarcodeDetector,
+  decodeWithJsQR,
+  detectWithBarcodeDetector,
+  enableContinuousFocus,
+  loadQrImage,
+  MAX_IMAGE_ANALYSIS_WIDTH,
+  MAX_LIVE_ANALYSIS_WIDTH,
+  SCAN_INTERVAL_MS,
+  selectMainCamera,
+  type BarcodeDetectorLike,
+} from "../lib/qrScanner";
 
 type WalletQr = Extract<ParsedQrPayload, { kind: "evm-wallet" }>;
 type NetworkOption = { id: number; label: string };
@@ -448,7 +290,7 @@ export default function ScanQR({ user }: { user: User }) {
       setMessage("");
 
       try {
-        const image = await loadImageFromFile(file);
+        const image = await loadQrImage(file);
         const detector = await getOrCreateBarcodeDetector();
 
         const detectedFromImage = await detectWithBarcodeDetector(
@@ -588,76 +430,6 @@ export default function ScanQR({ user }: { user: User }) {
       scheduleNextFrame(video, tick);
     }
 
-    async function selectMainCamera(): Promise<MediaTrackConstraints> {
-      const defaultConstraints: MediaTrackConstraints = {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 30, max: 30 },
-      };
-
-      try {
-        let devices = await navigator.mediaDevices.enumerateDevices();
-        let videoDevices = devices.filter((device) => device.kind === "videoinput");
-        const hasLabels = videoDevices.some((device) => device.label);
-
-        if (!hasLabels) {
-          const tempStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "environment" },
-            audio: false,
-          });
-          tempStream.getTracks().forEach((track) => track.stop());
-          devices = await navigator.mediaDevices.enumerateDevices();
-          videoDevices = devices.filter((device) => device.kind === "videoinput");
-        }
-
-        const backCameras = videoDevices.filter((device) => {
-          const label = device.label.toLowerCase();
-
-          return (
-            label.includes("back") ||
-            label.includes("rear") ||
-            label.includes("trasera") ||
-            label.includes("environment") ||
-            label.includes("posterior")
-          );
-        });
-
-        if (backCameras.length > 1) {
-          const mainCamera = backCameras.find((device) => {
-            const label = device.label.toLowerCase();
-            return label.includes("0, facing back") || label.includes("camera2 0");
-          });
-
-          const fallbackCamera = backCameras.find((device) => {
-            const label = device.label.toLowerCase();
-
-            return (
-              !label.includes("macro") &&
-              !label.includes("telephoto") &&
-              !label.includes("ultra")
-            );
-          });
-
-          const selectedId =
-            mainCamera?.deviceId ||
-            fallbackCamera?.deviceId ||
-            backCameras[0].deviceId;
-
-          return {
-            deviceId: { exact: selectedId },
-            width: { ideal: 1920, min: 1280 },
-            height: { ideal: 1080, min: 720 },
-            frameRate: { ideal: 30, max: 60 },
-          };
-        }
-      } catch {
-        // enumerate failed
-      }
-
-      return defaultConstraints;
-    }
-
     async function startCamera() {
       try {
         setCameraError("");
@@ -677,24 +449,7 @@ export default function ScanQR({ user }: { user: User }) {
 
         const track = stream.getVideoTracks()[0];
 
-        try {
-          const capabilities =
-            typeof track.getCapabilities === "function"
-              ? (track.getCapabilities() as FocusCapabilities)
-              : null;
-
-          if (capabilities?.focusMode?.includes("continuous")) {
-            await track.applyConstraints({
-              advanced: [
-                {
-                  focusMode: "continuous",
-                } as FocusConstraintSet,
-              ],
-            });
-          }
-        } catch {
-          // ignore unsupported focus constraints
-        }
+        await enableContinuousFocus(track);
 
         const video = videoRef.current;
         if (!video) return;

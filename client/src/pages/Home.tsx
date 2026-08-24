@@ -14,6 +14,7 @@ import LinkButton from "../components/LinkButton";
 import MenuSheet from "../components/MenuSheet";
 import ReceiptModal from "../components/ReceiptModal";
 import PrimaryNav from "../components/PrimaryNav";
+import PwaInstallButton from "../components/PwaInstallButton";
 import ActivityRow from "../components/ActivityRow";
 import TokenSelect from "../components/TokenSelect";
 import { RowSkeletonList, Skeleton } from "../components/Skeleton";
@@ -72,6 +73,7 @@ export default function Home({ user, previewModel }: { user: User; previewModel?
 					<ChevronDown />
 				</button>
 				<div className="flex items-center gap-2">
+					<PwaInstallButton />
 					<button type="button" onClick={() => setMenuOpen(true)} aria-label={t("menu.aria")} aria-haspopup="dialog" className="meli-avatar">
 						{user.photoURL ? <img src={user.photoURL} alt="" width="44" height="44" className="h-full w-full object-cover" referrerPolicy="no-referrer" /> : <span className="font-display text-[14px] font-bold uppercase">{(username || user.displayName || "?")[0]}</span>}
 					</button>

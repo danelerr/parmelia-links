@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
 import Turnstile from "../components/Turnstile";
+import { isTurnstileReady, type TurnstileState } from "../components/turnstileState";
 import NoticeCard from "../components/NoticeCard";
 import { DetailPageSkeleton } from "../components/Skeleton";
 import MeliSprite from "../components/brand/MeliSprite";
@@ -25,7 +26,10 @@ export default function TestFunds({ user }: { user: User }) {
 	const [funded, setFunded] = useState<boolean | null>(null);
 	const [loadFailed, setLoadFailed] = useState(false);
 	const [claiming, setClaiming] = useState(false);
-	const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+	const [turnstile, setTurnstile] = useState<TurnstileState>({
+		status: "loading",
+		token: null,
+	});
 
 	useEffect(() => {
 		let cancelled = false;
@@ -42,12 +46,13 @@ export default function TestFunds({ user }: { user: User }) {
 	}, [user]);
 
 	async function claim() {
+		if (!isTurnstileReady(turnstile)) return;
 		setClaiming(true);
 		try {
 			const operation = await apiFetch<AccountOperationResponse>("/account/fund", {
 				user,
 				method: "POST",
-				body: { turnstileToken },
+				body: { turnstileToken: turnstile.token },
 			});
 			await waitForAccountOperation(user, operation);
 			setFunded(true);
@@ -100,12 +105,12 @@ export default function TestFunds({ user }: { user: User }) {
 						{t("settings.faucetIntro")}
 					</p>
 					<div className="mb-4">
-						<Turnstile onToken={setTurnstileToken} />
+						<Turnstile onStateChange={setTurnstile} />
 					</div>
 					<button
 						type="button"
 						onClick={() => void claim()}
-						disabled={claiming || turnstileToken === null}
+						disabled={claiming || !isTurnstileReady(turnstile)}
 						className="btn btn-primary btn-block"
 					>
 						{claiming ? t("settings.sending") : t("settings.getTestFunds")}

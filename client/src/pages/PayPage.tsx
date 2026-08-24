@@ -4,7 +4,6 @@ import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
 import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { signInWithGoogle, type User } from "../lib/firebase";
-import Logo from "../components/Logo";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { activeNetwork } from "../lib/activeNetwork";
@@ -12,7 +11,7 @@ import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip71
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { useTranslation } from "react-i18next";
 import { formatAmount } from "../lib/format";
-import { parseTransactions, formatShortDate, type Transaction } from "../lib/transactions";
+import { parseTransactions, type Transaction } from "../lib/transactions";
 import OptionCard from "../components/OptionCard";
 import LinkButton from "../components/LinkButton";
 import AmountInput from "../components/AmountInput";
@@ -20,97 +19,24 @@ import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import ConfirmSheet from "../components/ConfirmSheet";
-import TxResult from "../components/TxResult";
-import { Skeleton } from "../components/Skeleton";
 import SigningDetails from "../components/SigningDetails";
 import { MoneyPanel, PanelActions, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
 import TokenSelect from "../components/TokenSelect";
-import { APP_URL } from "../lib/brand";
-
-const APP_HOST = new URL(APP_URL).hostname;
+import { parsePaymentError, PAYMENT_APP_HOST } from "../lib/paymentErrors";
+import {
+	ConfirmPayDestination,
+	PaidLinkView,
+	PayLoadErrorView,
+	PayLoadingView,
+	PayRecipient,
+	PayTrustBadge,
+	UsernameProfileView,
+	type LinkData,
+	type ManualConfirm,
+	type UserProfile,
+} from "../components/pay/PayViews";
 
 type PayStage = "idle" | "preparing" | "signing" | "securing";
-
-interface LinkData {
-	id: string;
-	amount: string;
-	currency: string;
-	reference: string;
-	wallet: string;
-	status: "pending" | "paid";
-	username?: string;
-}
-
-interface UserProfile {
-	username: string;
-	walletAddress: string;
-	displayName?: string | null;
-	socialUrl?: string | null;
-}
-
-/** "https://www.instagram.com/juan" -> "instagram.com/juan" for display. */
-function socialLabel(url: string): string {
-	return url.replace(/^https:\/\/(www\.)?/, "");
-}
-
-// A pending manual payment awaiting explicit confirmation (free-typed,
-// irreversible destinations get a review step before the biometric signature).
-type ManualConfirm = {
-	linkId: string;
-	wallet: string;
-	amount: string;
-	currency: string;
-	isAddress: boolean;
-	username?: string;
-	prepared: PreparedUserOperation;
-};
-
-/** Anti-phishing trust seal - always visible when paying. */
-function TrustBadge() {
-	const { t } = useTranslation();
-	return (
-		<div className="flex items-center justify-center gap-2 mb-7">
-			<Logo className="w-6" />
-			<span className="text-[13px] text-text-muted">
-				{t("pay.secureWith")} <span className="text-text font-medium">GatoPago</span>
-			</span>
-		</div>
-	);
-}
-
-function Recipient({ label, name }: { label: string; name?: string | null }) {
-	const { t } = useTranslation();
-	return (
-		<div className="flex flex-col items-center gap-2 mb-6">
-			<div className="flex h-12 w-12 items-center justify-center border-2 border-text bg-cat-500 font-display text-[18px] uppercase text-on-cat shadow-[4px_4px_0_var(--color-cat-700)]">
-				{(name || label).replace(/^@/, "")[0] || "?"}
-			</div>
-			<h1 className="text-[14px] text-text-muted">
-				{t("pay.payingTo")} <span className="text-text font-medium">{name || label}</span>
-				{name && <span className="text-text-faint"> · {label}</span>}
-			</h1>
-		</div>
-	);
-}
-
-/** Detail block inside the shared ConfirmSheet: the resolved destination of a
- *  manual (free-typed) payment, surfaced in full before the biometric prompt. */
-function ConfirmDestination({ tx }: { tx: ManualConfirm }) {
-	const { t } = useTranslation();
-	return (
-		<div className="mb-3 border border-border bg-surface px-4 py-3">
-			<span className="text-[12px] text-text-muted block mb-1">{t("pay.to")}</span>
-			{tx.isAddress ? (
-				<span className="text-[13px] text-text font-mono break-all">{tx.wallet}</span>
-			) : (
-				<span className="flex flex-col gap-1">
-					<span className="text-[15px] text-text">@{tx.username}</span>
-					<span className="text-[11px] text-text-faint font-mono break-all">{tx.wallet}</span>
-				</span>
-			)}
-		</div>
-	);
-}
 
 export default function PayPage({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
@@ -371,8 +297,8 @@ export default function PayPage({ user }: { user: User | null }) {
 		const code = err instanceof ApiError ? err.code : undefined;
 		const msg = code
 			? t(`err.${code}`, { defaultValue: err instanceof Error ? err.message : t("pay.processError") })
-			: parsePaymentError(err instanceof Error ? err.message : t("pay.processError"));
-		const noKeyOnDevice = msg === t("pay.errNoPasskeys", { host: APP_HOST });
+			: parsePaymentError(err instanceof Error ? err.message : t("pay.processError"), t);
+		const noKeyOnDevice = msg === t("pay.errNoPasskeys", { host: PAYMENT_APP_HOST });
 		notifyError(
 			new ApiError(msg, {
 				status: 400,
@@ -384,41 +310,6 @@ export default function PayPage({ user }: { user: User | null }) {
 				: { title: t("common.retry"), onClick: retry },
 		);
 		setError(msg);
-	}
-
-	// Map known raw errors (ERC-4337 codes, SDK strings, and the server's own
-	// Spanish balance messages) to a message in the user's language — so backend
-	// text never leaks untranslated. Truly unknown messages fall through.
-	function parsePaymentError(msg: string): string {
-		if (msg.includes("AA24")) return t("pay.errPasskeyValidate");
-		if (msg.includes("AA21")) return t("pay.errInsufficient");
-		if (msg.includes("AA25")) return t("pay.errSignatureInvalid");
-		if (msg.includes("Missing qx/qy")) {
-			return t("pay.errPasskeyDevice");
-		}
-		if (
-			msg.includes("Saldo USDC insuficiente") ||
-			msg.includes(`Saldo ${activeNetwork.nativeTokenSymbol} insuficiente`) ||
-			msg.includes("Saldo ETH insuficiente") ||
-			msg.includes("insufficient") ||
-			msg.includes("Insufficient")
-		)
-			return t("pay.errInsufficient");
-		if (msg.includes("Passkey not found") || msg.includes("Passkey no encontrada")) {
-			return t("pay.errPasskeyNotFound");
-		}
-		if (msg.includes("No passkeys available")) {
-			return t("pay.errNoPasskeys", { host: APP_HOST });
-		}
-		if (msg.includes("NotAllowedError") || msg.includes("timed out or was not allowed") || msg.includes("Firma cancelada")) {
-			return t("pay.errCancelled");
-		}
-		if (msg.includes("FailedOp")) {
-			const match = msg.match(/FailedOp\([^,]+,\s*"?([^")]+)/);
-			if (match) return `Error: ${match[1]}`;
-		}
-		if (msg.length > 150) return t("pay.errGeneric");
-		return msg;
 	}
 
 	async function handlePay() {
@@ -493,7 +384,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				onConfirm={() => void confirmAndPay()}
 				onCancel={() => setConfirmTx(null)}
 			>
-				<ConfirmDestination tx={confirmTx} />
+				<ConfirmPayDestination tx={confirmTx} />
 				<SigningDetails payload={confirmTx.prepared.signingPayload} networkName={activeNetwork.name} />
 			</ConfirmSheet>
 		);
@@ -512,37 +403,11 @@ export default function PayPage({ user }: { user: User | null }) {
 		"w-full max-w-[260px] bg-transparent text-center font-display text-[56px] leading-none text-text placeholder:text-text-faint tabular";
 
 	if (loading) {
-		return (
-			<Screen animate={false} aria-busy="true">
-				<div className="flex flex-col items-center mb-7" aria-hidden="true">
-					<Logo className="w-11 mb-4 opacity-75" />
-					<Skeleton className="h-3.5 w-24 rounded-[6px] mb-2" />
-					<Skeleton className="h-7 w-36 rounded-[9px]" />
-				</div>
-				<div className="mb-4 rounded-[20px] bg-surface p-6" aria-hidden="true">
-					<Skeleton className="h-3 w-24 rounded-[6px] mx-auto mb-5" />
-					<Skeleton className="h-14 w-48 rounded-[14px] mx-auto mb-5" />
-					<Skeleton className="h-3 w-32 rounded-[6px] mx-auto" />
-				</div>
-				<div className="flex-1" />
-				<Skeleton className="h-12 w-full rounded-full" />
-				<p role="status" aria-live="polite" className={`text-center mt-4 text-[13px] ${slowConnection ? "text-text-muted" : "sr-only"}`}>
-					{slowConnection ? t("pay.slowConnection") : t("common.loading")}
-				</p>
-			</Screen>
-		);
+		return <PayLoadingView slowConnection={slowConnection} />;
 	}
 
 	if (error && !linkData) {
-		return (
-			<Screen animate={false} className="items-center justify-center gap-5 px-8 text-center">
-				<Logo className="w-14 opacity-50" />
-				<p className="text-text text-[16px] max-w-[280px]">{error}</p>
-				<button onClick={() => navigate("/", { replace: true })} className="btn btn-primary btn-sm">
-					{t("pay.goHome")}
-				</button>
-			</Screen>
-		);
+		return <PayLoadErrorView message={error} onHome={() => navigate("/", { replace: true })} />;
 	}
 
 	// Manual pay (open the app with no link)
@@ -559,7 +424,7 @@ export default function PayPage({ user }: { user: User | null }) {
 				{confirmationSheet()}
 				<BackHeader title={withdrawIntent ? t("pay.withdrawTitle") : t("pay.sendTitle")} className="mb-6" />
 
-				<TrustBadge />
+				<PayTrustBadge />
 
 				<MoneyPanel className="flex flex-col items-center mb-6">
 					<AmountInput
@@ -705,73 +570,18 @@ export default function PayPage({ user }: { user: User | null }) {
 	// Username profile page
 	if (username && userProfile && !showPayForm) {
 		return (
-			<Screen animate={false}>
-				<BackHeader className="mb-6" />
-				<div className="flex-1 flex flex-col items-center justify-center text-center animate-fade-up">
-					<div className="mb-5 flex h-20 w-20 items-center justify-center border-2 border-text bg-cat-500 font-display text-[32px] uppercase text-on-cat shadow-[6px_6px_0_var(--color-cat-700)]">
-						{(userProfile.displayName || userProfile.username)[0]}
-					</div>
-					<h1 className="font-display text-[28px] mb-1">
-						{userProfile.displayName || `@${userProfile.username}`}
-					</h1>
-					{userProfile.displayName && (
-						<p className="text-[15px] text-text-muted mb-1">@{userProfile.username}</p>
-					)}
-					<p className="text-[14px] text-text-muted">{t("pay.receivesPaymentsOn", { network: activeNetwork.name })}</p>
-					{userProfile.socialUrl && (
-						<a
-							href={userProfile.socialUrl}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="mt-3 break-all px-6 text-[13px] text-info underline underline-offset-2"
-						>
-							{socialLabel(userProfile.socialUrl)}
-						</a>
-					)}
-					{user && payHistory && (
-						payHistory.count > 0 && payHistory.last ? (
-							<div className="meli-paper-card meli-paper-card--strong mt-6 px-5 py-3.5">
-								<p className="text-[13px] text-text-muted">
-									{t("pay.paidBefore", { count: payHistory.count })}
-								</p>
-								<p className="text-[12px] text-text-faint mt-0.5">
-									{t("pay.lastPayment", {
-										amount: formatAmount(payHistory.last.amount, payHistory.last.currency),
-										currency: payHistory.last.currency,
-										date: formatShortDate(payHistory.last.createdAt),
-									})}
-								</p>
-							</div>
-						) : (
-							<p className="mt-6 text-[13px] text-text-faint">{t("pay.firstTime")}</p>
-						)
-					)}
-				</div>
-				<button
-					onClick={() => (user ? setShowPayForm(true) : handleLogin())}
-					className="btn btn-primary btn-block"
-				>
-					{user ? t("pay.payTo", { name: userProfile.username }) : t("pay.signInToPay")}
-				</button>
-			</Screen>
+			<UsernameProfileView
+				profile={userProfile}
+				signedIn={Boolean(user)}
+				payHistory={payHistory}
+				onContinue={() => (user ? setShowPayForm(true) : void handleLogin())}
+			/>
 		);
 	}
 
 	// Paid link
 	if (linkData.status === "paid") {
-		return (
-			<Screen animate={false}>
-				<BackHeader onClick={() => navigate("/", { replace: true })} className="mb-6" />
-				<TxResult
-					state="success"
-					lead={t("pay.alreadyPaid")}
-					amount={formatAmount(linkData.amount, linkData.currency)}
-					unit={linkData.currency}
-				>
-					{linkData.reference && <p className="text-text-muted text-[14px] mt-3">{linkData.reference}</p>}
-				</TxResult>
-			</Screen>
-		);
+		return <PaidLinkView link={linkData} onHome={() => navigate("/", { replace: true })} />;
 	}
 
 	// Payment form (fixed link, open link, or username transfer)
@@ -784,8 +594,8 @@ export default function PayPage({ user }: { user: User | null }) {
 			{confirmationSheet()}
 			<BackHeader onClick={showPayForm ? () => setShowPayForm(false) : undefined} className="mb-6" />
 
-			<TrustBadge />
-			<Recipient label={recipientLabel} name={linkData.username ? userProfile?.displayName : null} />
+			<PayTrustBadge />
+			<PayRecipient label={recipientLabel} name={linkData.username ? userProfile?.displayName : null} />
 
 			{/* Amount */}
 			<MoneyPanel className="flex flex-col items-center mb-6">

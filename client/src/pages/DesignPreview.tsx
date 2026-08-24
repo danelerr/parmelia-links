@@ -90,7 +90,7 @@ export default function DesignPreview() {
 	if (view === "onboarding") return <Onboarding user={previewUser} onComplete={() => undefined} />;
 	if (view === "skeleton") return <AccountLaunchScreen />;
 	if (view === "stage") return <StageOverlay label="Preparando tu pago…" />;
-	if (view === "security") return <Security user={previewUser} previewStatus={{ hasWallet: true, signerCount: 2, guardian: "0x1911911911911911911911911911911911911911", recoveryPending: false, recoveryExecutableAfter: null, signers: null }} />;
+	if (view === "security") return <Security user={previewUser} previewStatus={{ hasWallet: true, chainStatus: "available", signerCount: 2, threshold: 1, guardian: "0x1911911911911911911911911911911911911911", recoveryPending: false, recoveryExecutableAfter: null, signers: null, passkeys: [] }} />;
 	if (view === "charge") return <CreateLink user={previewUser} />;
 	if (view === "payment") return <PaymentStatus user={previewUser} />;
 	if (view === "profile") return <ProfilePreview />;

@@ -1,10 +1,12 @@
-// Cloudflare Turnstile widget (Managed mode = invisible for humans).
-// Reports a token via onToken. If no site key is configured, it reports an
-// empty token immediately so dev flows aren't blocked (server skips the check).
+// Cloudflare Turnstile widget. A failed or expired challenge is a blocking
+// state, never the empty-string development sentinel.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TurnstileState } from "./turnstileState";
 
 const SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
+const SCRIPT_ID = "gatopago-turnstile-script";
 const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 type TurnstileApi = {
@@ -33,26 +35,48 @@ function loadScript(): Promise<void> {
 	if (window.turnstile) return Promise.resolve();
 	if (window.__turnstileLoading) return window.__turnstileLoading;
 	window.__turnstileLoading = new Promise<void>((resolve, reject) => {
-		const s = document.createElement("script");
-		s.src = SCRIPT_SRC;
-		s.async = true;
-		s.defer = true;
-		s.onload = () => resolve();
-		s.onerror = () => reject(new Error("turnstile script failed"));
-		document.head.appendChild(s);
+		const existing = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+		if (existing) existing.remove();
+		const script = document.createElement("script");
+		script.id = SCRIPT_ID;
+		script.src = SCRIPT_SRC;
+		script.async = true;
+		script.defer = true;
+		script.onload = () => resolve();
+		script.onerror = () => reject(new Error("Turnstile script failed"));
+		document.head.appendChild(script);
+	}).catch((error) => {
+		window.__turnstileLoading = undefined;
+		throw error;
 	});
 	return window.__turnstileLoading;
 }
 
-export default function Turnstile({ onToken }: { onToken: (token: string) => void }) {
+export default function Turnstile({
+	onStateChange,
+}: {
+	onStateChange: (state: TurnstileState) => void;
+}) {
+	const { t } = useTranslation();
 	const ref = useRef<HTMLDivElement>(null);
 	const widgetId = useRef<string | null>(null);
+	const [revision, setRevision] = useState(0);
+	const [state, setState] = useState<TurnstileState>(() =>
+		SITE_KEY ? { status: "loading", token: null } : { status: "disabled", token: "" },
+	);
+
+	const publish = useCallback((next: TurnstileState) => {
+		setState(next);
+		onStateChange(next);
+	}, [onStateChange]);
 
 	useEffect(() => {
-		// Not configured → unblock the flow; the server skips verification.
 		if (!SITE_KEY) {
-			onToken("");
-			return;
+			let cancelled = false;
+			queueMicrotask(() => {
+				if (!cancelled) onStateChange({ status: "disabled", token: "" });
+			});
+			return () => { cancelled = true; };
 		}
 		let cancelled = false;
 		loadScript()
@@ -61,24 +85,49 @@ export default function Turnstile({ onToken }: { onToken: (token: string) => voi
 				widgetId.current = window.turnstile.render(ref.current, {
 					sitekey: SITE_KEY,
 					theme: "dark",
-					callback: (token) => onToken(token),
-					"expired-callback": () => {
-						onToken("");
-						if (widgetId.current) window.turnstile?.reset(widgetId.current);
-					},
-					"error-callback": () => onToken(""),
+					callback: (token) => publish({ status: "verified", token }),
+					"expired-callback": () => publish({ status: "expired", token: null }),
+					"error-callback": () => publish({ status: "error", token: null }),
 				});
 			})
-			.catch(() => onToken("")); // network/script failure → don't hard-block
+			.catch(() => {
+				if (!cancelled) publish({ status: "error", token: null });
+			});
 		return () => {
 			cancelled = true;
 			if (widgetId.current && window.turnstile) {
 				window.turnstile.remove(widgetId.current);
+				widgetId.current = null;
 			}
 		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+	}, [onStateChange, publish, revision]);
+
+	function retry() {
+		publish({ status: "loading", token: null });
+		if (widgetId.current && window.turnstile) {
+			window.turnstile.reset(widgetId.current);
+			return;
+		}
+		setRevision((value) => value + 1);
+	}
 
 	if (!SITE_KEY) return null;
-	return <div ref={ref} className="flex justify-center" />;
+	return (
+		<div className="flex w-full flex-col items-center gap-2" aria-live="polite">
+			<div ref={ref} className="flex justify-center" />
+			{state.status === "loading" ? (
+				<p className="text-[12px] text-text-muted">{t("turnstile.checking")}</p>
+			) : null}
+			{state.status === "expired" || state.status === "error" ? (
+				<div className="text-center">
+					<p className="mb-1 text-[12px] text-danger">
+						{state.status === "expired" ? t("turnstile.expired") : t("turnstile.error")}
+					</p>
+					<button type="button" className="btn-text" onClick={retry}>
+						{t("turnstile.retry")}
+					</button>
+				</div>
+			) : null}
+		</div>
+	);
 }

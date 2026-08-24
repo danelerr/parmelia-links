@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { User } from "../lib/firebase";
 import { apiFetch } from "../lib/api";
-import { createPasskey, hasUsableKeyForSigners, signWithPasskey } from "../lib/webauthn";
+import { createPasskey, hasUsableKeyForSigners, rememberPasskey, signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork } from "../lib/activeNetwork";
@@ -19,15 +19,19 @@ import BackHeader from "../components/BackHeader";
 import LinkButton from "../components/LinkButton";
 import { FormPageSkeleton } from "../components/Skeleton";
 import MeliSprite from "../components/brand/MeliSprite";
+import PasskeyList, { type ManagedPasskey } from "../components/PasskeyList";
 
 interface PasskeyStatusResponse {
 	hasWallet: boolean;
+	chainStatus: "available" | "unavailable" | "not_applicable";
 	signerCount: number | null;
+	threshold: number | null;
 	guardian: string | null;
 	recoveryPending: boolean | null;
 	recoveryExecutableAfter: string | null;
 	/** Registered ERC-7913 signer bytes; null while the chain read fails. */
 	signers: string[] | null;
+	passkeys: ManagedPasskey[];
 }
 
 function isZeroAddress(address: string | null | undefined) {
@@ -57,6 +61,8 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	const [status, setStatus] = useState<PasskeyStatusResponse | null>(previewStatus ?? null);
 	const [loading, setLoading] = useState(!previewStatus);
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
+	const [pendingPasskey, setPendingPasskey] = useState<Awaited<ReturnType<typeof createPasskey>> | null>(null);
+	const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
 
 	const refresh = useCallback(async () => {
 		if (previewStatus) {
@@ -82,20 +88,31 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		setUpdatingPasskey(true);
 		try {
 			if (!user.uid) throw new Error(t("common.sessionExpired"));
-			const passkeyLabel = user.email || user.displayName || undefined;
-			const nextPasskey = await createPasskey(user.uid, passkeyLabel);
+			let nextPasskey = pendingPasskey;
+			if (!nextPasskey) {
+				const preflight = await apiFetch<{ registrationId: string; challenge: string }>(
+					"/account/passkey/registration/preflight",
+					{ user, body: {} },
+				);
+				const passkeyLabel = user.email || user.displayName || undefined;
+				nextPasskey = await createPasskey(user.uid, passkeyLabel, {
+					...preflight,
+					name: t("webauthn.backupKeyName"),
+				});
+				setPendingPasskey(nextPasskey);
+			}
 
-			const intentData = await apiFetch<{ addSignerCalldata?: string }>(
+			const intentData = await apiFetch<{ registrationId?: string }>(
 				"/account/passkey",
 				{ user, method: "PUT", body: nextPasskey },
 			);
-			if (!intentData.addSignerCalldata) {
+			if (!intentData.registrationId) {
 				throw new Error(t("settings.missingKeyData"));
 			}
 
 			const prepared = await apiFetch<PreparedUserOperation>("/account/passkey/prepare", {
 				user,
-				body: { callData: intentData.addSignerCalldata },
+				body: { registrationId: intentData.registrationId },
 			});
 
 			const assertion = await signWithPasskey(
@@ -103,6 +120,8 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 				prepared.credentialId,
 			);
 			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
+			rememberPasskey(nextPasskey);
+			setPendingPasskey(null);
 
 			await refresh();
 			if (submit.confirmed) {
@@ -118,12 +137,60 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		}
 	}
 
+	async function handleRenamePasskey(credentialId: string, name: string) {
+		setBusyKeyId(credentialId);
+		try {
+			await apiFetch(`/account/passkeys/${encodeURIComponent(credentialId)}`, {
+				user,
+				method: "PATCH",
+				body: { name },
+			});
+			await refresh();
+			notifySuccess(t("security.keyRenamed"));
+		} catch (error) {
+			notifyError(error, t("security.keyRenameError"));
+		} finally {
+			setBusyKeyId(null);
+		}
+	}
+
+	async function handleRemovePasskey(credentialId: string) {
+		setBusyKeyId(credentialId);
+		try {
+			const prepared = await apiFetch<PreparedUserOperation>(
+				`/account/passkeys/${encodeURIComponent(credentialId)}/remove/prepare`,
+				{ user, body: {} },
+			);
+			const assertion = await signWithPasskey(
+				userOperationChallenge(prepared, activeNetwork.chainId),
+				prepared.credentialId,
+			);
+			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
+			await refresh();
+			notifySuccess(
+				submit.confirmed ? t("security.keyRemoved") : t("security.keyRemovalPending"),
+				submit.confirmed ? undefined : t("security.keyRemovalPendingBody"),
+			);
+		} catch (error) {
+			notifyError(error, t("security.keyRemoveError"));
+		} finally {
+			setBusyKeyId(null);
+		}
+	}
+
 	const recoveryDateLabel = status?.recoveryExecutableAfter
 		? formatDate(status.recoveryExecutableAfter, { day: "numeric", month: "long" })
 		: null;
-	const keyCount = status?.signerCount || 1;
-	const recoveryOn = !isZeroAddress(status?.guardian);
+	const chainAvailable = status?.chainStatus === "available";
+	const keyCount = chainAvailable ? status?.signerCount ?? null : null;
+	const recoveryOn = chainAvailable && !isZeroAddress(status?.guardian);
+	const protectionActive =
+		chainAvailable &&
+		status?.signerCount !== null &&
+		status?.threshold !== null &&
+		(status?.signerCount ?? 0) >= (status?.threshold ?? 1);
 	const deviceMissingKey =
+		chainAvailable &&
 		!!status?.signers &&
 		status.signers.length > 0 &&
 		!hasUsableKeyForSigners(status.signers) &&
@@ -147,8 +214,12 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 								{t("security.heroBody")}
 							</p>
 							<span className="mt-4 inline-flex items-center gap-2 border border-[rgb(255_248_240/.3)] px-3 py-2 font-mono text-[9px] uppercase tracking-[0.08em] text-[#fff8f0]">
-								<i className="h-2 w-2 bg-growth" aria-hidden="true" />
-								{t("security.protected")}
+								<i className={`h-2 w-2 ${protectionActive ? "bg-growth" : "bg-pending"}`} aria-hidden="true" />
+								{protectionActive
+									? t("security.protected")
+									: status?.hasWallet
+										? t("security.protectionUnverified")
+										: t("security.protectionNotConfigured")}
 							</span>
 						</div>
 						<MeliSprite name="head-focused" motion="idle" className="pointer-events-none absolute -bottom-2 -right-3 w-28 opacity-95" />
@@ -175,7 +246,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 
 						<div className="grid grid-cols-2 border-b border-text">
 							<div className="border-r border-text bg-surface-2 px-4 py-4">
-								<p className="type-mono text-[25px] font-bold leading-none text-growth">{keyCount}</p>
+								<p className="type-mono text-[25px] font-bold leading-none text-growth">{keyCount ?? "—"}</p>
 								<p className="mt-2 text-[11px] leading-tight text-text-muted">
 									{t("settings.keyActive", { count: keyCount })}
 								</p>
@@ -230,6 +301,16 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 								{t("settings.addBackupKeyDesc")}
 							</p>
 						</div>
+
+						<PasskeyList
+							passkeys={status?.passkeys ?? []}
+							signerCount={status?.signerCount ?? null}
+							threshold={status?.threshold ?? null}
+							chainAvailable={chainAvailable}
+							busyId={busyKeyId}
+							onRename={handleRenamePasskey}
+							onRemove={handleRemovePasskey}
+						/>
 					</section>
 
 					<LinkButton to="/recover" className="meli-path-card-app interactive-surface mb-6 min-h-[104px] p-4 text-left">

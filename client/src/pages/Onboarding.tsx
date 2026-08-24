@@ -5,11 +5,12 @@ import { apiFetch } from "../lib/api";
 import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
-import { createPasskey } from "../lib/webauthn";
+import { createPasskey, rememberPasskey } from "../lib/webauthn";
 import BrandLockup from "../components/brand/BrandLockup";
 import MeliSprite from "../components/brand/MeliSprite";
 import PixelRail from "../components/brand/PixelRail";
 import Turnstile from "../components/Turnstile";
+import { isTurnstileReady, type TurnstileState } from "../components/turnstileState";
 import { useTranslation } from "react-i18next";
 import { readMigratedStorage, removeMigratedStorage } from "../lib/storageMigration";
 
@@ -47,31 +48,71 @@ export default function Onboarding({
 			return "";
 		}
 	});
-	// Turnstile token. null = not ready yet; "" = not configured (server skips).
-	const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+	const [turnstile, setTurnstile] = useState<TurnstileState>({
+		status: "loading",
+		token: null,
+	});
+	const [challengeRevision, setChallengeRevision] = useState(0);
+
+	function resetChallenge() {
+		setTurnstile({ status: "loading", token: null });
+		setChallengeRevision((value) => value + 1);
+	}
 
 	async function handleCreateWallet() {
+		if (!isTurnstileReady(turnstile)) return;
 		setCreatingWallet(true);
 		try {
 			if (!user.uid) throw new Error(t("common.sessionExpired"));
+			const preflight = await apiFetch<{
+				registrationId?: string;
+				challenge?: string;
+				alreadyExists?: boolean;
+				existingOperation?: AccountOperationResponse;
+			}>("/account/create/preflight", {
+				user,
+				body: { turnstileToken: turnstile.token },
+			});
+			if (preflight.existingOperation) {
+				await waitForAccountOperation(user, preflight.existingOperation);
+				onComplete();
+				navigate("/", { replace: true });
+				return;
+			}
+			if (preflight.alreadyExists) {
+				onComplete();
+				navigate("/", { replace: true });
+				return;
+			}
+			if (!preflight.registrationId || !preflight.challenge) {
+				throw new Error(t("webauthn.registrationExpired"));
+			}
 			const passkeyLabel = user.email || user.displayName || undefined;
-			const { credentialId, qx, qy } = await createPasskey(user.uid, passkeyLabel);
+			const credential = await createPasskey(user.uid, passkeyLabel, {
+				registrationId: preflight.registrationId,
+				challenge: preflight.challenge,
+				name: t("webauthn.primaryKeyName"),
+			});
 
 			// Referral attribution: invite link (?ref) or the manually entered code.
 			const ref = inviteCode.trim() || undefined;
 			const operation = await apiFetch<AccountOperationResponse>("/account/create", {
 				user,
-				body: { credentialId, qx, qy, ref, turnstileToken },
+				body: { ...credential, ref },
 			});
 			await waitForAccountOperation(user, operation);
+			rememberPasskey(credential);
 
 			removeMigratedStorage(REF_STORAGE_KEY, LEGACY_REF_STORAGE_KEY);
 			track("wallet_created", { referred: !!ref });
-			notifySuccess(t("onboarding.accountReady"), t("onboarding.welcomeFunds"));
+			notifySuccess(t("onboarding.accountReady"));
 			onComplete();
 			navigate("/", { replace: true });
 		} catch (err) {
 			notifyError(err, t("onboarding.createError"));
+			// Turnstile tokens are single-use. A failed preflight or a dismissed
+			// passkey prompt must always get a fresh challenge before retrying.
+			resetChallenge();
 		} finally {
 			setCreatingWallet(false);
 		}
@@ -135,10 +176,10 @@ export default function Onboarding({
 				className="flex flex-col items-center gap-4 animate-fade-up"
 				style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }}
 			>
-				<Turnstile onToken={setTurnstileToken} />
+				<Turnstile key={challengeRevision} onStateChange={setTurnstile} />
 				<button
 					onClick={handleCreateWallet}
-					disabled={creatingWallet || turnstileToken === null}
+					disabled={creatingWallet || !isTurnstileReady(turnstile)}
 					className="btn btn-primary btn-block"
 				>
 					{creatingWallet ? t("onboarding.creating") : t("onboarding.createAccount")}

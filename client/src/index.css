@@ -713,6 +713,36 @@ input, textarea, select {
 
 .meli-avatar .meli-sprite { filter: none; }
 
+.pwa-install-button {
+  position: relative;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--color-text);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 3px 3px 0 var(--color-cat-500);
+  transition: transform 150ms var(--ease-press), box-shadow 150ms var(--ease-press), background-color 140ms ease;
+}
+
+.pwa-install-button::after {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  background: var(--color-cat-700);
+  content: "";
+}
+
+.pwa-install-button:disabled { opacity: .55; }
+.pwa-install-button:not(:disabled):active {
+  box-shadow: 1px 1px 0 var(--color-cat-500);
+  transform: translate(2px, 2px);
+}
+
 .meli-login-stage {
   position: relative;
   display: grid;
@@ -968,6 +998,12 @@ input, textarea, select {
 .keep-round { border-radius: 999px !important; }
 
 @media (hover: hover) and (pointer: fine) {
+	.pwa-install-button:not(:disabled):hover {
+		background: var(--color-cat-50);
+		box-shadow: 5px 5px 0 var(--color-cat-500);
+		transform: translate(-2px, -2px);
+	}
+
   .meli-square-action:hover,
   .meli-quick-action:hover {
     border-color: var(--color-text);

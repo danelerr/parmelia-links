@@ -6,7 +6,7 @@ import { readMigratedStorage, writeStorage } from "./storageMigration";
 const PASSKEY_STORAGE_KEY = "gatopago:remembered-passkeys:v1";
 const LEGACY_PASSKEY_STORAGE_KEY = "parmelia:remembered-passkeys:v1";
 
-type RememberedPasskey = {
+export type RememberedPasskey = {
 	credentialId: string;
 	qx: string;
 	qy: string;
@@ -106,7 +106,7 @@ export function hasUsableKeyForSigners(signers: readonly string[]): boolean {
 	});
 }
 
-function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
+export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
 	const remembered = readRememberedPasskeys();
 	const existing = remembered[passkey.credentialId];
 	const now = new Date().toISOString();
@@ -166,12 +166,23 @@ function resolveRememberedPasskey(
 export async function createPasskey(
 	userId: string,
 	label?: string,
+	registration?: { registrationId: string; challenge: string; name?: string },
 ): Promise<{
+	registrationId: string;
 	credentialId: string;
 	qx: string;
 	qy: string;
+	clientDataJSON: string;
+	attestationObject: string;
+	clientExtensionResults: AuthenticationExtensionsClientOutputs;
+	authenticatorAttachment?: AuthenticatorAttachment;
+	transports: string[];
+	name?: string;
 }> {
-	const challenge = crypto.getRandomValues(new Uint8Array(32));
+	if (!registration?.registrationId || !registration.challenge) {
+		throw new Error(i18n.t("webauthn.registrationExpired"));
+	}
+	const challenge = new Uint8Array(base64urlToBuffer(registration.challenge));
 	const rpId = getRelyingPartyId();
 	const displayLabel = label?.trim() || i18n.t("webauthn.accountLabel");
 
@@ -199,14 +210,27 @@ export async function createPasskey(
 
 	const attestation = credential.response as AuthenticatorAttestationResponse;
 	const { qx, qy } = extractP256PublicKey(attestation);
-	const createdPasskey = {
+	const authenticatorAttachment =
+		credential.authenticatorAttachment === "platform" ||
+		credential.authenticatorAttachment === "cross-platform"
+			? credential.authenticatorAttachment
+			: undefined;
+	return {
+		registrationId: registration.registrationId,
 		credentialId: bufferToBase64url(credential.rawId),
 		qx: "0x" + qx,
 		qy: "0x" + qy,
+		clientDataJSON: bufferToBase64url(attestation.clientDataJSON),
+		attestationObject: bufferToBase64url(attestation.attestationObject),
+		clientExtensionResults: credential.getClientExtensionResults(),
+		...(authenticatorAttachment
+			? { authenticatorAttachment }
+			: {}),
+		transports: typeof attestation.getTransports === "function"
+			? attestation.getTransports()
+			: [],
+		...(registration.name ? { name: registration.name } : {}),
 	};
-
-	rememberPasskey(createdPasskey);
-	return createdPasskey;
 }
 
 /** Extract P256 public key (qx, qy) from AuthenticatorAttestationResponse */

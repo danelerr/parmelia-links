@@ -1,21 +1,13 @@
 import { initializeApp } from "firebase/app";
 import { clearHomeCache } from "./homeData";
 import {
-	readMigratedStorage,
-	removeMigratedStorage,
-	writeStorage,
-} from "./storageMigration";
-
-import {
 	browserLocalPersistence,
 	getAuth,
 	GoogleAuthProvider,
 	getRedirectResult,
-	isSignInWithEmailLink,
 	onAuthStateChanged,
-	sendSignInLinkToEmail,
 	setPersistence,
-	signInWithEmailLink,
+	signInWithCustomToken,
 	signInWithPopup,
 	signInWithRedirect,
 	signOut,
@@ -95,35 +87,10 @@ export async function signInWithGoogle() {
 	return signInWithProvider(googleProvider);
 }
 
-// ===== Email magic link (passwordless) =====
-
-const EMAIL_STORAGE_KEY = "gatopago:emailForSignIn";
-const LEGACY_EMAIL_STORAGE_KEY = "parmelia:emailForSignIn";
-
-/** Send a sign-in link to `email`. The link returns to /login on this origin. */
-export async function sendEmailLink(email: string) {
-	await sendSignInLinkToEmail(auth, email, {
-		url: `${window.location.origin}/login`,
-		handleCodeInApp: true,
-	});
-	// Needed to complete sign-in when the user returns via the email link.
-	writeStorage(EMAIL_STORAGE_KEY, email);
-}
-
-/** True if the current URL is a Firebase email sign-in link. */
-export function isEmailSignInLink(url: string) {
-	return isSignInWithEmailLink(auth, url);
-}
-
-/**
- * Complete an email-link sign-in from the current URL. Falls back to the passed
- * email if the original device's localStorage isn't available (different device).
- */
-export async function completeEmailLink(url: string, fallbackEmail?: string) {
-	const email = readMigratedStorage(EMAIL_STORAGE_KEY, LEGACY_EMAIL_STORAGE_KEY) || fallbackEmail;
-	if (!email) throw new Error("NEED_EMAIL");
-	const result = await signInWithEmailLink(auth, email, url);
-	removeMigratedStorage(EMAIL_STORAGE_KEY, LEGACY_EMAIL_STORAGE_KEY);
+/** Complete server-verified email OTP authentication with a Firebase custom token. */
+export async function signInWithEmailCodeToken(customToken: string) {
+	const result = await signInWithCustomToken(auth, customToken);
+	await result.user.getIdToken(true);
 	return result;
 }
 

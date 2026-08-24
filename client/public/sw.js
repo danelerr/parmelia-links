@@ -3,21 +3,15 @@
 //   - navigations: network-first with the cached shell as offline fallback
 //   - everything else (API, cross-origin, non-GET): untouched — money flows
 //     must NEVER be served from a cache.
-const CACHE = "gatopago-shell-v6";
+const CACHE = "gatopago-shell-v9";
 const SHELL = "/index.html";
 const PRECACHE = [
 	SHELL,
 	"/manifest.webmanifest",
 	"/favicon.ico",
 	"/apple-touch-icon.png",
-	"/gatopago.svg",
-	"/gatopago-icon.svg",
 	"/icon-192.png",
 	"/icon-512.png",
-	"/maskable-192.png",
-	"/maskable-512.png",
-	"/icon-monochrome.svg",
-	"/badge-96.png",
 ];
 const STATIC_ROOT_ASSETS = new Set(PRECACHE.slice(1));
 
@@ -80,6 +74,12 @@ self.addEventListener("fetch", (event) => {
 	const url = new URL(request.url);
 	if (url.origin !== self.location.origin) return;
 
+	// Firebase Auth owns these same-origin proxy routes. Intercepting one of its
+	// iframe/redirect navigations can replace the PWA shell with Firebase HTML
+	// and break every later app load. Leave the entire namespace to the network.
+	if (url.pathname === "/__/auth" || url.pathname.startsWith("/__/auth/")) return;
+	if (url.pathname === "/__/firebase" || url.pathname.startsWith("/__/firebase/")) return;
+
 	// Immutable build assets → cache-first.
 	if (url.pathname.startsWith("/assets/") || STATIC_ROOT_ASSETS.has(url.pathname)) {
 		event.respondWith(
@@ -94,20 +94,13 @@ self.addEventListener("fetch", (event) => {
 		return;
 	}
 
-	// App navigations → network-first, offline falls back to the cached shell.
-	// Only OK responses are cached: a 404/500 (or an error page) must never
-	// replace the working shell and get served offline forever.
+	// App navigations → network-first, offline falls back to the shell captured
+	// during the atomic install. Never overwrite SHELL from an arbitrary route:
+	// redirects, auth helpers and branded error pages are valid HTML responses
+	// but are not the application shell.
 	if (request.mode === "navigate") {
 		event.respondWith(
-			fetch(request)
-				.then(async (res) => {
-					if (res.ok) {
-						const cache = await caches.open(CACHE);
-						await cache.put(SHELL, res.clone());
-					}
-					return res;
-				})
-				.catch(() => caches.match(SHELL)),
+			fetch(request).catch(() => caches.match(SHELL)),
 		);
 	}
 });
@@ -148,7 +141,6 @@ self.addEventListener("push", (event) => {
 			self.registration.showNotification(title, {
 				body,
 				icon: "/icon-192.png",
-				badge: "/badge-96.png",
 				data: { link },
 			}),
 		]),

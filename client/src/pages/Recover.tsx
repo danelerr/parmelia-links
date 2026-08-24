@@ -17,7 +17,7 @@ import { useTranslation } from "react-i18next";
 import type { User } from "../lib/firebase";
 import { ApiError, apiFetch } from "../lib/api";
 import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
-import { createPasskey } from "../lib/webauthn";
+import { createPasskey, rememberPasskey } from "../lib/webauthn";
 import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
 import { formatDateTime } from "../lib/format";
 import { useViewTransitionNavigate } from "../hooks/useNav";
@@ -26,6 +26,7 @@ import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import TxResult from "../components/TxResult";
 import LinkButton from "../components/LinkButton";
+import StepUpCodeSheet from "../components/StepUpCodeSheet";
 import { FormPageSkeleton } from "../components/Skeleton";
 import {
 	readMigratedStorage,
@@ -113,6 +114,7 @@ export default function Recover({ user }: { user: User }) {
 	const [now, setNow] = useState(() => Date.now());
 	// Inline double-tap confirmation for cancel (no ConfirmSheet: no amount here).
 	const [cancelArmed, setCancelArmed] = useState(false);
+	const [stepUpAction, setStepUpAction] = useState<"start" | "execute" | null>(null);
 	const cancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	const refresh = useCallback(async () => {
@@ -160,13 +162,44 @@ export default function Recover({ user }: { user: User }) {
 		return () => clearInterval(id);
 	}, [waiting]);
 
-	async function handleStart() {
+	async function handleStart(stepUpToken: string) {
+		setPhase("proposing");
+		let preflight: { registrationId: string; challenge: string };
+		try {
+			preflight = await apiFetch<{ registrationId: string; challenge: string }>(
+				"/account/recovery/preflight",
+				{
+					user,
+					body: {},
+					headers: { "X-Step-Up-Token": stepUpToken },
+				},
+			);
+		} catch (error) {
+			if (error instanceof ApiError && error.code === "RECOVERY_IN_PROGRESS") {
+				await refresh();
+				return;
+			}
+			if (
+				error instanceof ApiError &&
+				(error.code === "STEP_UP_REQUIRED" || error.code === "STEP_UP_INVALID")
+			) {
+				setPhase("intro");
+				setStepUpAction("start");
+				return;
+			}
+			setPhase("error");
+			return;
+		}
+
 		setPhase("creating");
-		let created: { credentialId: string; qx: string; qy: string };
+		let created: Awaited<ReturnType<typeof createPasskey>>;
 		try {
 			if (!user.uid) throw new Error(t("common.sessionExpired"));
 			const passkeyLabel = user.email || user.displayName || undefined;
-			created = await createPasskey(user.uid, passkeyLabel);
+			created = await createPasskey(user.uid, passkeyLabel, {
+				...preflight,
+				name: t("webauthn.recoveryKeyName"),
+			});
 		} catch (error) {
 			// A dismissed OS prompt is not a failure: back to intro with a calm toast.
 			setPhase("intro");
@@ -179,7 +212,8 @@ export default function Recover({ user }: { user: User }) {
 		try {
 			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/propose", {
 				user,
-				body: { qx: created.qx, qy: created.qy },
+				body: created,
+				headers: { "X-Step-Up-Token": stepUpToken },
 			});
 			await waitForAccountOperation(user, operation);
 			// Only NOW is this credential the proposed one - promote it.
@@ -191,8 +225,7 @@ export default function Recover({ user }: { user: User }) {
 		} catch (error) {
 			if (error instanceof ApiError && error.code === "RECOVERY_IN_PROGRESS") {
 				// Someone proposed first. NEVER promote the key we just created: the
-				// on-chain proposal is for a DIFFERENT qx/qy. The orphan passkey stays
-				// harmlessly in the device hint.
+				// on-chain proposal is for a DIFFERENT qx/qy.
 				await refresh();
 				return;
 			}
@@ -200,7 +233,7 @@ export default function Recover({ user }: { user: User }) {
 		}
 	}
 
-	async function handleExecute() {
+	async function handleExecute(stepUpToken: string) {
 		const pointer = readPointer();
 		if (!pointer) {
 			await refresh();
@@ -211,8 +244,10 @@ export default function Recover({ user }: { user: User }) {
 			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/execute", {
 				user,
 				body: { credentialId: pointer.credentialId, qx: pointer.qx, qy: pointer.qy },
+				headers: { "X-Step-Up-Token": stepUpToken },
 			});
 			await waitForAccountOperation(user, operation);
+			rememberPasskey(pointer);
 			clearPointer();
 			// The Home "new device?" banner earns a fresh start after a recovery.
 			if (user.uid) {
@@ -242,6 +277,11 @@ export default function Recover({ user }: { user: User }) {
 					// the refetch lands on the *-elsewhere phase with the way out.
 					clearPointer();
 					await refresh();
+					return;
+				}
+				if (error.code === "STEP_UP_REQUIRED" || error.code === "STEP_UP_INVALID") {
+					setPhase("ready");
+					setStepUpAction("execute");
 					return;
 				}
 			}
@@ -328,6 +368,7 @@ export default function Recover({ user }: { user: User }) {
 	if (visiblePhase === "intro") {
 		const steps = [t("recover.step1"), t("recover.step2"), t("recover.step3")];
 		return (
+			<>
 			<Screen>
 				<BackHeader to="/" replace title={t("recover.title")} />
 
@@ -356,10 +397,21 @@ export default function Recover({ user }: { user: User }) {
 
 				<div className="flex-1" />
 
-				<button onClick={handleStart} className="btn btn-primary btn-block">
+				<button onClick={() => setStepUpAction("start")} className="btn btn-primary btn-block">
 					{t("recover.cta")}
 				</button>
 			</Screen>
+			{stepUpAction === "start" ? (
+				<StepUpCodeSheet
+					user={user}
+					onCancel={() => setStepUpAction(null)}
+					onVerified={(token) => {
+						setStepUpAction(null);
+						void handleStart(token);
+					}}
+				/>
+			) : null}
+			</>
 		);
 	}
 
@@ -406,6 +458,7 @@ export default function Recover({ user }: { user: User }) {
 
 	if (visiblePhase === "ready" || visiblePhase === "ready-elsewhere") {
 		return (
+			<>
 			<Screen>
 				<BackHeader to="/" replace />
 				<TxResult
@@ -415,7 +468,7 @@ export default function Recover({ user }: { user: User }) {
 				>
 					{visiblePhase === "ready" ? (
 						<>
-							<button onClick={handleExecute} className="btn btn-primary btn-block mt-6">
+							<button onClick={() => setStepUpAction("execute")} className="btn btn-primary btn-block mt-6">
 								{t("recover.readyCta")}
 							</button>
 							{cancelButton}
@@ -425,6 +478,17 @@ export default function Recover({ user }: { user: User }) {
 					)}
 				</TxResult>
 			</Screen>
+			{stepUpAction === "execute" ? (
+				<StepUpCodeSheet
+					user={user}
+					onCancel={() => setStepUpAction(null)}
+					onVerified={(token) => {
+						setStepUpAction(null);
+						void handleExecute(token);
+					}}
+				/>
+			) : null}
+			</>
 		);
 	}
 

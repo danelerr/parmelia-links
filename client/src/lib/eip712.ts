@@ -2,46 +2,15 @@ import {
 	hashTypedData,
 	isAddress,
 	isHex,
-	type Address,
 	type Hex,
 } from "viem";
+import {
+	PACKED_USER_OPERATION_EIP712_TYPES,
+	type UserOperationSigningPayload,
+} from "@gatopago/shared/user-operations";
 import { hexToBytes } from "./hex";
 
-const PACKED_USER_OPERATION_EIP712_TYPES = {
-	PackedUserOperation: [
-		{ name: "sender", type: "address" },
-		{ name: "nonce", type: "uint256" },
-		{ name: "initCode", type: "bytes" },
-		{ name: "callData", type: "bytes" },
-		{ name: "accountGasLimits", type: "bytes32" },
-		{ name: "preVerificationGas", type: "uint256" },
-		{ name: "gasFees", type: "bytes32" },
-		{ name: "paymasterAndData", type: "bytes" },
-	],
-} as const;
-
-export type UserOperationSigningPayload = {
-	standard: "EIP-712";
-	domain: {
-		name: "ERC4337";
-		version: "1";
-		chainId: number;
-		verifyingContract: Address;
-	};
-	types: typeof PACKED_USER_OPERATION_EIP712_TYPES;
-	primaryType: "PackedUserOperation";
-	message: {
-		sender: Address;
-		nonce: string;
-		initCode: Hex;
-		callData: Hex;
-		accountGasLimits: Hex;
-		preVerificationGas: string;
-		gasFees: Hex;
-		paymasterAndData: Hex;
-	};
-	digest: Hex;
-};
+export type { UserOperationSigningPayload } from "@gatopago/shared/user-operations";
 
 export type PreparedUserOperation = {
 	userOpHash: Hex;
