@@ -1,8 +1,18 @@
 {
-  "name": "shared",
+  "name": "@gatopago/shared",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "index.ts",
-  "types": "index.ts"
+  "types": "index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./user-operations": "./userOperations.ts"
+  },
+	"dependencies": {
+		"viem": "^2.55.19"
+	},
+	"devDependencies": {
+		"typescript": "~6.0.3"
+	}
 }

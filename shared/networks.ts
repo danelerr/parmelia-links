@@ -90,6 +90,30 @@ export type CctpChain = {
 	usdc: `0x${string}`;
 };
 
+export type PaymentPermitMode = "eip2612" | "approve";
+
+/**
+ * Universal Checkout is deliberately separate from the wallet's home-chain
+ * configuration. `paymentSource` is the fail-closed rollout flag; protocol
+ * capabilities alone never make a payment route visible.
+ */
+export type PaymentNetworkCapabilities = {
+	chainId: number;
+	name: string;
+	isTestnet: boolean;
+	isHomeChain: boolean;
+	settlementChainId: number;
+	cctpDomain: number;
+	paymentSource: boolean;
+	cctpStandard: boolean;
+	cctpFast: boolean;
+	localPaymentRouter: `0x${string}` | null;
+	cctpPaymentRouter: `0x${string}` | null;
+	permitMode: PaymentPermitMode;
+	usdc: `0x${string}`;
+	tokenMessenger: `0x${string}`;
+};
+
 export type NetworkConfig = {
 	key: SupportedChainKey;
 	chainId: number;
@@ -180,7 +204,9 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			paymaster: "0x913a1B51c4f5b1a458A56D0d700c956834cc1d15",
 			verifier: "0x14D5D46fc6ED1154F3719f87ae72C3020d4fb886",
 			paymentRouter: "0xaF5a6856F65eab6bd8d0e403E4cFd49aD0c0c04f",
-			crosschainRouter: "0x88Ae8A42d004934cD72b534bd362A49e7E4ad3a1",
+			// Hardened CCTP outbound router (Aug-2026): replay protection,
+			// destination allowlist and strict finality validation.
+			crosschainRouter: "0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c",
 			// Circle's official testnet USDC on Arbitrum Sepolia.
 			usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
 			usdcDecimals: 6,
@@ -406,4 +432,118 @@ export const CCTP_CHAINS: Record<number, CctpChain> = {
 /** CCTP info for an EVM chainId, or null if the chain isn't CCTP-enabled here. */
 export function getCctpChainByChainId(chainId: number): CctpChain | null {
 	return CCTP_CHAINS[chainId] ?? null;
+}
+
+const CCTP_V2_MAINNET_TOKEN_MESSENGER =
+	"0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d" as const;
+
+/**
+ * Frozen Universal Checkout v1 capability/address manifest. The three testnet
+ * sources were activated only after successful broadcasts, exact-match source
+ * verification, deployment manifests and real end-to-end smokes. Mainnet stays
+ * fail-closed until the production fork, audit and operational gates pass.
+ */
+export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilities>> = {
+	421614: {
+		chainId: 421614,
+		name: "Arbitrum Sepolia",
+		isTestnet: true,
+		isHomeChain: true,
+		settlementChainId: 421614,
+		cctpDomain: 3,
+		paymentSource: true,
+		cctpStandard: true,
+		cctpFast: true,
+		localPaymentRouter: "0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4",
+		cctpPaymentRouter: null,
+		permitMode: "eip2612",
+		usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+	},
+	84532: {
+		chainId: 84532,
+		name: "Base Sepolia",
+		isTestnet: true,
+		isHomeChain: false,
+		settlementChainId: 421614,
+		cctpDomain: 6,
+		paymentSource: true,
+		cctpStandard: true,
+		cctpFast: true,
+		localPaymentRouter: null,
+		cctpPaymentRouter: "0x961C08Bd5a11EFB7264B06d7f14a44FB4d9958Ba",
+		permitMode: "eip2612",
+		usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+	},
+	43113: {
+		chainId: 43113,
+		name: "Avalanche Fuji",
+		isTestnet: true,
+		isHomeChain: false,
+		settlementChainId: 421614,
+		cctpDomain: 1,
+		paymentSource: true,
+		cctpStandard: true,
+		cctpFast: false,
+		localPaymentRouter: null,
+		cctpPaymentRouter: "0xd8289B87b155e8691Da192b12E12E2b592fE7D1E",
+		permitMode: "eip2612",
+		usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
+		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+	},
+	42161: {
+		chainId: 42161,
+		name: "Arbitrum One",
+		isTestnet: false,
+		isHomeChain: true,
+		settlementChainId: 42161,
+		cctpDomain: 3,
+		paymentSource: false,
+		cctpStandard: true,
+		cctpFast: true,
+		localPaymentRouter: null,
+		cctpPaymentRouter: null,
+		permitMode: "approve",
+		usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,
+	},
+	8453: {
+		chainId: 8453,
+		name: "Base",
+		isTestnet: false,
+		isHomeChain: false,
+		settlementChainId: 42161,
+		cctpDomain: 6,
+		paymentSource: false,
+		cctpStandard: true,
+		cctpFast: true,
+		localPaymentRouter: null,
+		cctpPaymentRouter: null,
+		permitMode: "approve",
+		usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,
+	},
+	43114: {
+		chainId: 43114,
+		name: "Avalanche",
+		isTestnet: false,
+		isHomeChain: false,
+		settlementChainId: 42161,
+		cctpDomain: 1,
+		paymentSource: false,
+		cctpStandard: true,
+		cctpFast: false,
+		localPaymentRouter: null,
+		cctpPaymentRouter: null,
+		permitMode: "approve",
+		usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,
+	},
+};
+
+export function getPaymentNetworkCapabilities(
+	chainId: number,
+): PaymentNetworkCapabilities | null {
+	return PAYMENT_NETWORKS[chainId] ?? null;
 }

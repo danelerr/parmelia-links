@@ -1,6 +1,8 @@
 export * from "./EntryPointAbi";
 export * from "./networks";
 export * from "./errors";
+export * from "./paymentAuthorizations";
+export * from "./userOperations";
 
 // Contract addresses live per-chain in ./networks (NETWORKS[key].contracts) so the
 // app stays portable. Resolve them at runtime with getNetworkConfig(CHAIN_KEY).
@@ -12,6 +14,8 @@ export * from "./errors";
 export { abi as accountWebAuthnV2Abi } from "../contracts/out/AccountWebAuthnV2.sol/AccountWebAuthnV2.json";
 export { abi as accountFactoryV2Abi } from "../contracts/out/AccountFactoryV2.sol/AccountFactoryV2.json";
 export { abi as paymentRouterAbi } from "../contracts/out/ParmeliaPaymentRouter.sol/ParmeliaPaymentRouter.json";
+export { abi as paymentRouterV2Abi } from "../contracts/out/ParmeliaPaymentRouterV2.sol/ParmeliaPaymentRouterV2.json";
+export { abi as cctpPaymentRouterAbi } from "../contracts/out/ParmeliaCctpPaymentRouter.sol/ParmeliaCctpPaymentRouter.json";
 export { abi as crosschainRouterAbi } from "../contracts/out/ParmeliaCrosschainRouter.sol/ParmeliaCrosschainRouter.json";
 
 export const erc20Abi = [
