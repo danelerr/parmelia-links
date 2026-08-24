@@ -1,9 +1,9 @@
 // Earn ("Modo Ahorro"): USDC supply on Aave v3, straight from the user's smart
-// account. Design: DEFI_DESIGN.md v2.0 — one product, one asset, one protocol,
+// account. Design: docs/design/defi.md v2.0 — one product, one asset, one protocol,
 // zero custody. The rate is VARIABLE and never promised; the risk copy at the
 // bottom is mandatory product copy, not decoration. Flow mirrors Swap:
 // /earn/prepare → passkey signature → /pay/submit (standard lifecycle), with
-// the shared ConfirmSheet + StageOverlay (UX_DESIGN.md R-4).
+// the shared ConfirmSheet + StageOverlay (central UX architecture document, R-4).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
@@ -97,15 +97,17 @@ export default function Earn({ user }: { user: User }) {
 	}, [user]);
 
 	useEffect(() => {
-		void loadConfig().then((loaded) => {
-			if (loaded) void loadConfig(true);
+		queueMicrotask(() => {
+			void loadConfig().then((loaded) => {
+				if (loaded) void loadConfig(true);
+			});
 		});
 	}, [loadConfig]);
 
 	// The savings/available split only reflects the operation once it settles.
 	useEffect(() => {
 		if (poll.status === "included" || poll.status === "confirmed") {
-			void loadConfig(true);
+			queueMicrotask(() => void loadConfig(true));
 		}
 	}, [poll.status, loadConfig]);
 

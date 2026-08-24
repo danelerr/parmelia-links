@@ -358,10 +358,10 @@
     "notToday": "Not today, thanks"
   },
   "meliRoom": {
-    "eyebrow": "Meli's patio",
-    "title": "How should Meli join you today?",
+    "eyebrow": "Patio",
+    "title": "How should the cat join you today?",
     "body": "A visual preference, with no rewards for moving more money.",
-    "moodAria": "Meli expression",
+    "moodAria": "Cat expression",
     "calm": "Calm",
     "curious": "Curious",
     "focused": "Focused"

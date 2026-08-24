@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { mutate as mutateSWR } from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import type { HomeReadModel } from "../lib/homeData";
 import { notifyPromise, notifySuccess } from "../lib/notify";
 import { activeNetwork } from "../lib/activeNetwork";
-import { useAccountProfile } from "../hooks/useAccountProfile";
+import { useAccountProfile, type AccountProfile } from "../hooks/useAccountProfile";
 import { useTranslation } from "react-i18next";
 import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
@@ -30,26 +30,40 @@ const WALLET_ICON = (
 export default function Profile({ user }: { user: User }) {
 	const { t } = useTranslation();
 	const { profile, loading } = useAccountProfile(user);
-	const [username, setUsername] = useState("");
-	const [currentUsername, setCurrentUsername] = useState<string | null>(null);
-	const [displayName, setDisplayName] = useState("");
-	const [socialUrl, setSocialUrl] = useState("");
-	const [savedProfile, setSavedProfile] = useState({ displayName: "", socialUrl: "" });
+
+	return (
+		<Screen className="pb-[calc(env(safe-area-inset-bottom)_+_3rem)]">
+			<BackHeader title={t("menu.profile")} />
+			{loading || !profile ? (
+				<SettingsPageSkeleton />
+			) : (
+				<ProfileEditor
+					key={JSON.stringify([
+						profile.username,
+						profile.displayName,
+						profile.socialUrl,
+						profile.walletAddress,
+					])}
+					user={user}
+					profile={profile}
+				/>
+			)}
+		</Screen>
+	);
+}
+
+function ProfileEditor({ user, profile }: { user: User; profile: AccountProfile }) {
+	const { t } = useTranslation();
+	const [username, setUsername] = useState(profile.username || "");
+	const [currentUsername, setCurrentUsername] = useState<string | null>(profile.username);
+	const [displayName, setDisplayName] = useState(profile.displayName || "");
+	const [socialUrl, setSocialUrl] = useState(profile.socialUrl || "");
+	const [savedProfile, setSavedProfile] = useState({
+		displayName: profile.displayName || "",
+		socialUrl: profile.socialUrl || "",
+	});
 	const [savingUsername, setSavingUsername] = useState(false);
 	const [savingProfile, setSavingProfile] = useState(false);
-
-	useEffect(() => {
-		if (!profile) return;
-		setUsername(profile.username || "");
-		setCurrentUsername(profile.username);
-		const fields = {
-			displayName: profile.displayName || "",
-			socialUrl: profile.socialUrl || "",
-		};
-		setDisplayName(fields.displayName);
-		setSocialUrl(fields.socialUrl);
-		setSavedProfile(fields);
-	}, [profile]);
 
 	const usernameChanged = !!username.trim() && username !== currentUsername;
 	const profileChanged =
@@ -116,12 +130,7 @@ export default function Profile({ user }: { user: User }) {
 	}
 
 	return (
-		<Screen className="pb-[calc(env(safe-area-inset-bottom)_+_3rem)]">
-			<BackHeader title={t("menu.profile")} />
-			{loading || !profile ? (
-				<SettingsPageSkeleton />
-			) : (
-				<div className="animate-fade-up">
+		<div className="animate-fade-up">
 					<div className="flex items-center gap-4 mb-7 px-1">
 						{user.photoURL ? (
 							<img src={user.photoURL} alt="" referrerPolicy="no-referrer" width="64" height="64" className="h-16 w-16 border-2 border-text object-cover shadow-[5px_5px_0_var(--color-cat-700)]" />
@@ -176,8 +185,6 @@ export default function Profile({ user }: { user: User }) {
 							</div>
 						</SettingsSection>
 					) : null}
-				</div>
-			)}
-		</Screen>
+		</div>
 	);
 }

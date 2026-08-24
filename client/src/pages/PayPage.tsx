@@ -159,36 +159,45 @@ export default function PayPage({ user }: { user: User | null }) {
 		// request actually starts and disarmed the moment it settles, so it can't
 		// fire while the user idles on the form. The submit flow arms its own
 		// timer inside executePay.
+		let cancelled = false;
+		const controller = new AbortController();
 		let slowTimer: ReturnType<typeof setTimeout> | null = null;
 		function armSlowHint() {
-			slowTimer = setTimeout(() => setSlowConnection(true), 5000);
+			slowTimer = setTimeout(() => {
+				if (!cancelled) setSlowConnection(true);
+			}, 5000);
 		}
 		function disarmSlowHint() {
 			if (slowTimer) clearTimeout(slowTimer);
 			slowTimer = null;
-			setSlowConnection(false);
+			if (!cancelled) setSlowConnection(false);
 		}
 
 		async function fetchLink(id: string) {
 			armSlowHint();
 			try {
-				const res = await fetch(`${SERVER_URL}/links/${id}`);
+				const res = await fetch(`${SERVER_URL}/links/${id}`, { signal: controller.signal });
 				if (!res.ok) throw new Error("Link no encontrado");
-				setLinkData(await res.json());
-			} catch {
-				setError(t("pay.linkNotFound"));
+				const data = await res.json();
+				if (cancelled) return;
+				setLinkData(data);
+			} catch (error) {
+				if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+					setError(t("pay.linkNotFound"));
+				}
 			} finally {
 				disarmSlowHint();
-				setLoading(false);
+				if (!cancelled) setLoading(false);
 			}
 		}
 
 		async function fetchByUsername(uname: string) {
 			armSlowHint();
 			try {
-				const res = await fetch(`${SERVER_URL}/user/${uname}`);
+				const res = await fetch(`${SERVER_URL}/user/${uname}`, { signal: controller.signal });
 				if (!res.ok) throw new Error("Usuario no encontrado");
 				const data = await res.json();
+				if (cancelled) return;
 				setUserProfile(data);
 				setLinkData({
 					id: "username",
@@ -199,11 +208,13 @@ export default function PayPage({ user }: { user: User | null }) {
 					status: "pending",
 					username: uname,
 				});
-			} catch {
-				setError(t("pay.userNotFound"));
+			} catch (error) {
+				if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+					setError(t("pay.userNotFound"));
+				}
 			} finally {
 				disarmSlowHint();
-				setLoading(false);
+				if (!cancelled) setLoading(false);
 			}
 		}
 
@@ -211,27 +222,32 @@ export default function PayPage({ user }: { user: User | null }) {
 			fetchLink(linkId);
 		} else if (username) {
 			fetchByUsername(username);
-		} else if (amountParam) {
-			setLinkData({
-				id: "direct",
-				amount: amountParam,
-				currency: currencyParam,
-				reference: refParam || "",
-				wallet: walletParam || "",
-				status: "pending",
-			});
-			setLoading(false);
-		} else if (recipientParam && /^0x[a-fA-F0-9]{40}$/.test(recipientParam)) {
-			setManualMode(true);
-			setDestType("address");
-			setManualWallet(recipientParam);
-			setLoading(false);
 		} else {
-			setManualMode(true);
-			setLoading(false);
+			queueMicrotask(() => {
+				if (cancelled) return;
+				if (amountParam) {
+					setLinkData({
+						id: "direct",
+						amount: amountParam,
+						currency: currencyParam,
+						reference: refParam || "",
+						wallet: walletParam || "",
+						status: "pending",
+					});
+				} else {
+					setManualMode(true);
+					if (recipientParam && /^0x[a-fA-F0-9]{40}$/.test(recipientParam)) {
+						setDestType("address");
+						setManualWallet(recipientParam);
+					}
+				}
+				setLoading(false);
+			});
 		}
 
 		return () => {
+			cancelled = true;
+			controller.abort();
 			if (slowTimer) clearTimeout(slowTimer);
 		};
 		// Depend on the parsed primitives only - searchParams is a fresh object

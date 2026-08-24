@@ -19,17 +19,27 @@ export type PaymentLifecycleStatus =
 const POLL_MS = 3000;
 const MAX_POLLS = 60;
 
+type PollState = {
+	key: string | null;
+	status: PaymentLifecycleStatus | null;
+	txHash: string | null;
+	ended: boolean;
+};
+
+const IDLE_STATE: PollState = {
+	key: null,
+	status: null,
+	txHash: null,
+	ended: false,
+};
+
 /** Pass nulls to keep the hook idle when no submitted operation is being tracked. */
 export function usePaymentStatus(user: User | null, userOpHash: string | null) {
-	const [status, setStatus] = useState<PaymentLifecycleStatus | null>(null);
-	const [txHash, setTxHash] = useState<string | null>(null);
-	const [ended, setEnded] = useState(false);
+	const operationKey = user && userOpHash ? `${user.uid}:${userOpHash}` : null;
+	const [pollState, setPollState] = useState<PollState>(IDLE_STATE);
 
 	useEffect(() => {
-		if (!user || !userOpHash) return;
-		setStatus(null);
-		setTxHash(null);
-		setEnded(false);
+		if (!user || !userOpHash || !operationKey) return;
 		let polls = 0;
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | null = null;
@@ -42,22 +52,31 @@ export function usePaymentStatus(user: User | null, userOpHash: string | null) {
 					txHash?: string | null;
 				}>(`/pay/status/${userOpHash}`, { user });
 				if (stopped) return;
-				setStatus(data.status);
-				if (data.txHash) setTxHash(data.txHash);
-				if (
+				const terminal =
 					data.status === "included" ||
 					data.status === "confirmed" ||
-					data.status === "failed"
-				) {
+					data.status === "failed";
+				setPollState((current) => ({
+					key: operationKey,
+					status: data.status,
+					txHash:
+						data.txHash ??
+						(current.key === operationKey ? current.txHash : null),
+					ended: terminal,
+				}));
+				if (terminal) {
 					stopped = true;
-					setEnded(true);
 				}
 			} catch {
 				/* transient; keep polling until the cap */
 			}
 			if (polls >= MAX_POLLS && !stopped) {
 				stopped = true;
-				setEnded(true);
+				setPollState((current) =>
+					current.key === operationKey
+						? { ...current, ended: true }
+						: { ...IDLE_STATE, key: operationKey, ended: true },
+				);
 			}
 			if (!stopped) timer = setTimeout(() => void poll(), POLL_MS);
 		};
@@ -67,7 +86,8 @@ export function usePaymentStatus(user: User | null, userOpHash: string | null) {
 			stopped = true;
 			if (timer) clearTimeout(timer);
 		};
-	}, [user, userOpHash]);
+	}, [operationKey, user, userOpHash]);
 
-	return { status, txHash, ended };
+	const current = pollState.key === operationKey ? pollState : IDLE_STATE;
+	return { status: current.status, txHash: current.txHash, ended: current.ended };
 }

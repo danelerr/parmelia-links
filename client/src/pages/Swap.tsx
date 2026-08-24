@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
@@ -47,6 +47,13 @@ type Quote = {
 	isMax: boolean;
 };
 
+type QuoteState = {
+	key: string;
+	quote: Quote | null;
+	error: string;
+	loading: boolean;
+};
+
 type SwapStage = "idle" | "preparing" | "signing" | "sending";
 
 type PreparedSwap = PreparedUserOperation & {
@@ -76,9 +83,12 @@ export default function Swap({ user }: { user: User }) {
 	const [tokenOut, setTokenOut] = useState("ETH");
 	const [amount, setAmount] = useState("");
 	const [useMax, setUseMax] = useState(false);
-	const [quote, setQuote] = useState<Quote | null>(null);
-	const [quoting, setQuoting] = useState(false);
-	const [quoteError, setQuoteError] = useState("");
+	const [quoteState, setQuoteState] = useState<QuoteState>({
+		key: "",
+		quote: null,
+		error: "",
+		loading: false,
+	});
 	const [stage, setStage] = useState<SwapStage>("idle");
 	const [showDetails, setShowDetails] = useState(false);
 	const [prepared, setPrepared] = useState<PreparedSwap | null>(null);
@@ -89,22 +99,20 @@ export default function Swap({ user }: { user: User }) {
 		userOpHash: string;
 	} | null>(null);
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const quoteSeqRef = useRef(0);
 	const tokenInRef = useRef(tokenIn);
-	const balanceIn = balances[tokenIn];
 	const { data: homeModel } = useSWR<HomeReadModel>(`${SERVER_URL}/home`, null, {
 		revalidateOnMount: false,
 	});
+	const visibleBalances = useMemo(
+		() => ({ ...(homeModel?.balance.tokens ?? {}), ...balances }),
+		[balances, homeModel?.balance.tokens],
+	);
+	const balanceIn = visibleBalances[tokenIn];
 
 	useEffect(() => {
 		tokenInRef.current = tokenIn;
 	}, [tokenIn]);
-
-	// The protected app shell already loaded /home. Reuse those evidenced
-	// balances immediately, then let the dedicated live refresh reconcile them.
-	useEffect(() => {
-		if (!homeModel?.balance.tokens) return;
-		setBalances((current) => ({ ...homeModel.balance.tokens, ...current }));
-	}, [homeModel?.balance.tokens]);
 
 	// When the submit came back in flight (202/duplicate), keep polling on the
 	// success screen and flip the copy when the swap settles.
@@ -133,7 +141,7 @@ export default function Swap({ user }: { user: User }) {
 	// The balances only reflect the swap once it settles on-chain.
 	useEffect(() => {
 		if (poll.status === "included" || poll.status === "confirmed") {
-			void loadBalances(true);
+			queueMicrotask(() => void loadBalances(true));
 		}
 	}, [poll.status, loadBalances]);
 
@@ -149,23 +157,28 @@ export default function Swap({ user }: { user: User }) {
 				setSwapsEnabled(false);
 			}
 		})();
-		void loadBalances(true);
+		queueMicrotask(() => void loadBalances(true));
 	}, [user, loadBalances]);
+
+	const amountNumber = Number(amount);
+	const quoteKey =
+		((!useMax && amount && Number.isFinite(amountNumber) && amountNumber > 0) ||
+			(useMax && balanceIn && Number(balanceIn) > 0)) &&
+		tokenIn !== tokenOut
+			? `${tokenIn}:${tokenOut}:${amount}:${useMax ? balanceIn : "manual"}:${useMax}`
+			: null;
+	const quote = quoteKey && quoteState.key === quoteKey ? quoteState.quote : null;
+	const quoteError = quoteKey && quoteState.key === quoteKey ? quoteState.error : "";
+	const quoting = Boolean(quoteKey) && (quoteState.key !== quoteKey || quoteState.loading);
 
 	// Debounced quoting whenever the inputs change.
 	useEffect(() => {
-		setQuote(null);
-		setQuoteError("");
+		const seq = ++quoteSeqRef.current;
 		if (debounceRef.current) clearTimeout(debounceRef.current);
-		const value = Number(amount);
-		if (
-			(!useMax && (!amount || !Number.isFinite(value) || value <= 0)) ||
-			(useMax && (!balanceIn || Number(balanceIn) <= 0)) ||
-			tokenIn === tokenOut
-		) return;
+		if (!quoteKey) return;
 
 		debounceRef.current = setTimeout(async () => {
-			setQuoting(true);
+			setQuoteState({ key: quoteKey, quote: null, error: "", loading: true });
 			try {
 				const data = await apiFetch<Quote>("/swap/quote", {
 					user,
@@ -173,28 +186,32 @@ export default function Swap({ user }: { user: User }) {
 					// explicit flag lets current Workers resolve the live onchain max.
 					body: { tokenIn, tokenOut, amountIn: amount, useMax },
 				});
+				if (seq !== quoteSeqRef.current) return;
 				if (data.isMax) {
 					const resolved = maxAmountForInput(data.amountIn);
 					setAmount(resolved);
 					setBalances((current) => ({ ...current, [data.tokenIn]: data.amountIn }));
 				}
-				setQuote(data);
+				setQuoteState({ key: quoteKey, quote: data, error: "", loading: false });
 			} catch (err) {
-				setQuoteError(humanizeError(err, t("swap.quoteError")).message);
-			} finally {
-				setQuoting(false);
+				if (seq !== quoteSeqRef.current) return;
+				setQuoteState({
+					key: quoteKey,
+					quote: null,
+					error: humanizeError(err, t("swap.quoteError")).message,
+					loading: false,
+				});
 			}
 		}, 250);
 
 		return () => {
 			if (debounceRef.current) clearTimeout(debounceRef.current);
 		};
-	}, [amount, balanceIn, tokenIn, tokenOut, useMax, user, t]);
+	}, [amount, quoteKey, tokenIn, tokenOut, useMax, user, t]);
 
 	function flip() {
 		setTokenIn(tokenOut);
 		setTokenOut(tokenIn);
-		setQuote(null);
 		if (useMax) {
 			setAmount("");
 			setUseMax(false);
@@ -257,7 +274,6 @@ export default function Swap({ user }: { user: User }) {
 				pending: !submit.confirmed,
 				userOpHash: prep.userOpHash,
 			});
-			setQuote(null);
 			setAmount("");
 			setUseMax(false);
 			if (submit.confirmed) void loadBalances(true);
@@ -372,7 +388,7 @@ export default function Swap({ user }: { user: User }) {
 							<TokenSelect
 								value={tokenIn}
 								options={tokenOptions}
-								balances={balances}
+								balances={visibleBalances}
 								onChange={(symbol) => {
 									if (symbol === tokenOut) flip();
 									else {
@@ -420,7 +436,7 @@ export default function Swap({ user }: { user: User }) {
 							<TokenSelect
 								value={tokenOut}
 								options={tokenOptions}
-								balances={balances}
+								balances={visibleBalances}
 								onChange={(symbol) => {
 									if (symbol === tokenIn) flip();
 									else setTokenOut(symbol);

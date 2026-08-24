@@ -229,8 +229,6 @@ export default function ScanQR({ user }: { user: User }) {
   useEffect(() => {
     if (!scannedWallet) return;
     let cancelled = false;
-    setWalletIdentity(null);
-    setNetworksLoading(true);
 
     void Promise.all([
       fetchWithAuth(user, `${SERVER_URL}/user/resolve-wallet/${scannedWallet.address}`)
@@ -331,6 +329,7 @@ export default function ScanQR({ user }: { user: User }) {
     setMessage("");
     setScannedWallet(null);
     setWalletIdentity(null);
+    setNetworksLoading(false);
     setScannerVersion((version) => version + 1);
   }, []);
 
@@ -415,6 +414,8 @@ export default function ScanQR({ user }: { user: User }) {
       }
 
       if (payload?.kind === "evm-wallet") {
+        setWalletIdentity(null);
+        setNetworksLoading(true);
         setScannedWallet(payload);
         return;
       }
@@ -714,7 +715,6 @@ export default function ScanQR({ user }: { user: User }) {
     detectedRef.current = false;
     isDetectingRef.current = false;
     lastScanTimeRef.current = 0;
-    setMessage("");
     void getOrCreateBarcodeDetector();
     void startCamera();
 
@@ -834,7 +834,10 @@ export default function ScanQR({ user }: { user: User }) {
         {(["scan", "myqr"] as const).map((v) => (
           <button
             key={v}
-            onClick={() => setView(v)}
+            onClick={() => {
+              if (v === "scan" && view !== "scan") setMessage("");
+              setView(v);
+            }}
             aria-pressed={view === v}
             data-active={view === v}
             className="seg-item"

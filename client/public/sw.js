@@ -59,8 +59,9 @@ async function precacheAppShell() {
 self.addEventListener("install", (event) => {
 	// Keep the prior worker active unless the complete new shell was cached.
 	// A partially installed release must not replace a working offline version.
-	event.waitUntil(precacheAppShell());
-	self.skipWaiting();
+	event.waitUntil(
+		precacheAppShell().then(() => self.skipWaiting()),
+	);
 });
 
 self.addEventListener("activate", (event) => {
@@ -86,7 +87,7 @@ self.addEventListener("fetch", (event) => {
 				const hit = await cache.match(request);
 				if (hit) return hit;
 				const res = await fetch(request);
-				if (res.ok) cache.put(request, res.clone());
+				if (res.ok) await cache.put(request, res.clone());
 				return res;
 			}),
 		);
@@ -99,10 +100,10 @@ self.addEventListener("fetch", (event) => {
 	if (request.mode === "navigate") {
 		event.respondWith(
 			fetch(request)
-				.then((res) => {
+				.then(async (res) => {
 					if (res.ok) {
-						const copy = res.clone();
-						caches.open(CACHE).then((cache) => cache.put(SHELL, copy));
+						const cache = await caches.open(CACHE);
+						await cache.put(SHELL, res.clone());
 					}
 					return res;
 				})
@@ -167,10 +168,10 @@ self.addEventListener("notificationclick", (event) => {
 		/* malformed or cross-origin notification links fall back to Home */
 	}
 	event.waitUntil(
-		self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+		self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (list) => {
 			for (const client of list) {
 				if ("focus" in client) {
-					client.navigate(link);
+					await client.navigate(link);
 					return client.focus();
 				}
 			}

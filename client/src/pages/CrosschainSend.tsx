@@ -49,6 +49,13 @@ type Quote = {
 	mode: Mode;
 };
 
+type QuoteState = {
+	key: string;
+	quote: Quote | null;
+	error: string;
+	loading: boolean;
+};
+
 type PreparedCrosschain = PreparedUserOperation & {
 	opId?: string;
 	summary: {
@@ -104,9 +111,12 @@ export default function CrosschainSend({ user }: { user: User }) {
 	const [amount, setAmount] = useState("");
 	const [mode, setMode] = useState<Mode>("fast");
 	const [balance, setBalance] = useState<string | undefined>(undefined);
-	const [quote, setQuote] = useState<Quote | null>(null);
-	const [quoting, setQuoting] = useState(false);
-	const [quoteError, setQuoteError] = useState("");
+	const [quoteState, setQuoteState] = useState<QuoteState>({
+		key: "",
+		quote: null,
+		error: "",
+		loading: false,
+	});
 	const [stage, setStage] = useState<Stage>("idle");
 	const [confirming, setConfirming] = useState(false);
 	const [prepared, setPrepared] = useState<PreparedCrosschain | null>(null);
@@ -152,39 +162,52 @@ export default function CrosschainSend({ user }: { user: User }) {
 				setEnabled(false);
 			}
 		})();
-		void loadBalance(true);
+		queueMicrotask(() => void loadBalance(true));
 	}, [user, loadBalance, requestedChainId]);
+
+	const amountNumber = Number(amount);
+	const quoteKey =
+		enabled &&
+		destChainId &&
+		amount &&
+		Number.isFinite(amountNumber) &&
+		amountNumber > 0
+			? `${amount}:${destChainId}:${mode}`
+			: null;
+	const quote = quoteKey && quoteState.key === quoteKey ? quoteState.quote : null;
+	const quoteError = quoteKey && quoteState.key === quoteKey ? quoteState.error : "";
+	const quoting = Boolean(quoteKey) && (quoteState.key !== quoteKey || quoteState.loading);
 
 	// Debounced quoting.
 	useEffect(() => {
-		setQuote(null);
-		setQuoteError("");
 		const seq = ++quoteSeqRef.current;
 		if (debounceRef.current) clearTimeout(debounceRef.current);
-		const value = Number(amount);
-		if (!enabled || !destChainId || !amount || !Number.isFinite(value) || value <= 0) return;
+		if (!quoteKey || !destChainId) return;
 
 		debounceRef.current = setTimeout(async () => {
-			setQuoting(true);
+			setQuoteState({ key: quoteKey, quote: null, error: "", loading: true });
 			try {
 				const data = await apiFetch<Quote>("/crosschain/quote", {
 					user,
 					body: { amount, destinationChainId: destChainId, mode },
 				});
 				if (seq !== quoteSeqRef.current) return; // stale response - ignore
-				setQuote(data);
+				setQuoteState({ key: quoteKey, quote: data, error: "", loading: false });
 			} catch (err) {
 				if (seq !== quoteSeqRef.current) return;
-				setQuoteError(humanizeError(err, t("crosschain.quoteError")).message);
-			} finally {
-				if (seq === quoteSeqRef.current) setQuoting(false);
+				setQuoteState({
+					key: quoteKey,
+					quote: null,
+					error: humanizeError(err, t("crosschain.quoteError")).message,
+					loading: false,
+				});
 			}
 		}, 450);
 
 		return () => {
 			if (debounceRef.current) clearTimeout(debounceRef.current);
 		};
-	}, [amount, destChainId, mode, enabled, user, t]);
+	}, [amount, destChainId, mode, quoteKey, user, t]);
 
 	// Live tracking of the op after the burn confirms: burn -> attestation ->
 	// mint -> arrived. Poll quickly while Fast transfers normally advance, then
@@ -281,7 +304,6 @@ export default function CrosschainSend({ user }: { user: User }) {
 			});
 			setOpStatus(null);
 			setTrackingEnded(false);
-			setQuote(null);
 			setAmount("");
 			void loadBalance(true);
 		} catch (err) {

@@ -1,4 +1,4 @@
-// The one confirm-before-signing bottom sheet (R-4 in UX_DESIGN.md): every
+// The one confirm-before-signing bottom sheet (R-4 in the central UX architecture document): every
 // operation that moves money confirms through this exact surface, so the
 // moment before the biometric prompt always looks the same. Detail rows
 // (destination, fees, notes) go in children, between the amount and the

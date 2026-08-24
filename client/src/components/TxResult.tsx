@@ -1,4 +1,4 @@
-// The one operation-result block (R-5 in UX_DESIGN.md): success, in-flight or
+// The one operation-result block (R-5 in the central UX architecture document): success, in-flight or
 // failed, centered in the page body. Pages pass localized copy; `state` only
 // drives the icon and default emphasis. Extra content (explorer links, live
 // status, buttons) goes in children.

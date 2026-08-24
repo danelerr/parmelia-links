@@ -126,7 +126,13 @@ export default function Recover({ user }: { user: User }) {
 	}, [user]);
 
 	useEffect(() => {
-		void refresh();
+		let cancelled = false;
+		queueMicrotask(() => {
+			if (!cancelled) void refresh();
+		});
+		return () => {
+			cancelled = true;
+		};
 	}, [refresh]);
 
 	useEffect(() => () => {
@@ -136,7 +142,16 @@ export default function Recover({ user }: { user: User }) {
 	const executableAt = status?.recoveryExecutableAfter
 		? Date.parse(status.recoveryExecutableAfter)
 		: 0;
-	const waiting = phase === "pending" || phase === "pending-elsewhere";
+	const reachedDeadline =
+		(phase === "pending" || phase === "pending-elsewhere") &&
+		executableAt > 0 &&
+		now >= executableAt;
+	const visiblePhase: Phase = reachedDeadline
+		? readPointer()
+			? "ready"
+			: "ready-elsewhere"
+		: phase;
+	const waiting = visiblePhase === "pending" || visiblePhase === "pending-elsewhere";
 
 	// 30s tick while waiting; crossing zero flips to ready without a reload.
 	useEffect(() => {
@@ -144,12 +159,6 @@ export default function Recover({ user }: { user: User }) {
 		const id = setInterval(() => setNow(Date.now()), 30_000);
 		return () => clearInterval(id);
 	}, [waiting]);
-
-	useEffect(() => {
-		if (waiting && executableAt > 0 && now >= executableAt) {
-			setPhase(readPointer() ? "ready" : "ready-elsewhere");
-		}
-	}, [waiting, executableAt, now]);
 
 	async function handleStart() {
 		setPhase("creating");
@@ -279,7 +288,7 @@ export default function Recover({ user }: { user: User }) {
 	);
 
 	// ---- Overlay phases (the OS sheet or the network owns the screen) ----
-	if (phase === "creating" || phase === "proposing" || phase === "executing" || phase === "cancelling") {
+	if (visiblePhase === "creating" || visiblePhase === "proposing" || visiblePhase === "executing" || visiblePhase === "cancelling") {
 		const labels: Partial<Record<Phase, string>> = {
 			creating: t("recover.creatingKey"),
 			proposing: t("recover.proposing"),
@@ -288,12 +297,12 @@ export default function Recover({ user }: { user: User }) {
 		};
 		return (
 			<Screen>
-				<StageOverlay label={labels[phase] ?? null} spinner={phase !== "creating"} />
+				<StageOverlay label={labels[visiblePhase] ?? null} spinner={visiblePhase !== "creating"} />
 			</Screen>
 		);
 	}
 
-	if (phase === "loading") {
+	if (visiblePhase === "loading") {
 		return (
 			<Screen>
 				<BackHeader to="/" replace />
@@ -302,7 +311,7 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "no-wallet") {
+	if (visiblePhase === "no-wallet") {
 		return (
 			<Screen>
 				<BackHeader to="/" replace title={t("recover.title")} />
@@ -316,7 +325,7 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "intro") {
+	if (visiblePhase === "intro") {
 		const steps = [t("recover.step1"), t("recover.step2"), t("recover.step3")];
 		return (
 			<Screen>
@@ -354,7 +363,7 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "pending" || phase === "pending-elsewhere") {
+	if (visiblePhase === "pending" || visiblePhase === "pending-elsewhere") {
 		const msLeft = Math.max(0, executableAt - now);
 		return (
 			<Screen>
@@ -369,7 +378,7 @@ export default function Recover({ user }: { user: User }) {
 							: undefined
 					}
 				>
-					{phase === "pending" ? (
+					{visiblePhase === "pending" ? (
 						<>
 							<p className="text-[13px] text-text-muted leading-relaxed max-w-[320px] mt-4">
 								{t("recover.pendingWhy")}
@@ -395,16 +404,16 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "ready" || phase === "ready-elsewhere") {
+	if (visiblePhase === "ready" || visiblePhase === "ready-elsewhere") {
 		return (
 			<Screen>
 				<BackHeader to="/" replace />
 				<TxResult
 					state="progress"
 					lead={t("recover.readyLead")}
-					body={phase === "ready" ? t("recover.readyBody") : t("recover.elsewhereBody")}
+					body={visiblePhase === "ready" ? t("recover.readyBody") : t("recover.elsewhereBody")}
 				>
-					{phase === "ready" ? (
+					{visiblePhase === "ready" ? (
 						<>
 							<button onClick={handleExecute} className="btn btn-primary btn-block mt-6">
 								{t("recover.readyCta")}
@@ -419,7 +428,7 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "success") {
+	if (visiblePhase === "success") {
 		return (
 			<Screen>
 				<TxResult state="success" lead={t("recover.successLead")} body={t("recover.successBody")}>
@@ -431,7 +440,7 @@ export default function Recover({ user }: { user: User }) {
 		);
 	}
 
-	if (phase === "cancelled") {
+	if (visiblePhase === "cancelled") {
 		return (
 			<Screen>
 				<BackHeader to="/" replace />

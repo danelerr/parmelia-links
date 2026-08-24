@@ -126,9 +126,7 @@ function App() {
 		}
 	};
 
-	useEffect(() => {
-		initAnalytics();
-	}, []);
+	useEffect(initAnalytics, []);
 
 	useEffect(() => {
 		if (hasWallet !== true) return;

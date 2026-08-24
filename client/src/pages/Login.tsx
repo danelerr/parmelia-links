@@ -38,15 +38,15 @@ function MailIcon() {
 
 export default function Login() {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<Mode>("buttons");
+  const completingEmailLink = isEmailSignInLink(window.location.href);
+  const [mode, setMode] = useState<Mode>(() => completingEmailLink ? "completing" : "buttons");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [recoverIntent, setRecoverIntent] = useState(false);
 
   // Completing a magic-link return (the link points back here at /login).
   useEffect(() => {
-    if (!isEmailSignInLink(window.location.href)) return;
-    setMode("completing");
+    if (!completingEmailLink) return;
     completeEmailLink(window.location.href)
       .then(() => {
         // onAuthChange in App takes over and redirects.
@@ -60,7 +60,7 @@ export default function Login() {
           setMode("buttons");
         }
       });
-  }, [t]);
+  }, [completingEmailLink, t]);
 
   async function handleGoogle() {
     try {
