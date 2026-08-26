@@ -24,7 +24,7 @@
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
     "AUTH_EMAIL_FROM": "acceso@parmelia.me",
     "CHAIN_KEY": "arbitrum-sepolia",
-    "PAYMENTS_CUTOVER_MODE": "frozen",
+    "PAYMENTS_CUTOVER_MODE": "payments",
     // Remains false through target deploy and data import. Enable only while
     // cutover mode is frozen/payments after Payments bootstrap is complete.
     "PAYMENTS_SYNC_ENABLED": "true",
