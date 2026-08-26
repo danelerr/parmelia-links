@@ -52,6 +52,22 @@ function diagramSources(directory) {
 		.map((name) => resolve(directory, name));
 }
 
+function normalizePlantUmlSources(directory) {
+	for (const name of readdirSync(directory).filter((entry) => entry.endsWith(".puml"))) {
+		const path = resolve(directory, name);
+		const source = readFileSync(path, "utf8");
+		const normalized = source.replace(/\r\n?/gu, "\n");
+		if (source !== normalized) writeFileSync(path, normalized, "utf8");
+	}
+}
+
+function embeddedPlantUmlSource(path) {
+	const svg = readFileSync(path, "utf8");
+	const match = svg.match(/<\?plantuml-src\s+([^?]+)\?>/u);
+	if (!match?.[1]) throw new Error(`PlantUML source fingerprint missing: ${path}`);
+	return match[1];
+}
+
 function verifySvg(path) {
   const svg = readFileSync(path, "utf8");
   if (!svg.includes("<svg") || /Dot Executable|Syntax Error|No dot executable|Cannot find/iu.test(svg)) {
@@ -64,6 +80,7 @@ try {
 	const sourceDirectory = temporaryRoot ? resolve(temporaryRoot, "diagrams") : committedSourceDirectory;
 	const outputDirectory = temporaryRoot ? resolve(temporaryRoot, "rendered") : committedOutputDirectory;
 	if (temporaryRoot) cpSync(committedSourceDirectory, sourceDirectory, { recursive: true });
+	normalizePlantUmlSources(sourceDirectory);
 	const jar = await plantUmlJar();
 	const sources = diagramSources(sourceDirectory);
 	if (sources.length === 0) throw new Error("No numbered architecture diagrams found");
@@ -105,8 +122,8 @@ try {
 			throw new Error("Committed architecture SVG names do not match the numbered PlantUML sources");
 		}
 		for (const name of expectedNames) {
-			if (digest(readFileSync(resolve(outputDirectory, name))) !==
-				digest(readFileSync(resolve(committedOutputDirectory, name)))) {
+			if (embeddedPlantUmlSource(resolve(outputDirectory, name)) !==
+				embeddedPlantUmlSource(resolve(committedOutputDirectory, name))) {
 				throw new Error(`Architecture render is stale: ${name}`);
 			}
 		}
