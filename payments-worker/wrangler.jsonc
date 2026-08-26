@@ -18,10 +18,10 @@
     "PAYMENT_LIVE_ENABLED": "false",
     // First deploy is read-only until migrations/import are verified. Change to
     // false only in the activation deploy after the data-only cutover.
-    "PAYMENTS_BOOTSTRAP_MODE": "false",
+    "PAYMENTS_BOOTSTRAP_MODE": "true",
     // Replace with the 64-hex checksum emitted by split-payments-d1.mjs after
     // the final frozen import. Runtime writes require this exact D1 proof.
-    "PAYMENTS_DATA_CUTOVER_CHECKSUM": "ffb10c840313390517ec88afe2590385f73bd4b7e500670340a9c979aac30bb9",
+    "PAYMENTS_DATA_CUTOVER_CHECKSUM": "pending",
     "PAYMENT_ROUTER_PREFLIGHT_ENABLED": "true",
     "PAYMENT_AUTHORIZATION_TTL_SECONDS": "600",
     "CIRCLE_API_BASE_URL": "https://iris-api-sandbox.circle.com",
@@ -35,8 +35,8 @@
   },
   "d1_databases": [{
     "binding": "PAYMENTS_DB",
-    "database_name": "gatopago-payments",
-    "database_id": "f0daaeb3-8df0-44d3-8b1f-a2f37461d50e",
+    "database_name": "gatopago-payments-semantic-20260826",
+    "database_id": "5e3d05a6-b72f-43c4-ac0f-8f0aa6947b1a",
     "migrations_dir": "migrations"
   }],
   "durable_objects": {
