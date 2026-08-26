@@ -1,5 +1,9 @@
 # Registro remoto y reapertura de Fase 2.1
 
+> **Registro histórico, reemplazado:** conserva el estado observado el
+> 25-08-2026. El cierre corregido y la evidencia vigente están en
+> [Cierre remoto corregido de Fase 2.1](./phase-2-1-live-readiness-2026-08-26.md).
+
 **Corte:** 25 de agosto de 2026  
 **Alcance:** corte ejecutado en Cloudflare/Vercel y auditoría posterior  
 **Modo:** registro histórico; remediación local posterior sin promoción

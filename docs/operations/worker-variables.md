@@ -1,6 +1,6 @@
 # Inventario canónico de secretos y configuración
 
-**Última verificación:** 25 de agosto de 2026  
+**Última verificación:** 26 de agosto de 2026
 **Alcance:** App Worker (`server`), Payments Worker
 (`gatopago-payments-api`), cliente, dashboard, contratos y credenciales de
 operación  
@@ -26,6 +26,8 @@ registra valores secretos.
 - Los secretos generados para Payments durante Fase 2.1 están protegidos fuera
   del checkout con Windows DPAPI CurrentUser. Las private keys onchain no están
   dentro de ese archivo: provinieron del keystore Foundry `wallet-0x75`.
+- En la corrección del 26-08-2026 se reutilizaron esos valores; **no se rotó
+  ningún secreto** y ningún valor se imprimió o versionó.
 - Durante esta verificación, un comando diagnóstico mostró en la salida de la
   sesión el `VERCEL_OIDC_TOKEN` local de Dashboard y el `ETHERSCAN_API_KEY`
   local. No se copiaron a este documento ni a Git, pero ambos deben tratarse
@@ -147,7 +149,7 @@ Aquí sí existe trazabilidad exacta:
 |---|---|---|---|
 | `PAYMENT_AUTHORIZATION_SIGNER_PRIVATE_KEY` | El helper descifró el keystore Foundry `wallet-0x75` y comprobó que la dirección coincidía con los routers testnet; no hay evidencia de cuándo o cómo se creó/importó originalmente esa cuenta | Crear signer dedicado, pausar/drainar quotes, cambiar `authorizationSigner` en cada router y después rotar el Secret | No; permanece en el keystore externo y Cloudflare |
 | `PAYMENT_RELAYER_PRIVATE_KEY` | La misma key extraída de `wallet-0x75` durante el piloto testnet; el origen anterior del keystore no es reconstruible desde Git | Crear y fondear relayer CCTP dedicado; drenar leases/nonces y rotar | No; permanece en el keystore externo y Cloudflare |
-| `PAYMENT_RPC_URLS` | JSON construido con los RPC públicos de `contracts/.env.example` más un segundo proveedor público independiente para Arbitrum Sepolia, Base Sepolia y Avalanche Fuji | El helper valida HTTPS, dos hostnames y `eth_chainId` para cada endpoint antes de subir Secrets; se pueden reemplazar por endpoints administrados por chain | Los seis orígenes públicos están en Git; el JSON remoto no |
+| `PAYMENT_RPC_URLS` | JSON construido con los RPC públicos de `contracts/.env.example` más proveedores independientes: PublicNode para Arbitrum/Fuji y dRPC + Tenderly para Base | El helper valida HTTPS, al menos dos hostnames y `eth_chainId` para cada endpoint antes de subir Secrets; se pueden reemplazar por endpoints administrados por chain | Los siete orígenes públicos están en Git; el JSON remoto no |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | 32 bytes aleatorios generados con CSPRNG | Recuperable desde `payments-generated-secrets.dpapi` bajo el mismo usuario Windows; para rotar, usar el keyring anterior y recifrar todas las filas | No en el checkout; sí en DPAPI y Cloudflare |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY_ID` | Etiqueta pública elegida por el helper (`2026_08_phase2_1`) | Elegir un ID nuevo en cada rotación | El ID está en el script; el binding remoto se cargó como Secret |
 | `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS` | `{}` porque no existía una clave anterior de Payments | Agregar temporalmente `id -> clave` durante una rotación y retirar sólo cuando `remaining=0` | Sólo el valor vacío reproducible; ninguna clave histórica está en Git |
@@ -219,6 +221,11 @@ desde `client/.env` y las tres URLs desde constantes públicas del proyecto. Los
 valores se entregaron a Vercel por stdin y con `--no-sensitive`, porque son
 datos públicos del bundle. `dashboard/.env` todavía conserva el nombre legacy
 `VITE_SERVER_URL`; Vercel Production usa las URLs separadas.
+
+El 26-08-2026 se desactivó Vercel SSO para `gatopago-dashboard` y se comprobó
+acceso anónimo hasta el login propio de GatoPago. No se añadió ninguna variable,
+Project ID ni secret de Reown/WalletConnect; esos proveedores no forman parte de
+la arquitectura.
 
 ### Cómo obtener cada valor público
 

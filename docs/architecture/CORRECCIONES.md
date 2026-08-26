@@ -1,8 +1,8 @@
 # Correcciones aplicadas a la arquitectura de Payments
 
-**Fecha:** 25 de agosto de 2026  
-**Alcance:** código, pruebas, gates, runbook, diagramas y auditoría posterior  
-**Estado remoto:** base promovida; correcciones posteriores sólo locales
+**Fecha:** 26 de agosto de 2026
+**Alcance:** código, pruebas, gates, runbook, diagramas y auditoría posterior
+**Estado remoto:** correcciones promovidas en testnet; pagos live desactivados
 
 Este documento explica por qué se hizo cada corrección. La regla fue evitar dos
 extremos: no dejar riesgos reales detrás de diagramas bonitos y no crear una
@@ -298,20 +298,23 @@ Dashboard, Workers, passkeys y smart accounts no requieren un proveedor de
 wallets.
 
 Finalmente, los comandos de deploy ahora rechazan cambios relevantes
-dirty/untracked y un HEAD sin publicar en su upstream. El árbol actual debe
-versionarse antes de cualquier nueva promoción; este documento no autoriza ese
-commit ni un deploy. `DEPLOY.md` usa esos entrypoints también para dry-run y
+dirty/untracked y un HEAD sin publicar en su upstream. El runtime del corte fue
+versionado y publicado antes de desplegarse. `DEPLOY.md` usa esos entrypoints también para dry-run y
 publicación; un gate estático impide reintroducir `wrangler deploy` directo.
 
 El checksum histórico no se puede promover cambiando el valor de control. El
 importador ahora produce manifest v4/checksum semántico v2, normaliza de forma
 criptográficamente verificable la representación AES-GCM aleatoria y cifra
 webhooks con el formato `enc:v2:<key-id>` consumido por Payments. El preflight
-exporta el target pre-activación y ejecuta `--verify-target-sql`. Producción debe
-seguir el runbook de reemplazo hacia una D1 nueva; la D1 histórica queda intacta
-como evidencia/rollback.
+exporta el target pre-activación y ejecuta `--verify-target-sql`. El recut siguió
+ese runbook hacia `gatopago-payments-semantic-20260826`; la D1 histórica quedó
+intacta como evidencia/rollback.
 
 `pnpm verify:all` terminó en verde después de estas correcciones: App 253+22,
-Payments 51+19, Playwright 30/10, audit sin vulnerabilidades conocidas,
+Payments 52+19, Playwright 36/16, audit sin vulnerabilidades conocidas,
 split/restore semántico y 191 pruebas Foundry finales con 4 forks omitidos por
 ausencia de RPC.
+
+El gate remoto posterior ejecutó 197 pruebas Foundry sin fallos ni omisiones,
+preflights Cloudflare/Vercel y smokes de checkout/direct proxy. No ejecutó un
+pago E2E: esa evidencia permanece como el alcance de Fase 4.

@@ -1,18 +1,18 @@
 @startuml
 !include _theme.puml
-title Despliegue físico — base remota y correcciones locales pendientes
+title Despliegue físico — recut semántico promovido y pagos live desactivados
 
 left to right direction
 skinparam linetype ortho
 
 node "Navegador" as browser {
-  artifact "App + ruta checkout\n[remoto anterior]" as app_web COLOR_WEB
-  artifact "Dashboard\n[remoto: Vercel SSO]" as dashboard_web COLOR_READY
+  artifact "App + ruta checkout\n[remoto actual]" as app_web COLOR_WEB
+  artifact "Dashboard\n[login GatoPago público]" as dashboard_web COLOR_WEB
 }
 
 cloud "Vercel" as vercel COLOR_EXTERNAL {
-  artifact "client/dist\napp.parmelia.me\n[desplegado; fix local pendiente]" as client_dist COLOR_READY
-  artifact "dashboard/dist\ndashboard.parmelia.me\n[deployment existe; acceso bloqueado]" as dashboard_dist COLOR_READY
+  artifact "client/dist\napp.parmelia.me\n[desplegado]" as client_dist COLOR_LIVE
+  artifact "dashboard/dist\ndashboard.parmelia.me\n[desplegado; sin Vercel SSO]" as dashboard_dist COLOR_LIVE
 }
 
 cloud "Cloudflare" as cf {
@@ -25,8 +25,8 @@ cloud "Cloudflare" as cf {
   queue "parmelia-scheduled-jobs\n+ DLQ\n[desplegadas]" as app_queue COLOR_LIVE
   component "EventJobScheduler +\nRpcAdmissionController\nDurable Objects" as app_do COLOR_LIVE
 
-  database "gatopago-payments\nPAYMENTS_DB actual\n[checksum histórico de IDs]" as payments_d1 COLOR_LIVE
-  database "Payments D1 replacement\n[manifest v4; pendiente]" as replacement_payments_d1 COLOR_READY
+  database "gatopago-payments-semantic-20260826\nPAYMENTS_DB activa\n[manifest v4; checksum v2]" as payments_d1 COLOR_LIVE
+  database "gatopago-payments\nD1 histórica del 25-08\n[retenida; sólo auditoría/rollback]" as historical_payments_d1 COLOR_FUTURE
   queue "gatopago-payment-jobs\n+ DLQ\n[creadas]" as payments_queue COLOR_LIVE
   component "PaymentJobScheduler\nDurable Object\n[desplegado]" as payments_do COLOR_LIVE
   component "Cron recovery sweep\n*cada minuto*" as payments_cron COLOR_LIVE
@@ -69,7 +69,7 @@ app_do --> app_queue
 app_secrets --> app_worker
 
 payments_worker --> payments_d1
-payments_worker ..> replacement_payments_d1 : binding futuro sólo tras\nfreeze/import/verify
+payments_worker ..> historical_payments_d1 : sin escrituras\nretención histórica
 payments_worker --> payments_queue : produce
 payments_queue --> payments_worker : consume / redelivery
 payments_do --> payments_queue : jobs diferidos
@@ -95,14 +95,15 @@ arb_cctp --> arb_cctp : mint USDC al comercio
 note bottom of payments_worker
   PAYMENT_LIVE_ENABLED=false.
   Sólo testnets están habilitadas en este corte.
-  Migración 0006 y hardening de attempt no desplegados.
-  La D1 replacement tampoco fue creada/aplicada.
+  Migración 0006 y hardening de attempt desplegados.
+  Fase 4 debe aportar pagos E2E con evidencia.
 end note
 
 legend right
   |= Color |= Estado |
   |<#DCFCE7> Verde | Existe remotamente |
-  |<#FEF3C7> Amarillo | Implementado; falta promover |
+  |<#FEF3C7> Amarillo | Preparado; aún no promovido |
+  |<#E5E7EB> Gris | Histórico o futuro, fuera del runtime activo |
   |<#FCE7F3> Rosa | Secret/binding, nunca valor plano |
   |<#EDE9FE> Violeta | Proveedor o red externa |
 endlegend

@@ -47,7 +47,8 @@ Cuando dos documentos se contradigan, se aplica este orden:
 
 - [Integraciones](./operations/integrations.md)
 - [Inventario canónico de secretos y configuración](./operations/worker-variables.md)
-- [Readiness remoto de Fase 2.1 al 25-08-2026](./operations/phase-2-1-live-readiness-2026-08-25.md)
+- [Cierre remoto corregido de Fase 2.1 al 26-08-2026](./operations/phase-2-1-live-readiness-2026-08-26.md)
+- [Reapertura histórica de Fase 2.1 al 25-08-2026](./operations/phase-2-1-live-readiness-2026-08-25.md)
 - [Eventos muertos del outbox](./operations/user-event-outbox.md)
 - [Capacidad de Home](./runbooks/home-capacity.md)
 - [Drift de proyecciones](./runbooks/projection-drift.md)

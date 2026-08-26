@@ -1,6 +1,6 @@
 # Runbook: reemplazo semántico del corte Payments
 
-**Estado:** preparado localmente; no ejecutado remotamente  
+**Estado:** ejecutado remotamente el 26-08-2026; conservado como procedimiento reproducible
 **Motivo:** el target del 25-08-2026 conserva un checksum histórico basado en
 IDs. Ese valor no demuestra el contenido de las filas y no puede convertirse en
 evidencia semántica mediante un `UPDATE` del control.
@@ -11,7 +11,14 @@ No se reetiqueta la D1 actual. Se hace un corte nuevo hacia una D1 vacía y se
 conserva la anterior para rollback y auditoría. Esta es la única ruta aprobada
 mientras `PAYMENT_LIVE_ENABLED=false` y el delta posterior quede clasificado.
 
-Ya existe delta conocido: el target histórico creció de 4 a 7 merchants por el
+La ejecución del 26-08-2026 creó
+`gatopago-payments-semantic-20260826`, aplicó `0001`–`0006` y fijó el checksum
+semántico
+`5d3093e9b12288d7783832037b3bf06635591da1cf56df377ff4b4b6f3093a27`.
+La D1 histórica `gatopago-payments` se conservó intacta. El detalle auditable
+está en el [registro de cierre](../operations/phase-2-1-live-readiness-2026-08-26.md).
+
+El delta observado durante la ejecución fue: el target histórico creció de 4 a 7 merchants por el
 sync de cuentas y recibió al menos una quote de test. Los merchants derivados se
 recrean drenando nuevamente el sync después del nuevo import; no se copian a
 mano. La quote debe clasificarse explícitamente como artefacto test descartable o
@@ -62,7 +69,9 @@ imprimen.
 5. Drenar jobs/outboxes y resolver toda dead letter. Capturar el watermark.
 6. Consultar la D1 Payments histórica y clasificar todo delta respecto al
    snapshot original. Cero attempts/pagos live y una decisión escrita sobre los
-   artefactos test son precondiciones.
+artefactos test son precondiciones. En el corte ejecutado se clasificaron tres
+merchants derivados por sync y una quote local expirada sin attempt/pago; todos
+permanecieron sólo en el target histórico.
 7. Ejecutar backups cifrados y registrar versiones antes de modificar schema o
    bindings.
 
@@ -151,6 +160,10 @@ preflight exporta nuevamente el binding `PAYMENTS_DB` y ejecuta
 3. Desactivar bootstrap; mantener App congelada y `PAYMENT_LIVE_ENABLED=false`.
 4. Habilitar/drenar sync, cambiar App a `payments` y desplegar App mediante el
    entrypoint protegido.
+   Si un intento anterior ya consumió el outbox sembrado por `0033`, volver a
+   sembrar idempotentemente desde las cuentas wallet existentes usando la misma
+   clave lógica de deduplicación de la migración; después exigir outbox vacío y
+   paridad de merchants. No insertar merchants manualmente en Payments.
 5. Desplegar cliente/dashboard sólo después de los preflights remotos.
 6. Ejecutar smokes anónimos y autenticados. No activar pagos live durante este
    corte.

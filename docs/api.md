@@ -12,9 +12,9 @@ GatoPago selects only routes supported by the source chain.
 - **Get your keys:** create API keys and register webhooks in the dashboard at
   `https://dashboard.parmelia.me`.
 
-> The Phase 2 code is implemented locally, but the new Worker and D1 are not
-> deployed by this change. Until the controlled cutover, use the compatibility
-> host of the environment being tested. Mainnet remains disabled.
+> Phase 2 is deployed on the testnet infrastructure and the Payments D1 cutover
+> is semantically verified. Mainnet and live payment execution remain disabled;
+> build and test with `sk_test_…` only.
 
 ---
 

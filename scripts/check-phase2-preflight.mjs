@@ -101,7 +101,8 @@ assert(source.includes('record("app-dead-letters"') && source.includes('record("
 assert(paymentsSecretsHelper.includes("Assert-PaymentRpcSet") &&
   paymentsSecretsHelper.includes('"eth_chainId"') &&
   paymentsSecretsHelper.includes("arbitrum-sepolia-rpc.publicnode.com") &&
-  paymentsSecretsHelper.includes("base-sepolia-rpc.publicnode.com") &&
+  paymentsSecretsHelper.includes("base-sepolia.drpc.org") &&
+  paymentsSecretsHelper.includes("base-sepolia.gateway.tenderly.co") &&
   paymentsSecretsHelper.includes("avalanche-fuji-c-chain-rpc.publicnode.com"),
 "Payments secret helper must probe two independent RPC hostnames for every enabled testnet before upload");
 assert(protectedPreflightHelper.includes("ProtectedData]::Unprotect") &&

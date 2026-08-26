@@ -10,7 +10,7 @@ actor "Desarrollador B2B" as developer
 actor "Cliente pagador" as customer
 actor "Operador GatoPago" as operator
 
-rectangle "GatoPago Business — testnet al promover Fase 2.1" COLOR_READY {
+rectangle "GatoPago Business — testnet promovido en Fase 2.1" COLOR_LIVE {
   usecase "Recibir USDC de test\ndirecto en cuenta" as settle
   usecase "Crear intent y link\npor API test" as api_intent
   usecase "Compartir link o QR" as share
@@ -75,7 +75,7 @@ end note
 
 legend right
   |= Color |= Estado |
-  |<#FEF3C7> Amarillo | Listo en código; requiere promoción remota |
+  |<#DCFCE7> Verde | Disponible en el testnet promovido |
   |<#E5E7EB> Gris | Futuro propuesto; no vender como disponible |
 endlegend
 

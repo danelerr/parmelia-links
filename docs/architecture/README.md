@@ -1,7 +1,7 @@
 # Arquitectura visual de GatoPago
 
-**Fecha de corte:** 25 de agosto de 2026  
-**Estado:** base de Fase 2.1 promovida; auditoría reabierta y correcciones sólo locales  
+**Fecha de corte:** 26 de agosto de 2026
+**Estado:** Fase 2.1 corregida y promovida en testnet; ejecución monetaria desactivada
 **Propósito:** explicar el sistema con un único vocabulario y separar con claridad
 lo que está desplegado, lo que está listo en código y lo que sólo es futuro.
 
@@ -31,7 +31,7 @@ temporal, no un tercer BFF.
 | App Backend | carpeta `server/`; Worker remoto `server` | Identidad, passkeys, cuentas, UserOperations, Home, swaps, contactos y CCTP personal. |
 | Payments Backend | carpeta `payments-worker/`; Worker remoto `gatopago-payments-api` | Comercios, links, intents, quotes, attempts, routing de cobro, settlement, eventos y webhooks. |
 | App DB | binding `GATOPAGO_DB`; D1 `parmeliadb` | Datos propios del dominio App. |
-| Payments DB | binding `PAYMENTS_DB`; D1 `gatopago-payments` | Datos propios del dominio Payments. |
+| Payments DB | binding `PAYMENTS_DB`; D1 `gatopago-payments-semantic-20260826` | Datos propios del dominio Payments. La D1 `gatopago-payments` permanece sólo como histórico del primer corte. |
 | App Jobs | Queue `parmelia-scheduled-jobs` | Indexación y trabajos de App. |
 | Payments Jobs | Queue `gatopago-payment-jobs` | Reconciliación, CCTP y entregas de webhooks. |
 
@@ -45,13 +45,13 @@ que ve el operador en Cloudflare.
 | App Backend `server` | Desplegado. |
 | App DB `parmeliadb` | Existe; todavía contiene también las tablas históricas de pagos. |
 | App Jobs | Existen. |
-| Payments Backend | `gatopago-payments-api` desplegado con el código anterior; las protecciones de payer/capability/evidencia y migración `0006` sólo están locales. |
-| Payments DB | `gatopago-payments` creada, migrada e importada; su prueba histórica sólo cubre IDs y se conserva intacta. Antes de otra promoción se requiere una D1 nueva con manifest v4/checksum semántico v2. |
+| Payments Backend | `gatopago-payments-api` desplegado con capability/firma del payer, validación de receipt, CAS/expiry, Multicall3 y migración `0006`. |
+| Payments DB | `gatopago-payments-semantic-20260826` activa con manifest v4/checksum semántico v2. `gatopago-payments` permanece intacta como evidencia histórica. |
 | Payments Jobs | Queue y DLQ creadas; sin trabajos activos o terminales al cierre. |
 | Migraciones App `0033` y `0034` | Aplicadas; App usa boundary v2 y modo `payments`. |
-| Snapshot de partición | Import data-only ejecutado una vez: 4 merchants, 21 links y 21 intents. El checksum remoto histórico cubre IDs. El candidato nuevo verifica semántica de todas las columnas, normaliza cifrado aleatorio y compara un export del target pre-activación. |
+| Snapshot de partición | Import data-only ejecutado una vez: 4 merchants, 21 links y 21 intents. El checksum semántico cubre tablas, columnas y contenido; el export target se comparó antes de activar y el sync posterior dejó 7 merchants. |
 | Cliente Vercel | `parmelia` sirve `https://app.parmelia.me`; el checkout usa únicamente el provider EIP-1193 que una extensión o el navegador integrado de la propia wallet ya expone. No integra proveedores externos de conexión. |
-| Dashboard Vercel | El deployment existe, pero una petición anónima a `https://dashboard.parmelia.me` redirige a Vercel SSO. |
+| Dashboard Vercel | `https://dashboard.parmelia.me` es accesible anónimamente y muestra el login de GatoPago; Vercel SSO está desactivado. |
 | Routers de pago | Desplegados y verificados en testnets soportadas. No se activó mainnet. |
 
 ## Orden de lectura

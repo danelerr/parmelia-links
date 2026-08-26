@@ -1,7 +1,7 @@
 # Plan de implementación — Checkout universal y aceptación USDC en tres redes
 
 **Fecha:** 25 de agosto de 2026<br>
-**Estado:** Fase 1 cerrada en testnet; corte App/Payments histórico promovido pero Fase 2.1 reabierta por auditoría<br>
+**Estado:** Fase 1 cerrada; Fase 2.1 y hardening de Fase 3 promovidos en testnet; Fase 4 transaccional pendiente<br>
 **Primera salida objetivo:** Arbitrum como red hogar; cobros desde Arbitrum, Base y Avalanche<br>
 **Activo inicial:** USDC nativo
 
@@ -10,15 +10,15 @@ corte de producto acotado. La Fase 1 de contratos/testnets ya tiene evidencia y
 la separación App/Payments de la Fase 2 ya existe en el código y las migraciones.
 La revisión posterior detectó gaps de configuración, recuperación, concurrencia,
 contabilidad y cutover; ya se incorporaron al alcance y se corrigieron localmente
-en 3A–3C. La promoción sigue bloqueada hasta completar los gates remotos. Este plan no
+en 3A–3C. El 26-08-2026 se promovieron y pasaron los gates remotos; la evidencia
+transaccional completa sigue en Fase 4. Este plan no
 propone transformar toda la aplicación en una wallet multichain antes de mainnet.
 
-La Fase 2 sí fue provisionada y desplegada el 25-08-2026, pero el Worker remoto
-no contiene el hardening posterior, falta `0006` y el checksum histórico sólo
-cubría IDs. El siguiente rollout no reetiqueta esa evidencia: conserva la D1 y
-repite freeze/import/verify hacia un target nuevo mediante manifest v4/checksum
-semántico v2. La realidad del código y de los preflights prevalece sobre cualquier
-casilla histórica de este documento.
+El corte histórico del 25-08-2026 quedó preservado, sin reetiquetar su checksum
+basado sólo en IDs. El recut del 26-08-2026 creó una D1 nueva, aplicó `0006` y
+verificó freeze/import/export mediante manifest v4/checksum semántico v2. La
+realidad del código y de los preflights prevalece sobre cualquier casilla
+histórica de este documento.
 
 ## 0. Decisión ejecutiva
 
@@ -806,7 +806,7 @@ testnet. Un deploy exitoso sin transacción real no cierra la fase.
 
 ### Fase 2 — separación de backend/datos + quote e intent engine (8–12 días)
 
-**Estado al 25-08-2026: promovido en Cloudflare y Vercel.**
+**Estado al 26-08-2026: promovido y recortado semánticamente en Cloudflare/Vercel.**
 La entrega incluye dos Workers, dos schemas D1, dos colas por dominio,
 Service Binding unidireccional App → Payments, contratos RPC/Queue N/N-1, copy y
 restore verificables, intent/quote/attempt engine, settlement idempotente y
@@ -857,6 +857,15 @@ drenados, ambos Workers están sanos y los smokes directo/proxy pasan. El
 preflight remoto concluye `fully promoted`; Vercel sigue fuera de este cierre
 Cloudflare.
 
+**Recut correctivo ejecutado el 26-08-2026:** se conservó la D1 anterior y se
+creó `gatopago-payments-semantic-20260826` desde una base vacía con migraciones
+`0001`–`0006`. El manifest v4/checksum semántico v2
+`5d3093e9b12288d7783832037b3bf06635591da1cf56df377ff4b4b6f3093a27`
+verifica tablas, columnas y contenido; el export target pasó `quick_check`, FK y
+comparación semántica. App volvió a modo `payments`, se drenaron siete cuentas,
+Payments quedó sano y ambos frontends se promovieron con acceso anónimo real.
+La D1 histórica no se alteró.
+
 ### Incremento 2.1 — economía y sponsorship extensibles, gratuitos por defecto
 
 **Estado al 25-08-2026: backend y frontends promovidos.**
@@ -882,12 +891,12 @@ contratos, alterar pagos en curso o redeployar smart accounts.
    wallet/compatibilidad. Merchant checkout tiene una única autoridad económica
    en Payments, por lo que los dos Workers no pueden cobrar dos veces.
 
-**Gate de entrada a Fase 3, reabierto por auditoría:** el corte Cloudflare y los
-deployments Vercel existen, pero la verificación posterior demostró que el
-dashboard está detrás de Vercel SSO, el checkout remoto sólo soporta provider
-inyectado y un attempt público podía bloquearse con un hash inventado. El
-candidato local corrige esos límites; no está promovido. El lanzamiento gratuito
-usa los routers CCTP actuales con cap `0`.
+**Gate de entrada a Fase 3, cerrado el 26-08-2026:** la capability/firma del
+payer, validación de receipt, CAS/expiry, reset A→B, redundancia RPC, recut
+semántico y acceso público del dashboard están promovidos. El checkout externo
+usa deliberadamente sólo un provider EIP-1193 ya inyectado y muestra fallback
+sin spinner cuando no existe; no usa Reown/WalletConnect. El lanzamiento gratuito
+usa los routers CCTP actuales con cap `0` y `PAYMENT_LIVE_ENABLED=false`.
 Un redeploy preventivo con cap `100` sigue siendo una decisión separada de
 negocio, no una condición para corregir el software.
 
@@ -895,7 +904,7 @@ negocio, no una condición para corregir el software.
 
 ### Fase 3 — hardening de Payments + checkout público (8–12 días)
 
-**Estado al 25-08-2026: componentes base promovidos; hardening posterior sólo local y evidencia transaccional completa aún pertenece a Fase 4.** Esta fase absorbe los
+**Estado al 26-08-2026: hardening y checkout promovidos; evidencia transaccional completa aún pertenece a Fase 4.** Esta fase absorbe los
 hallazgos de la auditoría posterior a Fase 2. Primero cierra seguridad económica,
 recuperación y cutover; después amplía la UX pública. Ningún test verde anterior
 permite omitir los gates de esta sección.
@@ -907,9 +916,9 @@ como opción, y el E2E prueba injected wallet, fallback EIP-2612 →
 `approve + pay`, caída del registro y reanudación después de recargar. 3C pasó
 la verificación integral y el ensayo local compuesto de cutover/rollback: modos
 bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksum,
-    outbox y restores independientes. La auditoría posterior reabrió 3C: falta
-    repetir el gate integral, versionar, aplicar `0006` y promover. Que un
-    deployment exista no prueba acceso anónimo ni universalidad del checkout.
+    outbox y restores independientes. La promoción correctiva aplicó `0006`,
+    desplegó ambos Workers/frontends y repitió gates remotos. Acceso anónimo y la
+    regresión A→B se probaron en navegador; una transacción E2E sigue en Fase 4.
 
 #### 3A. Bloqueadores de backend y operación
 
@@ -995,7 +1004,7 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
   outbox y compatibilidad N/N-1.
 - [x] `pnpm verify:all`, auditoría, E2E, restore drill, contratos, diagramas y
   release artifacts repetidos después de las correcciones posteriores.
-- [ ] Con autorización separada para operar remotamente: preflight fail-closed,
+- [x] Con autorización separada para operar remotamente: preflight fail-closed,
   backup, creación/migración/import, deploy target→caller, health y smokes. Sin
   autorización, la fase puede cerrar solo su componente local y queda la promoción
   marcada como pendiente.
@@ -1010,11 +1019,12 @@ ejecutó 187 pruebas instrumentadas y Foundry informó 4 omisiones de suites/cas
 fork en ese gate.
 
 **Evidencia local posterior a la auditoría (26-08-2026):** `pnpm verify:all`
-vuelve a pasar. App: 253 unitarias + 22 runtime. Payments: 51 + 19. Playwright:
-30 aprobadas + 10 omisiones de matriz. Audit: 0 vulnerabilidades conocidas.
+vuelve a pasar. App: 253 unitarias + 22 runtime. Payments: 52 + 19. Playwright:
+36 aprobadas + 16 omisiones de matriz. Audit: 0 vulnerabilidades conocidas.
 D1: restore de 59 tablas y checksum semántico con tamper negativo. Foundry:
-191 aprobadas + 4 forks omitidos sin RPC. Sigue pendiente commit/CI, migración
-`0006`, deploy y smoke remoto.
+191 aprobadas + 4 forks omitidos sin RPC. La promoción posterior aplicó `0006`,
+desplegó runtime/frontends y completó el smoke remoto compuesto; el gate remoto
+ejecutó 197 pruebas Foundry sin fallos ni omisiones.
 
 **Segunda revisión local (26-08-2026):** reabrió el gate porque el primer reset
 A→B esperaba la respuesta de B, el helper RPC sólo duplicaba Base, el checksum
@@ -1024,16 +1034,18 @@ por las tres redes, exige una D1 nueva con export target verificado y fuerza los
 entrypoints protegidos. La verificación integral de este segundo delta queda
 registrada con `pnpm verify:all` en exit 0: incluye la regresión A→B en desktop y
 mobile, split/restore semántico, guards de deploy y las suites completas citadas
-arriba. Sigue siendo evidencia local, no una aprobación de producción.
+arriba. Esa segunda revisión fue la entrada del recut remoto registrado el
+26-08-2026; no equivale a readiness de mainnet.
 
-**Cierre local anterior, ahora reabierto:** ningún job App se pierde por drift de nombre; CCTP y webhooks se
+**Cierre de Fase 3 promovido:** ningún job App se pierde por drift de nombre; CCTP y webhooks se
 recuperan tras crash sin duplicación económica; nonces concurrentes son seguros;
 ledger/API/webhook reflejan el monto realmente acuñado; idempotencia concurrente
 y rotación de claves están probadas; el runbook tiene un único cutover ejecutable;
 y el mismo link admite pago sin login con wallet externa o saldo GatoPago. La
-integración de contratos en las tres testnets ya tiene prueba fork viva; todavía
-falta el E2E completo contra Workers promovidos. El
-cierre local/testnet no equivale a deploy ni a readiness de mainnet.
+integración de contratos en las tres testnets tiene prueba fork viva y los
+Workers promovidos pasan smokes directos/proxy. El pago testnet completo con
+source tx, settlement, D1 y webhook pertenece a Fase 4; el cierre testnet no
+equivale a readiness de mainnet.
 
 ### Fase 4 — reconciliación y evidencia E2E real (3–5 días)
 

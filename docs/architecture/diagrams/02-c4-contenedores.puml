@@ -17,7 +17,7 @@ package "Sistema GatoPago" {
   queue "App Jobs\n[Cloudflare Queue]\nÍndice y trabajos personales" as app_jobs COLOR_LIVE
 
   component "Payments Backend\n[Cloudflare Worker:\ngatopago-payments-api]\nCheckout, intents y settlement" as payments_api COLOR_LIVE
-  database "Payments DB\n[D1: gatopago-payments]\nPropiedad exclusiva de Payments" as payments_db COLOR_LIVE
+  database "Payments DB\n[D1: gatopago-payments-semantic-20260826]\nPropiedad exclusiva de Payments" as payments_db COLOR_LIVE
   queue "Payments Jobs\n[Cloudflare Queue]\nReconcile, CCTP y webhooks" as payment_jobs COLOR_LIVE
   component "Payment Job Scheduler\n[Durable Object]\nCompacta y despierta jobs" as scheduler COLOR_LIVE
 }
@@ -68,7 +68,7 @@ legend right
   C4: persona -> contenedor -> datos/infraestructura
   |= Color |= Estado |
   |<#DCFCE7> Verde | Remoto actual |
-  |<#FEF3C7> Amarillo | Código listo; remoto pendiente |
+  |<#FEF3C7> Amarillo | Preparado; remoto pendiente |
   |<#DBEAFE> Azul | Frontend |
 endlegend
 

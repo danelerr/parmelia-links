@@ -6,15 +6,15 @@
 
 ## 0. Corte de Fase 2: dos Workers y dos D1
 
-**Estado al 25-08-2026:** el corte Cloudflare y la promoción Vercel ya fueron
-ejecutados en las cuentas actuales. `server` usa
-`PAYMENTS_CUTOVER_MODE=payments`; Payments tiene una D1 real, bootstrap
-desactivado y un checksum histórico basado sólo en IDs. `app.parmelia.me` responde
-anónimamente, pero la auditoría posterior comprobó
-que `dashboard.parmelia.me` redirige a Vercel SSO y que las correcciones de
-checkout/Payments aún no están desplegadas. **No actualizar el checksum ni
-reimportar sobre esa D1.** El siguiente rollout debe conservarla y repetir el
-corte hacia una D1 nueva siguiendo
+**Estado al 26-08-2026:** el recut semántico Cloudflare y la promoción Vercel
+están ejecutados y verificados. `server` usa
+`PAYMENTS_CUTOVER_MODE=payments`; Payments apunta a
+`gatopago-payments-semantic-20260826`, tiene bootstrap desactivado, migraciones
+`0001`–`0006` y checksum semántico fijado. `app.parmelia.me` y
+`dashboard.parmelia.me` responden anónimamente; el dashboard muestra el login de
+GatoPago y no Vercel SSO. `PAYMENT_LIVE_ENABLED=false` permanece sin cambios.
+La D1 histórica no se borra ni se reimporta. El procedimiento que produjo este
+estado está en
 [`payments-semantic-recut.md`](./docs/runbooks/payments-semantic-recut.md). La secuencia siguiente queda como runbook reproducible y
 de recuperación. Los deploys manuales se ejecutan
 con `pnpm --filter payments-worker run deploy` y

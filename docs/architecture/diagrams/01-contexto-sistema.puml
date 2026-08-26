@@ -54,10 +54,9 @@ payments_backend --> evm : routers de cobro
 legend right
   |= Color |= Estado |
   |<#DCFCE7> Verde | Desplegado remotamente |
-  |<#FEF3C7> Amarillo | Implementado; promoción pendiente |
+  |<#FEF3C7> Amarillo | Preparado; promoción pendiente |
   |<#DBEAFE> Azul | Interfaz GatoPago |
   |<#EDE9FE> Violeta | Sistema externo |
-  |<#FEF3C7> Amarillo | Corrección local pendiente de promoción |
 endlegend
 
 @enduml

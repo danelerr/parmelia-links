@@ -1,7 +1,7 @@
 # Runbook: corte App → Payments sin perder escrituras
 
 **Fecha:** 25 de agosto de 2026  
-**Estado:** procedimiento preparado; no ejecutado remotamente  
+**Estado:** ejecutado remotamente; conservado como procedimiento de corte/rollback
 **Alcance:** mover el dominio de cobros desde App D1/App Queue hacia Payments
 D1/Payments Queue sin doble escritura ni confirmaciones falsas.
 
