@@ -55,7 +55,9 @@ const paymentsDataChecksum = value(paymentsConfig,
   /"PAYMENTS_DATA_CUTOVER_CHECKSUM"\s*:\s*"([^"]+)"/u, "Payments data cutover checksum");
 
 function names(config, key) {
-  return [...config.matchAll(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, "gu"))].map((match) => match[1]);
+  return [...config.matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/gu)]
+    .filter((match) => match[1] === key)
+    .map((match) => match[2]);
 }
 
 const appQueues = [...new Set([...names(appConfig, "queue"), ...names(appConfig, "dead_letter_queue")])];
@@ -85,8 +87,8 @@ function clean(output) {
   return String(output ?? "").replaceAll(/\u001b\[[0-9;]*m/gu, "").trim();
 }
 
-function run(command, args, { allowFailure = false, env = process.env, cwd = root } = {}) {
-  const result = spawnSync(command, args, {
+function runNode(args, { allowFailure = false, env = process.env, cwd = root } = {}) {
+  const result = spawnSync(process.execPath, args, {
     cwd,
     env,
     encoding: "utf8",
@@ -97,14 +99,14 @@ function run(command, args, { allowFailure = false, env = process.env, cwd = roo
   const stderr = clean(result.stderr);
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFailure) {
-    throw new Error(clean(stderr || stdout || `${command} exited ${result.status}`));
+    throw new Error(clean(stderr || stdout || `node exited ${result.status}`));
   }
   return { ok: result.status === 0, stdout, stderr };
 }
 
 function wrangler(filter, args, options) {
   const cli = resolve(root, filter, "node_modules", "wrangler", "bin", "wrangler.js");
-  return run(process.execPath, [cli, ...args], { ...options, cwd: resolve(root, filter) });
+  return runNode([cli, ...args], { ...options, cwd: resolve(root, filter) });
 }
 
 function d1Read(filter, binding, sql) {
@@ -173,7 +175,7 @@ function snapshotSplit() {
     const target = resolve(directory, "payments.sqlite");
     const backups = resolve(directory, "split");
     wrangler("server", ["d1", "export", "GATOPAGO_DB", "--remote", "--output", sourceSql, "-y"]);
-    const split = run(process.execPath, [resolve(root, "scripts", "split-payments-d1.mjs"),
+    const split = runNode([resolve(root, "scripts", "split-payments-d1.mjs"),
       "--source-sql", sourceSql, "--target", target, "--backup-dir", backups], {
       env: { ...process.env, WEBHOOK_SECRET_ENCRYPTION_KEY: "11".repeat(32),
         WEBHOOK_SECRET_ENCRYPTION_KEY_ID: "preflight-semantic",
@@ -212,7 +214,7 @@ function verifyPaymentsTargetSnapshot(snapshot) {
     const manifestPath = resolve(directory, "semantic-manifest.json");
     writeFileSync(manifestPath, `${JSON.stringify(snapshot.manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     wrangler("payments-worker", ["d1", "export", "PAYMENTS_DB", "--remote", "--output", targetSql, "-y"]);
-    const verification = run(process.execPath, [resolve(root, "scripts", "split-payments-d1.mjs"),
+    const verification = runNode([resolve(root, "scripts", "split-payments-d1.mjs"),
       "--verify-target-sql", targetSql, "--manifest", manifestPath]);
     return verification.stdout;
   } finally {

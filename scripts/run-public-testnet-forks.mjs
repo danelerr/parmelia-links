@@ -23,26 +23,40 @@ const networks = [
   },
 ];
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+function output(result, label) {
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(String(result.stderr || result.stdout || `${label} exited ${result.status}`).trim());
+  }
+  return String(result.stdout ?? "").trim();
+}
+
+function runCast(args) {
+  return output(spawnSync("cast", args, {
+    cwd: root,
+    env: process.env,
+    encoding: "utf8",
+    windowsHide: true,
+    stdio: "pipe",
+    maxBuffer: 32 * 1024 * 1024,
+  }), "cast");
+}
+
+function runForge(args, options = {}) {
+  return output(spawnSync("forge", args, {
     cwd: options.cwd ?? root,
     env: options.env ?? process.env,
     encoding: "utf8",
     windowsHide: true,
     stdio: options.stdio ?? "pipe",
     maxBuffer: 32 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(String(result.stderr || result.stdout || `${command} exited ${result.status}`).trim());
-  }
-  return String(result.stdout ?? "").trim();
+  }), "forge");
 }
 
 const forkEnv = { ...process.env };
 for (const network of networks) {
   const rpcUrl = process.env[network.env]?.trim() || network.fallback;
-  const observed = run("cast", ["chain-id", "--rpc-url", rpcUrl]);
+  const observed = runCast(["chain-id", "--rpc-url", rpcUrl]);
   if (observed !== network.chainId) {
     throw new Error(`${network.name} RPC returned chain ${observed}; expected ${network.chainId}`);
   }
@@ -50,7 +64,7 @@ for (const network of networks) {
   console.log(`[ready] ${network.name}: chain ${observed}`);
 }
 
-run("forge", ["test"], {
+runForge(["test"], {
   cwd: resolve(root, "contracts"),
   env: forkEnv,
   stdio: "inherit",

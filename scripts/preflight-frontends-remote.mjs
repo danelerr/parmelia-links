@@ -53,7 +53,8 @@ function linkedProject(relativeDirectory) {
 }
 
 function missingEnv(output, expected) {
-  return expected.filter((name) => !new RegExp(`(?:^|\\s)${name}(?:\\s|$)`, "mu").test(output));
+  const listedNames = new Set(output.match(/[A-Z][A-Z0-9_]*/gu) ?? []);
+  return expected.filter((name) => !listedNames.has(name));
 }
 
 const flags = new Set(process.argv.slice(2));

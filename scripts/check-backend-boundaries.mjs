@@ -28,15 +28,17 @@ function queueNames(config) {
 }
 
 function sourceConstant(source, name) {
-  const match = source.match(new RegExp(`(?:export\\s+)?const\\s+${name}\\s*=\\s*"([^"]+)"`, "u"));
+  const constants = [...source.matchAll(/(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]+)"/gu)];
+  const match = constants.find((entry) => entry[1] === name);
   if (!match) throw new Error(`Queue source constant is missing: ${name}`);
-  return match[1];
+  return match[2];
 }
 
 function producerQueue(config, binding) {
-  const match = config.match(new RegExp(`"binding"\\s*:\\s*"${binding}"[\\s\\S]{0,240}?"queue"\\s*:\\s*"([^"]+)"`, "u"));
+  const producers = [...config.matchAll(/"binding"\s*:\s*"([^"]+)"[\s\S]{0,240}?"queue"\s*:\s*"([^"]+)"/gu)];
+  const match = producers.find((entry) => entry[1] === binding);
   if (!match) throw new Error(`Queue producer binding is missing: ${binding}`);
-  return match[1];
+  return match[2];
 }
 
 function consumerQueues(config) {

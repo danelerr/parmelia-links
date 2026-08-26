@@ -156,7 +156,7 @@ function webhookAad(keyId) {
 
 function encryptLegacySecret(secret, spec) {
   const nonce = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", spec.key, nonce);
+  const cipher = createCipheriv("aes-256-gcm", spec.key, nonce, { authTagLength: 16 });
   cipher.setAAD(webhookAad(spec.id));
   const encrypted = Buffer.concat([cipher.update(secret, "utf8"), cipher.final(), cipher.getAuthTag()]);
   return `enc:v2:${spec.id}:${nonce.toString("base64")}.${encrypted.toString("base64")}`;
@@ -176,7 +176,7 @@ function decryptImportedWebhookSecret(ciphertext, storedKeyId, keyring) {
   const nonce = Buffer.from(nonceEncoded, "base64");
   const payload = Buffer.from(payloadEncoded, "base64");
   if (nonce.length !== 12 || payload.length <= 16) throw new Error("Invalid webhook ciphertext length");
-  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
   if (embedded) decipher.setAAD(webhookAad(keyId));
   decipher.setAuthTag(payload.subarray(payload.length - 16));
   return Buffer.concat([decipher.update(payload.subarray(0, -16)), decipher.final()]).toString("utf8");
