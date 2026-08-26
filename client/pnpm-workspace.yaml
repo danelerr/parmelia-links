@@ -1,0 +1,11 @@
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - semver@6.3.1
+overrides:
+  slow-redact: '0.3.1'
+allowBuilds:
+  '@firebase/util': false
+  protobufjs: false
+minimumReleaseAgeExclude:
+  - '@types/react-dom@19.2.5'

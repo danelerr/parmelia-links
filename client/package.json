@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -11,7 +15,6 @@
   },
   "dependencies": {
     "@fontsource-variable/recursive": "^5.3.0",
-    "@gatopago/shared": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "firebase": "^12.18.0",
     "html-to-image": "^1.11.13",

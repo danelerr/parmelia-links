@@ -1,11 +1,21 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath } from 'node:url'
+
+const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // `client/` is also a standalone pnpm workspace for Vercel. During monorepo
+  // development its dependencies resolve to the root store, so allow that
+  // exact parent or Vite rejects font files and visual tests use fallbacks.
+  server: {
+    fs: { allow: [repositoryRoot] },
+  },
   build: {
+	manifest: true,
     rollupOptions: {
       output: {
         // Split Firebase Auth into its own chunk. It's the heaviest dependency

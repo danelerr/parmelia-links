@@ -7,7 +7,7 @@
 import { fetchWithAuth } from "./authFetch";
 import type { User } from "./firebase";
 import i18n from "./i18n";
-import { SERVER_URL } from "./brand";
+import { PAYMENTS_URL, SERVER_URL } from "./brand";
 
 export { SERVER_URL };
 
@@ -46,7 +46,18 @@ export async function apiFetch<T = Record<string, unknown>>(
 	path: string,
 	opts: ApiOptions = {},
 ): Promise<T> {
-	const url = path.startsWith("http") ? path : `${SERVER_URL}${path}`;
+	return apiFetchFrom<T>(SERVER_URL, path, opts);
+}
+
+export async function paymentsApiFetch<T = Record<string, unknown>>(
+	path: string,
+	opts: ApiOptions = {},
+): Promise<T> {
+	return apiFetchFrom<T>(PAYMENTS_URL, path, opts);
+}
+
+async function apiFetchFrom<T>(baseUrl: string, path: string, opts: ApiOptions): Promise<T> {
+	const url = path.startsWith("http") ? path : `${baseUrl}${path}`;
 	const init: RequestInit = {
 		method: opts.method ?? (opts.body !== undefined ? "POST" : "GET"),
 		headers: opts.headers,

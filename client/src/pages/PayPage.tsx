@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useParams } from "react-router";
 import { ApiError, SERVER_URL, apiFetch } from "../lib/api";
 import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
@@ -23,6 +23,10 @@ import SigningDetails from "../components/SigningDetails";
 import { MoneyPanel, PanelActions, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
 import TokenSelect from "../components/TokenSelect";
 import { parsePaymentError, PAYMENT_APP_HOST } from "../lib/paymentErrors";
+import ExternalWalletCheckout from "../features/checkout/ExternalWalletCheckout";
+import PaymentMethodSelector, { type CheckoutPaymentMethod } from "../features/checkout/PaymentMethodSelector";
+import { getCheckout } from "../features/checkout/api";
+import type { CheckoutResponse } from "../features/checkout/types";
 import {
 	ConfirmPayDestination,
 	PaidLinkView,
@@ -41,10 +45,18 @@ type PayStage = "idle" | "preparing" | "signing" | "securing";
 export default function PayPage({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
 	const { username } = useParams();
+	const requestIdentity = `${username ?? ""}?${searchParams.toString()}`;
+	return <PayPageContent key={requestIdentity} user={user} />;
+}
+
+function PayPageContent({ user }: { user: User | null }) {
+	const [searchParams] = useSearchParams();
+	const { username } = useParams();
 	const navigate = useViewTransitionNavigate();
 	const { t } = useTranslation();
 	const withdrawIntent = searchParams.get("intent") === "withdraw";
 	const [linkData, setLinkData] = useState<LinkData | null>(null);
+	const [checkout, setCheckout] = useState<CheckoutResponse | null>(null);
 	const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [paying, setPaying] = useState(false);
@@ -59,6 +71,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	const [destType, setDestType] = useState<"address" | "username">(withdrawIntent ? "address" : "username");
 	const [resolvingUsername, setResolvingUsername] = useState(false);
 	const [confirmTx, setConfirmTx] = useState<ManualConfirm | null>(null);
+	const [paymentMethod, setPaymentMethod] = useState<CheckoutPaymentMethod>("external");
 	// Saved contacts, surfaced as one-tap destinations in manual mode.
 	const [contacts, setContacts] = useState<{ id: string; username: string; alias: string | null }[]>([]);
 	// Own balance, visible at the moment of paying (top ask from field testing).
@@ -102,11 +115,21 @@ export default function PayPage({ user }: { user: User | null }) {
 		async function fetchLink(id: string) {
 			armSlowHint();
 			try {
-				const res = await fetch(`${SERVER_URL}/links/${id}`, { signal: controller.signal });
-				if (!res.ok) throw new Error("Link no encontrado");
-				const data = await res.json();
+				const data = await getCheckout(id);
 				if (cancelled) return;
-				setLinkData(data);
+				setCheckout(data);
+				setLinkData({
+					id: data.link.id,
+					amount: data.intent.amount,
+					amountMode: data.intent.amount_mode,
+					currency: data.intent.currency,
+					reference: data.intent.reference,
+					wallet: data.link.wallet,
+					status: data.intent.status === "paid" || data.intent.status === "overpaid" ? "paid" : "pending",
+				});
+				if (data.intent.amount_mode === "payer_defined" && data.intent.amount_atomic !== "0") {
+					setPayAmount(data.intent.amount);
+				}
 			} catch (error) {
 				if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
 					setError(t("pay.linkNotFound"));
@@ -399,6 +422,10 @@ export default function PayPage({ user }: { user: User | null }) {
 		}
 	}
 
+	const handleExternalPaid = useCallback((settledAmount: string) => {
+		setLinkData((current) => current ? { ...current, amount: settledAmount || current.amount, status: "paid" } : current);
+	}, []);
+
 	const bigInput =
 		"w-full max-w-[260px] bg-transparent text-center font-display text-[56px] leading-none text-text placeholder:text-text-faint tabular";
 
@@ -560,7 +587,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	if (!linkData) return null;
 
 	const isStoredLink = !["direct", "username", "manual"].includes(linkData.id);
-	const hasFixedAmount = Number(linkData.amount) > 0;
+	const hasFixedAmount = linkData.amountMode ? linkData.amountMode === "fixed" : Number(linkData.amount) > 0;
 	const recipientLabel = linkData.username
 		? `@${linkData.username}`
 		: linkData.wallet
@@ -587,6 +614,7 @@ export default function PayPage({ user }: { user: User | null }) {
 	// Payment form (fixed link, open link, or username transfer)
 	const isOpenAmount = !hasFixedAmount;
 	const payingCurrency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
+	const selectedAmount = hasFixedAmount ? linkData.amount : payAmount;
 
 	return (
 		<Screen animate={false}>
@@ -644,21 +672,30 @@ export default function PayPage({ user }: { user: User | null }) {
 				</p>
 			)}
 
-			<TransactionActions hint={t("common.noNetworkFees")}>
-				{!user ? (
-					<button onClick={handleLogin} className="btn btn-primary btn-block">
-						{t("pay.signInToPay")}
-					</button>
-				) : (
-					<button
-						onClick={handlePay}
-						disabled={paying || (isOpenAmount && !payAmount)}
-						className="btn btn-money btn-block"
-					>
-						{t("common.pay")}
-					</button>
-				)}
-			</TransactionActions>
+			{isStoredLink && checkout && user ? (
+				<PaymentMethodSelector value={paymentMethod} onChange={setPaymentMethod} />
+			) : null}
+
+			{isStoredLink && checkout && (!user || paymentMethod === "external") ? (
+				<ExternalWalletCheckout key={checkout.link.id} checkout={checkout} amount={selectedAmount} onPaid={handleExternalPaid} />
+			) : (
+				<TransactionActions hint={t("common.noNetworkFees")}>
+					{!user ? (
+						<button type="button" onClick={handleLogin} className="btn btn-primary btn-block">
+							{t("pay.signInToPay")}
+						</button>
+					) : (
+						<button
+							type="button"
+							onClick={handlePay}
+							disabled={paying || (isOpenAmount && !payAmount)}
+							className="btn btn-money btn-block"
+						>
+							{t("common.pay")}
+						</button>
+					)}
+				</TransactionActions>
+			)}
 			{slowConnection && paying && (
 				<p role="status" aria-live="polite" className="text-text-faint text-[12px] text-center mt-3 animate-fade-in">
 					{t("pay.networkSlow")}

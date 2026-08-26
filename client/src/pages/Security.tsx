@@ -21,7 +21,7 @@ import { FormPageSkeleton } from "../components/Skeleton";
 import MeliSprite from "../components/brand/MeliSprite";
 import PasskeyList, { type ManagedPasskey } from "../components/PasskeyList";
 
-interface PasskeyStatusResponse {
+export interface PasskeyStatusResponse {
 	hasWallet: boolean;
 	chainStatus: "available" | "unavailable" | "not_applicable";
 	signerCount: number | null;
@@ -39,7 +39,7 @@ function isZeroAddress(address: string | null | undefined) {
 }
 
 const CHEVRON = (
-	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0 transition-transform group-open:rotate-90">
+	<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-faint shrink-0 transition-transform group-open:rotate-90">
 		<path d="m9 18 6-6-6-6" />
 	</svg>
 );
@@ -56,33 +56,71 @@ function Faq({ question, children }: { question: string; children: React.ReactNo
 	);
 }
 
-export default function Security({ user, previewStatus }: { user: User; previewStatus?: PasskeyStatusResponse }) {
+export default function Security({ user, previewStatus }: { user: User; previewStatus?: PasskeyStatusResponse | null }) {
 	const { t } = useTranslation();
+	const previewing = previewStatus !== undefined;
 	const [status, setStatus] = useState<PasskeyStatusResponse | null>(previewStatus ?? null);
-	const [loading, setLoading] = useState(!previewStatus);
+	const [loading, setLoading] = useState(!previewing);
+	const [loadFailed, setLoadFailed] = useState(previewStatus === null);
+	const [retrying, setRetrying] = useState(false);
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [pendingPasskey, setPendingPasskey] = useState<Awaited<ReturnType<typeof createPasskey>> | null>(null);
 	const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
+	const fetchStatus = useCallback(
+		() => apiFetch<PasskeyStatusResponse>("/account/passkey", { user }),
+		[user],
+	);
 
-	const refresh = useCallback(async () => {
-		if (previewStatus) {
-			setStatus(previewStatus);
-			return;
+	const refresh = useCallback(async (): Promise<boolean> => {
+		if (previewing) {
+			setStatus(previewStatus ?? null);
+			setLoadFailed(previewStatus === null);
+			return previewStatus !== null;
 		}
 		try {
-			setStatus(await apiFetch<PasskeyStatusResponse>("/account/passkey", { user }));
+			const nextStatus = await fetchStatus();
+			setStatus(nextStatus);
+			setLoadFailed(false);
+			return true;
 		} catch {
-			setStatus(null);
+			// Keep any last-known response visible, but mark it as unverified and
+			// block sensitive actions until a fresh server/onchain read succeeds.
+			setLoadFailed(true);
+			return false;
 		}
-	}, [previewStatus, user]);
+	}, [fetchStatus, previewStatus, previewing]);
 
 	useEffect(() => {
-		if (previewStatus) return;
-		(async () => {
+		if (previewing) return;
+		let active = true;
+		void fetchStatus()
+			.then(
+				(nextStatus) => {
+					if (!active) return;
+					setStatus(nextStatus);
+					setLoadFailed(false);
+				},
+				() => {
+					if (active) setLoadFailed(true);
+				},
+			)
+			.finally(() => {
+				if (active) setLoading(false);
+			});
+		return () => {
+			active = false;
+		};
+	}, [fetchStatus, previewing]);
+
+	async function handleRetry() {
+		if (retrying) return;
+		setRetrying(true);
+		try {
 			await refresh();
-			setLoading(false);
-		})();
-	}, [previewStatus, refresh]);
+		} finally {
+			setRetrying(false);
+		}
+	}
 
 	async function handleAddPasskey() {
 		setUpdatingPasskey(true);
@@ -137,7 +175,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		}
 	}
 
-	async function handleRenamePasskey(credentialId: string, name: string) {
+	async function handleRenamePasskey(credentialId: string, name: string): Promise<boolean> {
 		setBusyKeyId(credentialId);
 		try {
 			await apiFetch(`/account/passkeys/${encodeURIComponent(credentialId)}`, {
@@ -147,14 +185,16 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			});
 			await refresh();
 			notifySuccess(t("security.keyRenamed"));
+			return true;
 		} catch (error) {
 			notifyError(error, t("security.keyRenameError"));
+			return false;
 		} finally {
 			setBusyKeyId(null);
 		}
 	}
 
-	async function handleRemovePasskey(credentialId: string) {
+	async function handleRemovePasskey(credentialId: string): Promise<boolean> {
 		setBusyKeyId(credentialId);
 		try {
 			const prepared = await apiFetch<PreparedUserOperation>(
@@ -171,8 +211,10 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 				submit.confirmed ? t("security.keyRemoved") : t("security.keyRemovalPending"),
 				submit.confirmed ? undefined : t("security.keyRemovalPendingBody"),
 			);
+			return true;
 		} catch (error) {
 			notifyError(error, t("security.keyRemoveError"));
+			return false;
 		} finally {
 			setBusyKeyId(null);
 		}
@@ -181,9 +223,13 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	const recoveryDateLabel = status?.recoveryExecutableAfter
 		? formatDate(status.recoveryExecutableAfter, { day: "numeric", month: "long" })
 		: null;
-	const chainAvailable = status?.chainStatus === "available";
+	const statusLoaded = status !== null && !loadFailed;
+	const chainAvailable = statusLoaded && status.chainStatus === "available";
+	const securityStateVerified =
+		statusLoaded && (!status.hasWallet || chainAvailable);
 	const keyCount = chainAvailable ? status?.signerCount ?? null : null;
 	const recoveryOn = chainAvailable && !isZeroAddress(status?.guardian);
+	const keyVerificationUnavailable = !securityStateVerified;
 	const protectionActive =
 		chainAvailable &&
 		status?.signerCount !== null &&
@@ -195,6 +241,26 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		status.signers.length > 0 &&
 		!hasUsableKeyForSigners(status.signers) &&
 		!status.recoveryPending;
+	const canAddPasskey = statusLoaded && status.hasWallet && chainAvailable;
+	const addPasskeyHelp = !statusLoaded
+		? t("security.addKeyStatusUnavailable")
+		: !status.hasWallet
+			? t("security.addKeyNeedsWallet")
+			: !chainAvailable
+				? t("security.addKeyChainUnavailable")
+				: t("settings.addBackupKeyDesc");
+	const protectionLabel = !securityStateVerified
+		? t("security.protectionUnverified")
+		: protectionActive
+			? t("security.protected")
+			: status.hasWallet
+				? t("security.protectionUnverified")
+				: t("security.protectionNotConfigured");
+	const recoveryLabel = !securityStateVerified
+		? t("security.recoveryUnverified")
+		: recoveryOn
+			? t("security.recoveryReady")
+			: t("security.recoverySetup");
 
 	return (
 		<Screen>
@@ -215,20 +281,26 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							</p>
 							<span className="mt-4 inline-flex items-center gap-2 border border-[rgb(255_248_240/.3)] px-3 py-2 font-mono text-[9px] uppercase tracking-[0.08em] text-[#fff8f0]">
 								<i className={`h-2 w-2 ${protectionActive ? "bg-growth" : "bg-pending"}`} aria-hidden="true" />
-								{protectionActive
-									? t("security.protected")
-									: status?.hasWallet
-										? t("security.protectionUnverified")
-										: t("security.protectionNotConfigured")}
+								{protectionLabel}
 							</span>
 						</div>
 						<MeliSprite name="head-focused" motion="idle" className="pointer-events-none absolute -bottom-2 -right-3 w-28 opacity-95" />
 					</section>
 
+					{loadFailed ? (
+						<div className="mb-6 border-2 border-pending bg-pending/10 p-4" role="alert" aria-live="polite">
+							<p className="font-display text-[15px] text-pending">{t("security.statusLoadTitle")}</p>
+							<p className="mt-1 text-[12px] leading-relaxed text-text-muted">{t("security.statusLoadBody")}</p>
+							<button type="button" onClick={handleRetry} disabled={retrying} className="btn btn-ghost mt-3 min-h-10 px-4 text-[12px]">
+								{retrying ? t("security.retryingStatus") : t("security.retryStatus")}
+							</button>
+						</div>
+					) : null}
+
 					<section className="meli-paper-card meli-paper-card--strong mb-6 overflow-hidden" aria-labelledby="security-keys-title">
 						<div className="flex items-start gap-3 border-b-2 border-text p-5">
 							<div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center border-2 border-text bg-cat-500 text-text shadow-[3px_3px_0_var(--color-cat-700)]">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 									<path d="M12 1a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-2V5a4 4 0 0 0-4-4Z" />
 									<circle cx="12" cy="14" r="1.5" fill="currentColor" stroke="none" />
 								</svg>
@@ -253,7 +325,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							</div>
 							<div className="bg-surface-2 px-4 py-4">
 								<p className="font-display text-[25px] leading-none text-pending">
-									{recoveryOn ? t("settings.yes") : "-"}
+									{recoveryOn ? t("settings.yes") : "—"}
 								</p>
 								<p className="mt-2 text-[11px] leading-tight text-text-muted">{t("settings.recovery")}</p>
 							</div>
@@ -291,14 +363,16 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							) : null}
 
 							<button
+								type="button"
 								onClick={handleAddPasskey}
-								disabled={updatingPasskey}
+								disabled={updatingPasskey || !canAddPasskey}
+								aria-describedby="add-passkey-help"
 								className="btn btn-primary btn-block"
 							>
 								{updatingPasskey ? t("settings.addingKey") : t("settings.addBackupKey")}
 							</button>
-							<p className="text-[12px] text-text-faint leading-relaxed mt-3 px-0.5">
-								{t("settings.addBackupKeyDesc")}
+							<p id="add-passkey-help" className={`text-[12px] leading-relaxed mt-3 px-0.5 ${canAddPasskey ? "text-text-faint" : "text-pending"}`}>
+								{addPasskeyHelp}
 							</p>
 						</div>
 
@@ -307,6 +381,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							signerCount={status?.signerCount ?? null}
 							threshold={status?.threshold ?? null}
 							chainAvailable={chainAvailable}
+							verificationUnavailable={keyVerificationUnavailable}
 							busyId={busyKeyId}
 							onRename={handleRenamePasskey}
 							onRemove={handleRemovePasskey}
@@ -323,7 +398,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							<strong className="block font-display text-[17px]">{t("security.recoveryTitle")}</strong>
 							<small className="mt-1 block text-[11px] leading-relaxed text-text-muted">{t("recover.settingsBody")}</small>
 							<small className="mt-2 block font-mono text-[9px] uppercase tracking-[0.06em] text-cat-700">
-								{recoveryOn ? t("security.recoveryReady") : t("security.recoverySetup")}
+								{recoveryLabel}
 							</small>
 						</span>
 						<span aria-hidden="true" className="font-mono text-[18px] font-bold">→</span>

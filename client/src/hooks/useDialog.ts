@@ -10,6 +10,93 @@
 
 import { useEffect, useRef } from "react";
 
+type ModalEntry = {
+	dialog: HTMLElement;
+	order: number;
+	trigger: HTMLElement | null;
+	focusFirst: () => void;
+};
+
+type BackgroundState = {
+	inert: boolean;
+	ariaHidden: string | null;
+};
+
+const modalEntries: ModalEntry[] = [];
+const backgroundStates = new Map<HTMLElement, BackgroundState>();
+let nextModalOrder = 0;
+let previousBodyOverflow: string | undefined;
+
+function bodyBranch(element: HTMLElement): HTMLElement {
+	let branch = element;
+	while (branch.parentElement && branch.parentElement !== document.body) {
+		branch = branch.parentElement;
+	}
+	return branch;
+}
+
+function stackingLevel(entry: ModalEntry): number {
+	const value = Number.parseInt(getComputedStyle(bodyBranch(entry.dialog)).zIndex, 10);
+	return Number.isFinite(value) ? value : 0;
+}
+
+function topModal(): ModalEntry | null {
+	return modalEntries.reduce<ModalEntry | null>((top, candidate) => {
+		if (!top) return candidate;
+		const levelDifference = stackingLevel(candidate) - stackingLevel(top);
+		return levelDifference > 0 || (levelDifference === 0 && candidate.order > top.order)
+			? candidate
+			: top;
+	}, null);
+}
+
+function restoreBackground(element: HTMLElement): void {
+	const state = backgroundStates.get(element);
+	if (!state) return;
+	element.inert = state.inert;
+	if (state.ariaHidden === null) element.removeAttribute("aria-hidden");
+	else element.setAttribute("aria-hidden", state.ariaHidden);
+	backgroundStates.delete(element);
+}
+
+function reconcileModalBackground(): void {
+	const top = topModal();
+	const activeBranch = top ? bodyBranch(top.dialog) : null;
+	if (!top) {
+		for (const element of [...backgroundStates.keys()]) restoreBackground(element);
+		if (previousBodyOverflow !== undefined) {
+			document.body.style.overflow = previousBodyOverflow;
+			previousBodyOverflow = undefined;
+		}
+		return;
+	}
+
+	if (previousBodyOverflow === undefined) {
+		previousBodyOverflow = document.body.style.overflow;
+	}
+	document.body.style.overflow = "hidden";
+
+	for (const element of Array.from(document.body.children)) {
+		if (!(element instanceof HTMLElement)) continue;
+		if (element === activeBranch) {
+			restoreBackground(element);
+			continue;
+		}
+		if (!backgroundStates.has(element)) {
+			backgroundStates.set(element, {
+				inert: element.inert,
+				ariaHidden: element.getAttribute("aria-hidden"),
+			});
+		}
+		element.inert = true;
+		element.setAttribute("aria-hidden", "true");
+	}
+
+	for (const element of [...backgroundStates.keys()]) {
+		if (!element.isConnected) restoreBackground(element);
+	}
+}
+
 export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () => void) {
 	const dialogRef = useRef<T>(null);
 	// Latest onClose without re-running the mount effect (callers pass inline
@@ -37,32 +124,24 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () =>
 			Array.from(dialogElement.querySelectorAll<HTMLElement>(focusableSelector)).filter(
 				(element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
 			);
-		// preventScroll: moving focus into (and later back out of) the dialog must
-		// never scroll the page - that's the "background jumps down on open and
-		// back up on close" bug under bottom sheets.
-		(dialogElement.querySelector<HTMLElement>("[data-dialog-initial-focus]") ?? focusable()[0] ?? dialogElement)
-			.focus({ preventScroll: true });
-
-		// Freeze the page behind the overlay while it's open.
-		const prevOverflow = document.body.style.overflow;
-		document.body.style.overflow = "hidden";
-		const background: Array<{ element: HTMLElement; inert: boolean; ariaHidden: string | null }> = [];
-		let branch: HTMLElement = dialogElement;
-		while (branch.parentElement) {
-			const parent = branch.parentElement;
-			for (const sibling of Array.from(parent.children)) {
-				if (!(sibling instanceof HTMLElement) || sibling === branch) continue;
-				background.push({ element: sibling, inert: sibling.inert, ariaHidden: sibling.getAttribute("aria-hidden") });
-				sibling.inert = true;
-				sibling.setAttribute("aria-hidden", "true");
-			}
-			if (parent === document.body) break;
-			branch = parent;
-		}
+		const focusFirst = () => {
+			// preventScroll avoids the background jumping under bottom sheets.
+			(dialogElement.querySelector<HTMLElement>("[data-dialog-initial-focus]") ?? focusable()[0] ?? dialogElement)
+				.focus({ preventScroll: true });
+		};
+		const entry: ModalEntry = {
+			dialog: dialogElement,
+			order: nextModalOrder,
+			trigger,
+			focusFirst,
+		};
+		nextModalOrder += 1;
+		modalEntries.push(entry);
+		reconcileModalBackground();
+		if (topModal() === entry) focusFirst();
 
 		function handleKeyDown(event: KeyboardEvent) {
-			const openDialogs = Array.from(document.querySelectorAll<HTMLElement>("[role='dialog'][aria-modal='true']"));
-			if (openDialogs.at(-1) !== dialogElement) return;
+			if (topModal() !== entry) return;
 			if (event.key === "Escape") {
 				event.preventDefault();
 				onCloseRef.current();
@@ -87,10 +166,9 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () =>
 			}
 		}
 		function keepFocusInside(event: FocusEvent) {
-			const openDialogs = Array.from(document.querySelectorAll<HTMLElement>("[role='dialog'][aria-modal='true']"));
-			if (openDialogs.at(-1) !== dialogElement) return;
+			if (topModal() !== entry) return;
 			if (!dialogElement.contains(event.target as Node)) {
-				(focusable()[0] ?? dialogElement).focus({ preventScroll: true });
+				focusFirst();
 			}
 		}
 		document.addEventListener("keydown", handleKeyDown);
@@ -98,13 +176,19 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose: () =>
 		return () => {
 			document.removeEventListener("keydown", handleKeyDown);
 			document.removeEventListener("focusin", keepFocusInside);
-			document.body.style.overflow = prevOverflow;
-			for (const item of background) {
-				item.element.inert = item.inert;
-				if (item.ariaHidden === null) item.element.removeAttribute("aria-hidden");
-				else item.element.setAttribute("aria-hidden", item.ariaHidden);
+			const index = modalEntries.indexOf(entry);
+			if (index >= 0) modalEntries.splice(index, 1);
+			reconcileModalBackground();
+			const nextTop = topModal();
+			if (nextTop) {
+				if (entry.trigger && nextTop.dialog.contains(entry.trigger)) {
+					entry.trigger.focus({ preventScroll: true });
+				} else {
+					nextTop.focusFirst();
+				}
+			} else {
+				entry.trigger?.focus({ preventScroll: true });
 			}
-			trigger?.focus({ preventScroll: true });
 		};
 	}, []);
 

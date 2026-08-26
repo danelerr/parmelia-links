@@ -12,6 +12,7 @@ import TxResult from "../TxResult";
 export interface LinkData {
 	id: string;
 	amount: string;
+	amountMode?: "fixed" | "payer_defined";
 	currency: string;
 	reference: string;
 	wallet: string;

@@ -16,7 +16,7 @@ import Move from "./Move";
 import Onboarding from "./Onboarding";
 import PaymentStatus from "./PaymentStatus";
 import Profile from "./Profile";
-import Security from "./Security";
+import Security, { type PasskeyStatusResponse } from "./Security";
 import StageOverlay from "../components/StageOverlay";
 
 const previewUser = {
@@ -28,6 +28,36 @@ const previewUser = {
 } as unknown as User;
 
 const now = new Date().toISOString();
+const previewSecurityStatus: PasskeyStatusResponse = {
+	hasWallet: true,
+	chainStatus: "available",
+	signerCount: 2,
+	threshold: 1,
+	guardian: "0x1911911911911911911911911911911911911911",
+	recoveryPending: false,
+	recoveryExecutableAfter: null,
+	signers: null,
+	passkeys: [
+		{
+			credentialId: "preview-primary-key",
+			name: "Este teléfono",
+			registrationSource: "onboarding",
+			transports: ["internal"],
+			createdAt: now,
+			lastUsedAt: now,
+			currentHint: true,
+		},
+		{
+			credentialId: "preview-backup-key",
+			name: "Llave de respaldo",
+			registrationSource: "backup",
+			transports: ["internal"],
+			createdAt: now,
+			lastUsedAt: now,
+			currentHint: false,
+		},
+	],
+};
 const previewModel: HomeReadModel = {
 	schemaVersion: 1,
 	identity: { uid: previewUser.uid, username: "daniel", displayName: "Daniel", socialUrl: null },
@@ -90,7 +120,34 @@ export default function DesignPreview() {
 	if (view === "onboarding") return <Onboarding user={previewUser} onComplete={() => undefined} />;
 	if (view === "skeleton") return <AccountLaunchScreen />;
 	if (view === "stage") return <StageOverlay label="Preparando tu pago…" />;
-	if (view === "security") return <Security user={previewUser} previewStatus={{ hasWallet: true, chainStatus: "available", signerCount: 2, threshold: 1, guardian: "0x1911911911911911911911911911911911911911", recoveryPending: false, recoveryExecutableAfter: null, signers: null, passkeys: [] }} />;
+	if (view === "security") return <Security user={previewUser} previewStatus={previewSecurityStatus} />;
+	if (view === "security-error") return <Security user={previewUser} previewStatus={null} />;
+	if (view === "security-chain-error") {
+		return (
+			<Security
+				user={previewUser}
+				previewStatus={{
+					...previewSecurityStatus,
+					chainStatus: "unavailable",
+					signerCount: null,
+					threshold: null,
+					guardian: null,
+				}}
+			/>
+		);
+	}
+	if (view === "security-single-key") {
+		return (
+			<Security
+				user={previewUser}
+				previewStatus={{
+					...previewSecurityStatus,
+					signerCount: 1,
+					passkeys: previewSecurityStatus.passkeys.slice(0, 1),
+				}}
+			/>
+		);
+	}
 	if (view === "charge") return <CreateLink user={previewUser} />;
 	if (view === "payment") return <PaymentStatus user={previewUser} />;
 	if (view === "profile") return <ProfilePreview />;

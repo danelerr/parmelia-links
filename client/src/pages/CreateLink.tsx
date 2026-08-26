@@ -10,7 +10,7 @@ import AmountInput from "../components/AmountInput";
 import TxResult from "../components/TxResult";
 import { RowSkeletonList } from "../components/Skeleton";
 import TokenSelect from "../components/TokenSelect";
-import { apiFetch } from "../lib/api";
+import { paymentsApiFetch } from "../lib/api";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
@@ -52,7 +52,7 @@ export default function CreateLink({ user }: { user: User }) {
 	// with their QR, paid ones show the receipt. Fetched only while on the form.
 	const { data: linksData, isLoading: linksLoading, mutate: mutateLinks } = useSWR(
 		step === "form" ? "/links" : null,
-		(path: string) => apiFetch<{ links: ChargeLink[] }>(path, { user }),
+		(path: string) => paymentsApiFetch<{ links: ChargeLink[] }>(path, { user }),
 	);
 	const charges = linksData?.links ?? [];
 	// Bounded on both ends: 5 visible by default, "Ver todos" expands to the
@@ -77,7 +77,7 @@ export default function CreateLink({ user }: { user: User }) {
 	async function handleCreate() {
 		setLoading(true);
 		try {
-			const data = await apiFetch<{ id: string }>("/links", {
+			const data = await paymentsApiFetch<{ id: string }>("/links", {
 				user,
 				body: { amount, currency, reference },
 			});
