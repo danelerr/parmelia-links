@@ -3,6 +3,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { getPaymentNetworkCapabilities } from "../../../shared/networks";
 import type { Bindings } from "../env";
 
+const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
+
 function configuredRpcMap(env: Bindings): Record<string, unknown> {
 	if (!env.PAYMENT_RPC_URLS) throw new Error("PAYMENT_RPC_URLS is not configured");
 	let parsed: unknown;
@@ -43,7 +45,8 @@ function paymentChain(chainId: number): Chain {
 	const config = getPaymentNetworkCapabilities(chainId);
 	if (!config) throw new Error(`Unsupported payment chain ${chainId}`);
 	return defineChain({ id: chainId, name: config.name, nativeCurrency: { name: "Native", symbol: chainId === 43113 || chainId === 43114 ? "AVAX" : "ETH", decimals: 18 },
-		rpcUrls: { default: { http: ["https://configured-at-runtime.invalid"] } }, testnet: config.isTestnet });
+		rpcUrls: { default: { http: ["https://configured-at-runtime.invalid"] } },
+		contracts: { multicall3: { address: MULTICALL3_ADDRESS } }, testnet: config.isTestnet });
 }
 
 export function paymentPublicClient(env: Bindings, chainId: number): PublicClient {

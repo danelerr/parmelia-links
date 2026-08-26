@@ -22,6 +22,7 @@ const cctpRouterAbi = parseAbi([
 	"function SETTLEMENT_CHAIN_ID() view returns (uint256)",
 	"function FAST_TRANSFER_ENABLED() view returns (bool)",
 ]);
+const routerPreflightAbi = [...commonRouterAbi, ...cctpRouterAbi] as const;
 
 type PaymentRouterKind = "local" | "cctp";
 
@@ -199,23 +200,25 @@ async function readPaymentRouter(env: Bindings, target: PaymentRouterTarget): Pr
 			authorizationSigner: null, paused: null, tokenMessenger: null,
 			settlementChainId: null, fastTransferEnabled: null };
 	}
-	const [maxPlatformFeeBps, usdc, treasury, signer, paused] = await Promise.all([
-		client.readContract({ address: target.address, abi: commonRouterAbi, functionName: "MAX_PLATFORM_FEE_BPS" }),
-		client.readContract({ address: target.address, abi: commonRouterAbi, functionName: "USDC" }),
-		client.readContract({ address: target.address, abi: commonRouterAbi, functionName: "treasury" }),
-		client.readContract({ address: target.address, abi: commonRouterAbi, functionName: "authorizationSigner" }),
-		client.readContract({ address: target.address, abi: commonRouterAbi, functionName: "paused" }),
-	]);
-	let tokenMessenger: Address | null = null;
-	let settlementChainId: bigint | null = null;
-	let fastTransferEnabled: boolean | null = null;
-	if (target.kind === "cctp") {
-		[tokenMessenger, settlementChainId, fastTransferEnabled] = await Promise.all([
-			client.readContract({ address: target.address, abi: cctpRouterAbi, functionName: "TOKEN_MESSENGER" }),
-			client.readContract({ address: target.address, abi: cctpRouterAbi, functionName: "SETTLEMENT_CHAIN_ID" }),
-			client.readContract({ address: target.address, abi: cctpRouterAbi, functionName: "FAST_TRANSFER_ENABLED" }),
-		]);
-	}
+	const contracts = [
+		{ address: target.address, abi: routerPreflightAbi, functionName: "MAX_PLATFORM_FEE_BPS" },
+		{ address: target.address, abi: routerPreflightAbi, functionName: "USDC" },
+		{ address: target.address, abi: routerPreflightAbi, functionName: "treasury" },
+		{ address: target.address, abi: routerPreflightAbi, functionName: "authorizationSigner" },
+		{ address: target.address, abi: routerPreflightAbi, functionName: "paused" },
+		...(target.kind === "cctp" ? [
+			{ address: target.address, abi: routerPreflightAbi, functionName: "TOKEN_MESSENGER" },
+			{ address: target.address, abi: routerPreflightAbi, functionName: "SETTLEMENT_CHAIN_ID" },
+			{ address: target.address, abi: routerPreflightAbi, functionName: "FAST_TRANSFER_ENABLED" },
+		] : []),
+	] as const;
+	const observed = await client.multicall({ contracts, allowFailure: false }) as unknown as [
+		bigint, Address, Address, Address, boolean, Address?, bigint?, boolean?,
+	];
+	const [maxPlatformFeeBps, usdc, treasury, signer, paused] = observed;
+	const tokenMessenger = target.kind === "cctp" ? observed[5] ?? null : null;
+	const settlementChainId = target.kind === "cctp" ? observed[6] ?? null : null;
+	const fastTransferEnabled = target.kind === "cctp" ? observed[7] ?? null : null;
 	return { codePresent: true, maxPlatformFeeBps, usdc, treasury,
 		authorizationSigner: signer, paused, tokenMessenger, settlementChainId, fastTransferEnabled };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Bindings } from "../src/env";
+import { paymentPublicClient } from "../src/services/clients";
 import {
 	assertPaymentRouterReadyForAuthorization,
 	collectPaymentRouterHealth,
@@ -39,6 +40,12 @@ function healthy(target: PaymentRouterTarget, extra: Partial<PaymentRouterObserv
 }
 
 describe("payment router preflight", () => {
+	it("uses the canonical Multicall3 deployment to keep each router observation bounded", () => {
+		const client = paymentPublicClient(environment(), 421614);
+		expect(client.chain?.contracts?.multicall3?.address.toLowerCase())
+			.toBe("0xca11bde05977b3631167028862be2a173976ca11");
+	});
+
 	it("validates the deployed execution surface against the signer and immutable manifest", async () => {
 		const health = await collectPaymentRouterHealth(environment(), async (_env, target) => healthy(target));
 
