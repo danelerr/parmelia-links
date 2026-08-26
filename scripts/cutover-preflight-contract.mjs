@@ -135,6 +135,22 @@ export function classifyAppOperationalState(counts) {
   };
 }
 
+const PAYMENT_DRAIN_FIELDS = [
+  "payment_reconcile_active",
+  "webhook_delivery_active",
+];
+
+export function classifyAppPaymentDrainState(counts) {
+  if (!counts || PAYMENT_DRAIN_FIELDS.some((field) =>
+    !Number.isSafeInteger(counts[field]) || counts[field] < 0)) {
+    return { valid: false, active: -1 };
+  }
+  return {
+    valid: true,
+    active: PAYMENT_DRAIN_FIELDS.reduce((total, field) => total + counts[field], 0),
+  };
+}
+
 export function assertQueueContract(input) {
   if (!input.sourceName || input.sourceName !== input.producerName ||
     !input.consumerNames.includes(input.sourceName)) {

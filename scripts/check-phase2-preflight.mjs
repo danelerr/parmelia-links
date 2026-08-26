@@ -4,6 +4,7 @@ import {
   assertQueueContract,
   assertSnapshotOwnership,
   classifyAppOperationalState,
+  classifyAppPaymentDrainState,
   classifyLocalCutoverConfig,
   classifyPaymentsImportState,
   requiresExactPaymentsBaseline,
@@ -180,6 +181,7 @@ assert(!requiresExactPaymentsBaseline("syncing") && !requiresExactPaymentsBaseli
 
 const cleanApp = {
   payment_reconcile_dead: 0, payment_reconcile_active: 0,
+  webhook_delivery_active: 0,
   user_event_dead: 0, user_event_active: 0,
   balance_refresh_active: 0, balance_refresh_failed: 0,
   balance_projection_drift: 0, account_operation_active: 0,
@@ -195,6 +197,14 @@ assert(classifyAppOperationalState({ ...cleanApp, account_operation_active: 2 })
   "Active App operations were not detected");
 assert(classifyAppOperationalState({ ...cleanApp, reorg_replay_failed: undefined }).valid === false,
   "Malformed App operational evidence was accepted");
+assert(JSON.stringify(classifyAppPaymentDrainState(cleanApp)) ===
+  JSON.stringify({ valid: true, active: 0 }), "A clean Payments drain state was not accepted");
+assert(classifyAppPaymentDrainState({ ...cleanApp, payment_reconcile_active: 2 }).active === 2,
+  "Active payment reconciliation was not detected by the Payments drain gate");
+assert(classifyAppPaymentDrainState({ ...cleanApp, webhook_delivery_active: 3 }).active === 3,
+  "Active webhook delivery was not detected by the Payments drain gate");
+assert(classifyAppPaymentDrainState({ ...cleanApp, balance_refresh_active: 7 }).active === 0,
+  "Personal App work incorrectly blocked the Payments drain gate");
 
 assertQueueContract({ label: "test", sourceName: "jobs", producerName: "jobs",
   consumerNames: ["jobs"] });

@@ -7,6 +7,7 @@ import {
   assertQueueContract,
   assertSnapshotOwnership,
   classifyAppOperationalState,
+  classifyAppPaymentDrainState,
   classifyLocalCutoverConfig,
   classifyPaymentsImportState,
   isCutoverChecksum,
@@ -302,6 +303,7 @@ async function main() {
     SELECT
       (SELECT COUNT(*) FROM payment_reconcile_requests WHERE status = 'dead') AS payment_reconcile_dead,
       (SELECT COUNT(*) FROM payment_reconcile_requests WHERE status IN ('pending', 'processing', 'failed')) AS payment_reconcile_active,
+      (SELECT COUNT(*) FROM webhook_deliveries WHERE status IN ('pending', 'processing')) AS webhook_delivery_active,
       (SELECT COUNT(*) FROM user_event_outbox WHERE status = 'dead') AS user_event_dead,
       (SELECT COUNT(*) FROM user_event_outbox WHERE status IN ('pending', 'processing', 'failed')) AS user_event_active,
       (SELECT COUNT(*) FROM balance_refresh_requests WHERE status IN ('pending', 'processing', 'failed')) AS balance_refresh_active,
@@ -316,14 +318,15 @@ async function main() {
       (SELECT COUNT(*) FROM chain_reorg_replay_requests WHERE status = 'failed') AS reorg_replay_failed;
   `)[0]?.results?.[0];
   const appOperationalState = classifyAppOperationalState(appOperationalCounts);
+  const appPaymentDrainState = classifyAppPaymentDrainState(appOperationalCounts);
   record("app-dead-letters", appOperationalState.valid && appOperationalState.dead === 0,
     appOperationalState.valid
       ? `${appOperationalState.dead} terminal/dead operational rows remain`
       : "App operational counts are missing or malformed", "source");
-  record("app-drain", appOperationalState.valid && appOperationalState.active === 0,
-    appOperationalState.valid
-      ? `${appOperationalState.active} active operations remain before the snapshot watermark`
-      : "App active-operation counts are missing or malformed", "app-cutover");
+  record("app-drain", appPaymentDrainState.valid && appPaymentDrainState.active === 0,
+    appPaymentDrainState.valid
+      ? `${appPaymentDrainState.active} payment-owned operations remain before the snapshot watermark; personal App jobs do not block this cutover`
+      : "App payment-drain counts are missing or malformed", "app-cutover");
 
   const snapshot = flags.has("--skip-snapshot") ? null : snapshotSplit();
   record("production-snapshot-split", !!snapshot,

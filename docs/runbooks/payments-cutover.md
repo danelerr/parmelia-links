@@ -123,6 +123,10 @@ SELECT
 
 Las filas de `crosschain_operations` no forman parte de este cero: pertenecen a
 App y el relayer continúa procesándolas durante y después del corte.
+Tampoco bloquean el snapshot `balance_refresh_requests`, `account_operations`,
+el indexador ni sus outboxes: son trabajo personal que permanece en App y puede
+recrearse de forma autónoma. El preflight informa su salud por separado, pero
+`app-drain` suma exclusivamente conciliaciones de pago y entregas webhook.
 
 Revisar además backlog/DLQ de App Queue. Un estado `dead`, `needs_support` o
 fallido no se ignora: se documenta y se resuelve o se aborta el corte.
