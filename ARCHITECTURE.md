@@ -1,7 +1,8 @@
 # GatoPago - Arquitectura del Proyecto
 
 > Actualizado: agosto 2026. Índice y precedencia: [`docs/README.md`](./docs/README.md).
-> Complementos: [diseño cross-chain](./docs/design/cross-chain.md),
+> Complementos: [mapa visual y diagramas PlantUML](./docs/architecture/README.md),
+> [diseño cross-chain](./docs/design/cross-chain.md),
 > [`docs/api.md`](./docs/api.md) (API pública `/v1`),
 > [`contracts/AUDIT.md`](./contracts/AUDIT.md) (contratos) y
 > [`DEPLOY.md`](./DEPLOY.md) (runbook).
@@ -15,11 +16,104 @@ El producto combina:
 - **Firebase Auth** para identidad: **Google** y **código de 6 dígitos por correo**. El Worker valida el código y entrega un Firebase Custom Token; no hay contraseñas ni enlaces de acceso.
 - **Passkeys WebAuthn (P256)** para firmar operaciones de la wallet en el dispositivo.
 - **Smart accounts `AccountWebAuthnV2`** (MultiSigner ERC-7913 + UUPS + recovery con guardian) desplegadas por factory.
-- **Cloudflare Worker + D1** para API, orquestación de pagos, persistencia y relaying de UserOperations.
+- **Dos Cloudflare Workers, dos D1 y dos Queues**: App para identidad/cuentas/UserOperations y Payments para checkout/intents/settlement/webhooks.
 
 Funcionalidades de producto: links de cobro, pago a username/QR/manual, **swaps internos** (Uniswap v3/v4 vía Universal Router), **cross-chain USDC vía Circle CCTP v2** (enviar a otra red desde la app + checkout público `/cc/:username` para cobrar desde otras redes), **contactos e invitaciones con código de referido**, **extracto con filtros compartibles por URL**, **comprobantes**, **notificaciones push** ("te pagaron"), **i18n ES/EN**, y una **API de cobros `/v1` estilo Stripe** (payment intents, webhooks firmados, sandbox) con su **dashboard de comerciantes**.
 
 El backend prepara y transmite UserOperations, pero **no custodia la clave de firma del usuario**. La autorización real de pagos ocurre con WebAuthn en el navegador.
+
+## Topología de backend vigente desde Fase 2
+
+La unidad de escala no es el dashboard. El dashboard y el checkout son clientes
+del dominio Payments; no existe un “Worker del dashboard”. La frontera operativa
+es la siguiente:
+
+| Deployable | Base y datos propietarios | Responsabilidad |
+|---|---|---|
+| App API (`server/`, deploy remoto `server`) | `GATOPAGO_DB`, `parmelia-scheduled-jobs` | Firebase/OTP/passkeys, smart accounts, UserOperations, Home/ledger, swaps, Earn, contactos y card. |
+| `gatopago-payments-api` (`payments-worker/`) | `PAYMENTS_DB`, `gatopago-payment-jobs` | merchants/API keys, links, intents, quotes, attempts, routing local/CCTP, settlement, eventos y webhooks. |
+
+App tiene un único Service Binding hacia Payments para compatibilidad y para
+enviar comandos versionados e idempotentes. Payments no llama a App, verifica
+Firebase por sí mismo y nunca recibe `GATOPAGO_DB`. Las referencias entre ambos
+dominios (`owner_uid`, `payment_attempt_id`) son IDs lógicos, no foreign keys.
+Cada transición económica y su outbox de webhook viven en el mismo batch de
+`PAYMENTS_DB`; la sincronización entre Workers usa outboxes durables y no simula
+una transacción distribuida.
+
+El nombre físico `server` y su Queue histórica se conservan durante este corte:
+renombrarlos simultáneamente duplicaría secretos, Durable Objects, URLs y estado
+sin mejorar el aislamiento. `gatopago-app-api` describe el rol lógico; un cambio
+de nombre posterior debe hacerse detrás de un hostname estable y como migración
+operativa independiente.
+
+`gatopago-app-api` no es un BFF genérico del dashboard: es el backend de dominio
+de la app. Su proxy de `/links`, `/checkout`, `/v1` y `/merchant` es una capa de
+compatibilidad N-1 y no posee lógica ni datos económicos. `/pay` y `/crosschain`
+siguen en App porque también ejecutan transferencias, fondeo y CCTP personales;
+solamente el subflujo de `/pay` que consume un link reservado llama a Payments
+mediante el contrato RPC versionado. Los
+clientes nuevos de dashboard/checkout hablan con Payments. Si más adelante se
+necesita un hostname único, caché o protección antiabuso común, se puede añadir
+un gateway edge sin D1 ni reglas de negocio; crear hoy un tercer BFF sólo añade
+otro deploy y otro salto síncrono.
+
+La partición actual es **física por dominio**, no sharding horizontal:
+
+- localmente existen dos schemas, dos historiales de migración y un cutover
+  data-only verificable; remotamente `PAYMENTS_DB` sigue sin provisionarse y su
+  config conserva un UUID centinela;
+- los archivos Wrangler forman una máquina de estados de un solo escritor; App
+  y Payments tienen guards de deploy, y desactivar bootstrap exige un SHA-256
+  que coincida con `payment_migration_control` en cada entrada HTTP/RPC/Queue/Cron;
+- `payment-jobs` sí se particiona lógicamente por chain/recurso y los reintentos
+  diferidos se compactan en `PAYMENT_JOB_SCHEDULER` antes de llegar a Queue;
+- una sola `PAYMENTS_DB` es la topología inicial. Sus hot paths tienen índices y
+  un gate `EXPLAIN QUERY PLAN`; `max_concurrency=8` limita presión concurrente
+  sobre D1 y proveedores;
+- el siguiente corte, sólo con saturación medida después de optimizar queries y
+  batching, es sharding por merchant detrás del repositorio. No es crear más
+  Workers HTTP: una D1 individual seguiría siendo el cuello de escritura.
+
+El tercer Worker de settlement no se crea por anticipación. Sólo se extrae si
+métricas sostenidas muestran que el consumidor de pagos agota CPU/subrequests,
+que sus retries afectan la latencia HTTP o que necesita una clave/perímetro de
+seguridad independiente. Separarlo entonces no exige volver a partir la base:
+el contrato Queue y la propiedad de `PAYMENTS_DB` ya están definidos.
+
+### Economía y patrocinio extensibles (Fase 2.1)
+
+La decisión comercial vigente es **cero comisión de GatoPago**. Esa decisión no
+está mezclada con la capacidad técnica de los contratos:
+
+| Capa | Responsabilidad | Invariante |
+|---|---|---|
+| `PAYMENT_FEE_POLICY_JSON` | Reglas versionadas y acotadas por merchant, modo, chain, route y monto | Ausente o vacío = `free-default`, 0 bps. |
+| `shared/networks.ts` | Capacidad inmutable del router ya desplegado | Un cap es un techo, nunca una tarifa activa. |
+| Quote/attempt | Snapshot de policy, regla, bps, bearer, recipient y cap | No cambia aunque luego cambie la configuración. |
+| `payment_fee_ledger` | Dos líneas: plataforma y red, quoted vs actual | Settlement/webhook no se completa sin evidencia económica. |
+| Preflight onchain | Código, signer, pause, USDC, treasury y cap | Una divergencia corta antes de firmar. |
+
+Una regla con fee positiva requiere simultáneamente
+`PAYMENT_ROUTER_PREFLIGHT_ENABLED=true`, un recipient válido, una treasury
+onchain idéntica y un cap desplegado suficiente. La policy nunca puede convertir
+silenciosamente una ruta gratuita en pagada. Los fees CCTP de Circle se muestran
+por separado: son costo de red, no ingreso de GatoPago.
+
+Las operaciones propias de la app (swap y cross-chain personal) conservan un
+switch maestro distinto, `GATOPAGO_FEES_ENABLED=false`. Un valor BPS aislado no
+activa nada; si el switch se habilita, configuración, cap y treasury fallan
+cerrado. La compatibilidad merchant N-1 permanece forzada a 0 y no reutiliza esa
+configuración: checkout tiene una sola autoridad económica en Payments.
+
+El patrocinio ERC-4337 usa `SponsorshipProvider`, no una dependencia directa de
+`ParmeliaPaymaster`. Hay tres adapters: `parmelia`, servicio ERC-7677 y
+`self-funded`. Un fallback reconstruye y reestima una UserOperation todavía sin
+firma. `paymasterAndData` forma parte del digest ERC-4337: después de `/prepare`
+no se cambia proveedor ni contrato; se crea otra preparación y el usuario firma
+de nuevo. `pending_payments` guarda provider y paymaster address exactos para
+canary, drenaje e incidentes. Las smart accounts no dependen de una dirección de
+paymaster, por lo que cambiarlo no migra cuentas.
 
 ---
 
@@ -30,7 +124,7 @@ El backend prepara y transmite UserOperations, pero **no custodia la clave de fi
 | Contratos | Solidity (solc pineado `0.8.28`), Foundry, OpenZeppelin v5 (ERC-7913 / ERC-7821 / UUPS)                                             |
 | Cliente   | React 19, TypeScript 6, Vite 7, Tailwind CSS v4, react-i18next, Firebase (Auth + Messaging + Analytics), SWR, react-router-dom, qrcode.react, jsqr (lazy), html-to-image, sileo, Turnstile |
 | Dashboard | React 19, Vite, SWR (`useSWRInfinite` para paginación), Firebase Auth — panel del comerciante para la API `/v1`                     |
-| Servidor  | Hono, Cloudflare Workers + Queues + Durable Objects + Email Sending, viem, jose, SimpleWebAuthn, **Cloudflare D1 (SQLite)**           |
+| Servidor  | Hono, dos Cloudflare Workers, dos D1, dos Queues/DLQ, Durable Objects + Email Sending, viem, jose, SimpleWebAuthn                    |
 | Shared    | Módulo TypeScript compartido: ABIs, redes/direcciones, tokens, config Uniswap/CCTP y **contrato de errores** (`errors.ts`)          |
 | Red       | Arbitrum Sepolia (421614) - testnet activa. Arbitrum One (42161) - producción (contratos aún no desplegados). Base Sepolia - destino CCTP / legacy. |
 | Deploy    | Cliente y dashboard en Vercel, servidor en Cloudflare Workers                                                                        |
@@ -68,18 +162,21 @@ gatopago/
 │                                 #   BinanceDeposit, CrosschainSend, CrosschainReceive, Settings
 ├── dashboard/               # panel de comerciantes (API keys, pagos, webhooks, sandbox)
 │   └── src/pages/                # Login, Overview, Payments, PaymentDetail, ApiKeys, Webhooks, Events, Sandbox
-├── server/                  # Cloudflare Worker (Hono)
-│   ├── migrations/               # 0001..0032 (ver "Modelo de Datos")
+├── server/                  # gatopago-app-api (Hono; App Worker)
+│   ├── migrations/               # 0001..0034; sólo dominio App
 │   └── src/
 │       ├── index.ts              # middlewares + rutas + consumers de Queue
 │       ├── chain.ts              # chainKey -> viem Chain
 │       ├── middlewares/          # auth.ts (Firebase JWKS), apiAuth.ts (API keys sk_)
 │       ├── routes/               # user, account, links, pay, transactions, swap, contacts,
 │       │                         #   bridge, crosschain, v1 (API pública), merchant (dashboard)
-│       └── services/             # storage(D1), settlement (liquidación+reconciliador), userOp,
-│                                 #   paymaster, paymentRouter, crosschainRelayer, clients, keys,
+│       └── services/             # storage(D1), account/UserOp/indexer y binding App -> Payments
+│                                 #   sponsorship/providers, paymaster health, clients, keys,
 │                                 #   validation, swap, uniswap, bridge, push, turnstile, indexer,
-│                                 #   eventScheduler, eventJobs, webhooks, apiKeys, apiError, logger
+│                                 #   eventScheduler, eventJobs, apiError, logger
+├── payments-worker/         # gatopago-payments-api (checkout + merchant API)
+│   ├── migrations/               # schema Payments + snapshots/ledger económico
+│   └── src/                      # routes, repositories, quote/auth engine, CCTP, watcher y webhooks
 ├── contracts/               # Foundry (V2 activo)
 │   ├── src/                      # AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
 │   │                             #   ParmeliaPaymentRouter, ParmeliaCrosschainRouter, ERC7913WebAuthnVerifier
@@ -88,7 +185,8 @@ gatopago/
 └── shared/
     ├── index.ts                  # ABIs (compiladas) + erc20Abi
     ├── errors.ts                 # contrato de errores: ERR + ERROR_HTTP_STATUS (ver docs/reference/error-codes.md)
-    └── networks.ts               # fuente de verdad: redes, tokens, Uniswap, CCTP, direcciones, guards
+    ├── networks.ts               # fuente de verdad: redes, tokens, Uniswap, CCTP, direcciones, guards
+    └── paymentContracts.ts       # RPC/Queue N y N-1; sin handlers, secretos ni bindings D1
 ```
 
 ---
@@ -140,15 +238,23 @@ Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos
 - Consume la API con la capa tipada **`lib/api.ts`** (`apiFetch` → `ApiError` con `error_code`) y centraliza avisos en **`lib/notify.ts`** (mapea `error_code → t("err."+code)`).
 - Push opt-in (`lib/push.ts`), eventos de funnel (`lib/analytics.ts`), PWA instalable, i18n ES/EN.
 
-### 2. Worker API (Hono/Cloudflare)
-- Verifica Firebase ID tokens con JWKS de Google (cache 1h); la superficie `/v1` autentica con API keys `sk_` (hash SHA-256 en D1).
-- API de usuario, cuenta, links, pagos, swaps, contactos, cross-chain, historial (ledger), API pública `/v1` y rutas del dashboard (`/merchant`).
+### 2. Workers API (Hono/Cloudflare)
+- Ambos verifican Firebase ID tokens directamente con JWKS de Google. Sólo Payments autentica `/v1` con API keys `sk_` (hash SHA-256 en `PAYMENTS_DB`).
+- App conserva usuario, cuenta, ejecución, swaps, contactos, historial y cross-chain personal. Payments expone `/links`, `/checkout`, `/v1`, `/merchant` y el CCTP específico de cobros.
 - Despliega smart accounts; construye UserOps ERC-4337 patrocinadas y las envía con `handleOps`.
-- No existe Cron Trigger. Las transiciones de dominio y los webhooks firmados
-  registran trabajo en `EventJobScheduler`: un Durable Object independiente por
-  red, job y partición. Cada objeto compacta duplicados de su shard, conserva
-  una alarma sólo mientras tiene trabajo y publica en Queue. El consumidor usa
-  un lease D1 y se reprograma sólo si aún existe estado activo.
+- App no usa Cron Trigger: sus transiciones registran trabajo en
+  `EventJobScheduler`, un Durable Object por red/job/partición que compacta
+  duplicados, conserva una alarma sólo mientras hay trabajo y publica en su
+  Queue. Payments sí declara un Cron cada minuto como **recovery sweep** de
+  outbox y watchers activos; no reemplaza a Queue ni es el scheduler primario.
+  El consumidor de Payments confirma sólo jobs completados: una reentrega con
+  lease vigente se reprograma hasta que pueda reclamarlo.
+- En Payments, únicamente `repositories/` y `stores/` acceden a `PAYMENTS_DB`.
+  El rail on-chain encapsula Circle/RPC/routers para que casos de uso y
+  persistencia no dependan de un proveedor concreto.
+- `PAYMENT_LIVE_ENABLED=false` y el manifest sin routers mainnet mantienen
+  claves, webhooks e intents live bloqueados por backend. El selector del
+  Dashboard sólo refleja esa capacidad; nunca es el control de seguridad.
 - Alchemy Address Activity entrega actividad de wallets y un Custom Webhook
   filtrado despierta `InvoicePaid`/recovery. Ambos se verifican por HMAC y sólo
   producen señales particionadas; el pool RPC vuelve a leer la evidencia
@@ -167,12 +273,12 @@ Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos
   de un deploy, sin esperar a que un usuario abra Home.
 - Invariante de reposo: sin wallets activas ni trabajo durable pendiente hay
   cero alarmas, mensajes de Queue, invocaciones background y lecturas RPC.
-- Persiste todo en D1.
+- Cada Worker persiste exclusivamente en su D1 y consume exclusivamente su Queue.
 
 ### 3. Contratos y Account Abstraction (ERC-4337)
 - **`AccountWebAuthnV2.sol`:** wallet del usuario (MultiSigner ERC-7913 + ejecución ERC-7821 + UUPS). Múltiples passkeys, threshold y recovery con guardian + timelock 48h (propuestas validadas, cancelables por dueño y guardian).
 - **`AccountFactoryV2.sol`:** despliega proxies hacia el implementation. `predictAddress`/`createAccount`.
-- **`ParmeliaPaymaster.sol`:** patrocina gas. El servidor firma `paymasterAndData` por UserOp, acotado a `[validAfter, validUntil]` (~10 min). Cap on-chain de coste por op (`maxSponsoredGasCost`) y ciclo completo de stake. `postOp` es el punto de integración para fees.
+- **`ParmeliaPaymaster.sol`:** implementación propia opcional de patrocinio. El adapter firma `paymasterAndData` por UserOp, acotado a `[validAfter, validUntil]` (~10 min). Cap on-chain de coste por op (`maxSponsoredGasCost`) y ciclo completo de stake. La cuenta no queda vinculada a este contrato.
 - **`ParmeliaPaymentRouter.sol`:** rail abierto no-custodial (Flow B): cualquier wallet externa paga una invoice autorizada por firma del backend; fondos directo al merchant, fee al treasury (cap 1%).
 - **`ParmeliaCrosschainRouter.sol`:** fee-skim + `depositForBurn` de CCTP v2 (outbound), cap 1%, `receiveMessage` permissionless en destino.
 - **`ERC7913WebAuthnVerifier.sol`:** verificador stateless de firmas WebAuthn/P256.
@@ -219,17 +325,25 @@ pagador externo llama al TokenMessenger directamente y registra su tx (dedupe
 único por hash).
 
 ### 7. API de cobros `/v1` + dashboard
-Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables on-chain por cualquier wallet vía PaymentRouter (Flow B, reconciliado por el watcher de `InvoicePaid`). Webhooks firmados HMAC-SHA256 con outbox en D1, claim atómico anti doble-entrega, reintentos con backoff (1m→24h, 6 intentos) y reenvío manual desde el dashboard. `expires_at` se aplica en pago, autorización on-chain y simulate. Referencia pública en `docs/api.md` + `docs/openapi.yaml`.
+`gatopago-payments-api` crea un intent y link juntos. El checkout emite quotes
+de fee viva ligada al hash de una capability, exige `personal_sign` del payer y
+reserva un solo attempt EIP-712. Un source hash sólo se persiste después de que
+Payments verifica por RPC receipt, `from`, router y evento del attempt; el
+watcher reconcilia evidencia aunque el navegador no registre el hash. Los
+webhooks usan outbox atómico, entrega física at-least-once y dedupe lógica por
+evento. Dashboard y checkout apuntan directamente a Payments; App mantiene un
+proxy temporal para clientes N-1. Referencia pública en `docs/api.md` y
+`docs/openapi.yaml`.
 
 ---
 
-## Backend (`server/`)
+## Backend App (`server/`)
 
 ### Entry point
 `server/src/index.ts` compone la API, exporta `{ fetch, queue }`,
 `EventJobScheduler` y `RpcAdmissionController`:
 - `cors()` (allowlist por `ALLOWED_ORIGINS`; abierto = warning en mainnet), `logger()`, `authMiddleware` globales; healthcheck `GET /`.
-- Montaje: `/user/transactions`, `/user`, `/account`, `/links`, `/pay`, `/swap`, `/contacts`, `/bridge`, `/crosschain`, `/v1`, `/merchant`.
+- Montaje propio: `/user/transactions`, `/user`, `/account`, `/pay`, `/crosschain`, `/swap`, `/contacts`, `/bridge`, Home/Earn/card. El control `legacy | frozen | payments` mantiene rollback, congela las superficies extraídas y sólo después delega `/links`, `/checkout`, `/v1` y `/merchant` por Service Binding, siempre sin acceso a `PAYMENTS_DB`. En `/pay`, el guard se aplica al link almacenado, no a las operaciones personales.
 - `queue` transporta jobs de dominio compactados; los mensajes inválidos se
   confirman sin bloquear hermanos y los fallos usan retry con backoff.
 - `EventJobScheduler` almacena como máximo una generación por
@@ -279,7 +393,7 @@ Payment intents estilo Stripe respaldados por payment links (Flow A) o pagables 
 | GET/POST | `/bridge/*`               | SÍ   | Cotización Across (legacy, solo mainnet)                          |
 | GET/POST | `/crosschain/{config,quote,prepare}` | SÍ | Outbound CCTP (op registrada antes de firmar; gas-gating fail-closed) |
 | GET    | `/crosschain/status/:opId`  | SÍ   | Progreso outbound (burn → attestation → mint)                     |
-| GET/POST | `/crosschain/inbound/*`   | NO   | Checkout público (rate limit por IP; dedupe de tx; status por opId) |
+| GET/POST | `/crosschain/inbound/*`   | NO   | Fondeo CCTP público de una cuenta (rate limit por IP; dedupe de tx; status por opId) |
 | *      | `/v1/*`                     | sk_  | API pública de payment intents (ver `docs/api.md`)                |
 | *      | `/merchant/*`               | SÍ   | Dashboard: keys, webhooks, pagos (paginación por cursor), sandbox |
 
@@ -321,7 +435,7 @@ Migraciones en `server/migrations/` (aplicar SIEMPRE antes de desplegar el Worke
 | `merchants` / `api_keys` | comercio + claves `sk_` (solo hash)                                                              |
 | `payment_intents`  | intents `/v1` (respaldados por payment_links; `onchain_id` para Flow B; `expires_at` aplicado)         |
 | `webhook_endpoints` / `events` / `webhook_deliveries` | outbox firmado con reintentos/backoff y claim atómico            |
-| `crosschain_operations` | ops CCTP (STRICT/FK/CHECK; `attempt_count`, `last_error`, dedupe único de `source_tx_hash`)       |
+| `crosschain_operations` | operaciones CCTP personales de App (STRICT/FK/CHECK; relayer propio y dedupe de `source_tx_hash`); no se copian a Payments durante el cutover |
 | `rate_limits`      | contadores de ventana fija del rate limiter in-Worker                                                   |
 | `auth_email_codes` | códigos de acceso/step-up con digest HMAC, TTL, intentos y consumo atómico                              |
 | `auth_step_up_sessions` | proofs opacos de un solo uso, ligados al UID y almacenados únicamente como HMAC                    |
@@ -369,7 +483,10 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 - **Anti-abuso:** Turnstile + rate limiter D1 (por IP en endpoints públicos, por uid en el faucet) + reglas de zona Cloudflare como capa fuerte al tener dominio.
 - Todo error público lleva `error_code` estable (`shared/errors.ts`, ver [`docs/reference/error-codes.md`](./docs/reference/error-codes.md)); el cliente es dueño del texto (i18n).
 - Firmas P256 normalizadas a low-s. Monedas y rutas de swap validadas server-side contra whitelist. CORS por allowlist.
-- Secrets nunca en el repo: van por `wrangler secret` / `.dev.vars` (gitignored; plantilla en `.dev.vars.example`).
+- Secrets nunca se versionan en Git: producción usa `wrangler secret` y local
+  usa archivos ignorados con plantillas vacías. Los archivos ignorados siguen
+  estando dentro del checkout/OneDrive; su inventario y el P0 de extracción
+  están en [`docs/operations/worker-variables.md`](./docs/operations/worker-variables.md).
 
 ---
 
@@ -400,11 +517,15 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | `FAUCET_PRIVATE_KEY`           | secret  | EOA con el presupuesto del faucet                    |
 | `RECOVERY_GUARDIAN_PRIVATE_KEY` | secret | Guardian de recovery (obligatoria en mainnet)       |
 | `PAYMASTER_SIGNER_PRIVATE_KEY` | secret  | Firma sponsorships (obligatoria en mainnet)          |
+| `SPONSORSHIP_PROVIDER` / `SPONSORSHIP_FALLBACK_PROVIDER` | var | `parmelia`, `erc7677` o `self-funded`; fallback sólo pre-firma |
+| `SPONSORSHIP_PAYMASTER_ADDRESS` | var | Override de contrato propio para rotación sin cambiar el manifest de cuentas |
+| `PAYMASTER_SERVICE_URL` / `PAYMASTER_SERVICE_EXPECTED_PAYMASTER` | secret/var | Servicio ERC-7677 y pin obligatorio de contrato en mainnet |
+| `SPONSORSHIP_HEALTH_CHECK_ENABLED` / `PAYMASTER_MIN_DEPOSIT_WEI` | var | Verifica bytecode, EntryPoint, signer, depósito y cap operativo |
 | `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` | secret | Firma autorizaciones Flow B (obligatoria en mainnet) |
 | `TURNSTILE_SECRET_KEY`         | secret  | Anti-abuso (testnet: opcional; mainnet: fail-closed) |
 | `FCM_SERVICE_ACCOUNT`          | secret  | Service account JSON (1 línea); sin definir = sin push |
 | `CCTP_RPC_URLS`                | secret  | Opcional: JSON chainId→RPC para destinos cross-chain |
-| `GATOPAGO_FEES_ENABLED` / `GATOPAGO_SWAP_FEE_BPS` / `GATOPAGO_MAX_FEE_BPS` / `GATOPAGO_TREASURY_ADDRESS` / `GATOPAGO_PAYMENT_FEE_BPS` / `GATOPAGO_CROSSCHAIN_FEE_BPS` | var | Fees (OFF por defecto; hard cap 1% en código y contratos) |
+| `GATOPAGO_FEES_ENABLED` / `GATOPAGO_SWAP_FEE_BPS` / `GATOPAGO_MAX_FEE_BPS` / `GATOPAGO_TREASURY_ADDRESS` / `GATOPAGO_CROSSCHAIN_FEE_BPS` | var | Fees de operaciones wallet (OFF por defecto; hard cap 1%). Checkout se configura solo en Payments. |
 | `CROSSCHAIN_PAUSED` / `CROSSCHAIN_DISABLED_CHAINS` / `CROSSCHAIN_MIN_RELAYER_GAS_WEI` | var | Kill switch y flags cross-chain |
 | `EARN_PAUSED`                  | var     | Kill switch del Ahorro (Aave)                        |
 | `GATOPAGO_DB`                  | binding | Base D1 principal                                    |
@@ -414,6 +535,10 @@ Todo está envuelto en `<ErrorBoundary>`. Páginas con `React.lazy`. Accesibilid
 | `INDEXER_SAFETY_SWEEP_SECONDS` | var     | Intervalo 60–86400 s del fallback autónomo; sólo vive con wallets activas |
 | `ALCHEMY_WEBHOOK_*` / `ALCHEMY_ADDRESS_WEBHOOKS_JSON` | secret/var | Uno o varios slots Address Activity |
 | `ALCHEMY_CUSTOM_WEBHOOK_*`     | secret/var | Eventos filtrados de router/recovery              |
+
+Payments configura por separado `PAYMENT_FEE_POLICY_JSON`,
+`PAYMENT_PLATFORM_FEE_RECIPIENT` y
+`PAYMENT_ROUTER_PREFLIGHT_ENABLED`. Ninguna pertenece al App Worker.
 
 ---
 

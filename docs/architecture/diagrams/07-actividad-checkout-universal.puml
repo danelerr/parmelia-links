@@ -1,0 +1,112 @@
+@startuml
+!include _theme.puml
+title Actividad — Resolver un checkout universal en testnet
+
+start
+
+partition "Negocio" {
+  :Crear PaymentIntent test con monto,
+  referencia e idempotency key;
+  :Compartir link o QR;
+}
+
+partition "Cliente / App Web" {
+  :Abrir la ruta checkout;
+  if (¿Cambia la identidad de la ruta?) then (sí)
+    :Desmontar inmediatamente el checkout anterior;
+    :Mostrar loading hasta resolver la nueva ruta;
+  endif
+}
+
+partition "Payments" {
+  :Leer intent y settlement;
+  if (¿Intent pagable y vigente?) then (sí)
+    :Mostrar redes realmente habilitadas;
+  else (no)
+    :Responder estado terminal o error explícito;
+    stop
+  endif
+}
+
+partition "Cliente / App Web" {
+  :Elegir saldo GatoPago o wallet externa;
+  if (¿Provider injected disponible?) then (sí)
+    :Usar EIP-1193 local;
+  else (no)
+    :Indicar que abra el link dentro\ndel navegador de su wallet\no use saldo GatoPago;
+    stop
+  endif
+  :Seleccionar red donde ya tiene USDC de test;
+  :Crear capability aleatoria en sessionStorage;
+}
+
+partition "Payments" {
+  :Verificar chain, RPC, router, signer,
+  pause, USDC y caps;
+  if (¿Ruta saludable?) then (sí)
+    :Calcular quote viva;
+    :Congelar policy, fees, payer,
+    ruta y expiración;
+    :Devolver mensaje ligado al payer,
+    quote y hash de capability;
+    :Validar personal_sign del payer;
+    :Persistir attempt antes de autorizar;
+  else (no)
+    :No ofrecer la ruta;
+    stop
+  endif
+}
+
+partition "Cliente / Blockchain" {
+  if (¿Saldo GatoPago?) then (sí)
+    :Firmar UserOperation con passkey;
+    :Ejecutar router local en Arbitrum Sepolia;
+  else (wallet externa)
+    if (¿USDC en Arbitrum Sepolia?) then (sí)
+      :Firmar transacción de wallet;
+      :Ejecutar PaymentRouter local;
+    else (Base Sepolia o Fuji)
+      :Firmar transacción de wallet;
+      :Ejecutar CCTP PaymentRouter;
+      :Burn en origen;
+    endif
+  endif
+}
+
+partition "Payments" {
+  :Recibir hash como dato no confiable;
+  :Consultar receipt por RPC y verificar
+  from, router y evento del attempt;
+  if (¿Evidencia válida?) then (sí)
+    :Persistir hash por compare-and-set;
+  else (pendiente / inválida)
+    :No cambiar el attempt;
+  endif
+  :Reconciliar recibos y logs canónicos;
+  if (¿CCTP?) then (sí)
+    :Consultar attestation en Iris;
+    :Llamar MessageTransmitter en destino;
+  endif
+  if (¿Settlement válido?) then (sí)
+    :Registrar fee evidence idempotente;
+    :Batch económico por CAS:
+    paid + evento + outbox;
+  else (pendiente / fallo)
+    :Reintentar con backoff o enviar a DLQ;
+    stop
+  endif
+  :Entregar webhook firmado;
+}
+
+partition "Negocio" {
+  :Marcar orden pagada y entregar producto;
+}
+
+stop
+
+legend right
+  Live/mainnet está bloqueado por backend.
+  La blockchain sigue siendo la verdad final.
+endlegend
+
+@enduml

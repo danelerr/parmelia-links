@@ -1,0 +1,43 @@
+' Tema autocontenido de los diagramas de arquitectura de GatoPago.
+!pragma layout smetana
+
+skinparam backgroundColor #FCFCFD
+skinparam shadowing false
+skinparam roundCorner 14
+skinparam defaultFontName Arial
+skinparam defaultFontColor #1F2937
+skinparam ArrowColor #52606D
+skinparam ArrowThickness 1
+skinparam PackageBorderColor #829AB1
+skinparam PackageBackgroundColor #F8FAFC
+skinparam RectangleBorderColor #627D98
+skinparam RectangleBackgroundColor #FFFFFF
+skinparam ComponentBorderColor #627D98
+skinparam ComponentBackgroundColor #FFFFFF
+skinparam DatabaseBorderColor #627D98
+skinparam DatabaseBackgroundColor #FFFFFF
+skinparam QueueBorderColor #627D98
+skinparam QueueBackgroundColor #FFFFFF
+skinparam NoteBorderColor #B7791F
+skinparam NoteBackgroundColor #FFFBEB
+skinparam ActorBorderColor #334E68
+skinparam ActorFontColor #243B53
+skinparam ActivityBorderColor #627D98
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityDiamondBorderColor #52606D
+skinparam ActivityDiamondBackgroundColor #F1F5F9
+skinparam ParticipantBorderColor #627D98
+skinparam ParticipantBackgroundColor #FFFFFF
+skinparam SequenceLifeLineBorderColor #9FB3C8
+skinparam SequenceGroupBorderColor #829AB1
+skinparam SequenceGroupBackgroundColor #F8FAFC
+skinparam UsecaseBorderColor #627D98
+skinparam UsecaseBackgroundColor #FFFFFF
+
+!define COLOR_LIVE #DCFCE7
+!define COLOR_READY #FEF3C7
+!define COLOR_WEB #DBEAFE
+!define COLOR_EXTERNAL #EDE9FE
+!define COLOR_FUTURE #E5E7EB
+!define COLOR_DATA #FCE7F3
+

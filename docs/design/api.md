@@ -316,8 +316,9 @@ de FX/settlement.
 
 ## 11. Webhooks (la integración real)
 
-**Eventos (Ahora):** `payment.created`, `payment.processing`, `payment.paid`,
-`payment.expired`, `payment.failed`, `payment.under_review`, `checkout.completed`.
+**Eventos (Ahora):** `payment.created`, `payment.paid` y `payment.overpaid`.
+Los demás estados se agregan cuando exista una transición implementada que los
+produzca; no se documentan como disponibles por anticipado.
 **Horizonte:** `payment.refunded`, `settlement.created`, `settlement.completed`.
 
 **Seguridad (modelo probado, no reinventar):**
@@ -328,9 +329,10 @@ de FX/settlement.
 - **Reintentos** con backoff exponencial; **logs de entrega** + botón "reenviar".
 
 **Infra de entrega (decisión consciente, encaja con el stack):** el outbox D1
-(`webhook_deliveries`) es la fuente durable y `SCHEDULED_JOBS_QUEUE` transporta
-trabajo. Una transición que crea una entrega despierta el scheduler; el job se
-reprograma sólo hasta entregar o agotar intentos. No existe polling vacío.
+(`webhook_deliveries`) es la fuente durable y `PAYMENT_JOBS_QUEUE` transporta
+trabajo. Una transición crea evento, outbox y deliveries en el mismo batch D1;
+el job usa dedupe + lease. El Cron de un minuto es recuperación acotada, no
+polling como mecanismo primario.
 
 ## 12. Idempotencia de requests
 
@@ -343,7 +345,8 @@ Cae natural por la config de dos cadenas:
 - **Sandbox** = Arbitrum Sepolia + claves `*_test` + **botón "simular pago"**
   (marca `paid` sin on-chain real → el dev prueba sus webhooks en minutos sin
   conseguir USDC de testnet). Crítico para adopción de devs.
-- **Producción** = Arbitrum One + claves `*_live`.
+- **Producción futura** = Arbitrum One + claves `*_live`; hoy el backend las
+  bloquea con `PAYMENT_LIVE_ENABLED=false` y verifica además el manifest mainnet.
 - Aislamiento total de datos por `mode`.
 
 ## 14. Integración con la Wallet/Cuenta GatoPago
@@ -356,7 +359,9 @@ casuales pueden vivir fuera de intents; los cobros, nunca.
 ## 15. Roadmap por fases (no "MVP")
 
 **Ahora — núcleo de la API:**
-1. [x] merchant/account + API keys (test/live, secreto hasheado SHA-256). — `merchant.routes.ts`, `services/apiKeys.ts`, `middlewares/apiAuth.ts`.
+1. [x] merchant/account + API keys test (secreto hasheado SHA-256); live existe
+   en schema para migración futura pero su creación está bloqueada. —
+   `payments-worker/src/routes/merchant.routes.ts`.
 2. [x] Payment Intent (respaldado por `payment_links`; metadata, idempotencia, expiración). — `routes/v1.routes.ts`.
 3. [x] Checkout vía link + QR (reusa la página `/pay`); `checkout_url` en el intent. ([ ] checkout_session con branding propio = Siguiente.)
 4. [x] Confirmación on-chain **Flujo A** (gancho en `/pay/submit`) **y Flujo B**
@@ -365,7 +370,8 @@ casuales pueden vivir fuera de intents; los cobros, nunca.
    router on-chain + `confirmation_policy` por tramo de monto.
 5. [x] Webhooks (outbox `webhook_deliveries` + Queue dirigida por eventos + firma HMAC + reintentos con backoff + idempotencia) + event log. — `services/webhooks.ts`, migración `0002_api.sql`.
 6. [x] Sandbox con "simular pago": `POST /v1/payment_intents/:id/simulate_payment` (solo claves `test`) marca `paid` y dispara el webhook sin on-chain.
-7. [ ] Dashboard de integración (los endpoints `/merchant/keys` y `/merchant/webhooks` existen; falta la UI).
+7. [x] Dashboard de integración para keys, webhooks, eventos, pagos y Sandbox;
+   los controles live consumen capacidad del backend y permanecen deshabilitados.
 
 **Implementado en este pase:** `POST /v1/payment_intents` (+ `GET`, `cancel`),
 `GET /v1/events`, gestión `/merchant/keys` y `/merchant/webhooks` (Firebase auth),

@@ -1,0 +1,110 @@
+@startuml
+!include _theme.puml
+title Despliegue físico — base remota y correcciones locales pendientes
+
+left to right direction
+skinparam linetype ortho
+
+node "Navegador" as browser {
+  artifact "App + ruta checkout\n[remoto anterior]" as app_web COLOR_WEB
+  artifact "Dashboard\n[remoto: Vercel SSO]" as dashboard_web COLOR_READY
+}
+
+cloud "Vercel" as vercel COLOR_EXTERNAL {
+  artifact "client/dist\napp.parmelia.me\n[desplegado; fix local pendiente]" as client_dist COLOR_READY
+  artifact "dashboard/dist\ndashboard.parmelia.me\n[deployment existe; acceso bloqueado]" as dashboard_dist COLOR_READY
+}
+
+cloud "Cloudflare" as cf {
+  node "Workers Edge" {
+    component "server\nApp Backend\n[desplegado]" as app_worker COLOR_LIVE
+    component "gatopago-payments-api\nPayments Backend\n[desplegado]" as payments_worker COLOR_LIVE
+  }
+
+  database "parmeliadb\nGATOPAGO_DB\n[desplegada]" as app_d1 COLOR_LIVE
+  queue "parmelia-scheduled-jobs\n+ DLQ\n[desplegadas]" as app_queue COLOR_LIVE
+  component "EventJobScheduler +\nRpcAdmissionController\nDurable Objects" as app_do COLOR_LIVE
+
+  database "gatopago-payments\nPAYMENTS_DB actual\n[checksum histórico de IDs]" as payments_d1 COLOR_LIVE
+  database "Payments D1 replacement\n[manifest v4; pendiente]" as replacement_payments_d1 COLOR_READY
+  queue "gatopago-payment-jobs\n+ DLQ\n[creadas]" as payments_queue COLOR_LIVE
+  component "PaymentJobScheduler\nDurable Object\n[desplegado]" as payments_do COLOR_LIVE
+  component "Cron recovery sweep\n*cada minuto*" as payments_cron COLOR_LIVE
+
+  artifact "Secrets App\nidentidad, sponsorship, RPC, ops" as app_secrets COLOR_DATA
+  artifact "Secrets Payments\nsigner, relayer CCTP, RPC,\nwebhook AES, ops token" as payments_secrets COLOR_DATA
+}
+
+cloud "Firebase + Email" as identity COLOR_EXTERNAL
+cloud "RPC providers" as rpc COLOR_EXTERNAL
+cloud "Circle Iris API" as circle COLOR_EXTERNAL
+
+node "Arbitrum Sepolia — home" as arbitrum COLOR_EXTERNAL {
+  component "Smart accounts + EntryPoint" as accounts
+  component "PaymentRouterV2" as home_router
+  component "MessageTransmitter + USDC" as arb_cctp
+}
+
+node "Base Sepolia — origen" as base COLOR_EXTERNAL {
+  component "CCTP PaymentRouter" as base_router
+  component "USDC + TokenMessenger" as base_cctp
+}
+
+node "Avalanche Fuji — origen" as avalanche COLOR_EXTERNAL {
+  component "CCTP PaymentRouter" as avax_router
+  component "USDC + TokenMessenger" as avax_cctp
+}
+
+client_dist --> app_web : descarga
+dashboard_dist --> dashboard_web : descarga
+app_web --> app_worker : identidad / wallet
+app_web --> payments_worker : links / checkout
+dashboard_web --> app_worker : autenticación
+dashboard_web --> payments_worker : merchant
+app_worker --> payments_worker : Service Binding PAYMENTS
+
+app_worker --> app_d1
+app_worker --> app_queue
+app_do --> app_queue
+app_secrets --> app_worker
+
+payments_worker --> payments_d1
+payments_worker ..> replacement_payments_d1 : binding futuro sólo tras\nfreeze/import/verify
+payments_worker --> payments_queue : produce
+payments_queue --> payments_worker : consume / redelivery
+payments_do --> payments_queue : jobs diferidos
+payments_cron --> payments_worker : recuperación
+payments_secrets --> payments_worker
+
+app_worker --> identity
+app_worker --> rpc
+payments_worker --> identity
+payments_worker --> rpc
+app_worker --> circle : attestation CCTP personal
+payments_worker --> circle : fees + attestations
+
+app_worker --> accounts : UserOperations
+payments_worker --> home_router : quote / reconcile
+payments_worker --> base_router : quote / reconcile
+payments_worker --> avax_router : quote / reconcile
+base_router --> base_cctp : burn
+avax_router --> avax_cctp : burn
+payments_worker --> arb_cctp : receiveMessage
+arb_cctp --> arb_cctp : mint USDC al comercio
+
+note bottom of payments_worker
+  PAYMENT_LIVE_ENABLED=false.
+  Sólo testnets están habilitadas en este corte.
+  Migración 0006 y hardening de attempt no desplegados.
+  La D1 replacement tampoco fue creada/aplicada.
+end note
+
+legend right
+  |= Color |= Estado |
+  |<#DCFCE7> Verde | Existe remotamente |
+  |<#FEF3C7> Amarillo | Implementado; falta promover |
+  |<#FCE7F3> Rosa | Secret/binding, nunca valor plano |
+  |<#EDE9FE> Violeta | Proveedor o red externa |
+endlegend
+
+@enduml

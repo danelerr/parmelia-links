@@ -1,0 +1,67 @@
+@startuml
+!include _theme.puml
+title Secuencia — Reconciliar settlement y entregar webhook
+
+queue "Payments Jobs" as queue
+participant "Job Runtime" as jobs
+database "PAYMENTS_DB" as db
+participant "Reconciler" as reconciler
+participant "RPC origen" as source_rpc
+participant "Circle Iris API" as iris
+participant "Relayer Payments" as relayer
+participant "MessageTransmitter\nen red destino" as transmitter
+participant "Wallet del negocio" as merchant_wallet
+participant "Webhook endpoint" as webhook
+
+queue -> jobs : entrega PaymentJobMessage v2
+jobs -> db : claim dedupe key + lease
+alt trabajo ya completado
+  db --> jobs : completed
+  jobs -> queue : ack
+else lease todavía vigente
+  db --> jobs : leased + segundos restantes
+  jobs -> queue : retry; nunca ack
+else lease adquirido
+  db --> jobs : claimed
+  jobs -> reconciler : reconcile attempt
+  reconciler -> source_rpc : recibo + confirmaciones + logs
+  source_rpc --> reconciler : evidencia canónica
+
+  alt pago local
+    reconciler -> db : fee evidence idempotente
+  else pago CCTP
+    reconciler -> iris : GET attestation por burn tx
+    iris --> reconciler : message + attestation
+    reconciler -> db : valida mensaje y fee ejecutada
+    reconciler -> relayer : solicitar mint en destino
+    relayer -> transmitter : receiveMessage(message, attestation)
+    transmitter -> merchant_wallet : mint USDC
+    transmitter --> relayer : receipt confirmado
+  end
+
+  reconciler -> db : batch económico atómico por CAS\nattempt + intent + link\n+ payment.paid/overpaid + outbox
+  db --> reconciler : aplicado o replay inerte
+  reconciler --> jobs : trabajo completado
+  jobs -> db : batch job completed + outbox completed
+  jobs -> queue : ack
+end
+
+queue -> jobs : webhook_delivery
+jobs -> db : claim delivery + lease
+jobs -> webhook : POST body + HMAC + timestamp
+alt HTTP 2xx
+  webhook --> jobs : aceptado
+  jobs -> db : delivered
+  jobs -> queue : ack
+else red / HTTP no exitoso
+  webhook --> jobs : error
+  jobs -> db : failed/dead + backoff
+  jobs -> queue : retry o DLQ
+end
+
+note over iris,transmitter
+  Iris entrega la attestation. No ejecuta receiveMessage:
+  esa llamada ocurre on-chain en MessageTransmitter destino.
+end note
+
+@enduml

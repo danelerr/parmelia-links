@@ -1,0 +1,75 @@
+@startuml
+!include _theme.puml
+title GatoPago — C4 nivel 2: contenedores
+
+left to right direction
+
+actor "Persona" as person
+actor "Negocio" as business
+actor "Sistema B2B" as b2b
+
+package "Sistema GatoPago" {
+  component "App Web\n[React + Vite]\nCuenta personal + ruta checkout" as client COLOR_WEB
+  component "Dashboard\n[React + Vite]\nPanel B2B" as dashboard COLOR_WEB
+
+  component "App Backend\n[Cloudflare Worker: server]\nIdentidad, UserOps y CCTP personal" as app_api COLOR_LIVE
+  database "App DB\n[D1: parmeliadb]\nPropiedad exclusiva de App" as app_db COLOR_LIVE
+  queue "App Jobs\n[Cloudflare Queue]\nÍndice y trabajos personales" as app_jobs COLOR_LIVE
+
+  component "Payments Backend\n[Cloudflare Worker:\ngatopago-payments-api]\nCheckout, intents y settlement" as payments_api COLOR_LIVE
+  database "Payments DB\n[D1: gatopago-payments]\nPropiedad exclusiva de Payments" as payments_db COLOR_LIVE
+  queue "Payments Jobs\n[Cloudflare Queue]\nReconcile, CCTP y webhooks" as payment_jobs COLOR_LIVE
+  component "Payment Job Scheduler\n[Durable Object]\nCompacta y despierta jobs" as scheduler COLOR_LIVE
+}
+
+cloud "Firebase" as firebase COLOR_EXTERNAL
+cloud "Email" as email COLOR_EXTERNAL
+cloud "RPC + Circle" as providers COLOR_EXTERNAL
+node "Smart accounts, PaymentRouters,\nUSDC y CCTP en EVM" as chains COLOR_EXTERNAL
+
+person --> client : usa
+person --> client : paga link o QR
+business --> dashboard : administra
+b2b --> payments_api : API /v1
+
+client --> app_api : HTTPS / identidad y wallet
+client --> payments_api : HTTPS / links y checkout
+dashboard --> app_api : HTTPS / autenticación
+dashboard --> payments_api : HTTPS / merchant
+app_api --> payments_api : Service Binding\núnica dependencia entre dominios
+
+app_api --> app_db : lee / escribe
+app_api --> app_jobs : produce / consume
+payments_api --> payments_db : lee / escribe
+payments_api --> payment_jobs : produce / consume
+scheduler --> payment_jobs : publica jobs vencidos
+
+app_api --> firebase : JWKS / tokens
+payments_api --> firebase : JWKS / tokens
+app_api --> email : OTP
+app_api --> providers : RPC
+payments_api --> providers : RPC / Circle
+app_api --> chains : UserOperations
+payments_api --> chains : pago y reconciliación
+
+note bottom of app_api
+  El modo legacy/frozen/payments controla el corte.
+  Sólo delega /links, /checkout, /v1 y /merchant.
+  /pay y /crosschain siguen en App, que nunca
+  recibe el binding PAYMENTS_DB.
+end note
+
+note bottom of payments_api
+  No existe un Worker del Dashboard.
+  No existe un tercer BFF desplegable en 2.1.
+end note
+
+legend right
+  C4: persona -> contenedor -> datos/infraestructura
+  |= Color |= Estado |
+  |<#DCFCE7> Verde | Remoto actual |
+  |<#FEF3C7> Amarillo | Código listo; remoto pendiente |
+  |<#DBEAFE> Azul | Frontend |
+endlegend
+
+@enduml

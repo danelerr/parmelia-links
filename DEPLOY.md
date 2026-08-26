@@ -4,6 +4,177 @@
 > indexación dirigida por eventos, swaps, referidos) en **Arbitrum Sepolia**. Al final, el delta
 > para **Arbitrum One**.
 
+## 0. Corte de Fase 2: dos Workers y dos D1
+
+**Estado al 25-08-2026:** el corte Cloudflare y la promoción Vercel ya fueron
+ejecutados en las cuentas actuales. `server` usa
+`PAYMENTS_CUTOVER_MODE=payments`; Payments tiene una D1 real, bootstrap
+desactivado y un checksum histórico basado sólo en IDs. `app.parmelia.me` responde
+anónimamente, pero la auditoría posterior comprobó
+que `dashboard.parmelia.me` redirige a Vercel SSO y que las correcciones de
+checkout/Payments aún no están desplegadas. **No actualizar el checksum ni
+reimportar sobre esa D1.** El siguiente rollout debe conservarla y repetir el
+corte hacia una D1 nueva siguiendo
+[`payments-semantic-recut.md`](./docs/runbooks/payments-semantic-recut.md). La secuencia siguiente queda como runbook reproducible y
+de recuperación. Los deploys manuales se ejecutan
+con `pnpm --filter payments-worker run deploy` y
+`pnpm --filter server run deploy`; sin `run`, pnpm 11 interpreta `deploy` como
+su comando incorporado.
+
+Antes de tocar una credencial, consulta el
+[`inventario canónico de secretos y configuración`](./docs/operations/worker-variables.md):
+distingue el valor público del secreto, registra su procedencia real y señala
+qué valores sólo tienen nombre remoto verificable.
+
+Orden de promoción (no intercambiarlo):
+
+1. Ejecutar `pnpm verify:all`, `pnpm check:d1:restore` y
+   `.\scripts\invoke-phase2-preflight.ps1`. El segundo ensaya tanto el backup de App como
+   el split, checksum y restauración independiente de las dos bases. El preflight
+   sólo lee Cloudflare, exporta un snapshot a un directorio temporal que elimina
+   al terminar y sale con estado no-cero mientras falten recursos de la promoción;
+   nunca crea, migra, importa ni despliega.
+2. Crear explícitamente una D1 Payments **nueva**; conservar
+   `gatopago-payments` histórica y las Queue/DLQ existentes. Reemplazar el UUID
+   del binding sólo con el ID nuevo devuelto y mediante un diff versionado.
+3. Sobre la D1 Payments todavía vacía, aplicar con Wrangler **todas** las
+   migraciones descubiertas en `payments-worker/migrations/` (actualmente
+   `0001`–`0006`) y comprobar que figuran en `d1_migrations`. No importar un dump de schema ni insertar
+   manualmente en la tabla de historial de Wrangler.
+
+   ```powershell
+   pnpm --filter payments-worker exec wrangler d1 migrations list PAYMENTS_DB --remote
+   pnpm --filter payments-worker exec wrangler d1 migrations apply PAYMENTS_DB --remote
+   pnpm --filter payments-worker exec wrangler d1 migrations list PAYMENTS_DB --remote
+   ```
+4. Cargar en Payments sus secretos dedicados: signer EIP-712, RPCs por chain,
+   relayer CCTP, cifrado de webhooks, token de ops y opcionalmente Circle API.
+   Dejar `PAYMENT_FEE_POLICY_JSON` ausente/vacío (política `free-default`) y
+   habilitar `PAYMENT_ROUTER_PREFLIGHT_ENABLED=true`. No copiar `PRIVATE_KEY`,
+   paymaster, OTP o guardian desde App.
+   El primer deploy conserva `PAYMENTS_BOOTSTRAP_MODE=true`,
+   `PAYMENTS_DATA_CUTOVER_CHECKSUM=pending` y
+   `PAYMENT_LIVE_ENABLED=false`.
+5. Desplegar **primero** `gatopago-payments-api` en bootstrap. `/health/live`
+   debe mostrar `bootstrapActive=true`; `/health` degradado es deliberado porque
+   todavía no puede aceptar escrituras. Esto crea el target antes que el caller.
+6. Aplicar las migraciones expand-first App `0033` y `0034`, y desplegar App con
+   `PAYMENTS_CUTOVER_MODE=legacy` + `PAYMENTS_SYNC_ENABLED=false`. Comprobar que
+   no cambió el comportamiento. Después desplegar
+   `PAYMENTS_CUTOVER_MODE=frozen`, manteniendo sync apagado: todos los
+   `POST`/`PUT`/`PATCH`/`DELETE` de pagos deben devolver `503` con
+   `Retry-After`, mientras los `GET` legacy siguen disponibles. No continúes
+   hasta drenar jobs/outbox activos y capturar watermark, conteos y checksum.
+7. Con las escrituras congeladas, exportar `GATOPAGO_DB`.
+   El migrador acepta directamente el SQL de Wrangler y lo materializa en un
+   SQLite temporal aislado. Ejecutar:
+
+   ```powershell
+   .\scripts\prepare-payments-semantic-split.ps1 `
+     -SourceSql C:\secure\gatopago-app.sql `
+     -TargetSqlite C:\secure\gatopago-payments.sqlite `
+     -EvidenceDirectory C:\secure\gatopago-split-backup
+   ```
+
+   El wrapper recupera desde DPAPI la clave de webhooks existente y sólo la
+   expone al proceso hijo; no la imprime ni rota. `--source` sigue disponible
+   en el script Node si el operador ya materializó un SQLite. En un corte real
+   `WEBHOOK_SECRET_ENCRYPTION_KEY` y su key ID son obligatorios; el script
+   rehúsa sobreescribir target/backups, conserva IDs, verifica conteos/checksum,
+   `quick_check`/FK y abre ambas copias restauradas. Además genera
+   `gatopago-payments-data.sql`: contiene **solo datos**, excluye
+   `d1_migrations`, ordena padres antes que hijos y lleva un guard que rechaza
+   una D1 no vacía o un replay. El drill importa ese archivo sobre un schema
+   nuevo creado por todas las migraciones Payments y vuelve a verificar
+   contenido/IDs/checksum e índices críticos. El manifest debe ser versión 4 y
+   el checksum semántico versión 2; webhooks se escriben como `enc:v2`.
+
+   Las operaciones CCTP personales históricas **no se copian**: permanecen en
+   App. Payments importa sólo CCTP ligado a attempts merchant (cero en el
+   baseline auditado). El migrador falla en vez de omitir merchants, API keys,
+   webhooks, eventos o referencias inválidas.
+
+   Revisa el SHA-256 de `split-manifest.json` e importa exclusivamente ese
+   artefacto sobre la D1 ya migrada:
+
+   ```powershell
+   pnpm --filter payments-worker exec wrangler d1 execute PAYMENTS_DB --remote `
+     --file=C:\secure\gatopago-split-backup\gatopago-payments-data.sql
+   ```
+
+   El SQL contiene datos operativos y secretos de webhook ya cifrados: trátalo
+   como backup sensible, no lo subas a Git y bórralo/archívalo cifrado según la
+   política de retención después de validar el corte.
+8. Exportar primero la D1 nueva después del import y ejecutar
+   `split-payments-d1.mjs --verify-target-sql ... --manifest ...`, o el preflight
+   protegido que realiza esa comparación. Sólo con el target verificado y App
+   todavía `frozen`, copiar `split-manifest.json.verification.checksum` a
+   `PAYMENTS_DATA_CUTOVER_CHECKSUM` —no el SHA del archivo manifest—, conservar
+   `PAYMENTS_BOOTSTRAP_MODE=true`, desplegar Payments y exigir
+   `checks.dataCutover=verified`. Después cambiar sólo
+   `PAYMENTS_BOOTSTRAP_MODE=false` y desplegar de nuevo
+   `gatopago-payments-api`. Los guards de deploy rechazan cualquier salto que
+   habilite dos escritores o active Payments con `pending`. Verificar `/health/live`,
+   `/health`, un checkout migrado real por acceso directo y una operación `/v1`
+   test con App detenido. El preflight read-only exige además que ese mismo
+   checkout responda por el proxy temporal de App después de actualizarlo.
+9. Validar que `/health/ops` de Payments explica y deja en cero
+   `activeAttempts`, `pendingWebhooks`, `pendingOutbox` y `activeJobLeases`, o
+   documentar cada excepción. Con App todavía `frozen`, habilitar
+   `PAYMENTS_SYNC_ENABLED=true`, desplegar y drenar ambos outbox de frontera.
+   Luego cambiar App a `PAYMENTS_CUTOVER_MODE=payments`, conservar sync activo,
+   desplegar `server` in-place y probar el mismo checkout a través del Service
+   Binding. Si el binding falla, App debe responder `503`, nunca escribir en la
+   D1 equivocada.
+10. Completar `vercel login` y ejecutar desde la raíz:
+
+   ```powershell
+   pwsh -File scripts/deploy-phase2-frontends.ps1
+   pnpm preflight:frontends:remote
+   ```
+
+   El script verifica el link existente de `client/`, crea/vincula
+   `gatopago-dashboard`, configura sólo los nombres Production declarados,
+   despliega ambas superficies y asigna `dashboard.parmelia.me`. Los valores se
+   entregan a Vercel por stdin y no se escriben en el repositorio.
+   Un deploy real falla si el árbol relevante está dirty/untracked, si HEAD no
+   tiene upstream o si el commit publicado difiere. El preflight también rechaza
+   Vercel SSO en una superficie que deba ser pública.
+   `VITE_SERVER_URL` conserva el proxy sólo durante el soak N-1.
+11. Mantener tablas legadas read-only y los backups durante el soak. Un rollback
+   de código cambia versiones de Workers; jamás borra ni fusiona D1. Resolver
+   primero las escrituras en vuelo antes de reabrir el dominio anterior.
+
+La dependencia RPC es sólo App → Payments. El dashboard no tiene Worker propio
+y no se despliega un tercer consumidor hasta activar un gate medido documentado
+en `docs/design/universal-checkout-multichain.md`.
+
+El procedimiento, los criterios de abortar y el rollback están aislados en
+[`docs/runbooks/payments-cutover.md`](./docs/runbooks/payments-cutover.md). No
+se activa mainnet en este corte. La sustitución de la evidencia histórica está
+en [`docs/runbooks/payments-semantic-recut.md`](./docs/runbooks/payments-semantic-recut.md).
+`PAYMENT_LIVE_ENABLED=false` permanece en
+Wrangler y el backend exige además rutas mainnet desplegadas en el manifest.
+
+Secrets dedicados de Payments (ejecutar desde `payments-worker/` solo durante
+una promoción autorizada):
+
+```powershell
+npx wrangler secret put PAYMENT_AUTHORIZATION_SIGNER_PRIVATE_KEY
+npx wrangler secret put PAYMENT_RPC_URLS
+npx wrangler secret put PAYMENT_RELAYER_PRIVATE_KEY
+npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY
+npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID
+npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS
+npx wrangler secret put OPS_HEALTH_TOKEN
+npx wrangler secret put CIRCLE_API_KEY # opcional
+```
+
+`PAYMENT_FEE_POLICY_JSON` y `PAYMENT_PLATFORM_FEE_RECIPIENT` permanecen vacíos
+en el lanzamiento. Si alguna vez contienen una regla positiva, trátalos como
+configuración económica controlada, con revisión y canary según §12.6; no como
+un cambio rutinario de entorno.
+
 
 ## 1. Claves y fondos (una sola vez)
 
@@ -181,7 +352,7 @@ npx wrangler d1 migrations apply GATOPAGO_DB --remote
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
 `npx wrangler d1 migrations list GATOPAGO_DB --remote` y aplica, en orden, todo
-lo que falte hasta `0032_recovery_step_up.sql`. El Worker actual requiere
+lo que falte hasta `0034_sponsorship_observability.sql`. El Worker actual requiere
 la cadena completa: además del hardening y los ciclos durables originales,
 `0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
 rollback de reorg, shards del indexador, suscripciones de proveedor, control
@@ -189,7 +360,9 @@ plane RPC, finality de Arbitrum, outboxes, ciclo durable de UserOperations,
 paginación del ledger, cache durable de capacidades del bundler, cola de
 reconciliación, auditorías de balance y registro incremental de wallets. `0027`
 a `0032` agregan consistencia del indexador, marca, códigos de correo con consumo
-atómico, registro WebAuthn ligado al servidor y step-up de recuperación.
+atómico, registro WebAuthn ligado al servidor y step-up de recuperación. `0033`
+establece la frontera con Payments y `0034` persiste proveedor y dirección exacta
+de sponsorship para rotación/observabilidad.
 REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
 El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
 nunca replicar ese patrón hacia producción.
@@ -213,6 +386,11 @@ reemplazar una transacción cuyo nonce ya fue consumido.
 
 ## 6. Secrets del worker
 
+La lista siguiente es operativa; la fuente, ubicación, estado remoto y rotación
+de cada nombre están en el
+[`inventario canónico`](./docs/operations/worker-variables.md). No asumas que un
+archivo local coincide con Cloudflare: los valores remotos no se pueden leer.
+
 ```bash
 cd server
 npx wrangler secret put RPC_URL          # compatibilidad; no mezclar roles nuevos aquí
@@ -224,7 +402,7 @@ npx wrangler secret put RPC_PROVIDER_CAPABILITIES # límites/prioridad por endpo
 npx wrangler secret put PRIVATE_KEY                        # relayer handleOps/CCTP
 npx wrangler secret put FAUCET_PRIVATE_KEY                 # fondos del faucet (mainnet: obligatoria si se activa)
 npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY      # guardian (mainnet: obligatorio y distinto)
-npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY       # firma sponsorships
+npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY       # solo provider Parmelia: firma sponsorships
 npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY  # firma invoices Flow B
 npx wrangler secret put OPS_HEALTH_TOKEN                   # token aleatorio 32+ caracteres para /health/ops
 # Opcionales en TESTNET (feature-flag). En MAINNET: TURNSTILE es OBLIGATORIO
@@ -246,6 +424,25 @@ npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY  # 32 bytes base64/hex; obligatorio en mainnet
 npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID # ID corto, por ejemplo 2026_07
 ```
+
+Configura además el adaptador de sponsorship en `server/wrangler.jsonc` (o como
+vars del entorno), sin poner claves en Git:
+
+```text
+SPONSORSHIP_PROVIDER=parmelia             # parmelia | erc7677 | self-funded
+SPONSORSHIP_FALLBACK_PROVIDER=            # opcional; solo se intenta antes de firmar
+SPONSORSHIP_PAYMASTER_ADDRESS=<CONTRATO>  # override versionado del paymaster propio
+SPONSORSHIP_HEALTH_CHECK_ENABLED=true
+PAYMASTER_MIN_DEPOSIT_WEI=1000000000000000
+PAYMASTER_SERVICE_URL=                    # HTTPS para ERC-7677
+PAYMASTER_SERVICE_EXPECTED_PAYMASTER=     # pin obligatorio en mainnet
+PAYMASTER_SERVICE_TIMEOUT_MS=8000
+```
+
+Si el proveedor ERC-7677 requiere credenciales dentro de su contexto, carga
+`PAYMASTER_SERVICE_CONTEXT_JSON` con `wrangler secret put`; no lo declares como
+var pública. `self-funded` no es un fallback mágico: antes de pedir la firma el
+Worker verifica depósito de EntryPoint y balance nativo suficiente de la cuenta.
 
 El binding `EMAIL` y `AUTH_EMAIL_FROM` están declarados en `server/wrangler.jsonc`.
 Antes de publicar, valida en Cloudflare Email Sending que
@@ -276,12 +473,44 @@ No retires la clave previa antes del paso 4: las entregas de esos endpoints no
 podrían firmarse.
 
 Ya configurado en `wrangler.jsonc`: `CHAIN_KEY=arbitrum-sepolia`,
-`ALLOWED_ORIGINS`, una Queue y `EventJobScheduler`. No hay Cron Trigger: el
+`ALLOWED_ORIGINS`, una Queue y `EventJobScheduler`. App no tiene Cron Trigger: el
 Durable Object conserva una alarma sólo mientras exista trabajo y la elimina al
 vaciarse. El consumidor usa `max_batch_size=1`, de modo que cada
 indexador/reconciliador recibe una invocación y un presupuesto de subrequests
 independiente. Configura `APP_URL`, flags cross-chain y fees (`GATOPAGO_*`)
 explícitamente para cada entorno; mainnet no acepta el fallback de `APP_URL`.
+Payments sí tiene un Cron por minuto, limitado a recuperar outbox y watchers
+activos; Queue y `PaymentJobScheduler` siguen ejecutando y deduplicando el
+trabajo.
+
+### Rotación de paymaster o proveedor de sponsorship
+
+Cambiar de paymaster **no migra las smart accounts**: la cuenta firma una
+UserOperation que contiene el paymaster elegido. Sí exige respetar la frontera
+de firma y drenar operaciones en curso:
+
+1. Despliega y fondea/stakea el nuevo paymaster propio, o valida el endpoint
+   ERC-7677 y fija `PAYMASTER_SERVICE_EXPECTED_PAYMASTER` en mainnet.
+2. Comprueba EntryPoint, código, signer, depósito/capacidad y una preparación
+   canary. No cambies todavía el contrato viejo.
+3. Cambia `SPONSORSHIP_PROVIDER`/`SPONSORSHIP_PAYMASTER_ADDRESS` y despliega App.
+   Cada intento de fallback reconstruye y reestima la UserOperation **antes**
+   de mostrarla para firma; nunca se sustituye `paymasterAndData` después.
+4. Verifica `/health` y `/health/ops`. Este último agrupa operaciones activas
+   por proveedor **y dirección exacta** de paymaster.
+5. Las operaciones ya preparadas conservan el proveedor y contrato viejos.
+   Déjalas enviar o expirar; no las reescribas. Espera al menos el TTL máximo
+   actual de sponsorship (600 s) y exige conteo activo cero para la dirección
+   antigua antes de retirar depósito, desbloquear stake o apagar el servicio.
+6. Si también rotas `PAYMASTER_SIGNER_PRIVATE_KEY`, mantén el signer antiguo en
+   el contrato viejo durante ese drenaje. La nueva clave solo debe coincidir con
+   el nuevo contrato.
+7. Rollback: restaura el provider/address anterior y vuelve a preparar nuevas
+   UserOperations. Una operación firmada para un paymaster no es portable a otro.
+
+La política evita doble firma, invalidez silenciosa y retiro prematuro de fondos
+operativos. El health registra capacidad; no garantiza por sí solo que un
+proveedor externo acepte todas las políticas comerciales.
 
 ### RPC: capacidades por endpoint
 
@@ -393,17 +622,16 @@ pnpm --filter server exec wrangler queues list
 # pnpm --filter server exec wrangler queues create parmelia-scheduled-jobs
 # pnpm --filter server exec wrangler queues create parmelia-scheduled-jobs-dlq
 
-# 5. Regenerar bindings y validar el bundle/config sin publicar.
+# 5. Ejecutar los mismos guards de fuente/config y validar sin publicar.
 pnpm --filter server cf-typegen:check
-pnpm --filter server exec wrangler deploy --dry-run --minify
+pnpm --filter server run deploy -- --dry-run
 
 # 6. Desplegar la fuente local verificada. Wrangler registra también la
 # migración v2 de RpcAdmissionController declarada en wrangler.jsonc.
 # Wrangler ejecuta `forge build` automáticamente para regenerar los ABIs que
 # consume `shared/index.ts`, incluso si `contracts/out` fue limpiado.
 $releaseSha = git rev-parse HEAD
-pnpm --filter server exec wrangler deploy --minify --keep-vars --strict `
-  --message "manual $releaseSha"
+pnpm --filter server run deploy -- --keep-vars --strict --message "manual $releaseSha"
 
 # 7. Exigir readiness saludable.
 $health = Invoke-RestMethod -Uri "https://server.parmelia.workers.dev/health"
@@ -444,23 +672,26 @@ VITE_FIREBASE_MEASUREMENT_ID=...   # G-XXXX cuando habilites GA4
 pnpm --filter client dev
 ```
 
-**Producción (Vercel)** - la raíz del repositorio está enlazada al proyecto
-existente `danelerrs-projects/parmelia`; `vercel.json` construye únicamente
-`client` y publica `client/dist`. Las variables `VITE_*` viven en el entorno
-Production del proyecto. Desde la raíz:
+**Producción (Vercel)** - `client/` está enlazado al proyecto existente
+`parmelia` del team fijado en `.vercel/project.json` y es desplegable de forma autónoma. Su lockfile,
+configuración de pnpm y `package.json` fijan pnpm 11 y Node 24. Las variables
+`VITE_*` viven en el entorno Production del proyecto. Ejecuta desde `client/`:
 
-```bash
-vercel --prod
+```powershell
+vercel login
+pwsh -File scripts/deploy-phase2-frontends.ps1
 ```
 
-Ese comando actualiza `app.parmelia.me`; no debe crear ni enlazar otro proyecto.
+Ese flujo actualiza `app.parmelia.me` sin relink del cliente y promueve también
+el dashboard. `-PlanOnly` permite revisar el alcance sin autenticar ni mutar;
+`-ConfigureOnly` configura proyectos/variables sin desplegar.
 
 ## 9. Smoke test (en orden)
 
 ```bash
-pnpm --filter server test:unit           # 229 tests Node
+pnpm --filter server test:unit           # 253 tests Node
 pnpm --filter server test:worker-runtime # 22 tests workerd + D1 real
-cd contracts && forge test               # 191 pasan; 4 forks requieren RPC
+pnpm test:fork                            # 197 pasan; 6 forks vivos, 0 omitidos
 pnpm --filter server exec wrangler tail server # dejar abierto para ver logs
 ```
 
@@ -575,7 +806,10 @@ forge script script/Deploy.s.sol:DeployCctpPaymentRouter `
 
 Cada simulación valida chain ID, codehash de USDC/CCTP, CREATE2 deployer,
 capabilities Fast/Standard y dirección predicha. Base admite Fast/Standard;
-Fuji solo Standard. La fee de plataforma CCTP queda en `0` durante el piloto.
+Fuji solo Standard. La política comercial queda en `0` durante el piloto. El
+script nuevo despliega los CCTP routers con un techo inmutable de 100 bps para
+evitar otro cambio de bytecode si alguna excepción futura se aprueba; el techo
+es capacidad, no una comisión activa.
 
 ### 12.2 Broadcast y verificación de source
 
@@ -680,3 +914,40 @@ están en `contracts/deployments/testnet-smoke-evidence.json`; las direcciones y
 roles están en los cuatro manifests por contrato. Solo después de este cierre se
 activaron Arbitrum Sepolia, Base Sepolia y Fuji en `PAYMENT_NETWORKS`. No se
 desplegó ni habilitó ninguna mainnet.
+
+### 12.6 Activación futura y acotada de comisiones
+
+No hay que redeployar para cambiar una regla **si** el router ya tiene techo
+suficiente. Sin embargo, los CCTP routers hoy desplegados en Base Sepolia y Fuji
+tienen techo inmutable `0`: son correctos para el lanzamiento gratuito, pero
+deben redeployarse antes de permitir cualquier fee positiva en esas rutas. Los
+scripts locales ya preparan nuevos routers con cap `100`; esta edición no los
+ha publicado ni ha cambiado manifests remotos.
+
+Orden obligatorio si negocio aprueba una excepción de cobro:
+
+1. Mantén `PAYMENT_FEE_POLICY_JSON` vacío mientras preparas infraestructura.
+2. Para toda ruta cuyo manifest declare cap `0`, dry-run, despliega, verifica y
+   ejecuta el smoke del router nuevo. Actualiza manifest y `shared/networks.ts`
+   únicamente después de leer por RPC dirección, codehash, USDC, treasury,
+   signer, pause state y cap.
+3. Confirma que `0002_fee_policy_and_ledger.sql` figura aplicada en
+   `d1_migrations` (no la reapliques), configura
+   `PAYMENT_PLATFORM_FEE_RECIPIENT` y exige
+   `PAYMENT_ROUTER_PREFLIGHT_ENABLED=true`.
+4. Confirma `/health` y `/health/ops` verdes para **todas** las rutas habilitadas.
+5. Activa primero una regla versionada canary, acotada por `merchantIds`, modo,
+   chain, ruta y/o monto. Nunca estrenes una comisión con una regla global.
+6. Comprueba quote, snapshot firmado, transferencias, ledger, dashboard y
+   webhook. El comercio debe recibir siempre el neto del intent; la fee se suma
+   al pagador y jamás se descuenta silenciosamente.
+7. Para rollback elimina/deja vacío el documento de policy. Nuevas quotes vuelven
+   a `free-default`; quotes positivas ya emitidas pueden reservarse solo hasta su
+   expiración corta (2 min) y attempts firmados terminan con su snapshot original.
+   Si el corte debe ser inmediato por incidente, deshabilita la source route o
+   pausa el router y espera quote + authorization TTL antes de reabrir gratuito.
+
+La App conserva además `GATOPAGO_FEES_ENABLED=false` como switch maestro para
+swap/cross-chain personal y compatibilidad N-1. Los BPS aislados no cobran nada,
+y la política canónica de merchant checkout vive solo en Payments para impedir
+un doble cobro entre Workers.

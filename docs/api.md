@@ -1,17 +1,20 @@
 # GatoPago Payments API
 
-Accept stablecoin payments (USDC on Arbitrum) with a Stripe-style flow: create a
-**Payment Intent**, share a **checkout link or QR**, and receive a signed
-**webhook** when it's paid. No blockchain knowledge required from your customers.
+Accept USDC from Arbitrum, Base, or Avalanche with an intent-based flow: create a
+**Payment Intent**, share one **checkout link or QR**, and receive the merchant's
+chosen settlement in Arbitrum plus a signed webhook. The payer chooses a wallet;
+GatoPago selects only routes supported by the source chain.
 
-- **Base URL:** `https://server.parmelia.workers.dev`
+- **Payments base URL:** `https://gatopago-payments-api.parmelia.workers.dev`
+- **Temporary compatibility proxy:** `https://server.parmelia.workers.dev`
 - **Version:** all endpoints are under `/v1`.
 - **Content type:** `application/json` (request and response).
 - **Get your keys:** create API keys and register webhooks in the dashboard at
   `https://dashboard.parmelia.me`.
 
-> This reference documents what is live today. Items marked _(roadmap)_ are
-> designed but not yet enabled.
+> The Phase 2 code is implemented locally, but the new Worker and D1 are not
+> deployed by this change. Until the controlled cutover, use the compatibility
+> host of the environment being tested. Mainnet remains disabled.
 
 ---
 
@@ -21,16 +24,16 @@ Authenticate every `/v1` request with a secret API key in the `Authorization`
 header:
 
 ```
-Authorization: Bearer sk_live_your_key_here
+Authorization: Bearer sk_test_your_key_here
 ```
 
 - Keys come in two modes:
   - `sk_test_…` — **test mode**, settles on Arbitrum Sepolia. Use it to build and
     to drive the [sandbox](#test-mode--sandbox).
-  - `sk_live_…` — **live mode**. Will settle on Arbitrum One; the Arbitrum One
-    contracts are **not deployed yet**, so live mode is not operational — the API
-    fails closed (`CONTRACT_NOT_DEPLOYED`) rather than pointing at placeholder
-    addresses. Build against test mode today.
+  - `sk_live_…` — **live mode futuro**. El Dashboard no permite crearla hoy y
+    el backend responde `503 SERVICE_UNAVAILABLE` si una clave histórica intenta
+    crear un cobro. Habilitarla exige flag, settlement mainnet y al menos una
+    ruta mainnet desplegada y activa en el manifest. Build against test mode today.
 - The secret is shown **once**, at creation, in the dashboard. Store it securely;
   only its hash is kept server-side. If leaked, revoke it in the dashboard.
 - Never expose `sk_` keys in client-side code. They are server-to-server only.
@@ -47,7 +50,7 @@ A missing or invalid key returns `401` with a stable code:
 
 ```bash
 # 1. Create a payment intent for 25 USDC, tagged with your order id.
-curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
+curl -X POST https://gatopago-payments-api.parmelia.workers.dev/v1/payment_intents \
   -H "Authorization: Bearer sk_test_xxx" \
   -H "Content-Type: application/json" \
   -d '{"amount":"25.00","currency":"USDC","metadata":{"order_id":"A-1042"}}'
@@ -59,6 +62,7 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
   "object": "payment_intent",
   "status": "awaiting_payment",
   "amount": "25.00",
+  "amount_atomic": "25000000",
   "currency": "USDC",
   "reference": null,
   "metadata": { "order_id": "A-1042" },
@@ -78,22 +82,67 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
 
 ## Payment flows
 
-A payment intent can be paid two ways. You create the intent the same way for
-both; the difference is who pays and how.
+A payment intent has one public checkout. A GatoPago account uses the local
+Arbitrum router; an external wallet first requests a quote for its chain and
+then receives an EIP-712 attempt authorization. Base supports Fast or Standard
+CCTP; Avalanche is Standard-only. The merchant still settles USDC on Arbitrum.
 
-### Flow A — pay with a GatoPago account (default)
+### Flow A — pay with a GatoPago account (optional)
 
-The customer opens `checkout_url` in GatoPago and pays with their passkey. Gas is
-sponsored; nothing is needed from you beyond the `checkout_url`. Best when your
-customers are (or will become) GatoPago users.
+The customer opens `checkout_url`, chooses their GatoPago balance and pays with
+their passkey. Gas is sponsored. The public checkout defaults to an external
+wallet and never requires login unless the payer explicitly chooses this method.
 
-### Flow B — pay from any external wallet (on-chain)
+### Flow B — pay from an external wallet
 
-Lets anyone pay from any wallet (MetaMask, an exchange withdrawal, another dapp)
-without a GatoPago account, via the on-chain **PaymentRouter**. You request a
-signed authorization and the payer's wallet calls the router. Funds go **directly
-to the merchant**; GatoPago never custodies them. See
-[On-chain authorization](#get-an-on-chain-authorization-flow-b).
+The checkout creates an attempt-scoped browser capability, calls
+`POST /checkout/{linkId}/quotes`, proves control of the quoted payer by signing
+the returned message, and reserves exactly one signed attempt with
+`POST /checkout/{linkId}/attempts`. It broadcasts the indicated local or CCTP
+router call and reports the source transaction. Payments accepts that hash only
+after independently verifying its receipt, sender, router and exact event. Router watchers can
+recover the attempt from its on-chain event even if the browser closes before
+registration. GatoPago does not hold payer funds between transactions.
+
+---
+
+## Payment economics
+
+GatoPago's commercial default is **zero platform fees**. An absent
+`PAYMENT_FEE_POLICY_JSON` resolves to the immutable `free-default` policy; a
+non-zero environment value on its own does not activate charging. CCTP network
+fees, when applicable, are rail costs paid to Circle and are never reported as
+GatoPago revenue.
+
+The intent `amount` and `settlement_amount_atomic` are the merchant's net
+receivable. The payer's maximum is calculated independently:
+
+```text
+gross_payer_amount_atomic
+  = settlement_amount_atomic
+  + platform_fee_atomic
+  + cctp_fee_atomic
+```
+
+Every quote returns the matched versioned policy, platform fee, CCTP ceiling,
+gross payer amount, bearer and deployed router cap. Reserving an attempt copies
+those values into `fee_snapshot`; later policy edits cannot rewrite an existing
+signature or charge. `GET /v1/payment_intents/{id}` returns `fee_breakdown`
+when evidence exists, with separate `platform` and `network` lines plus quoted
+and actual totals. The same breakdown is included in paid/overpaid webhook
+payloads so merchants can reconcile without inferring fees from transfer
+deltas.
+
+A positive platform-fee rule is rejected unless all of these are true:
+
+- the rule is explicit, unambiguous and at most 100 bps;
+- `PAYMENT_PLATFORM_FEE_RECIPIENT` is valid;
+- the declared route and immutable deployed router cap permit it;
+- on-chain preflight confirms code, signer, USDC, treasury, pause state and
+  route-specific CCTP configuration immediately before authorization.
+
+This capability exists for a future scoped exception; it is not an active
+commercial fee policy.
 
 ---
 
@@ -111,8 +160,9 @@ to the merchant**; GatoPago never custodies them. See
 | `reference` | string \| null | Your free-text note (≤200 chars). |
 | `metadata` | object | Your opaque key/values, echoed in webhooks. |
 | `checkout_url` | string | Hosted checkout link (Flow A). |
-| `tx_hash` | string \| null | On-chain tx hash once paid. |
+| `tx_hash` | string \| null | Settlement evidence hash once paid. |
 | `mode` | string | `test` or `live`. |
+| `fee_breakdown` | object \| null | Platform and network fee evidence on the detail endpoint. |
 | `expires_at` | string | ISO 8601 UTC. |
 | `created_at` | string | ISO 8601 UTC. |
 
@@ -122,6 +172,8 @@ to the merchant**; GatoPago never custodies them. See
 |---|---|
 | `awaiting_payment` | Created, waiting for the customer to pay. |
 | `paid` | Payment confirmed; funds are in the merchant's account. Fires `payment.paid`. |
+| `overpaid` | Confirmed output exceeded the intended amount. Fires `payment.overpaid`. |
+| `processing` | Source execution is confirmed and settlement is still advancing. |
 | `canceled` | Canceled by the merchant before payment. |
 | `expired` | Past `expires_at` without payment. _(Auto-expiry is roadmap; treat `expires_at` as advisory and cancel intents you no longer want.)_ |
 
@@ -135,7 +187,7 @@ to the merchant**; GatoPago never custodies them. See
 | `currency` | no | Asset symbol; defaults to `USDC`. Must be supported on the active chain. |
 | `metadata` | no | Object of your own keys (`order_id`, `invoice_id`, …). Max 8 KB. |
 | `reference` | no | Short note (≤200 chars). |
-| `expires_in` | no | Seconds until expiry, 60–86400. Default 3600. |
+| `expires_at` | no | ISO timestamp within the next seven days. Default: one hour. |
 
 Headers:
 
@@ -145,7 +197,7 @@ Headers:
 Returns `201` with the payment intent (or `200` if an idempotent replay matched).
 
 ```bash
-curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
+curl -X POST https://gatopago-payments-api.parmelia.workers.dev/v1/payment_intents \
   -H "Authorization: Bearer sk_test_xxx" \
   -H "Idempotency-Key: order-A-1042" \
   -H "Content-Type: application/json" \
@@ -154,7 +206,7 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
     "currency": "USDC",
     "reference": "Order A-1042",
     "metadata": { "order_id": "A-1042", "customer_id": "u_88" },
-    "expires_in": 1800
+    "expires_at": "2026-08-24T18:00:00.000Z"
   }'
 ```
 
@@ -171,63 +223,43 @@ curl -X POST https://server.parmelia.workers.dev/v1/payment_intents \
 `POST /v1/payment_intents/{id}/cancel` → the updated intent.
 Only valid while `awaiting_payment`; otherwise returns `409 INTENT_NOT_PAYABLE`.
 
-### Get an on-chain authorization (Flow B)
+### Quote and authorize an external-wallet attempt (Flow B)
 
-`GET /v1/payment_intents/{id}/onchain`
+The canonical flow is public and scoped to the checkout link:
 
-Returns a GatoPago-signed authorization the payer's wallet uses to call the
-PaymentRouter. The signature binds the chain, router, invoice, token, amount,
-merchant and fee — the payer cannot change any of them.
+1. `GET /checkout/{linkId}` lists only enabled chains and routes.
+2. Generate a random 32-byte capability in the browser and keep it only in
+   `sessionStorage`. `POST /checkout/{linkId}/quotes` with `payer`,
+   `source_chain_id`, its SHA-256 as `attempt_capability_hash`, optional
+   `route`, and `amount` when the intent has `amount_mode=payer_defined`. CCTP
+   quotes use Circle's live fee response and fail closed if it is
+   stale, unavailable, or malformed. The response also contains
+   `platform_fee_atomic`, `cctp_fee_atomic`, `gross_payer_amount_atomic`,
+   `fee_policy`, `platform_fee_bps`, `platform_fee_bearer`,
+   `platform_fee_recipient`, and `route_fee_cap_bps`.
+3. Ask that exact payer to `personal_sign` the returned `payer_proof_message`.
+   `POST /checkout/{linkId}/attempts` with `quote_id`,
+   `payer_proof_signature`, the required `Idempotency-Key` and the raw capability
+   in `X-GatoPago-Checkout-Capability`. Only one unexpired attempt can be active.
+4. Build calldata from the returned `router`, `authorization`, and `signature`;
+   do not create calldata before the attempt exists.
+5. After the wallet sees a successful receipt, call
+   `POST /checkout/{linkId}/attempts/{attemptId}/register` with
+   `source_tx_hash` and the same capability header. A pending receipt returns
+   `409` without persisting the hash; mismatched sender/router/event is rejected.
+   The watcher can still recover the attempt from its on-chain event if this
+   request never arrives.
 
-```json
-{
-  "router": "0x…",
-  "chainId": 421614,
-  "invoiceId": "0x…",
-  "token": "0x…",
-  "amount": "25000000",
-  "merchant": "0x…",
-  "feeBps": 0,
-  "deadline": 1750000000,
-  "signature": "0x…",
-  "call": {
-    "function": "payInvoice(bytes32,address,uint256,address,uint256,uint256,bytes,bytes)",
-    "args": "invoiceId, token, amount, merchant, feeBps, deadline, signature, metadata(0x)"
-  },
-  "callWithPermit": {
-    "function": "payInvoiceWithPermit(bytes32,address,uint256,address,uint256,uint256,bytes,bytes,uint256,uint8,bytes32,bytes32)",
-    "args": "…same first 8 args…, permitDeadline, v, r, s"
-  }
-}
-```
+Reading, registering or canceling an attempt requires the same capability and
+returns `404` for a missing or incorrect value. An active-attempt conflict never
+reveals the winner's authorization. Reservations without a broadcast can be
+canceled immediately; stale `submitted` rows expire automatically if canonical
+evidence never appears.
 
-`callWithPermit` is **only present when the deployed router on the active chain
-supports it** (feature-flagged per network). Always feature-detect on the field
-instead of assuming it: the currently deployed testnet router predates
-`payInvoiceWithPermit`, so today the response carries `call` only.
-
-The payer's wallet then sends two transactions on the active Arbitrum chain:
-
-```solidity
-// 1) allow the router to pull the tokens
-USDC.approve(router, amount)
-
-// 2) pay — funds go straight to `merchant`, fee (if any) to the treasury
-PaymentRouter.payInvoice(invoiceId, token, amount, merchant, feeBps, deadline, signature, "0x")
-```
-
-**One transaction with permit (optional, when `callWithPermit` is present).** If
-the token supports EIP-2612 (USDC does) and the deployed router exposes it, the
-payer can skip the `approve` by signing a permit off-chain and calling
-`payInvoiceWithPermit(...)` with the permit's `permitDeadline, v, r, s` appended —
-a single transaction instead of two.
-
-When the router's `InvoicePaid` event is observed, the intent flips to `paid` and
-the `payment.paid` webhook fires. Notes:
-
-- The payer pays their own gas (they are a crypto-native wallet).
-- `amount` is in atomic units (USDC has 6 decimals → `25000000` = 25 USDC).
-- Returns `400 ROUTER_DISABLED` if the router isn't deployed on the active chain.
+The signature binds payer, merchant, source chain, route, exact settlement
+amount, fee ceiling, validity window, metadata and router. `GET
+/v1/payment_intents/{id}/onchain` remains only as an N-1 compatibility endpoint
+and requires `payer` plus `source_chain_id`; new integrations should not use it.
 
 ### Simulate a payment (test mode)
 
@@ -239,7 +271,7 @@ minutes without acquiring testnet funds. Returns `400 SANDBOX_ONLY` with a live
 key, `409 INTENT_NOT_PAYABLE` if not awaiting payment.
 
 ```bash
-curl -X POST https://server.parmelia.workers.dev/v1/payment_intents/pi_3b1c…/simulate_payment \
+curl -X POST https://gatopago-payments-api.parmelia.workers.dev/v1/payment_intents/pi_3b1c…/simulate_payment \
   -H "Authorization: Bearer sk_test_xxx"
 ```
 
@@ -270,8 +302,8 @@ Every state change is recorded as an immutable event (the source of webhooks).
 
 | Type | Fires when |
 |---|---|
-| `payment.created` | A payment intent is created. |
 | `payment.paid` | A payment intent is confirmed paid (Flow A, Flow B, or sandbox). |
+| `payment.overpaid` | Confirmed settlement exceeded the intended amount. |
 
 _(Roadmap: `payment.expired`, `payment.failed`, `payment.refunded`.)_
 
@@ -287,9 +319,10 @@ Register your endpoint URL in the dashboard; you receive a **signing secret**
 ```
 POST <your endpoint>
 Content-Type: application/json
-GatoPago-Signature: <hmac-sha256 hex>
+GatoPago-Signature: v1=<hmac-sha256 hex>
 GatoPago-Timestamp: <unix seconds>
 GatoPago-Event-Id: evt_…
+GatoPago-Delivery-Id: whd_…
 ```
 
 Body:
@@ -298,7 +331,6 @@ Body:
 {
   "id": "evt_…",
   "type": "payment.paid",
-  "created": "2026-06-16T14:05:00.000Z",
   "data": {
     "id": "pi_3b1c…",
     "object": "payment_intent",
@@ -308,7 +340,34 @@ Body:
     "reference": "Order A-1042",
     "metadata": { "order_id": "A-1042" },
     "tx_hash": "0x…",
-    "mode": "test"
+    "mode": "test",
+    "fee_breakdown": {
+      "currency": "USDC",
+      "platform": {
+        "type": "platform",
+        "bearer": "none",
+        "quoted_amount_atomic": "0",
+        "actual_amount_atomic": "0",
+        "recipient": null,
+        "status": "waived",
+        "policy_id": "free-default",
+        "policy_version": 1,
+        "rule_id": "free-default"
+      },
+      "network": {
+        "type": "network",
+        "bearer": "none",
+        "quoted_amount_atomic": "0",
+        "actual_amount_atomic": "0",
+        "recipient": null,
+        "status": "waived",
+        "policy_id": "sandbox",
+        "policy_version": 1,
+        "rule_id": "free-default"
+      },
+      "total_quoted_atomic": "0",
+      "total_actual_atomic": "0"
+    }
   }
 }
 ```
@@ -317,14 +376,17 @@ Body:
 
 Compute `HMAC-SHA256(secret, "<timestamp>.<raw body>")` and compare, in constant
 time, to the `GatoPago-Signature` header. Reject stale timestamps to prevent
-replay.
+replay. Persist `GatoPago-Event-Id` as a unique key before applying the business
+effect: delivery is at-least-once, so a timeout or crash may produce the same
+event again under the same event ID. `GatoPago-Delivery-Id` identifies the
+physical endpoint delivery for support and retry diagnostics.
 
 ```js
 import crypto from "node:crypto";
 
 export function verifyGatoPagoWebhook(rawBody, headers, secret) {
   const ts = headers["gatopago-timestamp"];
-  const signature = headers["gatopago-signature"];
+  const signature = headers["gatopago-signature"]?.replace(/^v1=/, "");
   const expected = crypto
     .createHmac("sha256", secret)
     .update(`${ts}.${rawBody}`)
@@ -343,17 +405,14 @@ export function verifyGatoPagoWebhook(rawBody, headers, secret) {
 > Verify against the **raw request body**, byte-for-byte. Re-serializing the JSON
 > will change the bytes and break the signature.
 
-> During the brand transition, the same values are also sent through the
-> legacy `Parmelia-*` header aliases. New integrations should use `GatoPago-*`.
-
 ### Idempotency & retries
 
-- **Deduplicate** by `id` (or the `GatoPago-Event-Id` header): the same event may
+- **Deduplicate** by the body `id`: the same event may
   be delivered more than once.
 - **Respond `2xx` quickly** (under ~10s). Do slow work asynchronously.
-- On any non-`2xx` (or timeout), GatoPago retries with backoff:
-  ~1m → 5m → 30m → 2h → 6h → 24h (up to 6 attempts), then marks the delivery
-  failed. Deliveries survive restarts.
+- On any non-`2xx` (or timeout), GatoPago retries with exponential backoff,
+  capped at one hour. After eight delivery attempts it enters `dead` for
+  operator/manual replay. Deliveries and their logical event survive restarts.
 
 ---
 
@@ -399,17 +458,23 @@ Errors use standard HTTP status codes and a JSON body:
 |---|---|---|
 | 400 | `INVALID_AMOUNT` | `amount` missing or ≤ 0. |
 | 400 | `UNSUPPORTED_CURRENCY` | `currency` not supported on the active chain. |
-| 400 | `METADATA_TOO_LARGE` | `metadata` exceeds 8 KB. |
-| 400 | `INVALID_EXPIRY` | `expires_in` out of the 60–86400 range. |
-| 400 | `NO_WALLET` | The merchant has no receiving wallet yet. |
-| 400 | `ROUTER_DISABLED` | On-chain pay unavailable on the active chain. |
+| 400 | `INVALID_METADATA` | `metadata` is not an object or exceeds 8 KB. |
+| 400 | `INVALID_EXPIRY` | `expires_at` is invalid or outside the next seven days. |
+| 400 | `CHAIN_DISABLED` | The requested source chain is not enabled. |
+| 400 | `QUOTE_STALE` | The quote or its live fee observation expired. |
 | 400 | `SANDBOX_ONLY` | `simulate_payment` called with a live key. |
 | 401 | `UNAUTHENTICATED` | Missing `Authorization: Bearer sk_…` header. |
-| 401 | `INVALID_API_KEY` | Malformed, unknown, or revoked API key. |
 | 404 | `INTENT_NOT_FOUND` | No such payment intent for this account. |
 | 404 | `EVENT_NOT_FOUND` | No such event for this account. |
 | 409 | `INTENT_NOT_PAYABLE` | Intent is not in a state that allows the action (already paid, canceled, or past `expires_at`). |
-| 500 | `CONTRACT_NOT_DEPLOYED` | The active chain's contracts are not deployed yet (live mode pre-launch). |
+| 409 | `ATTEMPT_ACTIVE` | Another unexpired attempt already reserves the intent. |
+| 503 | `FEE_UNAVAILABLE` | Circle did not provide a current valid fee; no hidden fallback was used. |
+| 503 | `INVALID_FEE_POLICY` | The versioned platform-fee policy is malformed or incomplete. |
+| 503 | `AMBIGUOUS_FEE_POLICY` | Top-priority rules disagree; GatoPago refuses to choose silently. |
+| 503 | `INVALID_ROUTE_CAPABILITY` | The static route capability or immutable cap is invalid. |
+| 503 | `ROUTER_FEE_CAP_EXCEEDED` | The matched rule exceeds the deployed router ceiling. |
+| 503 | `ROUTER_PREFLIGHT_REQUIRED` | A paid rule was requested without mandatory on-chain preflight. |
+| 503 | `ROUTER_PREFLIGHT_FAILED` | Deployed router state differs from the signed execution assumptions. |
 | 500 | `SERVER_ERROR` | Unexpected error on our side. Retry; if it persists, contact support with `requestId`. |
 
 ---
@@ -418,9 +483,9 @@ Errors use standard HTTP status codes and a JSON body:
 
 | Item | Value |
 |---|---|
-| Chain (test) | Arbitrum Sepolia (`421614`) |
-| Chain (live) | Arbitrum One (`42161`) — contracts not deployed yet |
-| PaymentRouter | returned by `GET /v1/payment_intents/{id}/onchain` (`router`) |
-| `payInvoice` | `payInvoice(bytes32 invoiceId, address token, uint256 amount, address merchant, uint256 feeBps, uint256 deadline, bytes signature, bytes metadata)` |
-| `payInvoiceWithPermit` | `payInvoiceWithPermit(…payInvoice args…, uint256 permitDeadline, uint8 v, bytes32 r, bytes32 s)` — one-tx pay with an EIP-2612 permit. Only where the deployed router supports it (feature-detect on `callWithPermit`) |
-| `InvoicePaid` | `event InvoicePaid(bytes32 indexed invoiceId, address indexed payer, address indexed merchant, address token, uint256 amount, uint256 fee, bytes metadata)` |
+| Home/settlement test chain | Arbitrum Sepolia (`421614`) |
+| Source test chains | Arbitrum Sepolia (`421614`), Base Sepolia (`84532`), Avalanche Fuji (`43113`) |
+| Router | returned by `POST /checkout/{linkId}/attempts` |
+| Local execution | `ParmeliaPaymentRouterV2.pay(PaymentAuthorization,signature)` after USDC approval/permit |
+| CCTP execution | `ParmeliaCctpPaymentRouter.pay(CctpPaymentAuthorization,signature)`; Fast on Base, Standard on Base/Fuji |
+| Recovery event | `PaymentSettled` or `CctpPaymentBurned`, each carrying the signed intent/attempt identifiers |

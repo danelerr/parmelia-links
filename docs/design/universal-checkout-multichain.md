@@ -1,17 +1,24 @@
 # Plan de implementación — Checkout universal y aceptación USDC en tres redes
 
-**Fecha:** 23 de agosto de 2026  
-**Estado:** propuesta ejecutable; no implica despliegue ni cambia por sí sola el diseño vigente  
-**Primera salida objetivo:** Arbitrum como red hogar; cobros desde Arbitrum, Base y Avalanche  
+**Fecha:** 25 de agosto de 2026<br>
+**Estado:** Fase 1 cerrada en testnet; corte App/Payments histórico promovido pero Fase 2.1 reabierta por auditoría<br>
+**Primera salida objetivo:** Arbitrum como red hogar; cobros desde Arbitrum, Base y Avalanche<br>
 **Activo inicial:** USDC nativo
 
 Este documento convierte la visión de intents, routing y settlement en un primer
-corte de producto acotado. No propone transformar toda la aplicación en una
-wallet multichain antes de mainnet.
+corte de producto acotado. La Fase 1 de contratos/testnets ya tiene evidencia y
+la separación App/Payments de la Fase 2 ya existe en el código y las migraciones.
+La revisión posterior detectó gaps de configuración, recuperación, concurrencia,
+contabilidad y cutover; ya se incorporaron al alcance y se corrigieron localmente
+en 3A–3C. La promoción sigue bloqueada hasta completar los gates remotos. Este plan no
+propone transformar toda la aplicación en una wallet multichain antes de mainnet.
 
-Mientras esta propuesta no sea aceptada e implementada, el diseño operativo
-vigente sigue siendo [`cross-chain.md`](./cross-chain.md) y la realidad del código
-prevalece sobre ambos documentos.
+La Fase 2 sí fue provisionada y desplegada el 25-08-2026, pero el Worker remoto
+no contiene el hardening posterior, falta `0006` y el checksum histórico sólo
+cubría IDs. El siguiente rollout no reetiqueta esa evidencia: conserva la D1 y
+repite freeze/import/verify hacia un target nuevo mediante manifest v4/checksum
+semántico v2. La realidad del código y de los preflights prevalece sobre cualquier
+casilla histórica de este documento.
 
 ## 0. Decisión ejecutiva
 
@@ -32,7 +39,7 @@ universal ni una wallet plenamente operativa en tres redes.
 
 | Origen del pago | Ejecución | Liquidación del comercio |
 |---|---|---|
-| Saldo GatoPago en Arbitrum | UserOperation actual + passkey | USDC en Arbitrum |
+| Saldo GatoPago en Arbitrum | UserOperation + `ParmeliaPaymentRouterV2` + passkey | USDC en Arbitrum |
 | Wallet externa en Arbitrum | `ParmeliaPaymentRouterV2` | USDC en Arbitrum |
 | Wallet externa en Base | `ParmeliaCctpPaymentRouter` + CCTP v2 | USDC en Arbitrum |
 | Wallet externa en Avalanche | `ParmeliaCctpPaymentRouter` + CCTP v2 | USDC en Arbitrum |
@@ -79,36 +86,34 @@ posterior y solo avanza si (a) existe capital preposicionado recurrente, (b) el
 beneficio de latencia/costo es medible y (c) existe un modelo de autorización
 compatible con las políticas limitadas de GatoPago.
 
-## 1. Hechos actuales que condicionan el plan
+## 1. Hechos de partida y estado que condicionan el plan
 
 1. El runtime sigue siendo mono-chain: `CHAIN_KEY` y `VITE_CHAIN_KEY` eligen una
    única red activa. `getPublicClient`, cuentas, balance, paymaster, indexer y Home
    dependen de esa red.
 2. `PayPage.tsx` es público para leer el link, pero el botón de pago exige login y
    termina en `/pay/prepare`; la wallet externa no está integrada en el checkout.
-3. El Flow B existe en backend y contrato, pero
-   `GET /v1/payment_intents/:id/onchain` exige la clave secreta del comercio. No
-   es un endpoint que pueda consumir de forma segura el navegador del pagador.
-4. El inbound CCTP público ya acepta una wallet externa y ya registra la operación
-   antes del burn, pero vive separado en `/cc/:recipient` y no está vinculado a un
-   `PaymentIntent`.
-5. `payment_intents` no guarda red de settlement ni intentos de ejecución. Su
-   `tx_hash` único deja de ser suficiente cuando hay burn en origen y mint en
-   destino.
-6. `crosschain_operations` ya modela source/destination chain, attestation,
-   retries y mint; se debe reutilizar, no reescribir.
-7. La quote CCTP actual usa constantes (`1.3 bps` estimado y `10 bps` de
-   `maxFee`). Para producción debe consultar la API de fees de Circle. Circle
-   advierte explícitamente que las fees pueden cambiar y no deben hardcodearse.
-8. El código ofrece `fast` por defecto también a Fuji. Circle soporta Fast como
-   origen en Arbitrum y Base, pero no en Avalanche; Avalanche debe usar Standard.
-9. Los contratos tienen una base saludable: en este corte `forge test` pasa
-   **124 tests**, con **1 fork test omitido** por falta de RPC. Eso valida pruebas
-   unitarias, no compatibilidad real en las tres redes ni readiness de mainnet.
-10. `DeploymentRoles` solo trata `42161` como mainnet. Base (`8453`) y Avalanche
-    (`43114`) quedarían fuera de la separación obligatoria de roles.
-11. El deploy del paymaster usa los mismos valores en `ether` para stake, depósito
-    y cap en cualquier red. Eso no es una política económica portable a AVAX.
+3. Flow B canónico ya usa endpoints públicos de quote/attempt ligados al payer;
+   `GET /v1/payment_intents/:id/onchain` queda solo como compatibilidad N-1.
+4. El inbound CCTP de cobro ya está ligado a `PaymentIntent`/`PaymentAttempt` y
+   vive en Payments. `/cc/:recipient` no es la nueva superficie de checkout.
+5. `payment_intents`, quotes y attempts ya conservan settlement, source/destination
+   tx y snapshot económico; no dependen de un único `tx_hash` ambiguo.
+6. Payments posee la máquina CCTP de attempts de checkout; App conserva la
+   máquina CCTP personal. Ninguna operación se copia, reconcilia o ejecuta desde
+   los dos dominios.
+7. Las quotes CCTP consultan la fee viva de Circle con timeout, caducidad y
+   fail-closed; no existe un fallback hardcodeado oculto.
+8. El registry y el router respetan capabilities: Base permite Fast/Standard y
+   Fuji únicamente Standard.
+9. Los contratos tienen una base saludable: `pnpm test:fork` pasa **197 tests**
+   sin fallos ni omisiones, incluidas seis pruebas fork vivas en Arbitrum
+   Sepolia, Base Sepolia y Fuji. Esto verifica las integraciones de testnet, no
+   equivale a readiness de mainnet ni sustituye una auditoría externa.
+10. `DeploymentRoles` trata Arbitrum, Base y Avalanche mainnet como entornos de
+    roles segregados; Base/Avalanche aún no activan cuenta/paymaster.
+11. Paymaster y smart account permanecen solo en la home chain. Antes de llevarlos
+    a otra red se necesitan parámetros de stake/deposit/cap propios de su moneda.
 12. Gateway resuelve saldo USDC unificado, no el onboarding instantáneo de fondos
     que todavía están en una wallet externa; su integración con smart accounts
     depende hoy de un EOA delegado con allowance completo sobre ese saldo.
@@ -132,6 +137,12 @@ Todo PR de esta iniciativa debe preservar estos invariantes:
 | U11 | Un refresh o cierre del navegador después del broadcast no puede dejar el pago sin atribuir. |
 | U12 | No se afirma “exactamente una vez entre chains”: se previene lo prevenible y un segundo settlement se detecta como sobrepago. |
 | U13 | Un link de monto abierto fija el monto antes de emitir autorización y no permite que dos pagadores congelen valores distintos. |
+| U14 | Cada tabla mutable tiene un único dominio propietario; ningún Worker escribe directamente en la base del otro. |
+| U15 | Checkout y `/v1` continúan operativos aunque el Worker de la app no esté disponible. |
+| U16 | Ninguna transición depende de una transacción distribuida: commands, jobs y callbacks son versionados e idempotentes. |
+| U17 | La política comercial por defecto es `free-default`: ninguna variable BPS aislada puede activar un cobro. |
+| U18 | Quote y attempt congelan policy/version/rule, fee, bearer, recipient y cap; un cambio posterior nunca modifica una autorización firmada. |
+| U19 | Un cambio o fallback de paymaster ocurre antes de la firma, reconstruye/reestima la UserOperation y conserva proveedor + dirección exacta para drenaje. |
 
 U12 merece atención: tres contratos en tres redes no comparten storage. Ningún
 `mapping(invoiceId => paid)` puede impedir por sí solo que dos autorizaciones ya
@@ -155,6 +166,8 @@ PaymentIntent
        GatoPago/Arb   wallet/Arb   wallet/Base o Avalanche
              │           │           │
          UserOp      local router    CCTP payment router
+             │           │           │
+         local router    │           │
              │           │           │
              └───────────┴──────┬────┘
                                 ▼
@@ -332,9 +345,25 @@ registry tipado y validarse contra codehash/config al iniciar.
 
 ### 5.2 Datos — migración propuesta de payment attempts
 
-Usar el siguiente número libre al implementarla (actualmente
-`0033_payment_attempts.sql`). `0030`–`0032` ya pertenecen al acceso por código,
-registro WebAuthn y step-up de recuperación, respectivamente.
+Crear el schema en la nueva base propietaria mediante
+`payments-worker/migrations/0001_payments_schema.sql`. La app conserva su
+historial `0001`–`0032`; si necesita adaptar `pending_payments` o retirar una FK
+cross-domain, usa su siguiente número libre (`0033`) sin administrar tablas de
+Payments. El procedimiento de copy/cutover se define en §5.6.
+
+Extender `merchants` para que Payments no dependa de un join contra `users`:
+
+```text
+owner_uid                    -- referencia lógica, sin FK cross-database
+settlement_wallet_address
+settlement_chain_id
+account_version              -- rechaza snapshots viejos de App
+updated_at
+```
+
+La wallet se copia desde el perfil vigente durante el backfill. Todo cambio
+posterior llega mediante el command versionado App → Payments; una quote siempre
+congela la wallet efectiva dentro de `route_json`.
 
 Extender `payment_intents`:
 
@@ -383,9 +412,13 @@ created_at / updated_at / completed_at
 - un solo intento **activo** por intent mediante índice parcial. El índice evita
   nuevas quotes concurrentes en D1, pero no se presenta como lock cross-chain.
 
-Añadir `payment_attempt_id` nullable y único a `crosschain_operations`. Esa tabla
-continúa siendo la máquina CCTP detallada; `payment_attempts` es la vista de
-orquestación común.
+La tabla `crosschain_operations` de `PAYMENTS_DB` incluye un
+`payment_attempt_id` único y modela únicamente el CCTP de checkout;
+`payment_attempts` es su vista de orquestación común. Las operaciones CCTP
+personales y su tabla histórica permanecen en App y no se copian como intents ni
+como filas query-only. En Payments, `payer_uid` es opcional: un checkout externo
+puede no tener usuario GatoPago y conserva `payer_address`/`owner_uid` como
+identidad de atribución.
 
 Migración de links:
 
@@ -400,7 +433,8 @@ Migración de links:
 
 ### 5.3 Servicios
 
-Extraer del actual `storage.ts` y añadir:
+Mover desde el actual `server/src/services/storage.ts` hacia repositorios propios
+de `payments-worker/` y añadir:
 
 | Servicio | Responsabilidad |
 |---|---|
@@ -465,8 +499,9 @@ integradores; no se expone una `sk_` en el checkout.
   local = evento/finalidad de Arbitrum; CCTP = `MintAndWithdraw` verificado en
   Arbitrum.
 - Reutilizar Iris, `validateCctpMessage`, retries, `manual_complete` y gas-gating.
-- Parametrizar el watcher del router por chain y usar el journal/checkpoints
-  existentes con `chain_id`; no crear un indexador paralelo sin reorg handling.
+- Parametrizar el watcher del router por chain y reutilizar el algoritmo de
+  journal/checkpoints/reorg handling con tablas propias en `PAYMENTS_DB`; no leer
+  ni escribir el journal de App ni crear un watcher ingenuo paralelo.
 - El evento del router permite encontrar un attempt aunque el cliente no haya
   llamado `/register`.
 - La transición `processing → paid` y el outbox de webhook ocurren en un batch
@@ -475,6 +510,154 @@ integradores; no se expone una `sk_` en el checkout.
   esperado aparece. Nunca perder esa evidencia aunque el intent ya esté `paid`.
 - Un attempt fallido no mata el intent: si no hubo movimiento y el link no
   expiró, vuelve a permitir una nueva quote.
+
+### 5.6 Topología de despliegue, datos y escala
+
+La Fase 2 adopta **dos Workers públicos, dos D1 físicos y dos colas**. El
+dashboard es un cliente del dominio de pagos; no tiene ni necesita un “Worker
+del dashboard”. Tampoco se crea ahora un tercer Worker de settlement.
+
+| Opción evaluada | Decisión | Motivo |
+|---|---|---|
+| Un Worker + un D1 | Rechazada | Mezcla secretos, releases, SLAs y dos dominios con ritmos distintos. |
+| Dos Workers + un D1 compartido | Rechazada | Aísla código, pero conserva contención, schema acoplado y permisos de escritura cruzados. |
+| Dos Workers + dos D1 | **Elegida** | Aísla fallos y escrituras sin introducir una cadena de microservicios. |
+| Tres Workers desde ahora | Diferida | El consumidor Queue puede vivir en Payments; extraerlo hoy no aumenta throughput de D1 y sí añade versionado/deploy operacional. |
+
+```text
+App React ───────────────► App API (`server`) ───► GATOPAGO_DB
+       │                         │                     │
+       │                         └──── app-jobs ───────┘
+       │
+       └─ links/pagos ──► gatopago-payments-api ─► PAYMENTS_DB
+                                  ▲       │              │
+Dashboard React ──────────────────┤       └─ payment-jobs┘
+Checkout público ─────────────────┘
+
+Compatibilidad temporal:
+App API (`server`) ── Service Binding RPC ──► gatopago-payments-api
+```
+
+La dependencia interna es **unidireccional**: app → payments. Payments nunca
+llama sincrónicamente a app para crear una quote, aceptar un pago o reconciliarlo.
+Así, una incidencia de Home, passkeys o indexación personal no tira el checkout
+ni la API del comercio. El Service Binding se usa durante la migración para
+conservar rutas existentes y para commands internos acotados; los clientes nuevos
+hablan directamente con el Worker propietario.
+
+| Deployable | Posee | Superficies principales | Secretos/capabilities |
+|---|---|---|---|
+| App API (código y deploy remoto `server`) | identidad de producto, smart accounts, UserOperations, Home, ledger, swaps, Earn, contactos, card e indexación de wallets | `/auth`, `/user`, `/account`, `/home`, `/pay` de ejecución, `/swap`, `/earn`, `/contacts`, `/card` | email, recovery, paymaster, bundler/relayer ERC-4337 y RPCs de cuenta |
+| `gatopago-payments-api` (nuevo `payments-worker/`) | links, merchants, intents, quotes, attempts, routing, CCTP de pagos, settlement, eventos y webhooks | `/links`, `/checkout`, `/v1`, `/merchant` y endpoints de ingestión de routers | signer de autorizaciones, CCTP/relayer de cobros, webhook encryption y RPCs de pago por chain |
+
+Ambos Workers verifican los Firebase ID tokens localmente contra JWKS; Payments
+no delega autenticación de dashboard a App. Las API keys `sk_` existen solo en
+Payments. App usa el RPC interno únicamente para commands con identidad y
+versión explícitas, por ejemplo provisionar/actualizar la wallet de settlement o
+conservar temporalmente una ruta antigua.
+
+El primer cutover actualiza App **in-place** bajo el nombre remoto `server` y
+conserva `parmelia-scheduled-jobs`. Renombrar esos recursos no forma parte de la
+frontera de dominio y se difiere para evitar migrar a la vez secretos, Durable
+Objects, URLs públicas y estado de Queue.
+
+`/crosschain` se separa por intención, no por archivo heredado. Una transferencia
+CCTP personal iniciada por la cuenta —incluidos su estado, reconciliación y
+relayer— permanece en App. Solo el CCTP que ejecuta un `PaymentIntent` de
+checkout/comercio pertenece a Payments. Son dos casos de uso y dos estados
+propietarios; no se copian operaciones personales a `PAYMENTS_DB` ni se ejecuta
+una misma operación desde ambos Workers.
+
+#### Propiedad de datos
+
+La opción “dos Workers, un solo D1” queda descartada. Cloudflare escala las
+invocaciones de Worker, pero cada D1 individual procesa queries de forma
+single-threaded. Compartir la base conservaría el mismo cuello de botella de
+escritura y permitiría que cualquier cambio de app rompiera pagos.
+
+- `GATOPAGO_DB` permanece con la app: `users`, auth/WebAuthn, passkeys,
+  operaciones de cuenta/UserOp, ledger, balances/read models, swaps, Earn,
+  contactos, card y estado del indexer de wallets.
+- `PAYMENTS_DB` nace en Fase 2: `payment_links`, `merchants`, `api_keys`,
+  `payment_intents`, `payment_attempts`, `crosschain_operations` de checkout,
+  settlement checkpoints, `payment_fee_ledger`, `webhook_endpoints`, `events`,
+  `webhook_deliveries`, rate limits y outboxes de pago.
+- `owner_uid`, `payer_uid` o `payment_attempt_id` son referencias lógicas entre
+  dominios, nunca foreign keys cross-database. El comercio guarda en Payments
+  su wallet de settlement versionada; no hace un join en vivo contra `users`.
+- Cuando App crea o cambia una cuenta, envía a Payments un command idempotente
+  con `accountVersion`; Payments rechaza updates viejos y el checkout sigue
+  leyendo su snapshot local.
+- Links, intents, attempt, evento y webhook outbox sí viven juntos en
+  `PAYMENTS_DB`, por lo que cada transición económica y su evento se confirman
+  en un único `D1.batch()` atómico.
+- Rutas y handlers no reciben un binding D1 genérico. Acceden mediante
+  repositorios del dominio; esto impide imports accidentales y deja una costura
+  para particionar Payments por comercio si la carga medida lo exige.
+
+La base nueva tiene su propio historial desde
+`payments-worker/migrations/0001_payments_schema.sql`; `0002` añade snapshots y
+ledger económico y `0003` indexa los hot paths de checkout, reconciliación,
+health, retención y cursores con un gate local de planes de consulta. En App,
+`0033` adapta referencias locales como
+`pending_payments.payment_attempt_id` y `0034` registra sponsorship; ninguna
+crea ni administra tablas de Payments.
+El cutover aplica primero `0001` + `0002` + `0003` mediante Wrangler para conservar su
+historial canónico y después carga un artefacto data-only que nunca toca
+`d1_migrations`. El script copia IDs intactos, calcula conteos/checksums, prueba
+la importación sobre un schema recién migrado, rechaza replay/D1 no vacía y
+verifica backup/restore; las tablas legadas no se borran en la misma entrega y
+quedan read-only hasta cerrar el soak test.
+
+#### Consistencia sin transacciones distribuidas
+
+El pago con saldo GatoPago usa también el router local para que las tres rutas
+produzcan evidencia uniforme:
+
+```text
+1. payments: crea y reserva PaymentAttempt
+2. payments: emite plan/autorización versionada y corta
+3. app: prepara/firma/transmite UserOperation que llama al router local
+4. payments: observa InvoicePaid y liquida intent + outbox atómicamente
+5. app: indexa la transferencia en el ledger de usuario de forma idempotente
+```
+
+Si cualquier paso se repite, `attemptId`, `authorizationHash`, tx hash y CAS
+producen el mismo resultado. La evidencia on-chain reconcilia estados dudosos;
+no se intenta mantener una transacción abierta entre Workers o entre D1.
+
+Los contratos RPC y mensajes de Queue viven como schemas TypeScript puros en
+`shared/`, incluyen `contractVersion`/`messageVersion` y no importan storage ni
+handlers. Cada cola tiene un único consumidor lógico en su Worker propietario,
+IDs de dedupe, retries y DLQ. Queues entrega al menos una vez, por lo que toda
+operación de dinero o webhook debe tolerar duplicados.
+
+#### ¿Cuándo sí extraer un tercer Worker?
+
+No se divide por cantidad de endpoints ni “por si acaso”. El candidato futuro
+es `gatopago-settlement-consumer`, privado y queue-only. Se extrae sin cambiar la
+API pública ni el schema de mensajes cuando se cumpla al menos uno de estos
+gates medidos:
+
+1. la clave de mint/relayer requiere una frontera de permisos o rotación
+   independiente del Worker HTTP;
+2. settlement necesita un ciclo de deploy/on-call distinto;
+3. el lag de `payment-jobs` incumple su SLO después de ajustar concurrencia,
+   batching y queries;
+4. el bundle, CPU o memoria del dominio de pagos se acerca de forma sostenida a
+   límites de plataforma.
+
+Un `checkout-edge` separado solo se considera si tráfico público/abuso afecta el
+SLO de `/v1` y `/merchant` aun con rate limits. Agregar tráfico normal no es un
+motivo: Workers escala horizontalmente. Si el cuello es D1, añadir Workers no lo
+arregla; se optimizan índices/queries y luego se particiona `PAYMENTS_DB` por
+merchant mediante el repositorio, manteniendo los mismos dos Workers.
+
+Los llamados síncronos se limitan a browser → Worker o app → payments: nunca una
+cadena de microservicios. Los RPC internos validan identidad/claims de forma
+explícita porque el contexto de Cloudflare Access no se propaga por Service
+Bindings. Los cambios de contrato interno son aditivos: primero se despliega el
+receptor compatible, después el caller y al final se retira la versión anterior.
 
 ## 6. Cambios de frontend
 
@@ -513,20 +696,18 @@ Esos términos pueden aparecer en “Detalles técnicos”.
 
 ### 6.2 Wallets externas
 
-Crear un `CheckoutWalletProvider` aislado del sistema de passkeys de GatoPago:
+Mantener el adaptador del pagador externo aislado del sistema de passkeys de
+GatoPago:
 
-- wagmi/viem para conexiones y writes;
-- injected/EIP-6963 para extensiones;
-- WalletConnect para móvil/QR;
-- connector adicional solo si las pruebas con usuarios lo justifican.
+- viem para lecturas y writes;
+- injected/EIP-1193 para extensiones o el navegador integrado de una wallet;
+- transferencia directa/QR cuando la ruta lo permita.
 
-`VITE_WALLETCONNECT_PROJECT_ID` es configuración pública del cliente, pero debe
-existir en el entorno de checkout y restringirse al dominio permitido en el
-proveedor.
-
-No reemplazar Firebase, passkeys ni el transporte ERC-4337 del resto de la app.
-El provider vive solo alrededor del checkout público para contener bundle y
-estado global.
+GatoPago no usa un proveedor externo para crear, custodiar o controlar sus
+wallets. El checkout no incorpora SDKs ni relays de conexión remota. Una wallet
+externa sólo se usa cuando el navegador ya expone una interfaz EIP-1193; en los
+demás casos se muestran instrucciones para abrir el link dentro de la propia
+wallet. Esto no reemplaza Firebase, passkeys ni ERC-4337 de GatoPago.
 
 Antes de escribir:
 
@@ -573,17 +754,23 @@ con checkout debe justificar por qué amplía el alcance.
 | Deploy | `contracts/script/Deploy.s.sol` | Parámetros económicos por chain, manifests y nuevos routers. |
 | Tests | `contracts/test/*.t.sol` | Unit, fuzz, invariants y tres suites fork; fixtures EIP-712 compartidos. |
 | Registry | `shared/networks.ts` | Seis redes, capabilities de pago y routers por red. |
-| Backend | `server/src/chain.ts` | viem chains para Arbitrum/Base/Avalanche y sus testnets. |
-| Backend | `server/src/services/clients.ts` | Factory de clients de pago por chain id; clients actuales siguen en home chain. |
-| Backend | `server/src/env.ts`, `runtimeConfig.ts` | Flags/RPC multired, HTTPS/mainnet, code y chain-id preflight. |
-| Backend | nuevo `server/src/routes/checkout.routes.ts` | API pública del checkout; auth y `/v1` permanecen separados. |
-| Backend | `server/src/routes/links.routes.ts`, `v1.routes.ts` | Todo link crea intent; respuestas incluyen settlement sin romper campos actuales. |
-| Backend | `server/src/services/storage.ts` | Extraer attempts; no seguir creciendo el hotspot. |
-| Backend | nuevos servicios de §5.3 | Policy/quote/auth/reconciliation por responsabilidad. |
-| Backend | `server/src/services/crosschainRelayer.ts` | Enlazar CCTP con attempt/intent y validar el nuevo sender router. |
-| Backend | `server/src/services/eventJobs.ts`, `eventScheduler.ts` | Watcher particionado por source chain con checkpoints. |
-| Datos | nueva migración (siguiente número libre; actualmente `0033_payment_attempts.sql`) | Intents enriquecidos, attempts y relación CCTP. |
+| App Worker | `server/src/index.ts`, `wrangler.jsonc` | Convertir el deployable actual en `gatopago-app-api`; conservar solo rutas/jobs/datos de app y añadir binding RPC unidireccional a Payments. |
+| App Worker | `server/src/routes/{links,pay,crosschain}.routes.ts` | Separar ejecución de cuenta de orquestación; proxies de compatibilidad temporales sin acceso a `PAYMENTS_DB`. |
+| Payments Worker | nuevo `payments-worker/` | Deployable `gatopago-payments-api` con Hono, health, auth JWKS/API keys, D1, Queue, DLQ y observabilidad propias. |
+| Payments Worker | nuevo `payments-worker/src/chain.ts`, `services/clients.ts` | viem/RPCs de pago para Arbitrum/Base/Avalanche y sus testnets; la app conserva clients de home chain. |
+| Payments Worker | nuevo `payments-worker/src/routes/{links,checkout,v1,merchant}.routes.ts` | Superficies del dominio de pago con middlewares/rate limits separados para público, Firebase y `sk_`. |
+| Payments Worker | nuevos servicios de §5.3 | Policy/quote/auth/reconciliation y repositorios propietarios por responsabilidad. |
+| Payments Worker | `services/feePolicy.ts`, `services/routerHealth.ts` | Policy versionada gratuita por defecto, caps por ruta y preflight on-chain antes de toda autorización pagada. |
+| Payments Worker | relayer CCTP propio de checkout, router watcher y jobs de webhooks | Una sola máquina CCTP merchant por attempt, watcher por source chain y consumidor `payment-jobs`; el relayer personal no se mueve desde App. |
+| Shared | `shared/` | Schemas versionados de RPC/jobs, errores, EIP-712 y registry; sin D1, env, secretos ni handlers. |
+| Shared | `shared/fees.ts`, `shared/networks.ts` | Contratos económicos puros y ceilings inmutables observados por red/router. |
+| Datos app | nueva `server/migrations/0033_*` solo si hace falta | Referencias lógicas a attempts y retiro de FKs cross-domain; no crea tablas Payments. |
+| App sponsorship | `server/src/services/{sponsorship,sponsorshipHealth,userOp}.ts`, migración `0034` | Adaptadores Parmelia/ERC-7677/self-funded, fallback pre-firma y drenaje observable por provider/contrato. |
+| Datos payments | `payments-worker/migrations/0001_payments_schema.sql`, `0002_fee_policy_and_ledger.sql`, `0003_query_scale.sql` | Links, intents, attempts, CCTP, settlement, snapshots, fee ledger, outboxes e índices de hot paths en `PAYMENTS_DB`. |
+| Migración | `scripts/split-payments-d1.mjs` | Backup, IDs intactos, conteos/checksums, artefacto data-only sin `d1_migrations`, ensayo sobre schema migrado, guard anti-replay y rollback sin borrar tablas legadas. |
+| Jobs | dos Queues/DLQ y schedulers separados | `app-jobs` y `payment-jobs`; un consumidor por cola, mensajes versionados e idempotentes. |
 | API | `shared/errors.ts`, `docs/openapi.yaml`, `docs/api.md` | Errores estables, endpoints públicos, objetos y webhooks nuevos. |
+| Frontends | `client/src/lib/api.ts`, `dashboard/src/*` | Bases API explícitas: app → App Worker; dashboard/checkout → Payments Worker; proxies solo durante transición. |
 | Frontend | `client/src/pages/PayPage.tsx` | Reducirlo a composición; no añadir otra máquina de estados inline. |
 | Frontend | nuevo `client/src/features/checkout/*` | Métodos, quote, review, progreso y resume. |
 | Frontend | nuevo `client/src/lib/checkoutWallet.ts` | Provider/connectors limitados al checkout. |
@@ -605,6 +792,10 @@ encoding y ninguna promesa de UI por encima de las capabilities.
 
 ### Fase 1 — contratos y testnets (4–6 días)
 
+**Estado al 24-08-2026: cerrada.** Los cuatro routers tienen manifests y smoke
+tests reales; la evidencia congelada está en
+[`testnet-smoke-evidence.json`](../../contracts/deployments/testnet-smoke-evidence.json).
+
 - Implementar routers y hardenings de §4.
 - Corregir `DeploymentRoles` y parametrizar deploy.
 - Desplegar/redeployar solo en Arbitrum Sepolia, Base Sepolia y Fuji.
@@ -613,32 +804,246 @@ encoding y ninguna promesa de UI por encima de las capabilities.
 **Cierre:** unit/fuzz/invariant verdes y una llamada real por cada router en su
 testnet. Un deploy exitoso sin transacción real no cierra la fase.
 
-### Fase 2 — datos, quote e intent engine (4–6 días)
+### Fase 2 — separación de backend/datos + quote e intent engine (8–12 días)
 
-- Aplicar la migración local y probar backup/restore.
-- Crear intent por todo link nuevo y compatibilidad para links anteriores.
-- Implementar fee CCTP viva, attempts, EIP-712 y API pública.
-- Generalizar clients/watchers solo en la frontera de pagos.
+**Estado al 25-08-2026: promovido en Cloudflare y Vercel.**
+La entrega incluye dos Workers, dos schemas D1, dos colas por dominio,
+Service Binding unidireccional App → Payments, contratos RPC/Queue N/N-1, copy y
+restore verificables, intent/quote/attempt engine, settlement idempotente y
+clientes App/Dashboard apuntando al propietario correcto.
 
-**Cierre:** API tests de idempotencia, expiry, una tentativa activa, fee stale,
-chain disabled y autorización manipulada.
+1. Congelar schemas versionados de RPC/jobs y tests de contrato antes de mover
+   handlers.
+2. Crear `gatopago-payments-api`, `PAYMENTS_DB`, `payment-jobs` y sus health/
+   observability gates; mantener `server/` como `gatopago-app-api`.
+3. Crear el schema Payments, copiar datos locales con IDs intactos y probar
+   backup/restore de **ambas** bases; no borrar las tablas legadas.
+4. Mover links, merchants, `/v1`, checkout, intent/attempt, CCTP de pagos,
+   settlement y webhooks al propietario Payments.
+5. Separar `eventJobs`/scheduler/Queue por dominio y eliminar cualquier import o
+   escritura D1 cruzada.
+6. Añadir Service Binding app → payments para compatibilidad, con un solo hop,
+   claims explícitos e interfaces aditivas.
+7. Crear intent por todo link nuevo, compatibilidad para links anteriores, fee
+   CCTP viva, attempts, EIP-712 y API pública.
+8. Generalizar clients/watchers solo en la frontera de pagos y usar el router
+   local también para el pago con saldo GatoPago.
 
-### Fase 3 — checkout público (4–6 días)
+**Cierre:** ambos Workers arrancan y pasan typecheck/tests por separado; checkout
+y `/v1` funcionan con App Worker caído; app core funciona con Payments caído
+salvo links/pagos; no hay acceso D1 cruzado; copy y restore cuadran conteos e
+IDs; un mensaje Queue duplicado no duplica settlement/webhook; y pasan los tests
+de idempotencia, expiry, tentativa activa, fee stale, chain disabled,
+autorización manipulada y compatibilidad RPC N/N-1.
 
-- Refactor del `PayPage` y métodos de pago.
-- Wallet injected + WalletConnect.
-- Flujos local/CCTP, simulación, fallback de permit y resume de attempt.
-- Copy ES/EN y accesibilidad teclado/móvil.
+**Baseline local al entrar en Fase 3 (25-08-2026):** `pnpm verify` verde; App con 247
+pruebas unitarias y 22 runtime; Payments con 30 unitarias y 9 runtime; 26 E2E de
+navegador aprobadas y 10 omitidas; auditoría de dependencias sin vulnerabilidades
+conocidas; 187 pruebas Foundry no-fork aprobadas y 4 pruebas fork omitidas por no
+disponer de RPC; builds, límites de bundle, fronteras, OpenAPI y query plans
+verdes; y backup/restore de App y del split App/Payments con integridad, foreign
+keys, replay guard y checksum verificados. Esta evidencia demuestra que el
+artefacto compila y pasa sus gates actuales, pero **no cierra Fase 2**: las suites
+no detectaban los fallos de configuración, crash recovery y concurrencia listados
+en Fase 3.
 
-**Cierre:** el mismo link se paga sin login desde las tres testnets y con saldo
-GatoPago en Arbitrum Sepolia.
+**Cutover remoto ejecutado el 25-08-2026:** la fuente contenía 4 merchants, 21
+links y 21 intents. El snapshot se cifró y restauró antes de importar data-only
+una vez sobre Payments; su checksum
+`ffb10c840313390517ec88afe2590385f73bd4b7e500670340a9c979aac30bb9` coincide
+con config y control D1. Las 7 operaciones CCTP personales permanecen en App y
+0 se importaron. App terminó en boundary v2/modo `payments`, los outbox están
+drenados, ambos Workers están sanos y los smokes directo/proxy pasan. El
+preflight remoto concluye `fully promoted`; Vercel sigue fuera de este cierre
+Cloudflare.
 
-### Fase 4 — reconciliación y evidencia E2E (3–5 días)
+### Incremento 2.1 — economía y sponsorship extensibles, gratuitos por defecto
 
-- Watchers multired, settlement y webhooks.
+**Estado al 25-08-2026: backend y frontends promovidos.**
+Este incremento no cambia la decisión comercial de no cobrar. El objetivo es
+evitar que una excepción futura obligue a mezclar reglas comerciales con
+contratos, alterar pagos en curso o redeployar smart accounts.
+
+1. Payments resuelve una policy JSON versionada y acotable por merchant, modo,
+   source chain, ruta y monto. Ausente = `free-default`; el máximo de plataforma
+   es 100 bps y empates contradictorios fallan cerrados.
+2. Cada quote y attempt persiste un snapshot económico inmutable. El
+   `payment_fee_ledger` separa ingreso GatoPago de costo CCTP, y API, webhook y
+   dashboard muestran quote vs. evidencia real.
+3. `shared/networks.ts` declara el cap inmutable realmente desplegado. Antes de
+   firmar una fee positiva, Payments lee code, cap, signer, treasury, USDC,
+   pause state y configuración CCTP on-chain; cualquier drift degrada health y
+   bloquea la autorización.
+4. App selecciona `parmelia`, un servicio ERC-7677 o `self-funded` mediante un
+   adaptador. Un fallback siempre ocurre antes de la firma y reconstruye/
+   reestima el UserOp; provider y dirección exacta quedan en D1 y health para
+   drenar una rotación de forma segura.
+5. `GATOPAGO_FEES_ENABLED=false` sigue siendo el switch maestro de operaciones
+   wallet/compatibilidad. Merchant checkout tiene una única autoridad económica
+   en Payments, por lo que los dos Workers no pueden cobrar dos veces.
+
+**Gate de entrada a Fase 3, reabierto por auditoría:** el corte Cloudflare y los
+deployments Vercel existen, pero la verificación posterior demostró que el
+dashboard está detrás de Vercel SSO, el checkout remoto sólo soporta provider
+inyectado y un attempt público podía bloquearse con un hash inventado. El
+candidato local corrige esos límites; no está promovido. El lanzamiento gratuito
+usa los routers CCTP actuales con cap `0`.
+Un redeploy preventivo con cap `100` sigue siendo una decisión separada de
+negocio, no una condición para corregir el software.
+
+<a id="fase-3-hardening"></a>
+
+### Fase 3 — hardening de Payments + checkout público (8–12 días)
+
+**Estado al 25-08-2026: componentes base promovidos; hardening posterior sólo local y evidencia transaccional completa aún pertenece a Fase 4.** Esta fase absorbe los
+hallazgos de la auditoría posterior a Fase 2. Primero cierra seguridad económica,
+recuperación y cutover; después amplía la UX pública. Ningún test verde anterior
+permite omitir los gates de esta sección.
+
+**Corte local actual:** los diez bloqueadores 3A están implementados y cubiertos
+por sus gates; 3B usa `client/src/features/checkout/` para API, provider,
+ejecución y resume. El checkout prioriza wallet externa, conserva saldo GatoPago
+como opción, y el E2E prueba injected wallet, fallback EIP-2612 →
+`approve + pay`, caída del registro y reanudación después de recargar. 3C pasó
+la verificación integral y el ensayo local compuesto de cutover/rollback: modos
+bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksum,
+    outbox y restores independientes. La auditoría posterior reabrió 3C: falta
+    repetir el gate integral, versionar, aplicar `0006` y promover. Que un
+    deployment exista no prueba acceso anónimo ni universalidad del checkout.
+
+#### 3A. Bloqueadores de backend y operación
+
+1. **Contrato real de App Queue.** Hacer coincidir el nombre consumido por
+   `eventJobs` con `parmelia-scheduled-jobs`, su binding productor y su consumer
+   Wrangler. El guard de arquitectura debe comparar código contra configuración,
+   y el test runtime debe usar el nombre literal/configurado, no importar la misma
+   constante que pretende comprobar. Un batch desconocido nunca se confirma y
+   pierde silenciosamente: produce señal operativa y una política explícita de
+   retry/DLQ.
+2. **Relayer CCTP recuperable.** En Payments, persistir el broadcast antes de
+   esperar receipt; recuperar una ejecución previa consultando `usedNonces`, tx y
+   eventos on-chain; y tratar la chain como fuente de verdad cuando D1 quedó
+   atrasado. Añadir fault injection para crash después de broadcast y después de
+   receipt, sin segundo mint ni operación atrapada en `processing`.
+3. **Nonce/concurrencia del signer.** Serializar envíos por signer+chain mediante
+   lease durable o un nonce manager con recuperación; justificar y probar
+   `max_concurrency`. Ocho jobs simultáneos del mismo relayer no pueden reemplazar
+   ni pisar sus nonces.
+4. **Contabilidad CCTP real.** Liquidar con el `mintedAmount` decodificado, no con
+   el mínimo esperado del attempt; registrar fee de red real, diferencia y
+   `overpaid`, y emitir esos valores coherentes en ledger, API y webhook.
+5. **Webhooks realmente at-least-once.** Recuperar leases `processing` vencidos,
+   mantener idempotencia lógica por `event_id`, probar crash entre claim/HTTP/
+   persistencia y asegurar retry/DLQ. El backend y las guías deben acordar el
+   formato `GatoPago-Signature: v1=<hex>` y enviar/documentar el mismo header de
+   event ID.
+6. **Rotación criptográfica de webhooks.** Descifrar por `secret_key_id` usando un
+   keyring/versionado; conservar claves antiguas hasta re-encriptar y verificar
+   todos los endpoints. Ninguna rotación puede invalidar secretos existentes.
+7. **Idempotencia concurrente.** Reemplazar read-before-insert de creación de
+   intents por una operación atómica o recuperación segura de unique conflict.
+   Dos requests simultáneos con el mismo `Idempotency-Key` deben devolver el mismo
+   recurso y nunca un `500`.
+8. **Cutover ejecutable y sin carrera.** Introducir modo bootstrap/sync-off. El
+   orden será: backup y freeze acotado; crear/migrar Payments D1; desplegar
+   Payments compatible sin sync; importar data-only sobre base vacía y verificar;
+   fijar el SHA-256 del import con bootstrap todavía activo; activar Payments;
+   habilitar sync/outbox; desplegar App caller con Service Binding; validar N/N-1;
+   y solo después apuntar clientes. El target del binding siempre existe antes
+   del caller, el outbox `0033` no puede poblar la base antes del import y no hay
+   una combinación válida con App legacy y Payments escribiendo a la vez.
+9. **Preflight fail-closed.** Corregir `legacySafety`/`ownership`, verificar nombre
+   de Queue en código vs. Wrangler, target de Service Binding, D1 vacía antes del
+   import, estado bootstrap, checksum runtime y orden de migraciones. HTTP/RPC,
+   Queue y Cron comparten el mismo gate D1; cualquier campo ausente,
+   `undefined` o divergente bloquea el corte. Conteos remotos son evidencia
+   fechada, no constantes documentales. La igualdad exacta con el snapshot se
+   exige antes de abrir el target; desde `syncing/cutover`, los conteos pueden
+   crecer y el invariante durable pasa a ser el checksum base atómico.
+10. **Documentación operable y única.** Usar el nombre remoto real
+    `gatopago-payments-api` en todos los comandos de secrets/deploy; mantener CCTP
+    personal en App y CCTP merchant en Payments en arquitectura, runbook,
+    diagramas y deploy; corregir ejemplo de firma/event ID; volver a renderizar
+    PlantUML y bloquear drift. No puede haber dos órdenes de cutover distintos.
+
+#### 3B. Checkout público
+
+1. Refactor del `PayPage` y métodos de pago, manteniendo la máquina de estados en
+   módulos de checkout y no otra vez inline.
+2. Apuntar checkout y dashboard directamente a Payments; retirar proxies solo
+   después de confirmar telemetría y ausencia de clientes antiguos.
+3. Wallet externa EIP-1193 únicamente cuando el navegador ya expone el provider,
+   mediante una extensión o el navegador integrado de la propia wallet. Si no
+   existe provider, mostrar instrucciones para abrir el link allí o usar saldo
+   GatoPago; no cargar SDKs, relays ni proveedores externos de conexión.
+4. Capability por sesión y firma del payer antes de reservar; lectura/registro/
+   cancelación scopeadas. El hash sólo se persiste después de validar receipt,
+   sender, router y evento por RPC de Payments.
+5. Flujos local/CCTP, simulación, fallback de permit y resume de attempt.
+6. Copy ES/EN y accesibilidad teclado/móvil.
+
+#### 3C. Gates de aceptación de Fase 3
+
+- [x] Tests negativos de drift Queue/Wrangler y Service Binding sin target.
+- [x] Tests concurrentes de idempotency key y de nonces del relayer.
+- [x] Fault injection CCTP en cada ventana de crash, incluido nonce ya usado.
+- [x] Ledger/API/webhook prueban `mintedAmount`, fee real y sobrepago.
+- [x] Webhook reclamado después de lease vencido, con firma y event ID verificables;
+  rotación de clave mantiene endpoints viejos y nuevos.
+- [x] Ensayo local compuesto de cutover y rollback con bootstrap, base vacía,
+  import único, checksum fijado y verificado en runtime, guards de transición,
+  outbox y compatibilidad N/N-1.
+- [x] `pnpm verify:all`, auditoría, E2E, restore drill, contratos, diagramas y
+  release artifacts repetidos después de las correcciones posteriores.
+- [ ] Con autorización separada para operar remotamente: preflight fail-closed,
+  backup, creación/migración/import, deploy target→caller, health y smokes. Sin
+  autorización, la fase puede cerrar solo su componente local y queda la promoción
+  marcada como pendiente.
+
+**Evidencia histórica previa a la auditoría (25-08-2026):** `pnpm verify:all` pasó sobre la
+implementación anterior; después del ajuste final de recuperación volvieron a pasar
+`pnpm verify`, los 28 E2E aplicables (10 omisiones de matriz), auditoría,
+release-artifact y split/restore D1. App terminó con 252 pruebas unitarias + 22
+runtime; Payments con 43 + 16. `pnpm test:fork` terminó con 197 aprobadas, 0
+fallos y 0 omisiones, incluidas 6 pruebas fork sobre las tres testnets. Coverage
+ejecutó 187 pruebas instrumentadas y Foundry informó 4 omisiones de suites/casos
+fork en ese gate.
+
+**Evidencia local posterior a la auditoría (26-08-2026):** `pnpm verify:all`
+vuelve a pasar. App: 253 unitarias + 22 runtime. Payments: 51 + 19. Playwright:
+30 aprobadas + 10 omisiones de matriz. Audit: 0 vulnerabilidades conocidas.
+D1: restore de 59 tablas y checksum semántico con tamper negativo. Foundry:
+191 aprobadas + 4 forks omitidos sin RPC. Sigue pendiente commit/CI, migración
+`0006`, deploy y smoke remoto.
+
+**Segunda revisión local (26-08-2026):** reabrió el gate porque el primer reset
+A→B esperaba la respuesta de B, el helper RPC sólo duplicaba Base, el checksum
+histórico carecía de reemplazo auditable y `DEPLOY.md` permitía evitar el guard.
+El candidato actual remonta toda la página por identidad de ruta, prueba dos RPC
+por las tres redes, exige una D1 nueva con export target verificado y fuerza los
+entrypoints protegidos. La verificación integral de este segundo delta queda
+registrada con `pnpm verify:all` en exit 0: incluye la regresión A→B en desktop y
+mobile, split/restore semántico, guards de deploy y las suites completas citadas
+arriba. Sigue siendo evidencia local, no una aprobación de producción.
+
+**Cierre local anterior, ahora reabierto:** ningún job App se pierde por drift de nombre; CCTP y webhooks se
+recuperan tras crash sin duplicación económica; nonces concurrentes son seguros;
+ledger/API/webhook reflejan el monto realmente acuñado; idempotencia concurrente
+y rotación de claves están probadas; el runbook tiene un único cutover ejecutable;
+y el mismo link admite pago sin login con wallet externa o saldo GatoPago. La
+integración de contratos en las tres testnets ya tiene prueba fork viva; todavía
+falta el E2E completo contra Workers promovidos. El
+cierre local/testnet no equivale a deploy ni a readiness de mainnet.
+
+### Fase 4 — reconciliación y evidencia E2E real (3–5 días)
+
+- Evidencia on-chain/testnet de watchers multired, settlement y webhooks ya
+  endurecidos en Fase 3; Fase 4 no posterga su corrección básica.
 - Pruebas de browser crash, tx no registrada, relayer sin gas, Iris/RPC caído,
   doble pago y sobrepago.
 - Observabilidad por chain/route y runbook.
+- Medir lag, CPU/memoria, tamaño de bundle y exposición de la clave de relayer;
+  extraer `settlement-consumer` únicamente si se activa un gate de §5.6.
 
 **Cierre:** cada prueba deja evidencia de source tx, CCTP message, destination tx,
 estado D1 y webhook; cero operaciones sin atribuir.
@@ -653,7 +1058,7 @@ estado D1 y webhook; cero operaciones sin atribuir.
   la misma hora.
 - Límites de monto/volumen iniciales definidos por riesgo de negocio.
 
-**Estimación orientativa para una persona:** 4–6 semanas hasta un candidato de
+**Estimación orientativa para una persona:** 5–7 semanas hasta un candidato de
 producción, más el tiempo de auditoría externa y correcciones. No es una promesa
 de fecha.
 
@@ -673,6 +1078,16 @@ de fecha.
 
 ### Backend
 
+- Tests de arquitectura impiden que App importe repositorios/bindings de
+  Payments y viceversa.
+- Contratos RPC/job N y N-1; caller nuevo contra receptor anterior y receptor
+  nuevo contra caller anterior.
+- App Worker caído mientras checkout y `/v1` operan; Payments caído mientras
+  Home/cuenta siguen operativos y links fallan de forma explícita.
+- Copy/cutover conserva IDs, conteos y checksums; restore independiente de
+  `GATOPAGO_DB` y `PAYMENTS_DB`.
+- Mensaje Queue duplicado, retry agotado y DLQ; ninguna duplicación económica ni
+  doble webhook lógico.
 - Circle fee API lenta/caída/malformada; nunca usar un valor hardcodeado oculto.
 - Base Fast/Standard; Avalanche Standard-only.
 - Attempt creado antes del calldata.
@@ -685,7 +1100,12 @@ de fecha.
 
 ### Navegador
 
-- Desktop injected y móvil WalletConnect.
+- Extensión EIP-1193 y navegador móvil integrado. Sin provider, se muestran
+  instrucciones para abrir el link dentro de la wallet; no existe conexión
+  remota mediante SDK, relay, QR o deep-link de terceros.
+- Capability ausente/incorrecta, firma de otro payer, replay con otra capability,
+  hash inexistente, receipt revertido, sender/router/evento manipulados y
+  expiración de `submitted` sin evidencia.
 - Wallet rechaza conexión, switch, permit, approve o pago.
 - USDC insuficiente y gas nativo insuficiente.
 - Chain equivocada/cambio de cuenta durante la quote.
@@ -695,6 +1115,14 @@ de fecha.
 
 ## 10. Operación y rollout
 
+- Workers, D1, Queues, DLQ, secrets, dashboards y health checks tienen nombres
+  y ownership separados; ningún deploy copia todo el set de secretos al otro.
+- Primer cutover: crear/validar `PAYMENTS_DB`, desplegar Payments de forma
+  compatible, luego App con el Service Binding y finalmente cambiar clientes.
+  Nunca desplegar primero un caller que exige un método RPC inexistente.
+- Los contratos internos cambian de forma aditiva y toleran version skew durante
+  rollout gradual. Las migraciones D1 no se versionan junto al Worker: backup y
+  compatibilidad de schema se verifican antes de promover código.
 - Kill switches separados para `local`, `base_cctp` y `avalanche_cctp`.
 - Métricas: quote success, wallet connect, simulation fail, approval abandon,
   source included, attestation latency, mint latency, settlement success y
@@ -718,11 +1146,19 @@ hay una razón de negocio concreta:
 3. **Monto del intent:** neto mínimo del comercio; fees encima para el pagador.
 4. **Base:** Fast por defecto, Standard como opción económica.
 5. **Avalanche:** Standard únicamente.
-6. **Fee GatoPago cross-chain piloto:** 0; medir costos/conversión antes de fijar.
+6. **Fee GatoPago:** `free-default` (0) en toda ruta. Los caps de contrato son
+   capacidad preventiva, nunca política ni promesa de cobro.
 7. **Wallet GatoPago:** operativa solo en Arbitrum durante fase 1.
 8. **Base/Avalanche:** rails de aceptación, no saldos agregados.
 9. **CCTP:** directo, relayer propio, caller permissionless, sin Hooks.
 10. **Activación mainnet:** progresiva y feature-flagged.
+11. **Backend Fase 2:** dos Workers públicos, dos D1 físicos y dos Queues; App →
+    Payments es la única dependencia RPC.
+12. **Tercer Worker:** no se crea sin activar y documentar un gate medido de
+    §5.6.
+13. **Sponsorship:** adapter Parmelia/ERC-7677/self-funded; ningún fallback
+    cambia el paymaster después de pedir la firma y toda rotación drena por
+    provider + dirección exacta.
 
 ## 12. Estrategia multichain después del checkout
 
@@ -805,3 +1241,19 @@ Estas extensiones pueden montarse después sobre `PaymentIntent` y
   <https://developers.circle.com/gateway/references/contract-interfaces-and-events>
 - EntryPoint v0.9 y address oficial:
   <https://github.com/eth-infinitism/account-abstraction/releases/tag/v0.9.0>
+- Cloudflare Service Bindings: RPC privado entre Workers, despliegues separados,
+  límite de invocaciones y advertencia de que Access no se propaga:
+  <https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/>
+- Límites de Workers y D1; D1 es single-threaded por base y escala
+  horizontalmente con bases menores:
+  <https://developers.cloudflare.com/workers/platform/limits/>
+  <https://developers.cloudflare.com/d1/platform/limits/>
+- `D1.batch()` ejecuta una transacción y revierte la secuencia si falla una
+  sentencia:
+  <https://developers.cloudflare.com/d1/worker-api/d1-database/>
+- Cloudflare Queues entrega al menos una vez; los consumidores de dinero deben
+  deduplicar mediante IDs/idempotency keys:
+  <https://developers.cloudflare.com/queues/reference/delivery-guarantees/>
+- Los despliegues graduales pueden producir version skew entre Workers unidos
+  por Service Binding:
+  <https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/>

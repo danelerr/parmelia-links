@@ -1,0 +1,87 @@
+@startuml
+!include _theme.puml
+title Payments Backend — C4 nivel 3: componentes reales
+
+left to right direction
+skinparam linetype ortho
+
+actor "App / Dashboard /\nAPI B2B" as clients
+actor "Pagador / wallet" as payer
+component "App Backend\nService Binding" as app_backend COLOR_LIVE
+
+package "Payments Backend — gatopago-payments-api" COLOR_LIVE {
+  component "HTTP API\n/links · /checkout\n/v1 · /merchant" as http_api
+  component "Auth + rate limits\nFirebase / API keys / público" as auth
+  component "Intent Service\nlinks + intents" as intent
+  component "Quote & Policy Engine\nroute, fee viva, caps" as quote
+  component "Authorization Service\nEIP-712 + preflight on-chain" as authorization
+  component "Settlement Reconciler\nevidencia, CAS, reorg" as reconcile
+  component "Job Runtime\nQueue consumer + leases" as jobs
+  component "Event Outbox\nwebhooks at-least-once" as outbox
+  component "Merchant Service\nkeys, endpoints, vistas" as merchant
+  component "Onchain Rail\nRPC, routers y Circle" as onchain
+  component "Repositories + Stores\núnica frontera SQL" as persistence
+}
+
+database "PAYMENTS_DB\nD1" as db COLOR_DATA
+queue "PAYMENT_JOBS_QUEUE" as queue COLOR_DATA
+component "PaymentJobScheduler\nDurable Object" as scheduler COLOR_DATA
+component "Cron de recuperación\n1 minuto" as cron COLOR_DATA
+cloud "Firebase JWKS" as firebase COLOR_EXTERNAL
+cloud "RPC por chain" as rpc COLOR_EXTERNAL
+cloud "Circle APIs" as circle COLOR_EXTERNAL
+node "PaymentRouter /\nCCTP Router" as routers COLOR_EXTERNAL
+rectangle "Endpoint del comercio" as webhook COLOR_EXTERNAL
+
+clients --> http_api : HTTP
+app_backend --> http_api : fetch N-1
+app_backend --> intent : RPC versionado\nreserve/register/upsert
+http_api --> auth
+auth --> firebase
+auth --> merchant
+auth --> intent
+intent --> quote
+quote --> authorization
+quote --> onchain : fee viva + preflight
+authorization --> onchain : código, cap y pause
+payer --> routers : firma y envía\ncalldata autorizada
+intent --> persistence
+quote --> persistence
+authorization --> persistence
+merchant --> persistence
+reconcile --> persistence
+outbox --> persistence
+jobs --> persistence : lease / dedupe
+persistence --> db
+
+http_api --> queue : produce trabajo inmediato
+reconcile --> queue : produce siguiente etapa
+outbox --> queue : publica entrega
+scheduler --> queue : publica trabajo diferido
+cron --> outbox : recovery sweep
+cron --> queue : despierta watchers activos
+queue --> jobs : entrega / redelivery
+jobs --> reconcile
+jobs --> outbox
+reconcile --> onchain : recibos, logs y settlement
+onchain --> rpc
+onchain --> circle
+onchain --> routers
+outbox --> webhook : HMAC + retry
+
+note bottom of persistence
+  Intent/attempt/fee ledger y evento/outbox
+  sólo acceden a D1 desde repositorios/stores.
+end note
+
+note bottom of reconcile
+  El navegador puede registrar un hash,
+  pero nunca es la fuente final de verdad.
+end note
+
+note bottom of jobs
+  Un lease vigente provoca retry, nunca ack.
+  Cron recupera; Queue sigue siendo transporte.
+end note
+
+@enduml

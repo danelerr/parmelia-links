@@ -23,6 +23,8 @@ Cuando dos documentos se contradigan, se aplica este orden:
 ### Núcleo
 
 - [Arquitectura](../ARCHITECTURE.md)
+- [Arquitectura visual y diagramas PlantUML](./architecture/README.md)
+- [Correcciones y fundamentos de la separación Payments](./architecture/CORRECCIONES.md)
 - [Seguridad](../SECURITY.md)
 - [Despliegue](../DEPLOY.md)
 - [Roadmap técnico](./roadmap.md)
@@ -37,17 +39,22 @@ Cuando dos documentos se contradigan, se aplica este orden:
 ### Diseños
 
 - [Cross-chain](./design/cross-chain.md)
+- [Acceso de emergencia y soberanía de las cuentas](./design/emergency-account-access.md)
 - [Plan propuesto: checkout universal y aceptación USDC en tres redes](./design/universal-checkout-multichain.md)
 - [DeFi y Earn](./design/defi.md)
 
 ### Operación
 
 - [Integraciones](./operations/integrations.md)
+- [Inventario canónico de secretos y configuración](./operations/worker-variables.md)
+- [Readiness remoto de Fase 2.1 al 25-08-2026](./operations/phase-2-1-live-readiness-2026-08-25.md)
 - [Eventos muertos del outbox](./operations/user-event-outbox.md)
 - [Capacidad de Home](./runbooks/home-capacity.md)
 - [Drift de proyecciones](./runbooks/projection-drift.md)
 - [Reorganizaciones](./runbooks/reorg.md)
 - [RPC e indexación](./runbooks/rpc-operations.md)
+- [Corte App → Payments sin perder escrituras](./runbooks/payments-cutover.md)
+- [Reemplazo semántico del corte Payments histórico](./runbooks/payments-semantic-recut.md)
 
 ### Evidencia
 

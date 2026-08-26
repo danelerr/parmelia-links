@@ -1,0 +1,82 @@
+@startuml
+!include _theme.puml
+title GatoPago Business — Casos de uso actuales y siguientes
+
+left to right direction
+
+actor "Dueño del negocio" as owner
+actor "Cajero / vendedor" as cashier
+actor "Desarrollador B2B" as developer
+actor "Cliente pagador" as customer
+actor "Operador GatoPago" as operator
+
+rectangle "GatoPago Business — testnet al promover Fase 2.1" COLOR_READY {
+  usecase "Recibir USDC de test\ndirecto en cuenta" as settle
+  usecase "Crear intent y link\npor API test" as api_intent
+  usecase "Compartir link o QR" as share
+  usecase "Pagar desde wallet\nsoportada" as pay
+  usecase "Consultar pagos, estado\ny evidencia" as inspect
+  usecase "Ver QR y checkout\nde un cobro" as qr
+  usecase "Administrar API keys\ntest" as keys
+  usecase "Configurar webhooks test\ny reintentar entregas" as hooks
+  usecase "Inspeccionar eventos\ny payloads" as events
+  usecase "Probar sin fondos\nen Sandbox" as sandbox
+  usecase "Cancelar un intent\npendiente" as cancel
+  usecase "Operar health, retries\ny reconciliación" as operate
+}
+
+rectangle "Siguiente iteración propuesta — no disponible todavía" COLOR_FUTURE {
+  usecase "Activar API keys y\nwebhooks live/mainnet" as live
+  usecase "Crear link live sin código\ndesde Dashboard" as no_code
+  usecase "Ver KPIs y conversión" as analytics
+  usecase "Exportar conciliación CSV" as export
+  usecase "Personalizar checkout" as branding
+  usecase "Equipos, roles y aprobaciones" as roles
+  usecase "Refund firmado por el negocio" as refund
+  usecase "Políticas programables\nde settlement" as policies
+}
+
+owner --> settle
+owner --> inspect
+owner --> cancel
+cashier --> share
+cashier --> qr
+customer --> pay
+developer --> api_intent
+developer --> keys
+developer --> hooks
+developer --> events
+developer --> sandbox
+operator --> operate
+
+api_intent ..> share : <<checkout_url>>
+pay ..> settle : <<settlement>>
+pay ..> inspect : <<evidencia>>
+hooks ..> events : <<outbox>>
+
+owner --> live
+owner --> no_code
+owner --> analytics
+owner --> export
+owner --> branding
+owner --> roles
+owner --> refund
+owner --> policies
+
+note bottom of live
+  El selector aparece bloqueado y el backend responde 503
+  hasta flag + manifest + routers mainnet verificados.
+end note
+
+note bottom of policies
+  Fiat/BOB, payroll, treasury, subscriptions,
+  splits y “any currency/chain” siguen fuera de alcance.
+end note
+
+legend right
+  |= Color |= Estado |
+  |<#FEF3C7> Amarillo | Listo en código; requiere promoción remota |
+  |<#E5E7EB> Gris | Futuro propuesto; no vender como disponible |
+endlegend
+
+@enduml

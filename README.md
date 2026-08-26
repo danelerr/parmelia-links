@@ -46,7 +46,9 @@ custody of user funds.
   and a public checkout (`/cc/username`) so external wallets can pay in from
   other chains (code complete; pending deploy + Flow A smoke test).
 - A **merchant dashboard** (API keys, payment intents, webhooks with signed
-  deliveries and retries, sandbox) backed by a `/v1` payments API in test mode.
+  deliveries and retries, sandbox) backed by a `/v1` payments API in test mode
+  (backend/deployment exist; the public Dashboard is currently blocked by
+  Vercel SSO and is not production-ready).
 - **Contacts, invites, push notifications**, ES/EN i18n, and an installable **PWA**.
 
 ## What is onchain (Account Abstraction)
@@ -93,8 +95,9 @@ make stablecoin payments feel fast, affordable, and reliable.
 ## Tech stack
 
 React 19 · TypeScript · Vite · Tailwind v4 (client) · Hono on Cloudflare Workers
-+ D1 + Queues + Durable Objects (backend) · viem · Solidity + Foundry + OpenZeppelin v5 (contracts) ·
-Firebase Auth/Messaging · Arbitrum.
++ two D1 ownership boundaries + Queues + Durable Objects (backend) · viem ·
+Solidity + Foundry + OpenZeppelin v5 (contracts) · Firebase Auth/Messaging ·
+Arbitrum.
 
 ## Architecture
 
@@ -103,16 +106,24 @@ capabilities, partitioned indexing and the WebSocket decision are covered in
 [docs/runbooks/rpc-operations.md](docs/runbooks/rpc-operations.md). In short:
 
 ```
-client / Alchemy webhooks ──> Worker + D1 ──> event scheduler ──> Queue ──> Arbitrum
-  passkeys, fast signal        source of truth    alarms only      bounded    ERC-4337
-  domain state + safety sweep  idempotent rows    with work        jobs       contracts
+client / Alchemy ──> App Worker + App D1 ────────────────> Arbitrum ERC-4337
+                         │ Service Binding RPC
+                         ▼
+dashboard / checkout ──> Payments Worker + Payments D1 ──> Queues / DO / payment rails
 ```
 
-There is no static Cron Trigger. Active wallets retain one configurable safety
-alarm so missed provider webhooks are reconciled even when nobody opens the app;
-it schedules only lagging shards and stops completely when there are no active
-wallets. Equivalent events are coalesced per partition before they reach Queue,
-and independent shards can scale horizontally.
+`server/` owns identity, accounts, contacts, activity, relaying and indexing.
+`payments-worker/` owns merchants, links, intents, API keys, webhooks, fees,
+sponsorship policy and payment execution. The App Worker can call Payments over
+a private Service Binding; neither Worker writes directly to the other's D1.
+
+The App Worker has no static Cron Trigger. Active wallets retain one configurable
+safety alarm so missed provider webhooks are reconciled even when nobody opens
+the app; it schedules only lagging shards and stops completely when there are no
+active wallets. The Payments Worker uses one bounded minute trigger for its
+outbox, key rotation, cleanup and active-chain router watches. Equivalent events
+are coalesced per partition before they reach Queue, and independent shards can
+scale horizontally.
 
 The zero-RPC Home invariant and bounded 1/100/1,000-identity load procedure are
 documented in
@@ -128,7 +139,9 @@ The reproducible toolchain is Node `24.19.0`, pnpm `11.23.0` and Foundry
 ```bash
 pnpm install
 pnpm --filter client dev      # web app
-cd server && npx wrangler dev  # API (needs .dev.vars)
+pnpm dev:server               # App Worker (needs server/.dev.vars)
+pnpm dev:payments             # Payments Worker (needs payments-worker/.dev.vars)
+pnpm dev:dashboard            # merchant dashboard
 cd contracts && forge test     # contracts
 pnpm verify                    # lint + types + server tests + builds + bundle budgets
 pnpm check:contracts:storage   # append-only storage-layout gate
@@ -139,10 +152,23 @@ pnpm check:openapi             # strict OpenAPI 3.1 structure/reference lint
 pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
 ```
 
+Before any Phase 2.1 remote change, run the read-only inventory:
+
+```bash
+pnpm verify:remote-readonly
+```
+
+An exit code of `2` means the local artifact is valid but remote provisioning or
+cutover is still pending; it does not mean production was changed. Follow the
+[Payments cutover runbook](docs/runbooks/payments-cutover.md) for the explicit,
+single-writer migration sequence.
+
 ## Tests
 
-- Contracts: `cd contracts && forge test` — 191 local tests/invariants passing;
-  four fork proofs are skipped unless their testnet RPC variables are present.
+- Contracts: `pnpm test:fork` — 197 tests/invariants passing, 0 failures and
+  0 skips. The command validates the three testnet chain IDs and executes six
+  live fork proofs; its public RPC defaults can be replaced with environment
+  variables when a dedicated provider is available.
   Coverage includes account recovery, paymaster gas caps, permit payments,
   cross-chain settlement and the upgrade-path storage regression.
 - `pnpm verify:all` enforces append-only contract storage layouts and
@@ -172,9 +198,10 @@ pnpm test:e2e                  # Chrome: client/dashboard desktop + mobile
   explicit Wrangler operation; D1 is never rolled back automatically.
 - Lint is blocking (`--max-warnings 0`) on `client`, `dashboard` and `server`;
   server lint is type-aware and rejects floating or misused promises.
-- `pnpm test:fork` runs three live integration tests for deployed GatoPago,
-  EntryPoint, CCTP, Uniswap and Aave contracts, including Aave supply/withdraw
-  and CCTP burn state changes.
+- `pnpm test:fork` runs six live fork tests against Arbitrum Sepolia, Base
+  Sepolia and Avalanche Fuji. They cover the three deployed checkout rails plus
+  EntryPoint/CCTP/Aave wiring, including Aave supply/withdraw and CCTP burn state
+  changes.
 - Manual release verification scans Git history and the checked-out worktree
   with Gitleaks and executes twelve Playwright checks across four viewport
   profiles, including automated WCAG 2.2 AA rules and keyboard focus order.
@@ -189,7 +216,9 @@ gas, and relay `handleOps`, but **cannot move funds** without a valid passkey
 signature the contract accepts. Key-separation guidance for mainnet is in
 [DEPLOY.md](DEPLOY.md) §11.
 Private reporting, secret handling and incident response are documented in
-[SECURITY.md](SECURITY.md).
+[SECURITY.md](SECURITY.md). The name-only inventory, verified provenance and
+safe acquisition/rotation guide is in
+[docs/operations/worker-variables.md](docs/operations/worker-variables.md).
 
 ## Roadmap
 
@@ -208,7 +237,8 @@ lives only in the [technical roadmap](docs/roadmap.md).
 
 ```
 client/      React PWA (deployed to Vercel → app.parmelia.me)
-server/      Cloudflare Worker API (Hono + D1 + event-driven indexer/relayer)
+server/      App Worker (identity/accounts/activity/indexer/relayer + App D1)
+payments-worker/ Payments Worker (merchant API/execution/webhooks + Payments D1)
 dashboard/   Merchant dashboard (React; API keys, payments, webhooks, sandbox)
 contracts/   Foundry: AccountWebAuthnV2, AccountFactoryV2, ParmeliaPaymaster,
              ParmeliaPaymentRouter, ParmeliaCrosschainRouter, verifier

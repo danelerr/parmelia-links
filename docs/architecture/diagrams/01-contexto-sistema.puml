@@ -1,0 +1,63 @@
+@startuml
+!include _theme.puml
+title GatoPago — Diagrama de contexto del sistema
+
+left to right direction
+
+actor "Cliente pagador" as payer
+actor "Dueño / operador\ndel negocio" as merchant
+actor "Desarrollador B2B" as developer
+actor "Operador GatoPago" as operator
+
+rectangle "GatoPago" as gatopago COLOR_WEB {
+  rectangle "App para personas\nCuenta, passkeys y pagos" as app
+  rectangle "Dashboard de negocios\nCobros e integración" as dashboard
+  rectangle "Checkout público\nRuta de App · link y QR" as checkout
+  rectangle "App Backend\nIdentidad y wallet" as app_backend COLOR_LIVE
+  rectangle "Payments Backend\nIntents, routing y settlement\n(desplegado; live mode apagado)" as payments_backend COLOR_LIVE
+}
+
+cloud "Firebase\nIdentidad" as firebase COLOR_EXTERNAL
+cloud "Email\nOTP transaccional" as email COLOR_EXTERNAL
+cloud "RPC providers\nLectura y broadcast" as rpc COLOR_EXTERNAL
+rectangle "Circle CCTP v2\nAttestations y fees" as circle COLOR_EXTERNAL
+node "Redes EVM soportadas\nArbitrum · Base · Avalanche" as evm COLOR_EXTERNAL
+rectangle "Sistema del negocio\ne-commerce / ERP / backend" as merchant_system COLOR_EXTERNAL
+
+payer --> app : administra su cuenta
+payer --> checkout : paga link o QR
+merchant --> dashboard : opera cobros
+developer --> dashboard : configura integración
+developer --> merchant_system : implementa órdenes
+merchant_system --> payments_backend : API /v1 + API key
+payments_backend --> merchant_system : webhook firmado
+operator --> app_backend : opera y observa
+operator --> payments_backend : opera y observa
+
+app --> app_backend : HTTPS
+app --> payments_backend : checkout nuevo
+dashboard --> app_backend : login / OTP
+dashboard --> payments_backend : recursos merchant
+checkout --> payments_backend : intent, quote y attempt
+app_backend --> payments_backend : Service Binding N-1\ny comandos versionados
+
+app_backend --> firebase : verifica identidad
+payments_backend --> firebase : verifica identidad merchant
+app_backend --> email : envía código de acceso
+app_backend --> rpc : smart accounts / UserOps
+payments_backend --> rpc : evidencia y settlement
+app_backend --> circle : CCTP personal
+payments_backend --> circle : rutas CCTP
+app_backend --> evm : operaciones personales
+payments_backend --> evm : routers de cobro
+
+legend right
+  |= Color |= Estado |
+  |<#DCFCE7> Verde | Desplegado remotamente |
+  |<#FEF3C7> Amarillo | Implementado; promoción pendiente |
+  |<#DBEAFE> Azul | Interfaz GatoPago |
+  |<#EDE9FE> Violeta | Sistema externo |
+  |<#FEF3C7> Amarillo | Corrección local pendiente de promoción |
+endlegend
+
+@enduml

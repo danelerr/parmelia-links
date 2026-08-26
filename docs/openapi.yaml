@@ -3,13 +3,17 @@ info:
   title: GatoPago Payments API
   version: "1.0.0"
   description: >
-    Accept stablecoin payments (USDC on Arbitrum) with a Stripe-style flow:
+    Accept USDC from Arbitrum, Base, or Avalanche with an intent/quote/attempt flow:
     create a Payment Intent, share a checkout link or QR, and receive a signed
-    webhook when it's paid. Create keys and webhooks in the dashboard
-    (https://dashboard.parmelia.me). See api.md for the full guide.
+    webhook when it's paid. The current capability is testnet-only: live keys,
+    webhooks and intents stay fail-closed until the operator flag and verified
+    mainnet route manifest are both enabled. Create test keys and webhooks in
+    the dashboard (https://dashboard.parmelia.me). See api.md for the full guide.
 servers:
+  - url: https://gatopago-payments-api.parmelia.workers.dev
+    description: Payments Worker (checkout, merchants, intents, settlement and webhooks)
   - url: https://server.parmelia.workers.dev
-    description: Production worker
+    description: Temporary App compatibility proxy during cutover
 
 security:
   - bearerAuth: []
@@ -17,6 +21,8 @@ security:
 tags:
   - name: Payment Intents
     description: Create, inspect, cancel, authorize, and simulate payment intents.
+  - name: Checkout
+    description: Public intent quotes, signed attempts, and execution registration.
   - name: Events
     description: Retrieve the immutable merchant event stream used by webhooks.
   - name: App Home
@@ -191,6 +197,162 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /checkout/{linkId}:
+    get:
+      operationId: getCheckout
+      tags: [Checkout]
+      summary: Retrieve a public checkout and its enabled source networks
+      security: []
+      parameters: [{ $ref: "#/components/parameters/LinkId" }]
+      responses:
+        "200":
+          description: Checkout state and fail-closed network capabilities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Checkout" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /checkout/{linkId}/quotes:
+    post:
+      operationId: createCheckoutQuote
+      tags: [Checkout]
+      summary: Quote a source chain and route
+      security: []
+      parameters: [{ $ref: "#/components/parameters/LinkId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payer, source_chain_id, attempt_capability_hash]
+              properties:
+                payer: { type: string, description: EVM payer address. }
+                source_chain_id: { type: integer, enum: [421614, 84532, 43113] }
+                attempt_capability_hash:
+                  type: string
+                  pattern: '^0x[0-9a-fA-F]{64}$'
+                  description: SHA-256 of a browser-generated, attempt-scoped capability. The capability itself is never sent on this call.
+                route: { type: string, enum: [auto, fast, standard], default: auto }
+                amount:
+                  type: string
+                  description: Required only when the checkout intent has amount_mode=payer_defined.
+      responses:
+        "201":
+          description: Short-lived quote using a live Circle fee for CCTP routes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentQuote" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /checkout/{linkId}/attempts:
+    post:
+      operationId: createCheckoutAttempt
+      tags: [Checkout]
+      summary: Reserve one signed payment attempt
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/LinkId" }
+        - { $ref: "#/components/parameters/CheckoutCapability" }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, maxLength: 160 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quote_id, payer_proof_signature]
+              properties:
+                quote_id: { type: string }
+                payer_proof_signature:
+                  type: string
+                  description: personal_sign signature by the quoted payer over payer_proof_message.
+      responses:
+        "201":
+          description: Signed EIP-712 attempt; create this before building calldata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentAttempt" }
+        "200":
+          description: Idempotent replay of the same attempt
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentAttempt" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /checkout/{linkId}/attempts/{attemptId}/register:
+    post:
+      operationId: registerCheckoutTransaction
+      tags: [Checkout]
+      summary: Register a source transaction after broadcast
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/LinkId" }
+        - { $ref: "#/components/parameters/AttemptId" }
+        - { $ref: "#/components/parameters/CheckoutCapability" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_tx_hash]
+              properties:
+                source_tx_hash: { type: string }
+      responses:
+        "200":
+          description: Registered only after Payments independently verifies the receipt, sender, router and signed-attempt event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentAttempt" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Receipt evidence is not available yet; no hash or status was persisted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Source-chain RPC evidence is temporarily unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /checkout/{linkId}/attempts/{attemptId}:
+    get:
+      operationId: getCheckoutAttempt
+      tags: [Checkout]
+      summary: Resume an attempt owned by this checkout session
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/LinkId" }
+        - { $ref: "#/components/parameters/AttemptId" }
+        - { $ref: "#/components/parameters/CheckoutCapability" }
+      responses:
+        "200":
+          description: Capability-scoped attempt state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentAttempt" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /checkout/attempts/{attemptId}/cancel:
+    post:
+      operationId: cancelCheckoutAttempt
+      tags: [Checkout]
+      summary: Cancel an unbroadcast reservation owned by this checkout session
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/AttemptId" }
+        - { $ref: "#/components/parameters/CheckoutCapability" }
+      responses:
+        "200": { description: Attempt canceled }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /home:
     get:
       operationId: getHome
@@ -285,7 +447,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: "Secret API key: Authorization: Bearer sk_live_… (or sk_test_…)."
+      description: "Secret API key. The current deployment accepts sk_test_…; sk_live_… remains disabled until mainnet activation gates pass."
     firebaseAuth:
       type: http
       scheme: bearer
@@ -299,6 +461,24 @@ components:
       required: true
       schema: { type: string }
       description: Payment intent id (pi_…).
+    LinkId:
+      in: path
+      name: linkId
+      required: true
+      schema: { type: string }
+    AttemptId:
+      in: path
+      name: attemptId
+      required: true
+      schema: { type: string }
+    CheckoutCapability:
+      in: header
+      name: X-GatoPago-Checkout-Capability
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Random 32-byte base64url capability generated in the browser and kept only in sessionStorage.
 
   responses:
     BadRequest:
@@ -432,12 +612,10 @@ components:
           type: string
           maxLength: 200
           description: Short free-text note.
-        expires_in:
-          type: integer
-          minimum: 60
-          maximum: 86400
-          default: 3600
-          description: Seconds until the intent expires.
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiry within the next seven days; defaults to one hour.
 
     PaymentIntent:
       type: object
@@ -446,16 +624,25 @@ components:
         object: { type: string, enum: [payment_intent] }
         status:
           type: string
-          enum: [awaiting_payment, paid, canceled, expired]
+          enum: [awaiting_payment, processing, paid, overpaid, canceled, expired, failed]
         amount: { type: string, example: "25.00" }
+        amount_mode: { type: string, enum: [fixed, payer_defined], default: fixed }
         currency: { type: string, example: USDC }
         reference: { type: [string, "null"] }
         metadata: { type: object, additionalProperties: true }
         checkout_url: { type: [string, "null"], description: Hosted checkout link (Flow A). }
         tx_hash: { type: [string, "null"] }
         mode: { type: string, enum: [test, live] }
+        settlement_chain_id: { type: integer }
+        amount_atomic: { type: string }
+        paid_at: { type: [string, "null"], format: date-time }
         expires_at: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
+        fee_breakdown:
+          anyOf:
+            - { $ref: "#/components/schemas/FeeBreakdown" }
+            - { type: "null" }
+          description: Present on the detail endpoint after an attempt has economic evidence.
 
     PaymentIntentList:
       type: object
@@ -464,6 +651,123 @@ components:
         data:
           type: array
           items: { $ref: "#/components/schemas/PaymentIntent" }
+
+    Checkout:
+      type: object
+      properties:
+        link: { type: object, additionalProperties: true }
+        intent: { $ref: "#/components/schemas/PaymentIntent" }
+        networks:
+          type: array
+          items:
+            type: object
+            properties:
+              chain_id: { type: integer }
+              name: { type: string }
+              routes:
+                type: array
+                items: { type: string, enum: [local, cctp_fast, cctp_standard] }
+              usdc: { type: string }
+              permit_mode: { type: string, enum: [eip2612, approve] }
+
+    PaymentQuote:
+      type: object
+      required: [id, intent_id, payer, source_chain_id, route, settlement_amount_atomic, platform_fee_atomic, cctp_fee_atomic, gross_payer_amount_atomic, fee_policy, platform_fee_bps, platform_fee_bearer, platform_fee_recipient, route_fee_cap_bps, fee_source, fee_observed_at, expires_at, quote_hash, payer_proof_message]
+      properties:
+        id: { type: string }
+        intent_id: { type: string }
+        payer: { type: string }
+        source_chain_id: { type: integer }
+        route: { type: string, enum: [local, cctp_fast, cctp_standard] }
+        settlement_amount_atomic: { type: string }
+        platform_fee_atomic: { type: string }
+        cctp_fee_atomic: { type: string }
+        gross_payer_amount_atomic: { type: string }
+        fee_policy: { $ref: "#/components/schemas/FeePolicySnapshot" }
+        platform_fee_bps: { type: integer, minimum: 0, maximum: 100 }
+        platform_fee_bearer: { type: string, enum: [none, payer] }
+        platform_fee_recipient: { type: [string, "null"] }
+        route_fee_cap_bps:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Immutable on-chain ceiling for this deployed route, not the fee charged.
+        fee_source: { type: string, enum: [local, circle_live] }
+        fee_observed_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        quote_hash: { type: string }
+        payer_proof_message:
+          type: string
+          description: Exact human-readable message that the quoted payer must sign before an attempt can be reserved.
+
+    PaymentAttempt:
+      type: object
+      required: [id, intent_id, payer, source_chain_id, route, status, router, authorization, signature, authorization_hash, valid_after, valid_until, fee_snapshot]
+      properties:
+        id: { type: string }
+        intent_id: { type: string }
+        payer: { type: string }
+        source_chain_id: { type: integer }
+        route: { type: string, enum: [local, cctp_fast, cctp_standard] }
+        status: { type: string, enum: [reserved, submitted, processing, paid, overpaid, failed, expired, canceled] }
+        router: { type: string }
+        authorization: { type: object, additionalProperties: true }
+        signature: { type: string }
+        authorization_hash: { type: string }
+        valid_after: { type: integer }
+        valid_until: { type: integer }
+        source_tx_hash: { type: [string, "null"] }
+        destination_tx_hash: { type: [string, "null"] }
+        user_op_hash: { type: [string, "null"] }
+        fee_snapshot: { $ref: "#/components/schemas/FeeSnapshot" }
+
+    FeePolicySnapshot:
+      type: object
+      required: [id, version, rule_id]
+      properties:
+        id: { type: string, example: free-default }
+        version: { type: integer, minimum: 1, example: 1 }
+        rule_id: { type: string, example: free-default }
+
+    FeeSnapshot:
+      type: object
+      description: Immutable economics captured before the payer signs this attempt.
+      required: [policy_id, policy_version, rule_id, platform_fee_bps, platform_fee_atomic, network_fee_max_atomic, gross_payer_amount_atomic, bearer, recipient, route_fee_cap_bps]
+      properties:
+        policy_id: { type: string }
+        policy_version: { type: integer, minimum: 1 }
+        rule_id: { type: string }
+        platform_fee_bps: { type: integer, minimum: 0, maximum: 100 }
+        platform_fee_atomic: { type: string }
+        network_fee_max_atomic: { type: string }
+        gross_payer_amount_atomic: { type: string }
+        bearer: { type: string, enum: [none, payer] }
+        recipient: { type: [string, "null"] }
+        route_fee_cap_bps: { type: integer, minimum: 0, maximum: 100 }
+
+    FeeLine:
+      type: object
+      required: [type, bearer, quoted_amount_atomic, actual_amount_atomic, recipient, status, policy_id, policy_version, rule_id]
+      properties:
+        type: { type: string, enum: [platform, network] }
+        bearer: { type: string, enum: [none, payer] }
+        quoted_amount_atomic: { type: string }
+        actual_amount_atomic: { type: [string, "null"] }
+        recipient: { type: [string, "null"] }
+        status: { type: string, enum: [quoted, waived, charged] }
+        policy_id: { type: string }
+        policy_version: { type: integer, minimum: 1 }
+        rule_id: { type: string }
+
+    FeeBreakdown:
+      type: object
+      required: [currency, platform, network, total_quoted_atomic, total_actual_atomic]
+      properties:
+        currency: { type: string, enum: [USDC] }
+        platform: { $ref: "#/components/schemas/FeeLine" }
+        network: { $ref: "#/components/schemas/FeeLine" }
+        total_quoted_atomic: { type: string }
+        total_actual_atomic: { type: [string, "null"] }
 
     RouterAuthorization:
       type: object
@@ -502,7 +806,7 @@ components:
       properties:
         id: { type: string, example: "evt_…" }
         merchantId: { type: string }
-        type: { type: string, enum: [payment.created, payment.paid] }
+        type: { type: string, enum: [payment.created, payment.paid, payment.overpaid] }
         objectId: { type: [string, "null"] }
         payload: { type: object, additionalProperties: true }
         mode: { type: string, enum: [test, live] }

@@ -1,0 +1,84 @@
+@startuml
+!include _theme.puml
+title Arquitectura objetivo — Proveedores sin boilerplate prematuro
+
+left to right direction
+skinparam linetype ortho
+
+actor "App / Dashboard / API B2B" as clients
+
+package "Payments — núcleo estable" COLOR_READY {
+  component "HTTP / RPC adapters" as inbound
+  component "PaymentIntent\nresultado comercial" as intent
+  component "Payment Orchestrator\ncasos de uso + idempotencia" as orchestrator
+  component "Policy / Routing\nselección explícita" as policy
+  component "Settlement + Reconciliation\nevidencia canónica" as settlement
+  component "Events / Outbox" as events
+  component "Repositories + Stores" as persistence
+  component "Onchain Rail\nUSDC + routers + CCTP\n[implementado]" as onchain
+}
+
+database "PAYMENTS_DB" as db COLOR_DATA
+queue "Payments Jobs" as queue COLOR_DATA
+node "Redes EVM" as evm COLOR_EXTERNAL
+cloud "Circle Iris" as circle COLOR_EXTERNAL
+
+package "Puertos futuros — crear sólo al integrar el primer proveedor" COLOR_FUTURE {
+  interface "PayinPort" as payin_port
+  interface "PayoutPort" as payout_port
+  interface "CardIssuingPort" as card_port
+  component "Adapter proveedor Payin A" as payin_adapter
+  component "Adapter proveedor Payout A" as payout_adapter
+  component "Adapter proveedor Tarjetas A" as card_adapter
+}
+
+cloud "Proveedor fiat / QR" as payin_provider COLOR_FUTURE
+cloud "Proveedor payout" as payout_provider COLOR_FUTURE
+cloud "Emisor / processor" as card_provider COLOR_FUTURE
+
+clients --> inbound
+inbound --> orchestrator
+orchestrator --> intent
+orchestrator --> policy
+policy --> onchain : rail actual
+orchestrator --> settlement
+settlement --> onchain
+settlement --> events
+intent --> persistence
+settlement --> persistence
+events --> persistence
+persistence --> db
+events --> queue
+onchain --> evm
+onchain --> circle
+
+policy ..> payin_port : futuro
+policy ..> payout_port : futuro
+policy ..> card_port : futuro
+payin_port ..> payin_adapter
+payout_port ..> payout_adapter
+card_port ..> card_adapter
+payin_adapter ..> payin_provider
+payout_adapter ..> payout_provider
+card_adapter ..> card_provider
+
+note bottom of orchestrator
+  El núcleo expresa capacidades del negocio.
+  Cada adapter traduce autenticación, estados,
+  webhooks y errores de un proveedor concreto.
+end note
+
+note bottom of payin_port
+  No hay implementación ni interfaz universal hoy.
+  Se extrae el puerto desde el contrato real del
+  primer proveedor, no desde supuestos.
+end note
+
+legend right
+  |= Color |= Estado |
+  |<#FEF3C7> Amarillo | Frontera actual en código |
+  |<#E5E7EB> Gris | Extensión futura, aún no implementada |
+  |<#FCE7F3> Rosa | Persistencia / transporte |
+endlegend
+
+@enduml

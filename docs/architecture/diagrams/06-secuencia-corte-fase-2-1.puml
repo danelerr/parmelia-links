@@ -1,0 +1,90 @@
+@startuml
+!include _theme.puml
+title Secuencia operativa — reemplazo semántico del corte de Fase 2.1
+
+actor "Operador" as operator
+participant "Preflight read-only" as preflight
+participant "Cloudflare" as cloudflare
+participant "App Worker" as app
+database "App DB" as app_db
+participant "Split tool local" as split
+database "Payments DB histórica\n[checksum de IDs; conservar]" as historical_payments_db
+database "Payments DB nueva\n[vacía]" as payments_db
+participant "Payments Worker" as payments
+participant "Vercel" as vercel
+
+group Preparación reversible
+  operator -> preflight : inventario, backups y estado remoto
+  preflight -> cloudflare : GET/listar recursos y secretos
+  preflight -> app_db : SELECT / PRAGMA / export
+  preflight --> operator : faltantes y gates; cero mutaciones
+  operator -> cloudflare : crear D1 Payments nueva\ncon UUID distinto
+  operator -> payments_db : aplicar migraciones Payments
+  operator -> cloudflare : cargar secrets dedicados
+  operator -> cloudflare : desplegar Payments en bootstrap
+  operator -> payments : GET /health/live
+  payments --> operator : bootstrapActive=true; mutaciones bloqueadas
+  operator -> app_db : aplicar migraciones App 0033 y 0034
+  operator -> cloudflare : desplegar App legacy + sync=false
+  app --> operator : health = legacy; comportamiento previo
+end
+
+critical Ventana sin escrituras de pagos
+  operator -> cloudflare : desplegar App con modo frozen
+  operator -> app : probar POST de pagos
+  app --> operator : 503 + Retry-After
+  operator -> app : probar GET de pagos
+  app --> operator : lectura legacy disponible
+  operator -> app_db : esperar jobs/outbox activos = 0
+  operator -> app_db : capturar watermark + conteos
+
+  operator -> app_db : export final inmutable
+  operator -> split : separar sólo datos de cobros
+  split -> split : checksum semántico v2, FK, quick_check,\ntamper/replay; CCTP personal queda en App
+  split --> operator : data-only SQL + manifest v4
+  operator -> payments_db : importar una sola vez
+  operator -> payments_db : exportar target importado
+  operator -> split : --verify-target-sql + manifest v4
+  split --> operator : contenido, IDs, FK y checksum verificados
+  operator -> cloudflare : fijar PAYMENTS_DATA_CUTOVER_CHECKSUM
+  operator -> payments : GET /health
+  payments --> operator : dataCutover=verified; bootstrap sigue activo
+end
+
+group Activación verificable
+  operator -> cloudflare : desactivar sólo bootstrap de Payments
+  operator -> payments : GET /health y /health/ops
+  payments --> operator : ready + dataCutover=verified
+  operator -> payments : smoke de checkout migrado directo
+  payments --> operator : mismo intent/link
+  operator -> cloudflare : App frozen + sync=true; drenar outboxes
+  app -> payments : commands versionados e idempotentes
+  operator -> cloudflare : desplegar App con modo payments + sync=true
+  operator -> app : smoke por compatibilidad N-1
+  app -> payments : Service Binding
+  payments --> app : mismo resultado
+  app --> operator : boundaryVersion 2
+  operator -> vercel : promover URLs de Payments
+  operator -> preflight : repetir gates read-only
+  preflight --> operator : corte verificable
+end
+
+note over app,app_db
+  frozen se aplica por prefijo a /links, /checkout, /v1 y
+  /merchant, y dentro de /pay sólo al subflujo de links.
+  /crosschain y las operaciones personales siguen activas.
+end note
+
+note over app_db,payments_db
+  App conserva las tablas históricas durante el soak.
+  Si Payments ya recibió escrituras nuevas, rollback exige
+  congelar y reconciliar; nunca se fusionan D1 automáticamente.
+end note
+
+note over historical_payments_db,payments_db
+  Nunca actualizar el checksum histórico in-place.
+  La D1 anterior permanece como evidencia y rollback;
+  sólo la nueva puede recibir el manifest semántico.
+end note
+
+@enduml

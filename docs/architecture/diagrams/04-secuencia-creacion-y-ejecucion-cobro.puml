@@ -1,0 +1,65 @@
+@startuml
+!include _theme.puml
+title Secuencia — Crear y ejecutar un cobro B2B
+
+actor "Negocio" as merchant
+participant "Backend del negocio" as merchant_backend
+participant "Payments API" as payments
+database "PAYMENTS_DB" as db
+actor "Cliente" as customer
+participant "App Web\nruta checkout" as checkout
+participant "App Backend\nsólo saldo GatoPago" as app_backend
+participant "Wallet / smart account" as wallet
+participant "PaymentRouter" as router
+queue "Payments Jobs" as jobs
+
+merchant -> merchant_backend : crea una orden
+merchant_backend -> payments : POST /v1/payment_intents\nAPI key test + Idempotency-Key
+payments -> db : batch D1 único\nintent + link + payment.created\n+ outbox + deliveries suscritas
+db --> payments : creación confirmada
+payments --> merchant_backend : intent + checkout_url
+merchant_backend --> merchant : link o QR
+merchant --> customer : comparte el cobro
+
+customer -> checkout : abre checkout_url
+checkout -> payments : GET /checkout/{linkId}
+payments -> db : lee link + intent
+payments --> checkout : resultado, monto y redes habilitadas
+
+customer -> checkout : elige saldo GatoPago o wallet externa
+checkout -> payments : POST /checkout/{linkId}/quotes
+payments -> db : persiste quote corta + fee/policy
+payments --> checkout : gross + ruta + expiración\n+ mensaje ligado al hash de capability
+customer -> wallet : personal_sign del mensaje de payer
+checkout -> payments : POST /checkout/{linkId}/attempts\nIdempotency-Key + capability + prueba payer
+payments -> payments : recupera signer y valida payer exacto
+payments -> db : reserva attempt + hash capability\nantes de firmar autorización
+payments --> checkout : EIP-712 + calldata
+
+alt Saldo GatoPago
+  checkout -> app_backend : preparar pago del attempt
+  app_backend -> payments : RPC reserveAppPaymentAttempt
+  payments -> db : valida/reserva de forma idempotente
+  app_backend --> checkout : UserOperation preparada
+  customer -> wallet : firma con passkey
+else Wallet externa
+  customer -> wallet : confirma la transacción
+end
+
+wallet -> router : ejecuta calldata autorizada
+router -> router : transfiere local o quema vía CCTP
+checkout -> payments : reporta tx hash + capability
+payments -> router : RPC: receipt, from, to y evento exacto
+alt Evidencia canónica presente
+  payments -> db : CAS reserved -> submitted + source hash
+else Pendiente o manipulada
+  payments --> checkout : 409 retryable o 400\nD1 no cambia
+end
+payments -> jobs : attempt_reconcile / router_watch
+
+note over checkout,jobs
+  El broadcast ni un hash declarado marcan el intent como pagado.
+  Si el navegador se cierra, Queue y el watcher continúan.
+end note
+
+@enduml
