@@ -18,7 +18,7 @@
     "PAYMENT_LIVE_ENABLED": "false",
     // First deploy is read-only until migrations/import are verified. Change to
     // false only in the activation deploy after the data-only cutover.
-    "PAYMENTS_BOOTSTRAP_MODE": "true",
+    "PAYMENTS_BOOTSTRAP_MODE": "false",
     // Replace with the 64-hex checksum emitted by split-payments-d1.mjs after
     // the final frozen import. Runtime writes require this exact D1 proof.
     "PAYMENTS_DATA_CUTOVER_CHECKSUM": "5d3093e9b12288d7783832037b3bf06635591da1cf56df377ff4b4b6f3093a27",
