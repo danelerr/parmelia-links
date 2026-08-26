@@ -27,7 +27,7 @@
     "PAYMENTS_CUTOVER_MODE": "frozen",
     // Remains false through target deploy and data import. Enable only while
     // cutover mode is frozen/payments after Payments bootstrap is complete.
-    "PAYMENTS_SYNC_ENABLED": "false",
+    "PAYMENTS_SYNC_ENABLED": "true",
     // Provider-neutral reconciliation defaults. Endpoint-specific plan limits
     // can be declared with the RPC_PROVIDER_CAPABILITIES secret/config.
     "RPC_INDEXER_MIN_BLOCK_RANGE": "10",
