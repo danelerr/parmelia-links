@@ -5,7 +5,6 @@ import {
 	getSourceDelivery,
 	recordSourceDelivery,
 } from "./chainJournal";
-import { scheduleEventJob } from "./eventScheduler";
 import { verifyAlchemySignature } from "./alchemyWebhook";
 import { logInfo } from "./logger";
 import {
@@ -173,12 +172,10 @@ export async function processAlchemyCustomWebhook(
 		signal.recovery || !signal.recognizedTopic || signal.truncated;
 	const schedules: Promise<unknown>[] = [];
 	if (wakeRouter) {
-		schedules.push(
-			scheduleEventJob(env, "router_watcher", {
-				delayMs: 10_000,
-				reason: "alchemy_custom_chain_event",
-			}),
-		);
+		logInfo("legacy_app_router_signal_ignored", {
+			deliveryId: envelope.id!,
+			reason: "payment_router_watcher_owned_by_payments_worker",
+		});
 	}
 	if (wakeRecovery) {
 		schedules.push((async () => {

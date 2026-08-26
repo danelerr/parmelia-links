@@ -51,14 +51,15 @@ bridgeRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json({ error: "Necesitas una cuenta primero.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
-		const crosschainFeeBps = BigInt(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS || "0");
 		const quote = await quoteBridge({
 			direction,
 			externalChainId,
 			amount,
 			arbitrumUsdc: network.contracts.usdc,
 			recipient: account,
-			crosschainFeeBps: crosschainFeeBps > 100n ? 100n : crosschainFeeBps,
+			// This surface is quote-only and does not yet own execution/ledger
+			// evidence. Keep it free until a signed, reconcilable withdrawal exists.
+			crosschainFeeBps: 0n,
 		});
 
 		return c.json({

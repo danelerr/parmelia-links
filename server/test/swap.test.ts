@@ -18,7 +18,6 @@ import {
 	universalRouterAbi,
 } from "../src/services/uniswap";
 import {
-	MAX_FEE_BPS_HARD_CAP,
 	applyFee,
 	applySlippage,
 	resolveSwapAmountInput,
@@ -101,9 +100,9 @@ describe("resolveFeePolicy", () => {
 	});
 
 	it("requires explicit enable + treasury", () => {
-		expect(
-			resolveFeePolicy(env({ GATOPAGO_FEES_ENABLED: "true", GATOPAGO_SWAP_FEE_BPS: "30" })).feeBps,
-		).toBe(0n); // no treasury
+		expect(() =>
+			resolveFeePolicy(env({ GATOPAGO_FEES_ENABLED: "true", GATOPAGO_SWAP_FEE_BPS: "30" })),
+		).toThrow("treasury");
 		const on = resolveFeePolicy(
 			env({
 				GATOPAGO_FEES_ENABLED: "true",
@@ -115,16 +114,15 @@ describe("resolveFeePolicy", () => {
 		expect(on.treasury).toBe(TREASURY);
 	});
 
-	it("hard-caps the fee at 1% no matter what env says", () => {
-		const policy = resolveFeePolicy(
+	it("fails closed instead of silently clamping an invalid fee", () => {
+		expect(() => resolveFeePolicy(
 			env({
 				GATOPAGO_FEES_ENABLED: "true",
 				GATOPAGO_SWAP_FEE_BPS: "5000",
 				GATOPAGO_MAX_FEE_BPS: "9999",
 				GATOPAGO_TREASURY_ADDRESS: TREASURY,
 			}),
-		);
-		expect(policy.feeBps).toBe(MAX_FEE_BPS_HARD_CAP);
+		)).toThrow("configuration");
 	});
 });
 

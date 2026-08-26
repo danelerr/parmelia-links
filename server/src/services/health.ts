@@ -9,6 +9,9 @@ import {
 	validateEmailSecurityConfig,
 	validateRuntimeConfig,
 } from "./runtimeConfig";
+import { collectSponsorshipHealth, type SponsorshipHealth } from "./sponsorshipHealth";
+import { paymentsCutoverState, type PaymentsCutoverState } from "./paymentsCutover";
+import { paymentsBoundarySyncState, type PaymentsBoundarySyncState } from "./paymentsRpc";
 
 type HealthStatus = "ok" | "degraded" | "not_ready";
 
@@ -19,6 +22,9 @@ export type HealthSnapshot = {
 	warnings: string[];
 	rpc: Awaited<ReturnType<typeof getRpcHealthSummary>>;
 	operations: OperationalHealthSummary | null;
+	sponsorship: SponsorshipHealth | null;
+	paymentsCutover: PaymentsCutoverState;
+	paymentsSync: PaymentsBoundarySyncState;
 };
 
 export type PublicReadiness = {
@@ -26,6 +32,8 @@ export type PublicReadiness = {
 	network: string | null;
 	issueCount: number;
 	warningCount: number;
+	paymentsCutoverMode: PaymentsCutoverState["mode"];
+	paymentsSyncEnabled: boolean;
 };
 
 // Cross-request state is limited to throttling an idempotent recovery wakeup;
@@ -35,18 +43,19 @@ let eventRecoveryLastAttemptAt = 0;
 function shouldWakeRecovery(summary: OperationalHealthSummary): boolean {
 	return [
 		summary.queues.paymentReconcileActive,
+		summary.queues.paymentAccountSyncActive,
+		summary.queues.paymentExecutionSyncActive,
 		summary.queues.userEventActive,
 		summary.queues.balanceRefreshActive,
 		summary.queues.accountOperationActive,
-		summary.queues.crosschainActive,
-		summary.queues.webhookDeliveryActive,
-		summary.queues.routerIntentActive,
 		summary.queues.indexerRegistryActive,
 		summary.queues.providerSubscriptionActive,
 		summary.queues.reorgReplayActive,
 		summary.queues.indexerActiveShards,
 	].some((value) => value > 0);
 }
+
+export const __test = { shouldWakeRecovery };
 
 export async function collectHealthSnapshot(
 	env: Bindings,
@@ -60,6 +69,23 @@ export async function collectHealthSnapshot(
 	}
 	let rpcHealth: HealthSnapshot["rpc"] = [];
 	let operationalHealth: OperationalHealthSummary | null = null;
+	let sponsorshipHealth: SponsorshipHealth | null = null;
+	const paymentsCutover = paymentsCutoverState(env);
+	const paymentsSync = paymentsBoundarySyncState(env);
+	if (!paymentsCutover.valid) issueCodes.push("payments_cutover_mode_invalid");
+	if (!paymentsSync.valid) issueCodes.push("payments_sync_configuration_invalid");
+	if (paymentsCutover.mode === "payments" && !paymentsSync.enabled) {
+		issueCodes.push("payments_sync_disabled_after_cutover");
+	}
+	if (paymentsCutover.mode === "frozen" && !paymentsSync.enabled) {
+		warnings.push("payments_sync_bootstrap_disabled");
+	}
+	if (paymentsCutover.mode === "frozen" && paymentsCutover.valid) {
+		warnings.push("payments_cutover_frozen");
+	}
+	if (paymentsCutover.mode === "payments" && !env.PAYMENTS) {
+		issueCodes.push("payments_binding_missing");
+	}
 
 	try {
 		if (await hasAccountOperationNeedsReview(env)) issueCodes.push("signer_nonce_blocked");
@@ -108,6 +134,13 @@ export async function collectHealthSnapshot(
 		issueCodes.push("d1_unavailable");
 		logError("health_operational_check_failed", error, { requestId });
 	}
+	try {
+		sponsorshipHealth = await collectSponsorshipHealth(env);
+		issueCodes.push(...sponsorshipHealth.issues);
+	} catch (error) {
+		issueCodes.push("sponsorship_health_unavailable");
+		logError("sponsorship_health_check_failed", error, { requestId });
+	}
 
 	const issues = [...new Set(issueCodes)];
 	const uniqueWarnings = [...new Set(warnings)];
@@ -118,6 +151,9 @@ export async function collectHealthSnapshot(
 		warnings: uniqueWarnings,
 		rpc: rpcHealth,
 		operations: operationalHealth,
+		sponsorship: sponsorshipHealth,
+		paymentsCutover,
+		paymentsSync,
 	};
 }
 
@@ -127,6 +163,8 @@ export function publicReadiness(snapshot: HealthSnapshot): PublicReadiness {
 		network: snapshot.network,
 		issueCount: snapshot.issues.length,
 		warningCount: snapshot.warnings.length,
+		paymentsCutoverMode: snapshot.paymentsCutover.mode,
+		paymentsSyncEnabled: snapshot.paymentsSync.enabled,
 	};
 }
 

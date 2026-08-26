@@ -351,7 +351,8 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 
 		const executeCalldata = encodeExecuteBatch(calls);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: SWAP_CALL_GAS_LIMIT,
@@ -368,6 +369,8 @@ swapRoutes.post("/prepare", requireAuth, async (c) => {
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 			// Context for /pay/submit to write precise ledger entries.
 			meta: {
 				quoteId,

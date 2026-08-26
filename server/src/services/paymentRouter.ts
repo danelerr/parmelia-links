@@ -17,7 +17,6 @@ import { getRouterSignerKey } from "./keys";
 import type { PaymentIntentRecord } from "./storage";
 
 const ROUTER_AUTH_WINDOW_SECONDS = 3600;
-const MAX_FEE_BPS = 100n; // mirrors the contract's hard cap
 const ZERO = "0x0000000000000000000000000000000000000000";
 
 function normalizeKey(key: string): Hex {
@@ -85,9 +84,10 @@ export async function buildRouterAuthorization(
 	const token = network.contracts.usdc;
 	const amount = parseUnits(intent.amount, network.contracts.usdcDecimals);
 
-	let feeBps = BigInt(env.GATOPAGO_PAYMENT_FEE_BPS || "0");
-	if (feeBps < 0n) feeBps = 0n;
-	if (feeBps > MAX_FEE_BPS) feeBps = MAX_FEE_BPS;
+	// Merchant checkout economics belong exclusively to Payments. This N-1
+	// serializer remains free so accidentally remounting it cannot double-charge
+	// alongside the canonical versioned policy.
+	const feeBps = 0n;
 
 	const invoiceId = (intent.onchainId as Hex) || intentToInvoiceId(intent.id);
 	const deadline = BigInt(routerAuthorizationDeadline(intent, Math.floor(Date.now() / 1000)));
@@ -114,7 +114,7 @@ export async function buildRouterAuthorization(
 		token,
 		amount: amount.toString(),
 		merchant,
-		feeBps: Number(feeBps),
+		feeBps: 0,
 		deadline: Number(deadline),
 		signature,
 		call: {

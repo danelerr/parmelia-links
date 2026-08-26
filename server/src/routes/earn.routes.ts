@@ -203,7 +203,8 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 				? buildDepositCalls(network, account, amountRaw!)
 				: buildWithdrawCalls(network, account, withdrawAll ? null : amountRaw);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: encodeExecuteBatch(calls),
 			callGasLimit: EARN_CALL_GAS_LIMIT,
@@ -221,6 +222,8 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			meta: { action, pool: network.aave!.pool, withdrawAll },
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 		});
 
 		logInfo("earn_prepare_created", { requestId, uid: user.sub, userOpHash, action, amount: ledgerAmount });

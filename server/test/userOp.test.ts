@@ -5,6 +5,7 @@ import {
 	P256_N,
 	buildUserOperationSigningPayload,
 	matchOnchainSigner,
+	maximumSelfFundedUserOpCost,
 	normalizeLowS,
 	serializeBigInts,
 	type PackedUserOp,
@@ -53,6 +54,14 @@ describe("serializeBigInts", () => {
 	});
 });
 
+describe("maximumSelfFundedUserOpCost", () => {
+	it("bounds the native prefund before selecting the self-funded fallback", () => {
+		expect(maximumSelfFundedUserOpCost({ verificationGasLimit: 500_000n,
+			callGasLimit: 300_000n, preVerificationGas: 100_000n, maxFeePerGas: 2n }))
+			.toBe(1_800_000n);
+	});
+});
+
 describe("buildUserOperationSigningPayload", () => {
 	const entryPoint = "0x433709009B8330FDa32311DF1C2AFA402eD8D009";
 	const userOp: PackedUserOp = {
@@ -92,6 +101,20 @@ describe("buildUserOperationSigningPayload", () => {
 		const original = buildUserOperationSigningPayload(userOp, 421_614, entryPoint);
 		const changed = buildUserOperationSigningPayload(
 			{ ...userOp, callData: "0x87654321" },
+			421_614,
+			entryPoint,
+		);
+
+		expect(changed.digest).not.toBe(original.digest);
+	});
+
+	it("binds the digest to the selected paymaster, so rotation requires a fresh signature", () => {
+		const original = buildUserOperationSigningPayload(userOp, 421_614, entryPoint);
+		const changed = buildUserOperationSigningPayload(
+			{
+				...userOp,
+				paymasterAndData: "0x00000000000000000000000000000000000000b2abcdef",
+			},
 			421_614,
 			entryPoint,
 		);

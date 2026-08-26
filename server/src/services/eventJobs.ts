@@ -36,10 +36,7 @@ import {
 	releaseLease,
 } from "./storage";
 import { drainUserEventOutbox } from "./userEventOutbox";
-import {
-	deliverPendingWebhooks,
-	migrateWebhookSecrets,
-} from "./webhooks";
+import { deliverPendingWebhooks, migrateWebhookSecrets } from "./webhooks";
 import { activeWebhookSecretPrefix } from "./webhookSecrets";
 import {
 	alchemyWebhookPartition,
@@ -47,6 +44,11 @@ import {
 	parseAlchemyWebhookPartition,
 } from "./alchemyWebhookConfig";
 import { drainChainReorgReplayRequests } from "./reorg";
+import {
+	drainPaymentsBoundaryOutbox,
+	paymentsBoundarySyncState,
+} from "./paymentsRpc";
+import { paymentsCutoverState } from "./paymentsCutover";
 
 export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 
@@ -54,6 +56,7 @@ export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 // makes duplicate at-least-once deliveries inert without a permanent poller.
 const JOB_LEASE_TTL_MS = 16 * 60_000;
 const FAST_RETRY_MS = 15_000;
+const CUSTOM_WEBHOOK_FOLLOWUP_MS = 2 * 60_000;
 const ROUTER_FALLBACK_POLL_MS = 2 * 60_000;
 
 export type WorkerQueueMessage = unknown;
@@ -66,6 +69,10 @@ type EventJobExecutor = (
 	env: Bindings,
 	message: EventJobMessage,
 ) => Promise<"completed" | "already_running">;
+
+function legacyPaymentRuntimeEnabled(env: Bindings): boolean {
+	return paymentsCutoverState(env).mode !== "payments";
+}
 
 const JOB_RUNNERS: Record<EventJobName, EventJobRunner> = {
 	indexer_wallet_registry: drainIndexerWalletRegistry,
@@ -108,13 +115,11 @@ const JOB_RUNNERS: Record<EventJobName, EventJobRunner> = {
 				: BigInt(message.targetBlock),
 		);
 	},
-	router_watcher: (env, message) =>
-		runRouterWatcher(
-			env,
-			message.targetBlock === undefined
-				? undefined
-				: BigInt(message.targetBlock),
-		),
+	// legacy/frozen keep the extracted checkout runners only long enough to
+	// drain the old domain. Personal CCTP remains App-owned in every mode.
+	router_watcher: (env, message) => legacyPaymentRuntimeEnabled(env)
+		? runRouterWatcher(env, message.targetBlock === undefined ? undefined : BigInt(message.targetBlock))
+		: Promise.resolve(null),
 	recovery_watcher: (env, message) => {
 		const shardId = parseShardPartition(message.partition);
 		if (shardId === null) {
@@ -140,9 +145,12 @@ const JOB_RUNNERS: Record<EventJobName, EventJobRunner> = {
 	account_operation_reconciler: (env) =>
 		runAccountOperationReconciler(env, 10),
 	crosschain_relayer: (env) => runCrosschainRelayer(env, 5),
-	webhook_delivery: (env) => deliverPendingWebhooks(env, 20),
+	webhook_delivery: (env) => legacyPaymentRuntimeEnabled(env)
+		? deliverPendingWebhooks(env, 20) : Promise.resolve(null),
 	user_event_delivery: (env) => drainUserEventOutbox(env, 10),
-	webhook_key_rotation: (env) => migrateWebhookSecrets(env),
+	payments_boundary_sync: (env) => drainPaymentsBoundaryOutbox(env, 20),
+	webhook_key_rotation: (env) => legacyPaymentRuntimeEnabled(env)
+		? migrateWebhookSecrets(env) : Promise.resolve(null),
 };
 
 type NextRunRow = {
@@ -259,13 +267,8 @@ async function nextAccountOperationRun(env: Bindings): Promise<number | null> {
 	return row?.present === 1 ? Date.now() + FAST_RETRY_MS : null;
 }
 
-function crosschainPollDelayMs(
-	ageMs: number,
-	status: string,
-): number {
-	if (status === "recoverable") {
-		return ageMs < 60 * 60_000 ? 60_000 : 5 * 60_000;
-	}
+function crosschainPollDelayMs(ageMs: number, status: string): number {
+	if (status === "recoverable") return ageMs < 60 * 60_000 ? 60_000 : 5 * 60_000;
 	if (status === "minting" && ageMs < 2 * 60_000) return 3_000;
 	if (ageMs < 2 * 60_000) return 5_000;
 	if (ageMs < 15 * 60_000) return 15_000;
@@ -275,42 +278,28 @@ function crosschainPollDelayMs(
 
 async function nextCrosschainRun(env: Bindings): Promise<number | null> {
 	const rows = await env.GATOPAGO_DB.prepare(
-		`SELECT status, created_at, updated_at
-		 FROM crosschain_operations
+		`SELECT status, created_at, updated_at FROM crosschain_operations
 		 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable')
-		 ORDER BY updated_at ASC
-		 LIMIT 1000`,
-	).all<{
-		status: string;
-		created_at: string;
-		updated_at: string;
-	}>();
-	if (rows.results.length === 0) return null;
-
+		 ORDER BY updated_at ASC LIMIT 1000`,
+	).all<{ status: string; created_at: string; updated_at: string }>();
 	const now = Date.now();
 	let earliest: number | null = null;
 	for (const row of rows.results) {
 		const createdAt = timestampMs(row.created_at);
 		const updatedAt = timestampMs(row.updated_at);
 		if (createdAt === null || updatedAt === null) continue;
-		const candidate =
-			updatedAt +
-			crosschainPollDelayMs(Math.max(0, now - createdAt), row.status);
+		const candidate = updatedAt + crosschainPollDelayMs(Math.max(0, now - createdAt), row.status);
 		if (earliest === null || candidate < earliest) earliest = candidate;
 	}
 	return earliest === null ? null : Math.max(now + 1_000, earliest);
 }
 
 async function nextWebhookDeliveryRun(env: Bindings): Promise<number | null> {
+	if (!legacyPaymentRuntimeEnabled(env)) return null;
 	const row = await env.GATOPAGO_DB.prepare(
-		`SELECT MIN(
-			CASE
-				WHEN status = 'processing' THEN next_retry_at
-				ELSE COALESCE(next_retry_at, created_at)
-			END
-		 ) AS next_run_at
-		 FROM webhook_deliveries
-		 WHERE status IN ('pending', 'processing')`,
+		`SELECT MIN(CASE WHEN status = 'processing' THEN next_retry_at
+		 ELSE COALESCE(next_retry_at, created_at) END) AS next_run_at
+		 FROM webhook_deliveries WHERE status IN ('pending', 'processing')`,
 	).first<NextRunRow>();
 	return noEarlierThan(timestampMs(row?.next_run_at), 1_000);
 }
@@ -329,6 +318,18 @@ async function nextUserEventRun(env: Bindings): Promise<number | null> {
 	return noEarlierThan(timestampMs(row?.next_run_at), 1_000);
 }
 
+async function nextPaymentsBoundarySyncRun(env: Bindings): Promise<number | null> {
+	if (!paymentsBoundarySyncState(env).enabled) return null;
+	const row = await env.GATOPAGO_DB.prepare(
+		`SELECT MIN(next_run_at) AS next_run_at FROM (
+			SELECT MIN(next_attempt_at) AS next_run_at FROM payment_account_sync_outbox WHERE status IN ('pending','failed')
+			UNION ALL
+			SELECT MIN(next_attempt_at) AS next_run_at FROM payment_execution_sync_outbox WHERE status IN ('pending','failed')
+		)`,
+	).first<NextRunRow>();
+	return noEarlierThan(timestampMs(row?.next_run_at), 1_000);
+}
+
 export async function wakeUserEventDeliveryIfPending(
 	env: Bindings,
 	reason: string,
@@ -339,20 +340,12 @@ export async function wakeUserEventDeliveryIfPending(
 }
 
 async function nextRouterFallbackRun(env: Bindings): Promise<number | null> {
-	// A Custom Alchemy webhook wakes this watcher on the actual InvoicePaid
-	// event. Polling remains a bounded compatibility fallback only while at
-	// least one (max-24h) intent can still be paid.
-	if (env.ALCHEMY_CUSTOM_WEBHOOK_ENABLED === "true") return null;
+	if (!legacyPaymentRuntimeEnabled(env) || env.ALCHEMY_CUSTOM_WEBHOOK_ENABLED === "true") return null;
 	const now = new Date().toISOString();
 	const row = await env.GATOPAGO_DB.prepare(
-		`SELECT MIN(expires_at) AS next_run_at
-		 FROM payment_intents
-		 WHERE status = 'awaiting_payment'
-		   AND expires_at IS NOT NULL
-		   AND expires_at > ?`,
-	)
-		.bind(now)
-		.first<NextRunRow>();
+		`SELECT MIN(expires_at) AS next_run_at FROM payment_intents
+		 WHERE status = 'awaiting_payment' AND expires_at IS NOT NULL AND expires_at > ?`,
+	).bind(now).first<NextRunRow>();
 	const expiresAt = timestampMs(row?.next_run_at);
 	if (expiresAt === null || expiresAt <= Date.now()) return null;
 	return Math.min(Date.now() + ROUTER_FALLBACK_POLL_MS, expiresAt);
@@ -383,13 +376,10 @@ async function nextAlchemyAddressSyncRun(
 }
 
 async function nextWebhookKeyRotationRun(env: Bindings): Promise<number | null> {
+	if (!legacyPaymentRuntimeEnabled(env)) return null;
 	const activePrefix = activeWebhookSecretPrefix(env);
 	if (!activePrefix) return null;
-	const remaining = await listWebhookSecretsNeedingEncryption(
-		env,
-		activePrefix,
-		1,
-	);
+	const remaining = await listWebhookSecretsNeedingEncryption(env, activePrefix, 1);
 	return remaining.length > 0 ? Date.now() + 1_000 : null;
 }
 
@@ -541,25 +531,15 @@ async function scheduleJobContinuations(
 			}
 			break;
 		case "router_watcher":
-			if (chainResult && !chainResult.caughtUp) {
-				schedules.push({
-					job,
-					runAt: Date.now() + FAST_RETRY_MS,
-					reason: "router_partition_catchup",
-					targetBlock: chainResult.targetBlock,
-				});
+			if (chainResult && !chainResult.caughtUp && legacyPaymentRuntimeEnabled(env)) {
+				schedules.push({ job, runAt: Date.now() + FAST_RETRY_MS,
+					reason: "router_partition_catchup", targetBlock: chainResult.targetBlock });
 			}
-			schedules.push({
-				job,
-				runAt: await nextRouterFallbackRun(env),
-				reason: "router_intent_pending_fallback",
-			});
-			if (message.reason === "alchemy_custom_chain_event") {
-				schedules.push({
-					job,
-					runAt: Date.now() + ROUTER_FALLBACK_POLL_MS,
-					reason: "alchemy_custom_finality_followup",
-				});
+			schedules.push({ job, runAt: await nextRouterFallbackRun(env),
+				reason: "router_intent_pending_fallback" });
+			if (message.reason === "alchemy_custom_chain_event" && legacyPaymentRuntimeEnabled(env)) {
+				schedules.push({ job, runAt: Date.now() + ROUTER_FALLBACK_POLL_MS,
+					reason: "alchemy_custom_finality_followup" });
 			}
 			break;
 		case "alchemy_address_sync":
@@ -597,18 +577,12 @@ async function scheduleJobContinuations(
 			});
 			break;
 		case "crosschain_relayer":
-			schedules.push({
-				job,
-				runAt: await nextCrosschainRun(env),
-				reason: "crosschain_operation_pending",
-			});
+			schedules.push({ job, runAt: await nextCrosschainRun(env),
+				reason: "crosschain_operation_pending" });
 			break;
 		case "webhook_delivery":
-			schedules.push({
-				job,
-				runAt: await nextWebhookDeliveryRun(env),
-				reason: "merchant_webhook_retry_due",
-			});
+			schedules.push({ job, runAt: await nextWebhookDeliveryRun(env),
+				reason: "merchant_webhook_retry_due" });
 			break;
 		case "user_event_delivery":
 			schedules.push({
@@ -617,12 +591,16 @@ async function scheduleJobContinuations(
 				reason: "user_event_retry_due",
 			});
 			break;
-		case "webhook_key_rotation":
+		case "payments_boundary_sync":
 			schedules.push({
 				job,
-				runAt: await nextWebhookKeyRotationRun(env),
-				reason: "webhook_keys_remaining",
+				runAt: await nextPaymentsBoundarySyncRun(env),
+				reason: "payments_boundary_retry_due",
 			});
+			break;
+		case "webhook_key_rotation":
+			schedules.push({ job, runAt: await nextWebhookKeyRotationRun(env),
+				reason: "webhook_keys_remaining" });
 			break;
 		case "indexer":
 			schedules.push({
@@ -649,7 +627,7 @@ async function scheduleJobContinuations(
 			if (message.reason === "alchemy_custom_chain_event") {
 				schedules.push({
 					job,
-					runAt: Date.now() + ROUTER_FALLBACK_POLL_MS,
+					runAt: Date.now() + CUSTOM_WEBHOOK_FOLLOWUP_MS,
 					reason: "alchemy_custom_finality_followup",
 				});
 			}
@@ -694,19 +672,23 @@ async function scheduleJobContinuations(
  * Normal operation never needs a scan: each state transition is its producer.
  */
 export async function recoverEventJobs(env: Bindings): Promise<number> {
-	const recoveryMessages: EventJobMessage[] = [
+	const recoveryJobs: EventJobName[] = [
 		"indexer_wallet_registry",
 		"reorg_replay",
 		"indexer_safety_sweep",
 		"payment_reconciler",
-		"router_watcher",
 		"balance_refresh",
 		"account_operation_reconciler",
 		"crosschain_relayer",
-		"webhook_delivery",
 		"user_event_delivery",
-		"webhook_key_rotation",
-	].map((job) => ({
+	];
+	if (paymentsBoundarySyncState(env).enabled) {
+		recoveryJobs.push("payments_boundary_sync");
+	}
+	if (legacyPaymentRuntimeEnabled(env)) {
+		recoveryJobs.push("router_watcher", "webhook_delivery", "webhook_key_rotation");
+	}
+	const recoveryMessages: EventJobMessage[] = recoveryJobs.map((job) => ({
 		schemaVersion: 3,
 		job: job as EventJobName,
 		partition: "global",
@@ -838,11 +820,14 @@ export async function consumeWorkerQueue(
 	logWarn("worker_queue_rejected", {
 		queue: batch.queue,
 		reason: "unknown_queue",
+		retryDelaySeconds: FAST_RETRY_MS / 1_000,
 	});
-	batch.ackAll();
+	// Configuration drift must never turn into silent data loss. A manual retry
+	// consumes the configured retry budget and ultimately reaches the Queue DLQ.
+	batch.retryAll({ delaySeconds: FAST_RETRY_MS / 1_000 });
 }
 
 export const __test = {
-	crosschainPollDelayMs,
+	legacyPaymentRuntimeEnabled,
 	retryDelaySeconds,
 };

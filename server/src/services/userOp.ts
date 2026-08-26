@@ -18,12 +18,16 @@ import {
 } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
-import { getPaymasterSignerKey } from "./keys";
 import {
-	buildSignedPaymasterAndData,
 	PAYMASTER_POST_OP_GAS_LIMIT,
 	PAYMASTER_VERIFICATION_GAS_LIMIT,
 } from "./paymaster";
+import {
+	withSponsorshipProviderFallback,
+	sponsorshipPaymasterAddress,
+	withSponsorshipGasLimits,
+	type SponsorshipProviderName,
+} from "./sponsorship";
 import {
 	getUserOperationTransport,
 	type UserOperationTransportMode,
@@ -216,10 +220,12 @@ export async function buildSponsoredUserOp(
 	userOpHash: Hex;
 	chainId: number;
 	signingPayload: UserOperationSigningPayload;
+	sponsorshipProvider: SponsorshipProviderName;
+	sponsorshipPaymasterAddress: Address | null;
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
 	// Fail closed on half-configured networks (TODO_DEPLOY placeholders).
-	assertContractsDeployed(network, ["entryPoint", "paymaster"]);
+	assertContractsDeployed(network, ["entryPoint"]);
 	const { contracts } = network;
 	const publicClient = getPublicClient(env);
 
@@ -250,7 +256,7 @@ export async function buildSponsoredUserOp(
 		pad(toHex(maxFeePerGas), { size: 16 }),
 	]) as Hex;
 
-	const userOp: PackedUserOp = {
+	const baseUserOp: PackedUserOp = {
 		sender: params.sender,
 		nonce,
 		initCode: "0x",
@@ -263,61 +269,67 @@ export async function buildSponsoredUserOp(
 	};
 
 	const chainId = await publicClient.getChainId();
-	// Dedicated sponsorship key; falls back to PRIVATE_KEY on testnets only.
-	const signerPrivateKey = getPaymasterSignerKey(env);
-	userOp.paymasterAndData = await buildSignedPaymasterAndData({
-		chainId,
-		paymasterAddress: contracts.paymaster,
-		userOp,
-		signerPrivateKey,
-	});
+	const sponsored = await withSponsorshipProviderFallback(env, async (provider) => {
+		// Fallback is entirely pre-signature. Each candidate starts clean and is
+		// re-estimated because paymaster byte length and validation gas can differ.
+		const candidate: PackedUserOp = { ...baseUserOp };
+		const prepared = await provider.prepare({ env, chainId,
+			entryPoint: contracts.entryPoint, userOp: candidate });
+		candidate.paymasterAndData = prepared.paymasterAndData;
+		let paymasterVerificationGasLimit: bigint | undefined;
+		let paymasterPostOpGasLimit: bigint | undefined;
+		let effectiveVerificationGasLimit = verificationGasLimit;
+		let effectiveCallGasLimit = callGasLimit;
+		let effectivePreVerificationGas = preVerificationGas;
 
-	if (params.transportMode === "bundler") {
-		const estimate = await getUserOperationTransport(
-			env,
-			"bundler",
-		).estimate(userOp, contracts.entryPoint);
-		const estimatedVerification = bufferedEstimate(
-			estimate.verificationGasLimit,
-			12_000n,
-			10_000_000n,
-		);
-		const estimatedCall = bufferedEstimate(
-			estimate.callGasLimit,
-			12_000n,
-			10_000_000n,
-		);
-		userOp.accountGasLimits = packGasLimits(
-			estimatedVerification,
-			estimatedCall,
-		);
-		userOp.preVerificationGas = bufferedEstimate(
-			estimate.preVerificationGas,
-			11_000n,
-			2_000_000n,
-		);
-		const paymasterVerificationGasLimit = bufferedEstimate(
-			estimate.paymasterVerificationGasLimit ??
-				PAYMASTER_VERIFICATION_GAS_LIMIT,
-			12_000n,
-			2_000_000n,
-		);
-		const paymasterPostOpGasLimit = bufferedEstimate(
-			estimate.paymasterPostOpGasLimit ?? PAYMASTER_POST_OP_GAS_LIMIT,
-			12_000n,
-			1_000_000n,
-		);
-		// Gas fields are part of GatoPago's paymaster authorization. Re-sign only
-		// after the bundler estimate is final.
-		userOp.paymasterAndData = await buildSignedPaymasterAndData({
-			chainId,
-			paymasterAddress: contracts.paymaster,
-			userOp,
-			signerPrivateKey,
-			paymasterVerificationGasLimit,
-			paymasterPostOpGasLimit,
-		});
-	}
+		if (params.transportMode === "bundler") {
+			const estimate = await getUserOperationTransport(env, "bundler")
+				.estimate(candidate, contracts.entryPoint);
+			effectiveVerificationGasLimit = bufferedEstimate(
+				estimate.verificationGasLimit, 12_000n, 10_000_000n);
+			effectiveCallGasLimit = bufferedEstimate(
+				estimate.callGasLimit, 12_000n, 10_000_000n);
+			effectivePreVerificationGas = bufferedEstimate(
+				estimate.preVerificationGas, 11_000n, 2_000_000n);
+			candidate.accountGasLimits = packGasLimits(
+				effectiveVerificationGasLimit,
+				effectiveCallGasLimit,
+			);
+			candidate.preVerificationGas = effectivePreVerificationGas;
+			paymasterVerificationGasLimit = bufferedEstimate(
+				estimate.paymasterVerificationGasLimit ?? PAYMASTER_VERIFICATION_GAS_LIMIT,
+				12_000n, 2_000_000n);
+			paymasterPostOpGasLimit = bufferedEstimate(
+				estimate.paymasterPostOpGasLimit ?? PAYMASTER_POST_OP_GAS_LIMIT,
+				12_000n, 1_000_000n);
+			if (candidate.paymasterAndData !== "0x") {
+				candidate.paymasterAndData = withSponsorshipGasLimits(candidate.paymasterAndData,
+					paymasterVerificationGasLimit, paymasterPostOpGasLimit);
+			}
+		}
+
+		candidate.paymasterAndData = await provider.finalize({ env, chainId,
+			entryPoint: contracts.entryPoint, userOp: candidate,
+			paymasterVerificationGasLimit, paymasterPostOpGasLimit }, prepared);
+		if (provider.name === "self-funded") {
+			const [entryPointDeposit, accountBalance] = await Promise.all([
+				publicClient.readContract({ address: contracts.entryPoint, abi: entryPointAbi,
+					functionName: "balanceOf", args: [candidate.sender] }) as Promise<bigint>,
+				publicClient.getBalance({ address: candidate.sender }),
+			]);
+			const maximumCost = maximumSelfFundedUserOpCost({
+				verificationGasLimit: effectiveVerificationGasLimit,
+				callGasLimit: effectiveCallGasLimit,
+				preVerificationGas: effectivePreVerificationGas,
+				maxFeePerGas,
+			});
+			if (entryPointDeposit + accountBalance < maximumCost) {
+				throw new Error("Self-funded sponsorship requires sufficient native balance or EntryPoint deposit");
+			}
+		}
+		return candidate;
+	});
+	const userOp = sponsored.value;
 
 	const userOpHash = (await publicClient.readContract({
 		address: contracts.entryPoint,
@@ -336,5 +348,19 @@ export async function buildSponsoredUserOp(
 		);
 	}
 
-	return { userOp, userOpHash, chainId, signingPayload };
+	return { userOp, userOpHash, chainId, signingPayload,
+		sponsorshipProvider: sponsored.provider,
+		sponsorshipPaymasterAddress: sponsorshipPaymasterAddress(userOp.paymasterAndData) };
+}
+
+export function maximumSelfFundedUserOpCost(input: {
+	verificationGasLimit: bigint;
+	callGasLimit: bigint;
+	preVerificationGas: bigint;
+	maxFeePerGas: bigint;
+}): bigint {
+	for (const value of Object.values(input)) {
+		if (value < 0n) throw new RangeError("UserOperation gas values cannot be negative");
+	}
+	return (input.verificationGasLimit + input.callGasLimit + input.preVerificationGas) * input.maxFeePerGas;
 }

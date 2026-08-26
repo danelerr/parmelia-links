@@ -18,13 +18,13 @@ import { ERR, getNetworkConfig, isSupportedChainKey } from "../../shared";
 
 import userRoutes from "./routes/user.routes";
 import accountRoutes from "./routes/account.routes";
-import linksRoutes from "./routes/links.routes";
 import txRoutes from "./routes/transactions.routes";
 import payRoutes from "./routes/pay.routes";
 import swapRoutes from "./routes/swap.routes";
 import earnRoutes from "./routes/earn.routes";
 import contactsRoutes from "./routes/contacts.routes";
 import bridgeRoutes from "./routes/bridge.routes";
+import linksRoutes from "./routes/links.routes";
 import crosschainRoutes from "./routes/crosschain.routes";
 import v1Routes from "./routes/v1.routes";
 import merchantRoutes from "./routes/merchant.routes";
@@ -38,6 +38,8 @@ import {
 	publicReadiness,
 	validOpsHealthToken,
 } from "./services/health";
+import { paymentsCutoverAction, paymentsCutoverState } from "./services/paymentsCutover";
+import { paymentsBoundarySyncState, proxyPaymentsRequest } from "./services/paymentsRpc";
 
 const app = new Hono<AppContext>();
 const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -181,7 +183,12 @@ app.use(
 
 app.get("/health/live", (c) => {
 	c.header("Cache-Control", "no-store");
-	return c.json({ status: "ok" as const });
+	const cutover = paymentsCutoverState(c.env);
+	const paymentsSync = paymentsBoundarySyncState(c.env);
+	return c.json({ status: "ok" as const, service: "gatopago-app-api",
+		paymentsBoundaryVersion: cutover.mode === "payments" ? 2 : 1,
+		paymentsCutoverMode: cutover.mode, paymentsCutoverConfigValid: cutover.valid,
+		paymentsSyncEnabled: paymentsSync.enabled, paymentsSyncConfigValid: paymentsSync.valid });
 });
 
 app.get("/health", async (c) => {
@@ -208,6 +215,21 @@ app.get("/health/ops", async (c) => {
 });
 
 app.use(authMiddleware);
+
+app.use("*", async (c, next) => {
+	const cutover = paymentsCutoverState(c.env);
+	const action = paymentsCutoverAction({ mode: cutover.mode, method: c.req.method,
+		pathname: new URL(c.req.url).pathname });
+	if (action === "block_write") {
+		c.header("Cache-Control", "no-store");
+		c.header("Retry-After", "60");
+		return c.json({ error: "Payment writes are temporarily frozen for a controlled migration",
+			error_code: ERR.SERVICE_UNAVAILABLE, requestId: c.get("requestId"),
+			payments_cutover_mode: cutover.mode, retryable: true }, 503);
+	}
+	if (action === "proxy") return proxyPaymentsRequest(c.env, c.req.raw);
+	await next();
+});
 
 // Healthcheck
 app.get("/", (c) => c.text("GatoPago API"));

@@ -4,7 +4,7 @@
   "scripts": {
     "pretest": "pnpm --dir .. build:contracts",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify",
+		"deploy": "node ../scripts/assert-reproducible-deploy-source.mjs server && node ../scripts/assert-app-deploy-config.mjs && wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
     "cf-typegen:check": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example --check",
     "lint": "eslint . --max-warnings 0",

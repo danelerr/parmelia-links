@@ -85,9 +85,9 @@ async function scheduleReplayStream(
 			reason: "chain_reorg_replay",
 		});
 	} else if (row.stream === `router:${row.chain_id}`) {
-		accepted = await scheduleEventJob(env, "router_watcher", {
-			reason: "chain_reorg_replay",
-		});
+		// Legacy App router journals are read-only after the Phase 2 cutover.
+		// Payments owns its independent journal/checkpoint and reorg replay.
+		accepted = true;
 	} else {
 		const recoveryShard = watcherShardId(
 			row.stream,

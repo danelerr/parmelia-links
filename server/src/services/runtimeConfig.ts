@@ -17,6 +17,7 @@ import {
 	getAlchemyAddressWebhookConfigs,
 	validateAlchemyAddressWebhookConfigs,
 } from "./alchemyWebhookConfig";
+import { sponsorshipProviderNames, validateSponsorshipConfig } from "./sponsorship";
 
 export type RuntimeConfigIssue = {
 	code: string;
@@ -77,6 +78,15 @@ function validOptionalInteger(
 	return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max;
 }
 
+function configuredFeeBps(raw: string | undefined): bigint | null {
+	if (raw === undefined || raw.trim() === "") return 0n;
+	if (!/^\d+$/u.test(raw)) return null;
+	try {
+		const value = BigInt(raw);
+		return value >= 0n && value <= 100n ? value : null;
+	} catch { return null; }
+}
+
 /** Dependencies required by sign-in OTP, recovery step-up and security email. */
 export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[] {
 	const issues: RuntimeConfigIssue[] = [];
@@ -129,6 +139,18 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 
 	const network = getNetworkConfig(chainKey as SupportedChainKey);
 	const mainnet = !network.isTestnet;
+	for (const code of validateSponsorshipConfig(env)) {
+		issues.push(issue(code, "Sponsorship provider configuration is invalid"));
+	}
+	if (env.SPONSORSHIP_HEALTH_CHECK_ENABLED !== undefined &&
+		!["true", "false"].includes(env.SPONSORSHIP_HEALTH_CHECK_ENABLED)) {
+		issues.push(issue("SPONSORSHIP_HEALTH_CHECK_INVALID",
+			"SPONSORSHIP_HEALTH_CHECK_ENABLED must be true or false"));
+	}
+	if (env.PAYMASTER_MIN_DEPOSIT_WEI !== undefined &&
+		(!/^\d+$/u.test(env.PAYMASTER_MIN_DEPOSIT_WEI) || BigInt(env.PAYMASTER_MIN_DEPOSIT_WEI) > 10n ** 30n)) {
+		issues.push(issue("PAYMASTER_MIN_DEPOSIT_INVALID", "PAYMASTER_MIN_DEPOSIT_WEI is invalid"));
+	}
 	const rpcUrls = parseRpcUrls(env.RPC_URL);
 	if (rpcUrls.length === 0 || rpcUrls.some((url) => !validHttpUrl(url, false))) {
 		issues.push(issue("RPC_URL_INVALID", "RPC_URL must contain one or more HTTP(S) endpoints"));
@@ -332,8 +354,22 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	if (env.APP_URL && !validHttpUrl(env.APP_URL, mainnet)) {
 		issues.push(issue("APP_URL_INVALID", `APP_URL must be a valid ${mainnet ? "HTTPS" : "HTTP(S)"} URL`));
 	}
-	if (env.GATOPAGO_FEES_ENABLED === "true" && !isAddress(env.GATOPAGO_TREASURY_ADDRESS ?? "")) {
-		issues.push(issue("TREASURY_INVALID", "A valid GATOPAGO_TREASURY_ADDRESS is required when fees are enabled"));
+	if (env.GATOPAGO_FEES_ENABLED !== undefined &&
+		!['true', 'false'].includes(env.GATOPAGO_FEES_ENABLED)) {
+		issues.push(issue("FEE_SWITCH_INVALID", "GATOPAGO_FEES_ENABLED must be true or false"));
+	}
+	if (env.GATOPAGO_FEES_ENABLED === "true") {
+		const cap = configuredFeeBps(env.GATOPAGO_MAX_FEE_BPS ?? "100");
+		const productFees = [env.GATOPAGO_SWAP_FEE_BPS, env.GATOPAGO_CROSSCHAIN_FEE_BPS]
+			.map(configuredFeeBps);
+		if (cap === null || productFees.some((value) => value === null || (cap !== null && value! > cap))) {
+			issues.push(issue("FEE_POLICY_INVALID",
+				"App fee basis points must be integers between 0 and the configured cap (maximum 100)"));
+		}
+		if (productFees.some((value) => value !== null && value > 0n) &&
+			!isAddress(env.GATOPAGO_TREASURY_ADDRESS ?? "")) {
+			issues.push(issue("TREASURY_INVALID", "A valid GATOPAGO_TREASURY_ADDRESS is required when a fee is nonzero"));
+		}
 	}
 
 	try {
@@ -374,19 +410,25 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 	}
 	issues.push(...validateEmailSecurityConfig(env));
 
-	const requiredContracts = ["factory", "paymaster", "verifier", "paymentRouter", "crosschainRouter"] as const;
+	const requiredContracts = ["factory", "verifier", "paymentRouter", "crosschainRouter"] as const;
 	for (const name of requiredContracts) {
 		if (!isContractDeployed(network.contracts[name])) {
 			issues.push(issue("CONTRACT_NOT_DEPLOYED", `${name} is not deployed on ${network.name}`));
 		}
 	}
+	if (sponsorshipProviderNames(env).includes("parmelia") && !isContractDeployed(
+		env.SPONSORSHIP_PAYMASTER_ADDRESS as `0x${string}` | undefined ?? network.contracts.paymaster)) {
+		issues.push(issue("CONTRACT_NOT_DEPLOYED", `paymaster is not deployed on ${network.name}`));
+	}
 
 	const roleKeys: Array<readonly [string, string | undefined]> = [
 		["PRIVATE_KEY", env.PRIVATE_KEY],
-		["PAYMASTER_SIGNER_PRIVATE_KEY", env.PAYMASTER_SIGNER_PRIVATE_KEY],
 		["PAYMENT_ROUTER_SIGNER_PRIVATE_KEY", env.PAYMENT_ROUTER_SIGNER_PRIVATE_KEY],
 		["RECOVERY_GUARDIAN_PRIVATE_KEY", env.RECOVERY_GUARDIAN_PRIVATE_KEY],
 	];
+	if (sponsorshipProviderNames(env).includes("parmelia")) {
+		roleKeys.push(["PAYMASTER_SIGNER_PRIVATE_KEY", env.PAYMASTER_SIGNER_PRIVATE_KEY]);
+	}
 	if (env.FAUCET_ENABLED === "true" || env.FAUCET_PRIVATE_KEY?.trim()) {
 		roleKeys.push(["FAUCET_PRIVATE_KEY", env.FAUCET_PRIVATE_KEY]);
 	}

@@ -4,15 +4,16 @@ import type { Bindings } from "../middlewares/auth";
 type CountRow = {
 	payment_reconcile_dead: number;
 	payment_reconcile_active: number;
+	payment_account_sync_active: number;
+	payment_account_sync_failed: number;
+	payment_execution_sync_active: number;
+	payment_execution_sync_failed: number;
 	user_event_dead: number;
 	user_event_active: number;
 	balance_refresh_active: number;
 	balance_refresh_failed: number;
 	balance_projection_drift: number;
 	account_operation_active: number;
-	crosschain_active: number;
-	webhook_delivery_active: number;
-	router_intent_active: number;
 	indexer_registry_active: number;
 	indexer_registry_failed: number;
 	provider_subscription_active: number;
@@ -32,15 +33,16 @@ export type OperationalHealthSummary = {
 	queues: {
 		paymentReconcileActive: number;
 		paymentReconcileDead: number;
+		paymentAccountSyncActive: number;
+		paymentAccountSyncFailed: number;
+		paymentExecutionSyncActive: number;
+		paymentExecutionSyncFailed: number;
 		userEventActive: number;
 		userEventDead: number;
 		balanceRefreshActive: number;
 		balanceRefreshFailed: number;
 		balanceProjectionDrift: number;
 		accountOperationActive: number;
-		crosschainActive: number;
-		webhookDeliveryActive: number;
-		routerIntentActive: number;
 		indexerRegistryActive: number;
 		indexerRegistryFailed: number;
 		providerSubscriptionActive: number;
@@ -71,6 +73,16 @@ export async function getOperationalHealth(
 				(SELECT COUNT(*) FROM payment_reconcile_requests
 				 WHERE status IN ('pending', 'processing', 'failed'))
 				 AS payment_reconcile_active,
+				(SELECT COUNT(*) FROM payment_account_sync_outbox
+				 WHERE status IN ('pending', 'processing', 'failed'))
+				 AS payment_account_sync_active,
+				(SELECT COUNT(*) FROM payment_account_sync_outbox
+				 WHERE status = 'failed') AS payment_account_sync_failed,
+				(SELECT COUNT(*) FROM payment_execution_sync_outbox
+				 WHERE status IN ('pending', 'processing', 'failed'))
+				 AS payment_execution_sync_active,
+				(SELECT COUNT(*) FROM payment_execution_sync_outbox
+				 WHERE status = 'failed') AS payment_execution_sync_failed,
 				(SELECT COUNT(*) FROM user_event_outbox
 				 WHERE status = 'dead') AS user_event_dead,
 				(SELECT COUNT(*) FROM user_event_outbox
@@ -86,15 +98,6 @@ export async function getOperationalHealth(
 				(SELECT COUNT(*) FROM account_operations
 				 WHERE status IN ('prepared', 'submitted'))
 				 AS account_operation_active,
-				(SELECT COUNT(*) FROM crosschain_operations
-				 WHERE status IN ('submitted', 'waiting_attestation', 'minting', 'recoverable'))
-				 AS crosschain_active,
-				(SELECT COUNT(*) FROM webhook_deliveries
-				 WHERE status IN ('pending', 'processing'))
-				 AS webhook_delivery_active,
-				(SELECT COUNT(*) FROM payment_intents
-				 WHERE status = 'awaiting_payment' AND expires_at > ?)
-				 AS router_intent_active,
 				(SELECT COUNT(*) FROM indexer_wallet_registry_outbox
 				 WHERE status IN ('pending', 'failed'))
 				 AS indexer_registry_active,
@@ -127,7 +130,7 @@ export async function getOperationalHealth(
 				   ))
 				 AS indexer_active_shards`,
 		)
-			.bind(new Date().toISOString(), network.chainId)
+			.bind(network.chainId)
 			.first<CountRow>(),
 		env.GATOPAGO_DB.prepare(
 			`SELECT stream, block_number, updated_at
@@ -167,6 +170,9 @@ export async function getOperationalHealth(
 	if (counts.payment_reconcile_dead > 0) {
 		warnings.push("payment_reconcile_dead");
 	}
+	if (counts.payment_account_sync_failed > 0 || counts.payment_execution_sync_failed > 0) {
+		warnings.push("payments_boundary_sync_failed");
+	}
 	if (counts.user_event_dead > 0) warnings.push("user_event_outbox_dead");
 	if (counts.balance_refresh_failed > 0) {
 		warnings.push("balance_refresh_failed");
@@ -192,15 +198,16 @@ export async function getOperationalHealth(
 			queues: {
 				paymentReconcileActive: counts.payment_reconcile_active,
 				paymentReconcileDead: counts.payment_reconcile_dead,
+				paymentAccountSyncActive: counts.payment_account_sync_active,
+				paymentAccountSyncFailed: counts.payment_account_sync_failed,
+				paymentExecutionSyncActive: counts.payment_execution_sync_active,
+				paymentExecutionSyncFailed: counts.payment_execution_sync_failed,
 				userEventActive: counts.user_event_active,
 				userEventDead: counts.user_event_dead,
 				balanceRefreshActive: counts.balance_refresh_active,
 				balanceRefreshFailed: counts.balance_refresh_failed,
 				balanceProjectionDrift: counts.balance_projection_drift,
 				accountOperationActive: counts.account_operation_active,
-				crosschainActive: counts.crosschain_active,
-				webhookDeliveryActive: counts.webhook_delivery_active,
-				routerIntentActive: counts.router_intent_active,
 				indexerRegistryActive: counts.indexer_registry_active,
 				indexerRegistryFailed: counts.indexer_registry_failed,
 				providerSubscriptionActive:

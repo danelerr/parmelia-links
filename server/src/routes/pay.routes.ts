@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	type Hex,
@@ -15,6 +15,7 @@ import {
 import {
 	accountWebAuthnV2Abi,
 	erc20Abi,
+	paymentRouterV2Abi,
 	getNetworkConfig,
 	getTokenBySymbol,
 	ERR,
@@ -38,6 +39,8 @@ import {
 	setPendingPaymentSubmitted,
 	updateCrosschainOp,
 } from "../services/storage";
+import { reserveAppPaymentAttempt, wakePaymentsSync } from "../services/paymentsRpc";
+import type { ReservedAppPaymentAttempt } from "../../../shared/paymentContracts";
 import { NON_PAYMENT_CURRENCIES } from "../services/settlement";
 import {
 	buildSponsoredUserOp,
@@ -53,6 +56,11 @@ import {
 } from "../services/validation";
 import { getClients } from "../services/clients";
 import { extractErrorMessage, logError, logInfo, logWarn } from "../services/logger";
+import {
+	paymentLinkPrepareAction,
+	paymentSubmissionBlocked,
+	paymentsCutoverState,
+} from "../services/paymentsCutover";
 import { SignerLeaseBusyError } from "../services/signerLease";
 import {
 	getUserOperationTransport,
@@ -64,10 +72,14 @@ import {
 const payRoutes = new Hono<AppContext>();
 
 function buildExecuteCalldata(target: `0x${string}`, value: bigint, data: Hex): Hex {
+	return buildExecuteBatchCalldata([{ target, value, callData: data }]);
+}
+
+function buildExecuteBatchCalldata(executions: Array<{ target: `0x${string}`; value: bigint; callData: Hex }>): Hex {
 	const mode = pad("0x01", { size: 32, dir: "right" }) as Hex;
 	const executionData = encodeAbiParameters(
 		parseAbiParameters("(address target, uint256 value, bytes callData)[]"),
-		[[{ target, value, callData: data }]],
+		[executions],
 	);
 	return encodeFunctionData({
 		abi: [{ name: "execute", type: "function", inputs: [{ name: "mode", type: "bytes32" }, { name: "executionData", type: "bytes" }], outputs: [] }],
@@ -83,6 +95,19 @@ function wrapMultiSignerSignature(signer: Hex, webAuthnSignature: Hex): Hex {
 	);
 }
 
+function cutoverUnavailable(c: Context<AppContext>, requestId: string) {
+	const cutover = paymentsCutoverState(c.env);
+	c.header("Cache-Control", "no-store");
+	c.header("Retry-After", "60");
+	return c.json({
+		error: "Payment writes are temporarily frozen for a controlled migration",
+		error_code: ERR.SERVICE_UNAVAILABLE,
+		requestId,
+		payments_cutover_mode: cutover.mode,
+		retryable: true,
+	}, 503);
+}
+
 payRoutes.post("/prepare", requireAuth, async (c) => {
 	const requestId = c.get("requestId");
 	try {
@@ -94,6 +119,11 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			uid: user.sub,
 			linkId: typeof linkId === "string" ? linkId : null,
 		});
+		const storedPaymentLink = isStoredPaymentLink(linkId);
+		const prepareAction = storedPaymentLink
+			? paymentLinkPrepareAction(paymentsCutoverState(c.env).mode)
+			: null;
+		if (prepareAction === "block") return cutoverUnavailable(c, requestId);
 
 		const profile = await getUserByUid(c.env, user.sub);
 		const senderAddress = profile?.walletAddress ?? undefined;
@@ -114,29 +144,47 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		let paymentAmount: string | null = null;
 		let paymentCurrency: string | null = null;
 		let pendingLinkId: string | null = typeof linkId === "string" ? linkId : null;
+		let paymentAttempt: ReservedAppPaymentAttempt | null = null;
 
-		if (isStoredPaymentLink(linkId)) {
-			const link = await getPaymentLinkById(c.env, linkId);
-			if (!link) {
-				logWarn("payment_prepare_link_not_found", { requestId, uid: user.sub, linkId });
-				return c.json({ error: "Link de pago no encontrado", error_code: ERR.LINK_NOT_FOUND, requestId }, 404);
+		if (storedPaymentLink) {
+			if (prepareAction === "payments") {
+				const reservation = await reserveAppPaymentAttempt(c.env, {
+					commandId: `prepare:${user.sub}:${linkId}:${c.req.header("Idempotency-Key")?.trim() || (typeof body.idempotencyKey === "string" ? body.idempotencyKey : "active")}`,
+					requestId,
+					uid: user.sub,
+					linkId,
+					payerAddress: senderAddress,
+					amount: typeof body.amount === "string" ? body.amount : undefined,
+				});
+				if (!reservation.ok) {
+					const status = reservation.error === "NOT_FOUND" ? 404 : reservation.error === "UNAVAILABLE" ? 503 : 409;
+					const code = reservation.error === "NOT_FOUND" ? ERR.LINK_NOT_FOUND : reservation.error === "UNAVAILABLE" ? ERR.SERVICE_UNAVAILABLE : ERR.PAYMENT_IN_PROGRESS;
+					return c.json({ error: reservation.message, error_code: code, requestId }, status);
+				}
+				paymentAttempt = reservation.value;
+				recipientAddress = normalizeWalletAddress(paymentAttempt.merchant);
+				paymentCurrency = paymentAttempt.currency;
+				paymentAmount = paymentAttempt.amount;
+				pendingLinkId = null;
+			} else {
+				const link = await getPaymentLinkById(c.env, linkId);
+				if (!link) {
+					logWarn("payment_prepare_link_not_found", { requestId, uid: user.sub, linkId });
+					return c.json({ error: "Link de pago no encontrado", error_code: ERR.LINK_NOT_FOUND, requestId }, 404);
+				}
+				if (link.status === "paid") {
+					logWarn("payment_prepare_link_already_paid", { requestId, uid: user.sub, linkId });
+					return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
+				}
+				const backingIntent = await getPaymentIntentByLinkId(c.env, linkId);
+				if (backingIntent && !isIntentPayable(backingIntent)) {
+					logWarn("payment_prepare_intent_not_payable", { requestId, uid: user.sub, linkId, intentStatus: backingIntent.status });
+					return c.json({ error: "Este cobro ya no está disponible", error_code: ERR.INTENT_NOT_PAYABLE, requestId }, 409);
+				}
+				recipientAddress = normalizeWalletAddress(link.wallet);
+				paymentCurrency = normalizeCurrency(link.currency, allowedCurrencies) ?? "USDC";
+				paymentAmount = Number(link.amount) > 0 ? link.amount : normalizePositiveAmount(body.amount);
 			}
-			if (link.status === "paid") {
-				logWarn("payment_prepare_link_already_paid", { requestId, uid: user.sub, linkId });
-				return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
-			}
-
-			// A link backing an API payment intent inherits the intent's lifecycle:
-			// canceled or expired intents keep a 'pending' link row, so check here.
-			const backingIntent = await getPaymentIntentByLinkId(c.env, linkId);
-			if (backingIntent && !isIntentPayable(backingIntent)) {
-				logWarn("payment_prepare_intent_not_payable", { requestId, uid: user.sub, linkId, intentStatus: backingIntent.status });
-				return c.json({ error: "Este cobro ya no está disponible", error_code: ERR.INTENT_NOT_PAYABLE, requestId }, 409);
-			}
-
-			recipientAddress = normalizeWalletAddress(link.wallet);
-			paymentCurrency = normalizeCurrency(link.currency, allowedCurrencies) ?? "USDC";
-			paymentAmount = Number(link.amount) > 0 ? link.amount : normalizePositiveAmount(body.amount);
 		} else {
 			recipientAddress = normalizeWalletAddress(body.wallet);
 			paymentCurrency = normalizeCurrency(body.currency, allowedCurrencies);
@@ -202,8 +250,36 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 					400,
 				);
 			}
-			const transferData = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipientAddress, rawAmount] });
-			executeCalldata = buildExecuteCalldata(tokenAddress, 0n, transferData);
+			if (paymentAttempt) {
+				const authorization = paymentAttempt.authorization;
+				const totalPayerAmount = BigInt(authorization.settlementAmount) + BigInt(authorization.platformFee);
+				if (erc20Balance < totalPayerAmount) {
+					return c.json({ error: `Saldo ${paymentCurrency} insuficiente`, error_code: ERR.INSUFFICIENT_BALANCE, requestId }, 400);
+				}
+				const approveData = encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [paymentAttempt.router, totalPayerAmount] });
+				const payData = encodeFunctionData({
+					abi: paymentRouterV2Abi,
+					functionName: "pay",
+					args: [{
+						intentId: authorization.intentId,
+						attemptId: authorization.attemptId,
+						payer: authorization.payer,
+						merchant: authorization.merchant,
+						settlementAmount: BigInt(authorization.settlementAmount),
+						platformFee: BigInt(authorization.platformFee),
+						validAfter: authorization.validAfter,
+						validUntil: authorization.validUntil,
+						metadataHash: authorization.metadataHash,
+					}, paymentAttempt.signature],
+				});
+				executeCalldata = buildExecuteBatchCalldata([
+					{ target: tokenAddress, value: 0n, callData: approveData },
+					{ target: paymentAttempt.router, value: 0n, callData: payData },
+				]);
+			} else {
+				const transferData = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipientAddress, rawAmount] });
+				executeCalldata = buildExecuteCalldata(tokenAddress, 0n, transferData);
+			}
 		} else {
 			let ethAmount: bigint;
 			try {
@@ -231,7 +307,8 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			executeCalldata = buildExecuteCalldata(recipientAddress, ethAmount, "0x");
 		}
 
-		const { userOp, userOpHash, chainId, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, chainId, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: senderAddress as `0x${string}`,
 			callData: executeCalldata,
 			transportMode: submissionTransport,
@@ -240,13 +317,21 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		await createPendingPayment(c.env, {
 			userOpHash,
 			linkId: pendingLinkId,
+			paymentAttemptId: paymentAttempt?.attemptId ?? null,
 			uid: user.sub,
 			amount: paymentAmount,
 			currency: paymentCurrency,
 			wallet: recipientAddress,
 			senderAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			meta: paymentAttempt ? {
+				paymentAttemptId: paymentAttempt.attemptId,
+				paymentIntentId: paymentAttempt.intentId,
+				paymentLinkId: paymentAttempt.linkId,
+			} : null,
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 		});
 
 		logInfo("payment_prepare_created", {
@@ -260,8 +345,10 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			linkId: pendingLinkId,
 			chainId,
 			submissionTransport,
+			sponsorshipProvider,
 		});
-		return c.json({ userOpHash, credentialId, submissionTransport, signingPayload });
+		return c.json({ userOpHash, credentialId, submissionTransport, signingPayload,
+			paymentAttemptId: paymentAttempt?.attemptId });
 	} catch (error) {
 		const user = c.get("user");
 		logError("payment_prepare_failed", error, { requestId, uid: user?.sub ?? null });
@@ -302,6 +389,22 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		if (pending.uid !== user.sub) {
 			logWarn("payment_submit_unauthorized_pending", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
 			return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT, requestId }, 403);
+		}
+		const cutover = paymentsCutoverState(c.env);
+		if (paymentSubmissionBlocked({
+			mode: cutover.mode,
+			hasLegacyLink: isStoredPaymentLink(pending.linkId),
+			hasPaymentAttempt: Boolean(pending.paymentAttemptId),
+		})) {
+			logWarn("payment_submit_cutover_blocked", {
+				requestId,
+				uid: user.sub,
+				userOpHash: userOpHashForLog,
+				mode: cutover.mode,
+				legacyLinkId: isStoredPaymentLink(pending.linkId) ? pending.linkId : null,
+				paymentAttemptId: pending.paymentAttemptId,
+			});
+			return cutoverUnavailable(c, requestId);
 		}
 
 		// Narrow the double-payment window: re-check the link (and any backing
@@ -526,6 +629,11 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			submission.transport,
 			submission.transactionHash,
 		);
+		if (pending.paymentAttemptId) {
+			await wakePaymentsSync(c.env, "payment_execution_submitted").catch((error) =>
+				logError("payments_execution_wakeup_failed", error, { requestId, userOpHash }),
+			);
+		}
 		if (claimedLinkId) {
 			// Bundlers return the stable UserOperation hash, not a bundle tx hash.
 			// Either value proves the claim was handed off and must not expire.
@@ -624,6 +732,9 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 					{ requestId, userOpHash: userOpHashForLog },
 				),
 			);
+			await wakePaymentsSync(c.env, "payment_execution_ambiguous").catch((wakeupError) =>
+				logError("payments_execution_wakeup_failed", wakeupError, { requestId, userOpHash: userOpHashForLog }),
+			);
 			if (claimedLinkId) {
 				await markPaymentLinkClaimBroadcast(
 					c.env,
@@ -697,13 +808,13 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		if (msg.includes("AA95")) return c.json({ error: "La transaccion de handleOps no tenia gas suficiente. Revisa el gas limit del relayer.", error_code: ERR.INSUFFICIENT_GAS, requestId }, 500);
 		if (msg.includes("InvalidPaymasterSignature") || msg.includes("AA33") || msg.includes("AA34")) {
 			return c.json({
-				error: "El paymaster rechazo la operacion. Revisa sponsorSigner on-chain, PAYMASTER_SIGNER_PRIVATE_KEY y el deposito del paymaster.",
+				error: "El proveedor de patrocinio rechazó la operación. Vuelve a prepararla para obtener una autorización vigente.",
 				error_code: ERR.PAYMASTER_REJECTED,
 				requestId,
 			}, 500);
 		}
 		if (msg.includes("AA31") || msg.toLowerCase().includes("deposit too low")) {
-			return c.json({ error: "El paymaster no tiene deposito suficiente para patrocinar el gas en EntryPoint.", error_code: ERR.PAYMASTER_DEPOSIT_LOW, requestId }, 500);
+			return c.json({ error: "El proveedor de patrocinio no tiene capacidad disponible. Vuelve a preparar la operación.", error_code: ERR.PAYMASTER_DEPOSIT_LOW, requestId }, 503);
 		}
 		if (msg.includes("FailedOp")) {
 			return c.json({ error: "La operación fue rechazada por EntryPoint.", error_code: ERR.PAYMENT_FAILED, requestId }, 500);

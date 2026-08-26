@@ -18,6 +18,7 @@ import { routerAuthorizationDeadline, RouterError } from "../src/services/paymen
 import { validateRuntimeConfig } from "../src/services/runtimeConfig";
 import { internalTransferSenderAddresses } from "../src/services/indexer";
 import { getRpcEndpointCapabilities } from "../src/services/rpcProviders";
+import { __test as healthTest } from "../src/services/health";
 import worker from "../src/index";
 import {
 	activeWebhookSecretPrefix,
@@ -143,6 +144,35 @@ function opFor(partial: Partial<CrosschainOpRecord> = {}): CrosschainOpRecord {
 }
 
 // ---------- CCTP message validation ----------
+
+describe("Payments boundary recovery", () => {
+	it("wakes recovery for either boundary outbox", () => {
+		const queues = {
+			paymentReconcileActive: 0,
+			paymentReconcileDead: 0,
+			paymentAccountSyncActive: 0,
+			paymentAccountSyncFailed: 0,
+			paymentExecutionSyncActive: 0,
+			paymentExecutionSyncFailed: 0,
+			userEventActive: 0,
+			userEventDead: 0,
+			balanceRefreshActive: 0,
+			balanceRefreshFailed: 0,
+			balanceProjectionDrift: 0,
+			accountOperationActive: 0,
+			indexerRegistryActive: 0,
+			indexerRegistryFailed: 0,
+			providerSubscriptionActive: 0,
+			providerSubscriptionFailed: 0,
+			reorgReplayActive: 0,
+			reorgReplayFailed: 0,
+			indexerActiveShards: 0,
+		};
+		expect(healthTest.shouldWakeRecovery({ queues, streams: [] })).toBe(false);
+		expect(healthTest.shouldWakeRecovery({ queues: { ...queues, paymentAccountSyncActive: 1 }, streams: [] })).toBe(true);
+		expect(healthTest.shouldWakeRecovery({ queues: { ...queues, paymentExecutionSyncActive: 1 }, streams: [] })).toBe(true);
+	});
+});
 
 describe("validateCctpMessage", () => {
 	// outbound burns net-of-fee: 1000000 - 1000
@@ -426,6 +456,22 @@ describe("runtime configuration", () => {
 		);
 	});
 
+	it("keeps app fees behind one explicit, bounded commercial switch", () => {
+		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			GATOPAGO_FEES_ENABLED: "sometimes",
+		})).map((entry) => entry.code)).toContain("FEE_SWITCH_INVALID");
+		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			GATOPAGO_FEES_ENABLED: "true",
+			GATOPAGO_TREASURY_ADDRESS: "0x00000000000000000000000000000000000000f1",
+			GATOPAGO_MAX_FEE_BPS: "20",
+			GATOPAGO_CROSSCHAIN_FEE_BPS: "21",
+		})).map((entry) => entry.code)).toContain("FEE_POLICY_INVALID");
+		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			GATOPAGO_FEES_ENABLED: "false",
+			GATOPAGO_CROSSCHAIN_FEE_BPS: "99",
+		})).map((entry) => entry.code)).not.toContain("FEE_POLICY_INVALID");
+	});
+
 	it("supports heterogeneous indexer plans through explicit capabilities", () => {
 		const alchemy = "https://arb-sepolia.g.alchemy.com/v2/redacted";
 		const publicRpc = "https://sepolia-rollup.arbitrum.io/rpc";
@@ -531,7 +577,15 @@ describe("runtime configuration", () => {
 		);
 		expect(liveness.headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect(liveness.headers.get("X-Frame-Options")).toBe("DENY");
-		expect(await liveness.json()).toEqual({ status: "ok" });
+			expect(await liveness.json()).toEqual({
+				status: "ok",
+				service: "gatopago-app-api",
+				paymentsBoundaryVersion: 1,
+				paymentsCutoverMode: "legacy",
+				paymentsCutoverConfigValid: true,
+				paymentsSyncEnabled: false,
+				paymentsSyncConfigValid: true,
+			});
 
 		const testnetHealth = await worker.fetch(
 			new Request("https://worker.example/health"),
@@ -545,6 +599,8 @@ describe("runtime configuration", () => {
 			network: "arbitrum-sepolia",
 			issueCount: 0,
 			warningCount: 0,
+			paymentsCutoverMode: "legacy",
+			paymentsSyncEnabled: false,
 		});
 
 		const hiddenOpsHealth = await worker.fetch(
@@ -574,6 +630,7 @@ describe("runtime configuration", () => {
 			issues: [],
 			warnings: [],
 			rpc: [],
+			paymentsCutover: { mode: "legacy", configuredValue: null, valid: true },
 		});
 
 		const mainnetEnv = envFor("arbitrum-one");
@@ -582,6 +639,35 @@ describe("runtime configuration", () => {
 		const blocked = await worker.fetch(new Request("https://worker.example/"), mainnetEnv, context);
 		expect(blocked.status).toBe(503);
 		expect(await blocked.json()).toMatchObject({ error_code: "SERVICE_UNAVAILABLE" });
+	});
+
+	it("fails extracted payment routes explicitly when the Payments binding is unavailable", async () => {
+		const context = {} as ExecutionContext;
+		const cutoverEnv = envFor("arbitrum-sepolia", {
+			PAYMENTS_CUTOVER_MODE: "payments",
+		});
+		const live = await worker.fetch(
+			new Request("https://worker.example/health/live"),
+			cutoverEnv,
+			context,
+		);
+		expect(await live.json()).toMatchObject({
+			paymentsBoundaryVersion: 2,
+			paymentsCutoverMode: "payments",
+			paymentsCutoverConfigValid: true,
+			paymentsSyncEnabled: false,
+			paymentsSyncConfigValid: true,
+		});
+
+		const response = await worker.fetch(
+			new Request("https://worker.example/links/missing-binding"),
+			cutoverEnv,
+			context,
+		);
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({
+			error_code: "SERVICE_UNAVAILABLE",
+		});
 	});
 
 	it("allows CORS preflight with If-None-Match header", async () => {

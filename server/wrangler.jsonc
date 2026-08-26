@@ -13,7 +13,7 @@
       "../contracts/src"
     ],
   },
-  "compatibility_date": "2026-08-20",
+  "compatibility_date": "2026-08-25",
   "compatibility_flags": ["nodejs_compat"],
   "dev": {
     "port": 8787,
@@ -24,6 +24,10 @@
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
     "AUTH_EMAIL_FROM": "acceso@parmelia.me",
     "CHAIN_KEY": "arbitrum-sepolia",
+    "PAYMENTS_CUTOVER_MODE": "payments",
+    // Remains false through target deploy and data import. Enable only while
+    // cutover mode is frozen/payments after Payments bootstrap is complete.
+    "PAYMENTS_SYNC_ENABLED": "true",
     // Provider-neutral reconciliation defaults. Endpoint-specific plan limits
     // can be declared with the RPC_PROVIDER_CAPABILITIES secret/config.
     "RPC_INDEXER_MIN_BLOCK_RANGE": "10",
@@ -43,6 +47,14 @@
     "RELAYER_MODE": "self",
     "BUNDLER_ROLLOUT_PERCENT": "0",
     "BUNDLER_SELF_FALLBACK": "false",
+    "GATOPAGO_FEES_ENABLED": "false",
+    "GATOPAGO_SWAP_FEE_BPS": "0",
+    "GATOPAGO_CROSSCHAIN_FEE_BPS": "0",
+    "GATOPAGO_MAX_FEE_BPS": "100",
+    "SPONSORSHIP_PROVIDER": "parmelia",
+    "SPONSORSHIP_HEALTH_CHECK_ENABLED": "true",
+    "PAYMASTER_SERVICE_TIMEOUT_MS": "8000",
+    "PAYMASTER_MIN_DEPOSIT_WEI": "1000000000000000",
     // Address Activity is a wakeup source; RPC remains canonical truth.
     "ALCHEMY_WEBHOOK_ENABLED": "false",
     // Custom Webhook wakes router/recovery verification on matching logs. Until
@@ -50,7 +62,7 @@
     "ALCHEMY_CUSTOM_WEBHOOK_ENABLED": "false",
     // CORS allowlist (defense in depth - real auth is Firebase token + passkey).
     // Add Vercel preview domains here if you test against previews.
-    "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173,https://app.parmelia.me",
+    "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173,https://app.parmelia.me,https://dashboard.parmelia.me",
   },
   // Event-driven scheduler: no static Cron Trigger. One Durable Object per
   // job partition owns an alarm only while that partition has pending work.
@@ -100,6 +112,12 @@
       "database_id": "1c1352dd-1ccb-4f55-a679-4a9ba24375be",
       "migrations_dir": "migrations",
     },
+  ],
+  "services": [
+    {
+      "binding": "PAYMENTS",
+      "service": "gatopago-payments-api"
+    }
   ],
   "send_email": [
     {

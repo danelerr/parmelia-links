@@ -19,7 +19,7 @@ import {
 } from "./uniswap";
 
 /** Hard cap on GatoPago's service fee - env can never push it above 1%. */
-export const MAX_FEE_BPS_HARD_CAP = 100n;
+const MAX_FEE_BPS_HARD_CAP = 100n;
 /** Default slippage when the client doesn't send one: 0.50%. */
 export const DEFAULT_SLIPPAGE_BPS = 50;
 /** Slippage bounds accepted from the client. */
@@ -60,13 +60,14 @@ export function resolveFeePolicy(env: Bindings): FeePolicy {
 
 	const configured = BigInt(env.GATOPAGO_SWAP_FEE_BPS || "0");
 	const envCap = BigInt(env.GATOPAGO_MAX_FEE_BPS || String(MAX_FEE_BPS_HARD_CAP));
-	const cap = envCap < MAX_FEE_BPS_HARD_CAP ? envCap : MAX_FEE_BPS_HARD_CAP;
-	const feeBps = configured < cap ? configured : cap;
+	if (configured < 0n || envCap < 0n || envCap > MAX_FEE_BPS_HARD_CAP || configured > envCap) {
+		throw new Error("Invalid swap fee policy configuration");
+	}
+	const feeBps = configured;
 
 	const treasury = env.GATOPAGO_TREASURY_ADDRESS;
-	if (feeBps <= 0n || !treasury || !/^0x[a-fA-F0-9]{40}$/.test(treasury)) {
-		return { feeBps: 0n, treasury: null };
-	}
+	if (feeBps === 0n) return { feeBps: 0n, treasury: null };
+	if (!treasury || !/^0x[a-fA-F0-9]{40}$/.test(treasury)) throw new Error("Invalid swap fee treasury");
 	return { feeBps, treasury: treasury as `0x${string}` };
 }
 

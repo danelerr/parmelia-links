@@ -202,6 +202,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0030_email_otp.sql",
 			"0031_webauthn_registration.sql",
 			"0032_recovery_step_up.sql",
+			"0033_payments_worker_boundary.sql",
+			"0034_sponsorship_observability.sql",
 		]);
 	});
 
@@ -464,6 +466,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			userOpHash: `0x${(currency === "PASSKEY_ADD" ? "71" : "72").repeat(32)}`,
 			uid,
 			linkId: null,
+			paymentAttemptId: null,
 			wallet,
 			senderAddress: wallet,
 			amount: "0",
@@ -473,6 +476,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			status: "submitted",
 			submittedTxHash: null,
 			submissionTransport: "self",
+			sponsorshipProvider: "legacy",
+			sponsorshipPaymasterAddress: null,
 			submittedAt: now,
 			submissionAttemptCount: 1,
 			lastSubmissionErrorCode: null,
@@ -1345,7 +1350,17 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			currency: "PASSKEY_ADD",
 			userOp: {},
 			submissionTransport: "bundler",
+			sponsorshipProvider: "erc7677",
+			sponsorshipPaymasterAddress: "0x00000000000000000000000000000000000000b2",
 		});
+		const sponsorship = await env.GATOPAGO_DB.prepare(
+			"SELECT sponsorship_provider, sponsorship_paymaster_address FROM pending_payments WHERE user_op_hash = ?",
+		).bind(userOpHash).first<{ sponsorship_provider: string; sponsorship_paymaster_address: string }>();
+		expect(sponsorship).toEqual({ sponsorship_provider: "erc7677",
+			sponsorship_paymaster_address: "0x00000000000000000000000000000000000000b2" });
+		await expect(env.GATOPAGO_DB.prepare(
+			"UPDATE pending_payments SET sponsorship_paymaster_address = 'not-an-address' WHERE user_op_hash = ?",
+		).bind(userOpHash).run()).rejects.toThrow();
 		expect(await claimPendingForSubmit(env, userOpHash)).toBe(true);
 
 		const journalOccurrence = async (input: {
@@ -1523,7 +1538,15 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(live.headers.get("Cross-Origin-Resource-Policy")).toBe("cross-origin");
 		expect(live.headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect(live.headers.get("X-Frame-Options")).toBe("DENY");
-		expect(await live.json()).toEqual({ status: "ok" });
+			expect(await live.json()).toEqual({
+				status: "ok",
+				service: "gatopago-app-api",
+				paymentsBoundaryVersion: 1,
+				paymentsCutoverMode: "legacy",
+				paymentsCutoverConfigValid: true,
+				paymentsSyncEnabled: false,
+				paymentsSyncConfigValid: true,
+			});
 
 		const health = await exports.default.fetch(new Request("https://worker.test/health"));
 		expect(health.status).toBe(200);
@@ -1534,6 +1557,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			network: "arbitrum-sepolia",
 			issueCount: 0,
 			warningCount: 1,
+			paymentsCutoverMode: "legacy",
+			paymentsSyncEnabled: false,
 		});
 		const opsHealth = await exports.default.fetch(new Request("https://worker.test/health/ops"));
 		expect(opsHealth.status).toBe(404);
@@ -1576,35 +1601,11 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(await response.json()).toMatchObject({ error_code: "PAYLOAD_TOO_LARGE" });
 	});
 
-	it("reads a migrated D1 payment link through the HTTP route", async () => {
-		const now = new Date().toISOString();
-		await env.GATOPAGO_DB.batch([
-			env.GATOPAGO_DB.prepare(
-				"INSERT INTO users (uid, username, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-			).bind("runtime-user", "runtime_user", "0x0000000000000000000000000000000000000001", now, now),
-			env.GATOPAGO_DB.prepare(
-				`INSERT INTO payment_links
-				 (id, owner_uid, wallet_address, amount, currency, reference, status, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-			).bind(
-				"runtime-link",
-				"runtime-user",
-				"0x0000000000000000000000000000000000000001",
-				"12.50",
-				"USDC",
-				"Runtime integration",
-				now,
-			),
-		]);
-
+	it("keeps payment routes local before the Payments cutover", async () => {
+		const live = await exports.default.fetch(new Request("https://worker.test/health/live"));
+		expect(live.status).toBe(200);
 		const response = await exports.default.fetch(new Request("https://worker.test/links/runtime-link"));
-		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({
-			id: "runtime-link",
-			ownerUid: "runtime-user",
-			amount: "12.50",
-			status: "pending",
-		});
+		expect(response.status).toBe(404);
 	});
 
 	it("repairs a CCTP hand-off stranded after broadcast", async () => {
@@ -1615,6 +1616,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const now = new Date().toISOString();
 		const opId = `0x${"42".repeat(32)}`;
 		const txHash = `0x${"24".repeat(32)}`;
+		await env.GATOPAGO_DB.prepare(
+			"INSERT OR IGNORE INTO users (uid, username, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		).bind("runtime-user", "runtime_user", "0x0000000000000000000000000000000000000001", now, now).run();
 		await createCrosschainOp(env, {
 			opId,
 			uid: "runtime-user",
@@ -1650,6 +1654,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			userOpHash: `0x${"11".repeat(32)}`,
 			uid: "runtime-user",
 			linkId: null,
+			paymentAttemptId: null,
 			wallet: "0x0000000000000000000000000000000000000002",
 			senderAddress: "0x0000000000000000000000000000000000000001",
 			amount: "12.5",
@@ -1659,6 +1664,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			status: "submitting",
 			submittedTxHash: null,
 			submissionTransport: "self",
+			sponsorshipProvider: "legacy",
+			sponsorshipPaymasterAddress: null,
 			submittedAt: null,
 			submissionAttemptCount: 1,
 			lastSubmissionErrorCode: null,

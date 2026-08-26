@@ -1,0 +1,33 @@
+{
+  "name": "payments-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "pnpm --dir .. build:contracts",
+    "dev": "wrangler dev",
+		"deploy": "node ../scripts/assert-reproducible-deploy-source.mjs payments-worker && node ../scripts/assert-payments-deploy-config.mjs && wrangler deploy --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
+    "cf-typegen:check": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example --check",
+    "lint": "eslint . --max-warnings 0",
+    "test": "pnpm test:unit && pnpm test:worker-runtime",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:worker-runtime": "vitest run --config vitest.worker.config.ts",
+    "typecheck:worker-runtime": "tsc --noEmit --project test-worker/tsconfig.json"
+  },
+  "dependencies": {
+    "hono": "^4.13.3",
+    "jose": "^6.2.10",
+    "viem": "^2.55.19"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.3",
+    "eslint": "^10.9.0",
+    "globals": "^17.11.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11",
+    "wrangler": "4.125.0"
+  }
+}

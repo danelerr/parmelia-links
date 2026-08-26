@@ -4,6 +4,7 @@ import type { Bindings } from "../src/middlewares/auth";
 import {
 	__test,
 	consumeEventJobsQueue,
+	consumeWorkerQueue,
 	SCHEDULED_JOBS_QUEUE_NAME,
 } from "../src/services/eventJobs";
 import {
@@ -29,9 +30,14 @@ function queueMessage(
 	};
 }
 
-function messageBatch(messages: Message<unknown>[]): MessageBatch<unknown> {
+const EXPECTED_APP_QUEUE_NAME = "parmelia-scheduled-jobs";
+
+function messageBatch(
+	messages: Message<unknown>[],
+	queue = EXPECTED_APP_QUEUE_NAME,
+): MessageBatch<unknown> {
 	return {
-		queue: SCHEDULED_JOBS_QUEUE_NAME,
+		queue,
 		messages,
 		metadata: {
 			metrics: {
@@ -58,13 +64,25 @@ function eventMessage(
 }
 
 describe("event-driven job orchestration", () => {
-	it("polls fresh CCTP operations quickly and backs off abandoned work", () => {
-		expect(__test.crosschainPollDelayMs(10_000, "waiting_attestation")).toBe(5_000);
-		expect(__test.crosschainPollDelayMs(10_000, "minting")).toBe(3_000);
-		expect(__test.crosschainPollDelayMs(5 * 60_000, "waiting_attestation")).toBe(15_000);
-		expect(__test.crosschainPollDelayMs(30 * 60_000, "waiting_attestation")).toBe(60_000);
-		expect(__test.crosschainPollDelayMs(3 * 60 * 60_000, "waiting_attestation")).toBe(5 * 60_000);
-		expect(__test.crosschainPollDelayMs(10_000, "recoverable")).toBe(60_000);
+	it("keeps the runtime Queue contract independent from the source constant", () => {
+		const wrangler = readFileSync(
+			new URL("../wrangler.jsonc", import.meta.url),
+			"utf8",
+		);
+		expect(SCHEDULED_JOBS_QUEUE_NAME).toBe(EXPECTED_APP_QUEUE_NAME);
+		expect(wrangler).toMatch(
+			/"binding"\s*:\s*"SCHEDULED_JOBS_QUEUE"[\s\S]{0,160}?"queue"\s*:\s*"parmelia-scheduled-jobs"/u,
+		);
+		expect(wrangler).toMatch(
+			/"consumers"\s*:\s*\[[\s\S]{0,160}?"queue"\s*:\s*"parmelia-scheduled-jobs"/u,
+		);
+	});
+
+	it("retries an unexpected Queue instead of acknowledging and losing its batch", async () => {
+		const batch = messageBatch([], "unexpected-app-queue");
+		await consumeWorkerQueue(batch, {} as Bindings);
+		expect(batch.ackAll).not.toHaveBeenCalled();
+		expect(batch.retryAll).toHaveBeenCalledWith({ delaySeconds: 15 });
 	});
 
 	it("ships no static cron trigger or scheduled Worker handler", () => {
@@ -95,8 +113,16 @@ describe("event-driven job orchestration", () => {
 				"recovery_watcher",
 				"balance_refresh",
 				"webhook_delivery",
+				"payments_boundary_sync",
 			]),
 		);
+	});
+
+	it("keeps legacy payment runners only for drain and rollback modes", () => {
+		expect(__test.legacyPaymentRuntimeEnabled({} as Bindings)).toBe(true);
+		expect(__test.legacyPaymentRuntimeEnabled({ PAYMENTS_CUTOVER_MODE: "legacy" } as Bindings)).toBe(true);
+		expect(__test.legacyPaymentRuntimeEnabled({ PAYMENTS_CUTOVER_MODE: "frozen" } as Bindings)).toBe(true);
+		expect(__test.legacyPaymentRuntimeEnabled({ PAYMENTS_CUTOVER_MODE: "payments" } as Bindings)).toBe(false);
 	});
 
 	it("coalesces equivalent/later schedules and only moves a job earlier", () => {

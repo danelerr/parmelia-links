@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import {
 	encodeFunctionData,
 	formatUnits,
+	getAddress,
 	isAddress,
 	keccak256,
 	pad,
@@ -130,9 +131,10 @@ function isInboundEnabled(env: Bindings): boolean {
 
 /** Deterministic fee + amount math (no persisted quote; recomputed at prepare). */
 function computeAmounts(crosschainFeeBps: string | undefined, amountRaw: bigint, mode: Mode) {
-	let feeBps = BigInt(crosschainFeeBps || "0");
-	if (feeBps < 0n) feeBps = 0n;
-	if (feeBps > MAX_GATOPAGO_FEE_BPS) feeBps = MAX_GATOPAGO_FEE_BPS;
+	const feeBps = BigInt(crosschainFeeBps || "0");
+	if (feeBps < 0n || feeBps > MAX_GATOPAGO_FEE_BPS) {
+		throw new Error("Invalid cross-chain fee policy configuration");
+	}
 	const gatoPagoFee = (amountRaw * feeBps) / 10_000n;
 	const net = amountRaw - gatoPagoFee;
 	const cctpFee = mode === "fast" ? (net * CCTP_FAST_FEE_EST_NUM) / CCTP_FAST_FEE_EST_DEN : 0n;
@@ -196,7 +198,8 @@ crosschainRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
-		const a = computeAmounts(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS, amountRaw, mode);
+		const a = computeAmounts(c.env.GATOPAGO_FEES_ENABLED === "true"
+			? c.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
@@ -280,7 +283,8 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			);
 		}
 
-		const a = computeAmounts(c.env.GATOPAGO_CROSSCHAIN_FEE_BPS, amountRaw, mode);
+		const a = computeAmounts(c.env.GATOPAGO_FEES_ENABLED === "true"
+			? c.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
@@ -295,6 +299,21 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 
 		const router = net.contracts.crosschainRouter;
+		if (a.feeBps > 0n) {
+			const configuredTreasury = c.env.GATOPAGO_TREASURY_ADDRESS;
+			if (!configuredTreasury || !isAddress(configuredTreasury)) {
+				throw new Error("Cross-chain fee treasury is not configured");
+			}
+			const [onchainTreasury, onchainCap, paused] = await Promise.all([
+				publicClient.readContract({ address: router, abi: crosschainRouterAbi, functionName: "treasury" }),
+				publicClient.readContract({ address: router, abi: crosschainRouterAbi, functionName: "MAX_FEE_BPS" }),
+				publicClient.readContract({ address: router, abi: crosschainRouterAbi, functionName: "paused" }),
+			]);
+			if (getAddress(onchainTreasury as `0x${string}`) !== getAddress(configuredTreasury) ||
+				BigInt(onchainCap as bigint) < a.feeBps || paused !== false) {
+				throw new Error("Cross-chain fee preflight does not match the deployed router");
+			}
+		}
 		const opId = keccak256(toBytes(crypto.randomUUID()));
 		const mintRecipient = pad(recipient as Hex, { size: 32 });
 
@@ -323,7 +342,8 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		];
 		const executeCalldata = encodeExecuteBatch(calls);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: CROSSCHAIN_CALL_GAS_LIMIT,
@@ -377,6 +397,8 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			senderAddress: account,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 			meta: {
 				opId,
 				direction: "outbound",

@@ -18,6 +18,7 @@ export const EVENT_JOB_NAMES = [
 	"crosschain_relayer",
 	"webhook_delivery",
 	"user_event_delivery",
+	"payments_boundary_sync",
 	"webhook_key_rotation",
 ] as const;
 

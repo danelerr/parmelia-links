@@ -128,7 +128,7 @@ function buildInitCallData(verifier: Hex, qx: Hex, qy: Hex, guardian: `0x${strin
 async function prepareV2WalletDeployment(env: AppContext["Bindings"], params: { qx: Hex; qy: Hex }) {
 	const network = getNetworkConfig(env.CHAIN_KEY);
 	// Fail closed on TODO_DEPLOY placeholders (e.g. arbitrum-one pre-deploy).
-	assertContractsDeployed(network, ["factory", "verifier", "paymaster"]);
+	assertContractsDeployed(network, ["factory", "verifier"]);
 	const { contracts } = network;
 	const publicClient = getPublicClient(env);
 
@@ -195,7 +195,7 @@ accountRoutes.post("/create/preflight", requireAuth, async (c) => {
 
 	try {
 		const network = getNetworkConfig(c.env.CHAIN_KEY);
-		assertContractsDeployed(network, ["factory", "verifier", "paymaster"]);
+		assertContractsDeployed(network, ["factory", "verifier"]);
 		getRecoveryGuardianAccount(c.env);
 		const registration = await issueWebAuthnRegistration(c.env, {
 			uid: user.sub,
@@ -425,7 +425,8 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 			args: [[newSigner]],
 		});
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData: callData as Hex,
 			verificationGasLimit: 400000n,
@@ -443,6 +444,8 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 			senderAddress: walletAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 			meta: {
 				passkeyRegistrationId: registration.registrationId,
 				credentialId: registration.credentialId,
@@ -517,7 +520,8 @@ accountRoutes.post("/passkeys/:credentialId/remove/prepare", requireAuth, async 
 			args: [[onchainSigner]],
 		});
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload } = await buildSponsoredUserOp(c.env, {
+		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData,
 			verificationGasLimit: 400000n,
@@ -534,6 +538,8 @@ accountRoutes.post("/passkeys/:credentialId/remove/prepare", requireAuth, async 
 			senderAddress: walletAddress,
 			userOp: serializeBigInts(userOp) as Record<string, unknown>,
 			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
 			meta: { credentialId },
 		});
 		return c.json({

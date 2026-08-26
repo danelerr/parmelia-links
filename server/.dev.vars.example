@@ -85,6 +85,29 @@ RECOVERY_GUARDIAN_PRIVATE_KEY=
 # Firma de sponsorships del paymaster. En MAINNET es obligatoria (sin fallback).
 PAYMASTER_SIGNER_PRIVATE_KEY=
 
+# Sponsorship se elige en runtime; cambiar proveedor no migra smart accounts.
+# Valores: parmelia | erc7677 | self-funded. El fallback ocurre antes de la firma.
+SPONSORSHIP_PROVIDER=parmelia
+SPONSORSHIP_FALLBACK_PROVIDER=
+# Permite rotar/reemplazar el paymaster propio sin cambiar shared/networks.ts.
+SPONSORSHIP_PAYMASTER_ADDRESS=
+SPONSORSHIP_HEALTH_CHECK_ENABLED=true
+PAYMASTER_MIN_DEPOSIT_WEI=1000000000000000
+# ERC-7677 (solo si el proveedor seleccionado lo requiere).
+PAYMASTER_SERVICE_URL=
+PAYMASTER_SERVICE_CONTEXT_JSON={}
+PAYMASTER_SERVICE_EXPECTED_PAYMASTER=
+PAYMASTER_SERVICE_TIMEOUT_MS=8000
+
+# Política comercial de las operaciones de la app (swap/cross-chain personal y
+# compatibilidad legacy). El switch maestro debe seguir false: valores BPS
+# aislados nunca activan una comisión por accidente.
+GATOPAGO_FEES_ENABLED=false
+GATOPAGO_SWAP_FEE_BPS=0
+GATOPAGO_CROSSCHAIN_FEE_BPS=0
+GATOPAGO_MAX_FEE_BPS=100
+GATOPAGO_TREASURY_ADDRESS=
+
 # Firma de autorizaciones del PaymentRouter (Flow B). En MAINNET es obligatoria.
 PAYMENT_ROUTER_SIGNER_PRIVATE_KEY=
 
@@ -124,14 +147,6 @@ AUTH_EMAIL_FROM=acceso@parmelia.me
 
 # URL publica del cliente usada para links de checkout.
 APP_URL=https://app.parmelia.me
-
-# Fees permanecen desactivadas salvo que GATOPAGO_FEES_ENABLED sea "true".
-GATOPAGO_FEES_ENABLED=false
-GATOPAGO_SWAP_FEE_BPS=0
-GATOPAGO_MAX_FEE_BPS=100
-GATOPAGO_TREASURY_ADDRESS=
-GATOPAGO_CROSSCHAIN_FEE_BPS=0
-GATOPAGO_PAYMENT_FEE_BPS=0
 
 # Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).
 CCTP_RPC_URLS=

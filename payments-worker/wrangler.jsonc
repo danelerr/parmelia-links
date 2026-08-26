@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gatopago-payments-api",
+  "main": "src/index.ts",
+  "build": {
+    "command": "pnpm build:contracts",
+    "cwd": "..",
+    "watch_dir": ["src", "../shared", "../contracts/src"]
+  },
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": { "port": 8788 },
+  "vars": {
+    "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
+    "ALLOWED_ORIGINS": "https://parmelia.me,https://www.parmelia.me,http://localhost:5173,https://app.parmelia.me,https://dashboard.parmelia.me",
+    "SETTLEMENT_CHAIN_ID": "421614",
+    "PAYMENT_ENABLED_CHAIN_IDS": "421614,84532,43113",
+    "PAYMENT_LIVE_ENABLED": "false",
+    // First deploy is read-only until migrations/import are verified. Change to
+    // false only in the activation deploy after the data-only cutover.
+    "PAYMENTS_BOOTSTRAP_MODE": "false",
+    // Replace with the 64-hex checksum emitted by split-payments-d1.mjs after
+    // the final frozen import. Runtime writes require this exact D1 proof.
+    "PAYMENTS_DATA_CUTOVER_CHECKSUM": "ffb10c840313390517ec88afe2590385f73bd4b7e500670340a9c979aac30bb9",
+    "PAYMENT_ROUTER_PREFLIGHT_ENABLED": "true",
+    "PAYMENT_AUTHORIZATION_TTL_SECONDS": "600",
+    "CIRCLE_API_BASE_URL": "https://iris-api-sandbox.circle.com",
+    "CHECKOUT_BASE_URL": "https://app.parmelia.me/pay"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
+  "d1_databases": [{
+    "binding": "PAYMENTS_DB",
+    "database_name": "gatopago-payments",
+    "database_id": "f0daaeb3-8df0-44d3-8b1f-a2f37461d50e",
+    "migrations_dir": "migrations"
+  }],
+  "durable_objects": {
+    "bindings": [{ "name": "PAYMENT_JOB_SCHEDULER", "class_name": "PaymentJobScheduler" }]
+  },
+  "migrations": [{ "tag": "v1_payment_job_scheduler", "new_sqlite_classes": ["PaymentJobScheduler"] }],
+  "queues": {
+    "producers": [{ "binding": "PAYMENT_JOBS_QUEUE", "queue": "gatopago-payment-jobs" }],
+    "consumers": [{
+      "queue": "gatopago-payment-jobs",
+      "max_batch_size": 5,
+      "max_batch_timeout": 2,
+      "max_retries": 20,
+      "dead_letter_queue": "gatopago-payment-jobs-dlq",
+      // D1 serializes writes inside one database. Keep bounded parallelism so
+      // HTTP traffic and provider calls retain capacity while Queue scales.
+      "max_concurrency": 8,
+      "retry_delay": 15
+    }]
+  },
+  "triggers": { "crons": ["* * * * *"] }
+}

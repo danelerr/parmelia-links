@@ -2,6 +2,7 @@ import type { Bindings } from "../middlewares/auth";
 import { logError } from "./logger";
 import { scheduleEventJob } from "./eventScheduler";
 import { scheduleWalletIndexerPartitions } from "./indexerPartitions";
+import { wakePaymentsSync } from "./paymentsRpc";
 import { d1All, d1First, d1Run, didWrite, nowIso } from "./storage/core";
 
 export * from "./storage/crosschain";
@@ -25,6 +26,7 @@ export type UserRecord = {
 	socialUrl: string | null;
 	createdAt: string | null;
 	updatedAt: string | null;
+	settlementAccountVersion: number;
 };
 
 export type PaymentLinkRecord = {
@@ -53,11 +55,13 @@ export type PaymentLinkRecord = {
  */
 export type PendingPaymentStatus = "prepared" | "submitting" | "submitted" | "confirmed" | "failed";
 export type PendingPaymentSubmissionTransport = "self" | "bundler";
+export type PendingPaymentSponsorshipProvider = "parmelia" | "erc7677" | "self-funded" | "legacy";
 
 export type PendingPaymentRecord = {
 	userOpHash: string;
 	uid: string;
 	linkId: string | null;
+	paymentAttemptId: string | null;
 	wallet: string;
 	senderAddress: string;
 	amount: string;
@@ -68,6 +72,8 @@ export type PendingPaymentRecord = {
 	status: PendingPaymentStatus;
 	submittedTxHash: string | null;
 	submissionTransport: PendingPaymentSubmissionTransport;
+	sponsorshipProvider: PendingPaymentSponsorshipProvider;
+	sponsorshipPaymasterAddress: string | null;
 	submittedAt: string | null;
 	submissionAttemptCount: number;
 	lastSubmissionErrorCode: string | null;
@@ -93,10 +99,11 @@ type UserRow = {
 	social_url: string | null;
 	created_at: string | null;
 	updated_at: string | null;
+	settlement_account_version: number;
 };
 
 const USER_COLUMNS =
-	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, display_name, social_url, created_at, updated_at";
+	"uid, wallet_address, username, referral_code, credential_id, funded_at, invited_by, display_name, social_url, created_at, updated_at, settlement_account_version";
 
 type PaymentLinkRow = {
 	id: string;
@@ -122,6 +129,7 @@ type PendingPaymentRow = {
 	user_op_hash: string;
 	uid: string;
 	link_id: string | null;
+	payment_attempt_id: string | null;
 	wallet_address: string;
 	sender_address: string;
 	amount: string;
@@ -131,6 +139,8 @@ type PendingPaymentRow = {
 	status: PendingPaymentStatus;
 	submitted_tx_hash: string | null;
 	submission_transport: PendingPaymentSubmissionTransport;
+	sponsorship_provider: PendingPaymentSponsorshipProvider;
+	sponsorship_paymaster_address: string | null;
 	submitted_at: string | null;
 	submission_attempt_count: number;
 	last_submission_error_code: string | null;
@@ -139,7 +149,7 @@ type PendingPaymentRow = {
 };
 
 const PENDING_COLS =
-	"user_op_hash, uid, link_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, submission_transport, submitted_at, submission_attempt_count, last_submission_error_code, created_at, expires_at";
+	"user_op_hash, uid, link_id, payment_attempt_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, submission_transport, sponsorship_provider, sponsorship_paymaster_address, submitted_at, submission_attempt_count, last_submission_error_code, created_at, expires_at";
 
 
 function mapUserRow(row: UserRow): UserRecord {
@@ -155,6 +165,7 @@ function mapUserRow(row: UserRow): UserRecord {
 		socialUrl: row.social_url,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
+		settlementAccountVersion: row.settlement_account_version ?? 0,
 	};
 }
 
@@ -182,6 +193,7 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 		userOpHash: row.user_op_hash,
 		uid: row.uid,
 		linkId: row.link_id,
+		paymentAttemptId: row.payment_attempt_id,
 		wallet: row.wallet_address,
 		senderAddress: row.sender_address,
 		amount: row.amount,
@@ -191,6 +203,8 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 		status: row.status ?? "prepared",
 		submittedTxHash: row.submitted_tx_hash ?? null,
 		submissionTransport: row.submission_transport ?? "self",
+		sponsorshipProvider: row.sponsorship_provider ?? "legacy",
+		sponsorshipPaymasterAddress: row.sponsorship_paymaster_address ?? null,
 		submittedAt: row.submitted_at ?? null,
 		submissionAttemptCount: row.submission_attempt_count ?? 0,
 		lastSubmissionErrorCode: row.last_submission_error_code ?? null,
@@ -239,8 +253,15 @@ export async function saveUser(
 			funded_at,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			, settlement_account_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN 0 ELSE 1 END)
 		ON CONFLICT(uid) DO UPDATE SET
+			settlement_account_version = CASE
+				WHEN excluded.wallet_address IS NOT NULL AND (
+					users.wallet_address IS NULL OR lower(users.wallet_address) != lower(excluded.wallet_address)
+				) THEN users.settlement_account_version + 1
+				ELSE users.settlement_account_version
+			END,
 			wallet_address = COALESCE(excluded.wallet_address, users.wallet_address),
 			username = COALESCE(excluded.username, users.username),
 			credential_id = COALESCE(excluded.credential_id, users.credential_id),
@@ -254,8 +275,10 @@ export async function saveUser(
 			user.fundedAt ?? null,
 			user.createdAt ?? timestamp,
 			timestamp,
+			walletAddress,
 		],
 	);
+	if (walletAddress) await wakePaymentsSync(env, "settlement_account_changed");
 }
 
 /**
@@ -514,16 +537,22 @@ export async function createPendingPayment(
 		PendingPaymentRecord,
 		| "createdAt"
 		| "expiresAt"
+		| "paymentAttemptId"
 		| "meta"
 		| "status"
 		| "submittedTxHash"
 		| "submissionTransport"
+		| "sponsorshipProvider"
+		| "sponsorshipPaymasterAddress"
 		| "submittedAt"
 		| "submissionAttemptCount"
 		| "lastSubmissionErrorCode"
 	> & {
 		meta?: Record<string, unknown> | null;
+		paymentAttemptId?: string | null;
 		submissionTransport?: PendingPaymentSubmissionTransport;
+		sponsorshipProvider?: Exclude<PendingPaymentSponsorshipProvider, "legacy">;
+		sponsorshipPaymasterAddress?: string | null;
 		createdAt?: string;
 		expiresAt?: string;
 	},
@@ -541,6 +570,7 @@ export async function createPendingPayment(
 			user_op_hash,
 			uid,
 			link_id,
+			payment_attempt_id,
 			wallet_address,
 			sender_address,
 			amount,
@@ -550,15 +580,18 @@ export async function createPendingPayment(
 			status,
 			submitted_tx_hash,
 			submission_transport,
+			sponsorship_provider,
+			sponsorship_paymaster_address,
 			submitted_at,
 			submission_attempt_count,
 			last_submission_error_code,
 			created_at,
 			expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, NULL, 0, NULL, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, ?, NULL, 0, NULL, ?, ?)
 		ON CONFLICT(user_op_hash) DO UPDATE SET
 			uid = excluded.uid,
 			link_id = excluded.link_id,
+			payment_attempt_id = excluded.payment_attempt_id,
 			wallet_address = excluded.wallet_address,
 			sender_address = excluded.sender_address,
 			amount = excluded.amount,
@@ -568,6 +601,8 @@ export async function createPendingPayment(
 			status = 'prepared',
 			submitted_tx_hash = NULL,
 			submission_transport = excluded.submission_transport,
+			sponsorship_provider = excluded.sponsorship_provider,
+			sponsorship_paymaster_address = excluded.sponsorship_paymaster_address,
 			submitted_at = NULL,
 			submission_attempt_count = 0,
 			last_submission_error_code = NULL,
@@ -577,6 +612,7 @@ export async function createPendingPayment(
 			pending.userOpHash,
 			pending.uid,
 			pending.linkId,
+			pending.paymentAttemptId ?? null,
 			pending.wallet,
 			pending.senderAddress,
 			pending.amount,
@@ -584,6 +620,8 @@ export async function createPendingPayment(
 			JSON.stringify(pending.userOp),
 			pending.meta ? JSON.stringify(pending.meta) : null,
 			pending.submissionTransport ?? "self",
+			pending.sponsorshipProvider ?? "legacy",
+			pending.sponsorshipPaymasterAddress?.toLowerCase() ?? null,
 			createdAt,
 			expiresAt,
 		],

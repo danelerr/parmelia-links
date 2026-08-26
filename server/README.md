@@ -118,38 +118,38 @@ comprobar D1; los códigos concretos sólo aparecen en `/health/ops` autenticado
 
 ## Secrets y variables
 
-`vars` (en `wrangler.jsonc`) para config no sensible: `FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`, las de fees (`GATOPAGO_*`) y los flags cross-chain (`CROSSCHAIN_PAUSED`, `CROSSCHAIN_DISABLED_CHAINS`, `CROSSCHAIN_MIN_RELAYER_GAS_WEI`).
+El inventario canónico —qué está cargado hoy, procedencia, obtención, ubicación
+local y orden de rotación— está en
+[`docs/operations/worker-variables.md`](../docs/operations/worker-variables.md).
+No ejecutar una lista completa de `secret put` a ciegas: cada Worker conserva
+sólo las credenciales de su dominio.
 
-`wrangler secret put` (o `.dev.vars` local, gitignored) para lo sensible:
+El snapshot remoto read-only del 25-08-2026 comprobó siete nombres en App:
+`AUTH_CODE_PEPPER`, `FCM_SERVICE_ACCOUNT`, `FIREBASE_SERVICE_ACCOUNT`,
+`FIREBASE_WEB_API_KEY`, `OPS_HEALTH_TOKEN`, `PRIVATE_KEY` y `RPC_URL`.
+Cloudflare permite listar nombres, pero no recuperar ni demostrar la procedencia
+de sus valores.
 
-```txt
-npx wrangler secret put RPC_URL                          # compatibilidad/base
-npx wrangler secret put RPC_READ_URLS                    # pool de lecturas puntuales
-npx wrangler secret put RPC_WRITE_URLS                   # simulación/broadcast
-npx wrangler secret put RPC_INDEXER_URLS                 # pool canónico eth_getLogs
-npx wrangler secret put RPC_ARCHIVE_URLS                 # backfills aislados
-npx wrangler secret put RPC_PROVIDER_CAPABILITIES        # límites/priority por slot, sin URLs
-npx wrangler secret put BUNDLER_RPC_URLS                 # sólo si RELAYER_MODE=bundler
-npx wrangler secret put PRIVATE_KEY                       # EOA operativa: relayer handleOps/CCTP
-npx wrangler secret put FAUCET_PRIVATE_KEY                # EOA con presupuesto faucet (obligatoria si se activa en mainnet)
-npx wrangler secret put RECOVERY_GUARDIAN_PRIVATE_KEY     # guardian dedicado (obligatorio y distinto en mainnet)
-npx wrangler secret put PAYMASTER_SIGNER_PRIVATE_KEY      # firma sponsorships del paymaster
-npx wrangler secret put PAYMENT_ROUTER_SIGNER_PRIVATE_KEY # firma autorizaciones de PaymentRouter (Flow B)
-npx wrangler secret put OPS_HEALTH_TOKEN                  # 32+ caracteres; protege /health/ops
-npx wrangler secret put TURNSTILE_SECRET_KEY              # anti-abuso (testnet: opcional; MAINNET: obligatorio, sin él create/fund fallan cerrado)
-npx wrangler secret put FCM_SERVICE_ACCOUNT               # JSON del service account, 1 línea (opcional; sin definir = sin push)
-npx wrangler secret put CCTP_RPC_URLS                     # opcional: JSON chainId->RPC para destinos cross-chain (si no, públicos)
-npx wrangler secret put ALCHEMY_WEBHOOK_ID                # Notify Address Activity
-npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK           # red exacta del webhook
-npx wrangler secret put ALCHEMY_WEBHOOK_SIGNING_KEY       # firma HMAC de Address Activity
-npx wrangler secret put ALCHEMY_ADDRESS_WEBHOOKS_JSON     # reemplazo multi-slot opcional
-npx wrangler secret put ALCHEMY_NOTIFY_AUTH_TOKEN         # API Notify para sincronizar wallets
-npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_ID         # Custom Webhook para router/recovery
-npx wrangler secret put ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY # firma HMAC del Custom Webhook
-npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY     # 32 bytes base64/hex; AES-GCM para secretos HMAC (mainnet obligatorio)
-npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEY_ID  # identificador corto de la clave activa
-npx wrangler secret put WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS # JSON id->clave, sólo durante rotación
+`vars` (en `wrangler.jsonc`) contiene configuración no sensible:
+`FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`, políticas de
+fees (`GATOPAGO_*`), flags cross-chain y descriptores de capacidad RPC sin URLs
+ni tokens. Una URL pasa a tratarse como Secret cuando incluye una credencial.
+
+App soporta Secrets opcionales para pools RPC/bundler, claves onchain separadas,
+Turnstile, Firebase/FCM y Alchemy. En testnet varios están deshabilitados o usan
+fallback; mainnet exige los roles descritos en `DEPLOY.md` §11. Las claves
+maestras de webhooks merchant pertenecen ahora a Payments; los nombres legacy
+en App sólo se conservan durante rollback/soak y no deben recibir secretos
+nuevos.
+
+Para cargar **un** valor después de obtenerlo y aprobar la ventana:
+
+```powershell
+pnpm --filter server exec wrangler secret put NOMBRE --name server
 ```
+
+Wrangler solicita el valor sin ponerlo en el argumento. El comando crea una
+versión del Worker, por lo que requiere preflight y rollback preparados.
 
 La API key incluida en una URL `https://arb-*.g.alchemy.com/v2/...` sólo
 autentica JSON-RPC: no sustituye ninguno de los IDs, signing keys o el token de
