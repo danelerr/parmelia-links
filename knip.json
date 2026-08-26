@@ -9,7 +9,8 @@
       ],
       "ignoreBinaries": [
         "cast",
-        "forge"
+        "forge",
+        "java"
       ]
     },
     "client": {
@@ -26,6 +27,24 @@
       ]
     },
     "server": {
+      "entry": [
+        "src/routes/crosschain.routes.ts",
+        "src/routes/links.routes.ts",
+        "src/routes/merchant.routes.ts",
+        "src/services/indexer/routerWatcher.ts",
+        "src/services/crosschainRelayer.ts",
+        "src/services/webhooks.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "test-worker/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "cloudflare"
+      ]
+    },
+    "payments-worker": {
       "project": [
         "src/**/*.ts",
         "test/**/*.ts",

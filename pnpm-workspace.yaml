@@ -1,6 +1,7 @@
 packages:
   - client
   - server
+  - payments-worker
   - shared
   - dashboard
 minimumReleaseAge: 10080
@@ -20,6 +21,9 @@ overrides:
   'postcss@<8.5.23': '>=8.5.23'
   'nanoid@<3.3.18': '>=3.3.18'
   'websocket-driver@<0.7.5': '>=0.7.5'
+  # pino's ^0.3 range otherwise selects 0.3.2, which was published without
+  # the trusted-publisher provenance present on 0.3.1.
+  slow-redact: '0.3.1'
   # @peculiar 2.9.x dropped trusted-publisher provenance. SimpleWebAuthn's
   # ranges also support the last provenance-preserving release, so keep the
   # ASN.1 parsers pinned until the publisher restores equivalent trust.
@@ -41,9 +45,7 @@ allowBuilds:
   sharp: false
   workerd: false
 minimumReleaseAgeExclude:
-  - flatted@3.4.2
-  - brace-expansion@5.0.5 || 5.0.6 || 5.0.7 || 5.0.8 || 5.0.9
-  - '@babel/core@7.29.1'
+  - brace-expansion@5.0.9
   # Reviewed latest-compatible dependency batch (2026-08-24). Keep these
   # exceptions version-specific so future releases still observe quarantine.
   - '@cloudflare/vitest-pool-workers@0.22.0'

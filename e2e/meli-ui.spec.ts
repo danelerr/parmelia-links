@@ -131,3 +131,58 @@ test("profile name and social fields preserve user input across renders", async 
 	await expect(page.getByRole("button", { name: /Guardar|Save/i }).first()).toBeEnabled();
 	await expectNoWcagViolations(page);
 });
+
+test("security treats an unavailable status as unknown and blocks key changes", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security-error");
+
+	const statusAlert = page.getByRole("alert");
+	await expect(statusAlert).toContainText(/No pudimos verificar tu protección|couldn't verify your protection/i);
+	await expect(page.getByText(/Estado no verificado|Status not verified/i)).toBeVisible();
+	await expect(page.getByText(/Plan de respaldo sin verificar|Backup plan not verified/i)).toBeVisible();
+	await expect(page.getByRole("button", { name: /Agregar otra llave|Add another key/i })).toBeDisabled();
+	await expect(page.getByRole("button", { name: /Volver a comprobar|Check again/i })).toBeEnabled();
+	await expectNoWcagViolations(page);
+
+	await openPreview(page, testInfo, "security-chain-error");
+	await expect(page.getByText(/Estado no verificado|Status not verified/i)).toBeVisible();
+	await expect(page.getByText(/Plan de respaldo sin verificar|Backup plan not verified/i)).toBeVisible();
+	await expect(page.getByRole("button", { name: /Agregar otra llave|Add another key/i })).toBeDisabled();
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).first()).toBeDisabled();
+	await expectNoWcagViolations(page);
+});
+
+test("security explains why the last active key cannot be removed", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security-single-key");
+
+	const removeButton = page.getByRole("button", { name: /Quitar|Remove/i });
+	await expect(removeButton).toBeDisabled();
+	await expect(page.getByText(/última llave activa|last active key/i)).toBeVisible();
+	await expectNoWcagViolations(page);
+});
+
+test("security keeps failed rename and removal actions open for retry", async ({ page }, testInfo) => {
+	await page.route("**/account/passkeys/**", async (route) => {
+		await route.fulfill({
+			status: 503,
+			contentType: "application/json",
+			body: JSON.stringify({ error: "Temporary failure", error_code: "SERVER_ERROR" }),
+		});
+	});
+	await openPreview(page, testInfo, "security");
+
+	await page.getByRole("button", { name: /Editar|Edit/i }).first().click();
+	const keyName = page.getByRole("textbox", { name: /Nombre de la llave|Key name/i });
+	await keyName.fill("Mi teléfono principal");
+	const renameForm = page.locator("form").filter({ has: keyName });
+	await renameForm.getByRole("button", { name: /Guardar|Save/i }).click();
+	await expect(keyName).toHaveValue("Mi teléfono principal");
+	await expect(renameForm.getByRole("alert")).toContainText(/nombre no cambió|name wasn't changed/i);
+
+	await renameForm.getByRole("button", { name: /Cancelar|Cancel/i }).click();
+	await page.getByRole("button", { name: /Quitar|Remove/i }).first().click();
+	const removeDialog = page.getByRole("dialog", { name: /Quitar esta llave|Remove this key/i });
+	await removeDialog.getByRole("button", { name: /Confirmar y quitar|Confirm and remove/i }).click();
+	await expect(removeDialog).toBeVisible();
+	await expect(removeDialog.getByRole("alert")).toContainText(/No se quitó ninguna llave|No key was removed/i);
+	await expectNoWcagViolations(page);
+});

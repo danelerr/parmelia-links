@@ -4,6 +4,8 @@ node_modules
 .env.*
 .dev.vars
 .dev.vars.*
+!**/.env.example
+!**/.dev.vars.example
 
 # Secrets — never commit. Firebase service account keys go to `wrangler secret`.
 *-firebase-adminsdk-*.json
@@ -14,10 +16,9 @@ node_modules
 *.DS_Store
 Thumbs.db
 
-# This is a pnpm workspace — never commit npm lockfiles or per-package pnpm locks.
-# The single source of truth is the root pnpm-lock.yaml.
+# This is a pnpm workspace. The client also keeps a lockfile because it is
+# intentionally deployable as an independent Vercel project from client/.
 package-lock.json
-client/pnpm-lock.yaml
 server/pnpm-lock.yaml
 shared/pnpm-lock.yaml
 
