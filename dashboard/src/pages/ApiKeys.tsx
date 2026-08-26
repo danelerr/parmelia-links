@@ -1,7 +1,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { sileo } from "../lib/notify";
-import { apiFetch } from "../lib/api";
+import { apiFetch, type PaymentModeCapabilities } from "../lib/api";
 import { docsUrl } from "../lib/docs";
 import type { User } from "../lib/firebase";
 import ErrorState from "../components/ErrorState";
@@ -22,6 +22,9 @@ export default function ApiKeys({ user }: { user: User }) {
 	const fetcher = (p: string) => apiFetch<{ data: ApiKey[] }>(p, { user });
 	const { data, error, isLoading, mutate } = useSWR("/merchant/keys", fetcher);
 	const keys = data?.data ?? [];
+	const { data: capabilities } = useSWR("/merchant/capabilities",
+		(p: string) => apiFetch<PaymentModeCapabilities>(p, { user }));
+	const liveEnabled = capabilities?.modes.live.enabled === true;
 
 	const [mode, setMode] = useState<"test" | "live">("test");
 	const [name, setName] = useState("");
@@ -52,6 +55,11 @@ export default function ApiKeys({ user }: { user: User }) {
 	// Live keys move real money: one deliberate extra step before creating.
 	function create() {
 		if (mode === "live") {
+			if (!liveEnabled) {
+				sileo.error({ title: "Modo live no disponible",
+					description: "La liquidación real seguirá bloqueada hasta habilitar y verificar las redes mainnet." });
+				return;
+			}
 			setConfirmLive(true);
 			return;
 		}
@@ -113,13 +121,18 @@ export default function ApiKeys({ user }: { user: User }) {
 					<span className="block text-[12px] text-text-faint mb-1.5">Modo</span>
 					<select name="mode" className="field" value={mode} onChange={(e) => setMode(e.target.value as "test" | "live")}>
 						<option value="test">test (sandbox)</option>
-						<option value="live">live (producción)</option>
+						<option value="live" disabled={!liveEnabled}>live (aún no disponible)</option>
 					</select>
 				</label>
 				<button type="submit" disabled={creating} className="btn btn-primary">
 					{creating ? "Creando…" : "Crear clave"}
 				</button>
 			</form>
+			{!liveEnabled && (
+				<p className="text-[12px] text-text-faint -mt-3 mb-5">
+					Solo testnet está habilitado. El backend rechazará claves live hasta que existan rutas mainnet verificadas.
+				</p>
+			)}
 
 			{/* Fresh key — shown once */}
 			{fresh && (

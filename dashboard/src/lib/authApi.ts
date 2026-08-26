@@ -1,11 +1,11 @@
-import { SERVER_URL } from "./brand";
+import { APP_API_URL } from "./brand";
 
 type ErrorPayload = { error?: unknown; error_code?: unknown };
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
 	let response: Response;
 	try {
-		response = await fetch(`${SERVER_URL}${path}`, {
+		response = await fetch(`${APP_API_URL}${path}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),

@@ -20,6 +20,14 @@ export class ApiError extends Error {
 	}
 }
 
+export type PaymentModeCapabilities = {
+	settlement: { chainId: number | null; name: string | null; isTestnet: boolean | null };
+	modes: {
+		test: { enabled: true };
+		live: { enabled: boolean; reason: string | null };
+	};
+};
+
 type ApiOptions = { user: User; method?: string; body?: unknown };
 
 export async function apiFetch<T = Record<string, unknown>>(

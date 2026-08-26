@@ -1,7 +1,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { sileo } from "../lib/notify";
-import { apiFetch } from "../lib/api";
+import { apiFetch, type PaymentModeCapabilities } from "../lib/api";
 import { docsUrl } from "../lib/docs";
 import type { User } from "../lib/firebase";
 import ErrorState from "../components/ErrorState";
@@ -17,8 +17,9 @@ const VERIFY_SNIPPET = `import crypto from "node:crypto";
 // para tener el cuerpo CRUDO (la firma es sobre los bytes exactos).
 function verifyGatoPago(req, secret) {
   const timestamp = req.header("GatoPago-Timestamp");
-  const signature = req.header("GatoPago-Signature");
-  if (!timestamp || !signature) return false;
+  const eventId = req.header("GatoPago-Event-Id");
+  const signature = req.header("GatoPago-Signature")?.replace(/^v1=/, "");
+  if (!timestamp || !eventId || !signature) return false;
 
   // Rechaza timestamps viejos (anti-replay, tolerancia 5 min).
   if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
@@ -27,8 +28,8 @@ function verifyGatoPago(req, secret) {
     .createHmac("sha256", secret) // tu whsec_...
     .update(\`\${timestamp}.\${req.body}\`)
     .digest("hex");
-  const a = Buffer.from(signature);
-  const b = Buffer.from(expected);
+  const a = Buffer.from(signature, "hex");
+  const b = Buffer.from(expected, "hex");
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }`;
 
@@ -56,6 +57,9 @@ export default function Webhooks({ user }: { user: User }) {
 	const fetcher = (p: string) => apiFetch<{ data: Endpoint[] }>(p, { user });
 	const { data, error, isLoading, mutate } = useSWR("/merchant/webhooks", fetcher);
 	const endpoints = data?.data ?? [];
+	const { data: capabilities } = useSWR("/merchant/capabilities",
+		(p: string) => apiFetch<PaymentModeCapabilities>(p, { user }));
+	const liveEnabled = capabilities?.modes.live.enabled === true;
 
 	const delFetcher = (p: string) => apiFetch<{ data: Delivery[] }>(p, { user });
 	const { data: delData, error: delError, mutate: mutateDel } = useSWR("/merchant/webhook_deliveries", delFetcher, {
@@ -70,6 +74,11 @@ export default function Webhooks({ user }: { user: User }) {
 	const [removeTarget, setRemoveTarget] = useState<Endpoint | null>(null);
 
 	async function create() {
+		if (mode === "live" && !liveEnabled) {
+			sileo.error({ title: "Modo live no disponible",
+				description: "Registra un endpoint test hasta que las rutas mainnet estén verificadas." });
+			return;
+		}
 		setCreating(true);
 		try {
 			const res = await apiFetch<{ secret: string }>("/merchant/webhooks", {
@@ -150,13 +159,18 @@ export default function Webhooks({ user }: { user: User }) {
 					<span className="block text-[12px] text-text-faint mb-1.5">Modo</span>
 					<select name="mode" className="field" value={mode} onChange={(e) => setMode(e.target.value as "test" | "live")}>
 						<option value="test">test</option>
-						<option value="live">live</option>
+						<option value="live" disabled={!liveEnabled}>live (aún no disponible)</option>
 					</select>
 				</label>
 				<button type="submit" disabled={creating} className="btn btn-primary">
 					{creating ? "Registrando…" : "Registrar"}
 				</button>
 			</form>
+			{!liveEnabled && (
+				<p className="text-[12px] text-text-faint -mt-3 mb-5">
+					Los webhooks live permanecen bloqueados junto con los cobros mainnet; test funciona normalmente.
+				</p>
+			)}
 
 			{secret && (
 				<div className="card p-5 mb-5">

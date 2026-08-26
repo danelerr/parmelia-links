@@ -32,8 +32,33 @@ type Detail = {
 	mode: "test" | "live";
 	created_at: string;
 	checkout_url: string | null;
+	fee_breakdown: {
+		currency: "USDC";
+		total_quoted_atomic: string;
+		total_actual_atomic: string | null;
+		platform: FeeLine;
+		network: FeeLine;
+	} | null;
 	onchain: OnchainAuth | null;
 };
+
+type FeeLine = {
+	bearer: "none" | "payer";
+	quoted_amount_atomic: string;
+	actual_amount_atomic: string | null;
+	status: "quoted" | "waived" | "charged";
+	policy_id: string;
+	policy_version: number;
+	rule_id: string;
+};
+
+function usdcAtomic(value: string | null): string {
+	if (value === null || !/^\d+$/u.test(value)) return "Pendiente";
+	const padded = value.padStart(7, "0");
+	const whole = padded.slice(0, -6).replace(/^0+(?=\d)/u, "");
+	const fraction = padded.slice(-6).replace(/0+$/u, "");
+	return `${whole}${fraction ? `.${fraction}` : ""} USDC`;
+}
 
 async function copy(value: string) {
 	try {
@@ -105,6 +130,29 @@ export default function PaymentDetail({ user }: { user: User }) {
 							</Row>
 						)}
 					</div>
+
+					{data.fee_breakdown && (
+						<div className="card p-5">
+							<div className="flex items-center justify-between gap-3 mb-3">
+								<h2 className="text-[16px]">Desglose económico</h2>
+								<span className="badge badge-muted">
+									{data.fee_breakdown.platform.status === "waived" ? "GatoPago gratis" : "fee aplicado"}
+								</span>
+							</div>
+							<Row label="Comisión GatoPago">
+								{usdcAtomic(data.fee_breakdown.platform.actual_amount_atomic ?? data.fee_breakdown.platform.quoted_amount_atomic)}
+							</Row>
+							<Row label="Costo de red">
+								{usdcAtomic(data.fee_breakdown.network.actual_amount_atomic ?? data.fee_breakdown.network.quoted_amount_atomic)}
+							</Row>
+							<Row label="Costo total">
+								{usdcAtomic(data.fee_breakdown.total_actual_atomic ?? data.fee_breakdown.total_quoted_atomic)}
+							</Row>
+							<Row label="Política">
+								<code className="mono">{data.fee_breakdown.platform.policy_id}@{data.fee_breakdown.platform.policy_version} · {data.fee_breakdown.platform.rule_id}</code>
+							</Row>
+						</div>
+					)}
 
 					{/* Cobrar en persona: the checkout as QR while it can still be paid */}
 					{data.checkout_url && data.status === "awaiting_payment" && (
