@@ -109,6 +109,10 @@ export type PaymentNetworkCapabilities = {
 	cctpFast: boolean;
 	localPaymentRouter: `0x${string}` | null;
 	cctpPaymentRouter: `0x${string}` | null;
+	/** Immutable on-chain ceiling. This is capability, never a fee policy. */
+	localPaymentMaxPlatformFeeBps: number | null;
+	/** Immutable on-chain ceiling. This is capability, never a fee policy. */
+	cctpPaymentMaxPlatformFeeBps: number | null;
 	permitMode: PaymentPermitMode;
 	usdc: `0x${string}`;
 	tokenMessenger: `0x${string}`;
@@ -456,6 +460,8 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: true,
 		localPaymentRouter: "0x64e0B48A4D360B235C3fEDe2431D79413aebb7A4",
 		cctpPaymentRouter: null,
+		localPaymentMaxPlatformFeeBps: 100,
+		cctpPaymentMaxPlatformFeeBps: null,
 		permitMode: "eip2612",
 		usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
 		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
@@ -472,6 +478,9 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: true,
 		localPaymentRouter: null,
 		cctpPaymentRouter: "0x961C08Bd5a11EFB7264B06d7f14a44FB4d9958Ba",
+		localPaymentMaxPlatformFeeBps: null,
+		// Current deployment is immutable at zero. Raise only after a verified redeploy.
+		cctpPaymentMaxPlatformFeeBps: 0,
 		permitMode: "eip2612",
 		usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
@@ -488,6 +497,9 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: false,
 		localPaymentRouter: null,
 		cctpPaymentRouter: "0xd8289B87b155e8691Da192b12E12E2b592fE7D1E",
+		localPaymentMaxPlatformFeeBps: null,
+		// Current deployment is immutable at zero. Raise only after a verified redeploy.
+		cctpPaymentMaxPlatformFeeBps: 0,
 		permitMode: "eip2612",
 		usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
 		tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
@@ -504,6 +516,8 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: true,
 		localPaymentRouter: null,
 		cctpPaymentRouter: null,
+		localPaymentMaxPlatformFeeBps: null,
+		cctpPaymentMaxPlatformFeeBps: null,
 		permitMode: "approve",
 		usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
 		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,
@@ -520,6 +534,8 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: true,
 		localPaymentRouter: null,
 		cctpPaymentRouter: null,
+		localPaymentMaxPlatformFeeBps: null,
+		cctpPaymentMaxPlatformFeeBps: null,
 		permitMode: "approve",
 		usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
 		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,
@@ -536,6 +552,8 @@ export const PAYMENT_NETWORKS: Readonly<Record<number, PaymentNetworkCapabilitie
 		cctpFast: false,
 		localPaymentRouter: null,
 		cctpPaymentRouter: null,
+		localPaymentMaxPlatformFeeBps: null,
+		cctpPaymentMaxPlatformFeeBps: null,
 		permitMode: "approve",
 		usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
 		tokenMessenger: CCTP_V2_MAINNET_TOKEN_MESSENGER,

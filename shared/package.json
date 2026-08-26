@@ -7,7 +7,9 @@
   "types": "index.ts",
   "exports": {
     ".": "./index.ts",
-    "./user-operations": "./userOperations.ts"
+    "./user-operations": "./userOperations.ts",
+    "./payment-contracts": "./paymentContracts.ts",
+    "./payment-authorizations": "./paymentAuthorizations.ts"
   },
 	"dependencies": {
 		"viem": "^2.55.19"

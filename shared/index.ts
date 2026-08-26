@@ -17,6 +17,8 @@ export { abi as paymentRouterAbi } from "../contracts/out/ParmeliaPaymentRouter.
 export { abi as paymentRouterV2Abi } from "../contracts/out/ParmeliaPaymentRouterV2.sol/ParmeliaPaymentRouterV2.json";
 export { abi as cctpPaymentRouterAbi } from "../contracts/out/ParmeliaCctpPaymentRouter.sol/ParmeliaCctpPaymentRouter.json";
 export { abi as crosschainRouterAbi } from "../contracts/out/ParmeliaCrosschainRouter.sol/ParmeliaCrosschainRouter.json";
+export * from "./paymentContracts";
+export * from "./fees";
 
 export const erc20Abi = [
 	{
