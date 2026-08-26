@@ -66,6 +66,15 @@ imprimen.
 7. Ejecutar backups cifrados y registrar versiones antes de modificar schema o
    bindings.
 
+   ```powershell
+   node scripts/d1-backup.mjs --remote --output <DIRECTORIO_PROTEGIDO>\app.sql.enc
+   node scripts/d1-backup.mjs --remote-payments --output <DIRECTORIO_PROTEGIDO>\payments-historical.sql.enc
+   ```
+
+   Ambos comandos usan la misma clave de archivo inyectada sólo al proceso; el
+   segundo cambia explícitamente al binding `PAYMENTS_DB` y valida tablas del
+   dominio Payments antes de aceptar el backup.
+
 ### 2. Construir el artefacto desde App congelada
 
 Exportar App de forma read-only:

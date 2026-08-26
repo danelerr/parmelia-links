@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverDir = resolve(rootDir, "server");
 const remoteConfigPath = resolve(serverDir, "wrangler.jsonc");
+const paymentsRemoteConfigPath = resolve(rootDir, "payments-worker", "wrangler.jsonc");
 const migrationsDir = resolve(serverDir, "migrations");
 const wranglerCli = resolve(serverDir, "node_modules", "wrangler", "bin", "wrangler.js");
 const database = "GATOPAGO_DB";
@@ -36,7 +37,7 @@ const magic = Buffer.from(`${backupFormat}\n`, "ascii");
 const legacyMagic = Buffer.from(`${legacyBackupFormat}\n`, "ascii");
 const nonceLength = 12;
 const tagLength = 16;
-const requiredTables = [
+const appRequiredTables = [
   "account_operations",
   "crosschain_operations",
   "events",
@@ -44,6 +45,18 @@ const requiredTables = [
   "pending_payments",
   "users",
   "webhook_deliveries",
+];
+const paymentsRequiredTables = [
+  "api_keys",
+  "events",
+  "merchants",
+  "payment_attempts",
+  "payment_intents",
+  "payment_links",
+  "payment_migration_control",
+  "payment_quotes",
+  "webhook_deliveries",
+  "webhook_endpoints",
 ];
 const fixtureSql = [
   "INSERT INTO users(uid, username) VALUES ('restore-drill-user', 'restore-drill-user')",
@@ -59,6 +72,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--remote") setMode("remote");
+    else if (arg === "--remote-payments") setMode("remote-payments");
     else if (arg === "--drill") setMode("drill");
     else if (arg === "--verify") {
       setMode("verify");
@@ -272,7 +286,7 @@ function assertSqlExport(path) {
   if (!prefix.includes("CREATE TABLE")) throw new Error("D1 export does not contain a schema");
 }
 
-async function verifyRestore(sqlPath, { expectFixture }) {
+async function verifyRestore(sqlPath, { expectFixture, requiredTables = appRequiredTables }) {
   const restoreDir = await makeTempDir("restore");
   try {
     writeDrillConfig(restoreDir);
@@ -366,7 +380,10 @@ async function runDrill() {
   }
 }
 
-async function runRemoteBackup(outputArg) {
+async function runRemoteBackup(outputArg, profile = "app") {
+  const remote = profile === "payments"
+    ? { binding: "PAYMENTS_DB", configPath: paymentsRemoteConfigPath, requiredTables: paymentsRequiredTables }
+    : { binding: database, configPath: remoteConfigPath, requiredTables: appRequiredTables };
   const key = parseEncryptionKey(process.env.D1_BACKUP_ENCRYPTION_KEY);
   const keyId = process.env.D1_BACKUP_ENCRYPTION_KEY_ID;
   if (!keyId || !/^[A-Za-z0-9._-]{1,64}$/.test(keyId)) {
@@ -388,7 +405,7 @@ async function runRemoteBackup(outputArg) {
   try {
     const plaintext = join(workDir, "remote.sql");
     const bookmarkOutput = wrangler(
-      ["d1", "time-travel", "info", database, "--config", remoteConfigPath, "--json"],
+      ["d1", "time-travel", "info", remote.binding, "--config", remote.configPath, "--json"],
       { capture: true },
     );
     const timeTravel = parseWranglerJson(bookmarkOutput);
@@ -396,10 +413,10 @@ async function runRemoteBackup(outputArg) {
     wrangler([
       "d1",
       "export",
-      database,
+      remote.binding,
       "--remote",
       "--config",
-      remoteConfigPath,
+      remote.configPath,
       "--output",
       plaintext,
       "-y",
@@ -409,10 +426,14 @@ async function runRemoteBackup(outputArg) {
 
     const decrypted = join(workDir, "restore.sql");
     await decryptFile(output, decrypted, key, checksums);
-    const verification = await verifyRestore(decrypted, { expectFixture: false });
+    const verification = await verifyRestore(decrypted, {
+      expectFixture: false,
+      requiredTables: remote.requiredTables,
+    });
     const manifest = {
       format: backupFormat,
-      database,
+      database: remote.binding,
+      profile,
       exportedAt: new Date().toISOString(),
       encryptedFile: basename(output),
       encryptedBytes: statSync(output).size,
@@ -466,7 +487,10 @@ async function verifyExistingBackup(inputArg, outputArg) {
       throw new Error("Decrypted backup output must end in .sql");
     }
     await decryptFile(input, decrypted, key, manifest);
-    const verification = await verifyRestore(decrypted, { expectFixture: false });
+    const requiredTables = manifest.profile === "payments" || manifest.database === "PAYMENTS_DB"
+      ? paymentsRequiredTables
+      : appRequiredTables;
+    const verification = await verifyRestore(decrypted, { expectFixture: false, requiredTables });
     console.log(
       `Encrypted D1 backup verified (${verification.tableCount} tables, integrity and FK checks OK).`,
     );
@@ -482,6 +506,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.mode === "drill") await runDrill();
   else if (options.mode === "remote") await runRemoteBackup(options.output);
+  else if (options.mode === "remote-payments") await runRemoteBackup(options.output, "payments");
   else await verifyExistingBackup(options.input, options.mode === "decrypt" ? options.output : undefined);
 }
 
