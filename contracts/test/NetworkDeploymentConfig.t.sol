@@ -59,6 +59,10 @@ contract NetworkDeploymentConfigTest is Test {
         assertEq(avalancheMainnet.settlementChainId, ARBITRUM_ONE);
         assertEq(baseTestnet.paymasterStake, 0);
         assertEq(avalancheMainnet.paymasterDeposit, 0);
+        assertEq(baseTestnet.cctpPaymentPlatformFeeCapBps, 100);
+        assertEq(avalancheTestnet.cctpPaymentPlatformFeeCapBps, 100);
+        assertEq(baseMainnet.cctpPaymentPlatformFeeCapBps, 100);
+        assertEq(avalancheMainnet.cctpPaymentPlatformFeeCapBps, 100);
     }
 
     function test_fastCapabilityMatchesCircleSupport() public view {

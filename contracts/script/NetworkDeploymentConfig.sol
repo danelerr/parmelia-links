@@ -32,6 +32,7 @@ library NetworkDeploymentConfig {
         bool isTestnet;
         bool isHomeChain;
         bool cctpFastSupported;
+        uint16 cctpPaymentPlatformFeeCapBps;
         address entryPoint;
         address usdc;
         address tokenMessenger;
@@ -61,6 +62,7 @@ library NetworkDeploymentConfig {
                 isTestnet: true,
                 isHomeChain: true,
                 cctpFastSupported: true,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d,
                 tokenMessenger: TESTNET_TOKEN_MESSENGER,
@@ -82,6 +84,7 @@ library NetworkDeploymentConfig {
                 isTestnet: true,
                 isHomeChain: false,
                 cctpFastSupported: true,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0x036CbD53842c5426634e7929541eC2318f3dCF7e,
                 tokenMessenger: TESTNET_TOKEN_MESSENGER,
@@ -103,6 +106,7 @@ library NetworkDeploymentConfig {
                 isTestnet: true,
                 isHomeChain: false,
                 cctpFastSupported: false,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0x5425890298aed601595a70AB815c96711a31Bc65,
                 tokenMessenger: TESTNET_TOKEN_MESSENGER,
@@ -124,6 +128,7 @@ library NetworkDeploymentConfig {
                 isTestnet: false,
                 isHomeChain: true,
                 cctpFastSupported: true,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0xaf88d065e77c8cC2239327C5EDb3A432268e5831,
                 tokenMessenger: MAINNET_TOKEN_MESSENGER,
@@ -145,6 +150,7 @@ library NetworkDeploymentConfig {
                 isTestnet: false,
                 isHomeChain: false,
                 cctpFastSupported: true,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
                 tokenMessenger: MAINNET_TOKEN_MESSENGER,
@@ -166,6 +172,7 @@ library NetworkDeploymentConfig {
                 isTestnet: false,
                 isHomeChain: false,
                 cctpFastSupported: false,
+                cctpPaymentPlatformFeeCapBps: 100,
                 entryPoint: ENTRY_POINT_V09,
                 usdc: 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E,
                 tokenMessenger: MAINNET_TOKEN_MESSENGER,

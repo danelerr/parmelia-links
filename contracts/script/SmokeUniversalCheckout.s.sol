@@ -193,7 +193,7 @@ contract SmokeCctpPaymentRouter is UniversalCheckoutSmokeScript {
         if (router.FAST_TRANSFER_ENABLED() != config.cctpFastSupported) {
             revert Smoke__UnexpectedFastCapability(config.cctpFastSupported, router.FAST_TRANSFER_ENABLED());
         }
-        if (router.MAX_PLATFORM_FEE_BPS() != 0) {
+        if (router.MAX_PLATFORM_FEE_BPS() != config.cctpPaymentPlatformFeeCapBps) {
             revert Smoke__UnexpectedPlatformFeeCap(router.MAX_PLATFORM_FEE_BPS());
         }
         if (router.authorizationSigner() != msg.sender) {

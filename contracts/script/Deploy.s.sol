@@ -216,7 +216,11 @@ contract DeployCctpPaymentRouter is GatoPagoDeploymentScript {
             block.chainid, deployer, roles.owner, roles.treasury, roles.authorizationSigner, roles.pauseGuardian
         );
 
-        uint256 configuredFeeCap = vm.envOr("GATOPAGO_CCTP_PLATFORM_FEE_CAP_BPS", uint256(0));
+        // Capability is not policy: the backend remains free by default. A bounded
+        // non-zero ceiling avoids a contract redeploy if an explicit future policy
+        // enables fees for a narrow transaction class.
+        uint256 configuredFeeCap =
+            vm.envOr("GATOPAGO_CCTP_PLATFORM_FEE_CAP_BPS", uint256(config.cctpPaymentPlatformFeeCapBps));
         if (configuredFeeCap > type(uint16).max) revert Deploy__ValueDoesNotFitUint16(configuredFeeCap);
         uint16 feeCap = SafeCast.toUint16(configuredFeeCap);
 
