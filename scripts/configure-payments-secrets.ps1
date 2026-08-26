@@ -3,7 +3,8 @@ param(
 	[string]$WorkerName = "gatopago-payments-api",
 	[string]$KeystoreAccount = "wallet-0x75",
 	[string]$ArbitrumSepoliaSecondaryRpcUrl = "https://arbitrum-sepolia-rpc.publicnode.com",
-	[string]$BaseSepoliaSecondaryRpcUrl = "https://base-sepolia-rpc.publicnode.com",
+	[string]$BaseSepoliaSecondaryRpcUrl = "https://base-sepolia.drpc.org",
+	[string]$BaseSepoliaTertiaryRpcUrl = "https://base-sepolia.gateway.tenderly.co",
 	[string]$AvalancheFujiSecondaryRpcUrl = "https://avalanche-fuji-c-chain-rpc.publicnode.com"
 )
 
@@ -146,7 +147,8 @@ $rpcSets = [ordered]@{
 	)
 	"84532" = @(
 		(Read-ExampleEnvValue "BASE_SEPOLIA_RPC_URL"),
-		$BaseSepoliaSecondaryRpcUrl
+		$BaseSepoliaSecondaryRpcUrl,
+		$BaseSepoliaTertiaryRpcUrl
 	)
 	"43113" = @(
 		(Read-ExampleEnvValue "AVALANCHE_FUJI_RPC_URL"),
