@@ -5,6 +5,7 @@ const localChrome = process.env.CI ? {} : { channel: "chrome" as const };
 export default defineConfig({
 	testDir: "./e2e",
 	fullyParallel: true,
+	workers: process.env.CI ? 2 : 4,
 	forbidOnly: Boolean(process.env.CI),
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? "github" : "list",
@@ -19,14 +20,14 @@ export default defineConfig({
 		{
 			command: "pnpm --filter client dev --host 127.0.0.1 --port 4173 --strictPort",
 			url: "http://127.0.0.1:4173/login",
-			env: { VITE_TURNSTILE_SITE_KEY: "" },
+			env: { VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA" },
 			reuseExistingServer: !process.env.CI,
 			timeout: 120_000,
 		},
 		{
 			command: "pnpm --filter dashboard dev --host 127.0.0.1 --port 4174 --strictPort",
 			url: "http://127.0.0.1:4174",
-			env: { VITE_TURNSTILE_SITE_KEY: "" },
+			env: { VITE_TURNSTILE_SITE_KEY: "1x00000000000000000000AA" },
 			reuseExistingServer: !process.env.CI,
 			timeout: 120_000,
 		},

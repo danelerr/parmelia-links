@@ -279,8 +279,7 @@ export async function cancelPaymentIntent(env: Bindings, merchantId: string, id:
 	const timestamp = nowIso();
 	const results = await env.PAYMENTS_DB.batch([
 		env.PAYMENTS_DB.prepare(
-			`UPDATE payment_intents SET status = 'canceled', updated_at = ? WHERE id = ? AND merchant_id = ? AND status = 'awaiting_payment'
-			 AND NOT EXISTS (SELECT 1 FROM payment_attempts WHERE intent_id = payment_intents.id AND status IN ('reserved','submitted','processing'))`,
+			"UPDATE payment_intents SET status = 'canceled', updated_at = ? WHERE id = ? AND merchant_id = ? AND status = 'awaiting_payment'",
 		).bind(timestamp, id, merchantId),
 		env.PAYMENTS_DB.prepare(
 			`UPDATE payment_links SET status = 'canceled', updated_at = ? WHERE intent_id = ?
@@ -329,11 +328,12 @@ export async function getAttemptByHash(env: Bindings, attemptHash: string): Prom
 	return row ? mapAttempt(row) : null;
 }
 
-export async function listActiveAttemptsByChain(env: Bindings, chainId: number, limit = 100): Promise<PaymentAttempt[]> {
+export async function listActiveRouterAddressesByChain(env: Bindings, chainId: number): Promise<Address[]> {
 	const result = await env.PAYMENTS_DB.prepare(
-		`SELECT ${ATTEMPT_COLUMNS} FROM payment_attempts WHERE source_chain_id = ? AND status IN ('reserved','submitted','processing') ORDER BY created_at LIMIT ?`,
-	).bind(chainId, limit).all<AttemptRow>();
-	return result.results.map(mapAttempt);
+		`SELECT DISTINCT router_address FROM payment_attempts
+		 WHERE source_chain_id = ? AND status IN ('reserved','submitted','processing')`,
+	).bind(chainId).all<{ router_address: Address }>();
+	return result.results.map((row) => row.router_address);
 }
 
 export async function markAttemptProcessing(env: Bindings, attemptId: string, sourceTxHash: string): Promise<void> {
@@ -485,26 +485,20 @@ export async function getAttemptByIdempotency(env: Bindings, input: {
 	return row ? mapAttempt(row) : null;
 }
 
-export async function getActiveAttempt(env: Bindings, intentId: string): Promise<PaymentAttempt | null> {
-	const row = await first<AttemptRow>(env,
-		`SELECT ${ATTEMPT_COLUMNS} FROM payment_attempts WHERE intent_id = ? AND status IN ('reserved','submitted','processing') ORDER BY created_at DESC LIMIT 1`,
-		[intentId]);
-	return row ? mapAttempt(row) : null;
-}
-
-const SUBMITTED_ATTEMPT_EVIDENCE_GRACE_SECONDS = 15 * 60;
+const ATTEMPT_EVIDENCE_GRACE_SECONDS = 15 * 60;
 
 export async function releaseExpiredPayerDefinedAmount(env: Bindings, intentId: string): Promise<void> {
 	const timestamp = nowIso();
 	const nowSeconds = Math.floor(Date.now() / 1000);
 	await env.PAYMENTS_DB.batch([
 		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_attempts SET status = 'expired', updated_at = ? WHERE intent_id = ? AND status = 'reserved' AND valid_until < ?",
-		).bind(timestamp, intentId, nowSeconds),
+			`UPDATE payment_attempts SET status = 'expired', last_error_code = 'PAYMENT_EVIDENCE_TIMEOUT', updated_at = ?
+			 WHERE intent_id = ? AND status = 'reserved' AND valid_until < ?`,
+		).bind(timestamp, intentId, nowSeconds - ATTEMPT_EVIDENCE_GRACE_SECONDS),
 		env.PAYMENTS_DB.prepare(
 			`UPDATE payment_attempts SET status = 'expired', last_error_code = 'PAYMENT_EVIDENCE_TIMEOUT', updated_at = ?
 			 WHERE intent_id = ? AND status = 'submitted' AND valid_until < ?`,
-		).bind(timestamp, intentId, nowSeconds - SUBMITTED_ATTEMPT_EVIDENCE_GRACE_SECONDS),
+		).bind(timestamp, intentId, nowSeconds - ATTEMPT_EVIDENCE_GRACE_SECONDS),
 		env.PAYMENTS_DB.prepare(
 			`UPDATE payment_intents SET amount = '0', amount_atomic = '0', updated_at = ?
 			 WHERE id = ? AND amount_mode = 'payer_defined' AND status = 'awaiting_payment'
@@ -515,26 +509,6 @@ export async function releaseExpiredPayerDefinedAmount(env: Bindings, intentId: 
 			 AND EXISTS (SELECT 1 FROM payment_intents WHERE id = ? AND amount_mode = 'payer_defined' AND amount_atomic = '0')`,
 		).bind(timestamp, intentId, intentId),
 	]);
-}
-
-function payerDefinedAmountStatements(
-	env: Bindings,
-	attempt: PaymentAttempt,
-	timestamp: string,
-): D1PreparedStatement[] {
-	const decimal = formatUnits(BigInt(attempt.settlementAmountAtomic), 6);
-	return [
-		env.PAYMENTS_DB.prepare(
-			`UPDATE payment_intents SET amount = ?, amount_atomic = ?, updated_at = ?
-			 WHERE id = ? AND amount_mode = 'payer_defined' AND amount_atomic = '0'
-			 AND status = 'awaiting_payment'`,
-		).bind(decimal, attempt.settlementAmountAtomic, timestamp, attempt.intentId),
-		env.PAYMENTS_DB.prepare(
-			`UPDATE payment_links SET amount = ?, updated_at = ? WHERE intent_id = ?
-			 AND EXISTS (SELECT 1 FROM payment_intents WHERE id = ? AND amount_mode = 'payer_defined'
-			 AND amount_atomic = ?)`,
-		).bind(decimal, timestamp, attempt.intentId, attempt.intentId, attempt.settlementAmountAtomic),
-	];
 }
 
 function feeLedgerStatements(env: Bindings, attempt: PaymentAttempt): D1PreparedStatement[] {
@@ -659,13 +633,9 @@ export async function recordAttemptFeeEvidence(env: Bindings, input: {
 export async function insertQuoteAndAttempt(env: Bindings, input: {
 	quote: PaymentQuote; attempt: PaymentAttempt; idempotencyKey: string;
 }): Promise<PaymentAttempt> {
-	const timestamp = nowIso();
-	await env.PAYMENTS_DB.batch([
-		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_attempts SET status = 'expired', updated_at = ? WHERE intent_id = ? AND status = 'reserved' AND valid_until < ?",
-		).bind(timestamp, input.attempt.intentId, Math.floor(Date.now() / 1000)),
-		...payerDefinedAmountStatements(env, input.attempt, timestamp),
-		env.PAYMENTS_DB.prepare(
+	try {
+		await env.PAYMENTS_DB.batch([
+			env.PAYMENTS_DB.prepare(
 			`INSERT INTO payment_quotes(id, intent_id, payer, source_chain_id, route, settlement_amount_atomic,
 			 platform_fee_atomic, cctp_fee_atomic, gross_payer_amount_atomic, fee_policy_id, fee_policy_version,
 			 fee_rule_id, platform_fee_bps, platform_fee_bearer, platform_fee_recipient, route_fee_cap_bps,
@@ -697,7 +667,14 @@ export async function insertQuoteAndAttempt(env: Bindings, input: {
 			input.attempt.platformFeeBearer, input.attempt.platformFeeRecipient, input.attempt.routeFeeCapBps,
 			input.attempt.createdAt, input.attempt.updatedAt),
 		...feeLedgerStatements(env, input.attempt),
-	]);
+		]);
+	} catch (error) {
+		const replay = await getAttemptByIdempotency(env, { intentId: input.attempt.intentId,
+			payerAddress: input.attempt.payerAddress, sourceChainId: input.attempt.sourceChainId,
+			idempotencyKey: input.idempotencyKey });
+		if (replay) return replay;
+		throw error;
+	}
 	const stored = await getAttempt(env, input.attempt.id);
 	if (!stored) throw new Error("Payment attempt creation was not durable");
 	return stored;
@@ -711,12 +688,7 @@ export async function insertAttempt(env: Bindings, input: {
 		payerProofMessageHash: `0x${string}`;
 	};
 }): Promise<PaymentAttempt> {
-	const timestamp = nowIso();
 	await env.PAYMENTS_DB.batch([
-		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_attempts SET status = 'expired', updated_at = ? WHERE intent_id = ? AND status = 'reserved' AND valid_until < ?",
-		).bind(timestamp, input.attempt.intentId, Math.floor(Date.now() / 1000)),
-		...payerDefinedAmountStatements(env, input.attempt, timestamp),
 		env.PAYMENTS_DB.prepare(
 			`INSERT INTO payment_attempts(id, attempt_hash, intent_id, quote_id, payer_uid, payer_address,
 			 idempotency_key, source_chain_id, route, status, router_address, authorization_hash,
@@ -802,59 +774,122 @@ export async function settleAttempt(env: Bindings, input: {
 	attemptId: string; sourceTxHash: string; destinationTxHash?: string | null; settledAmountAtomic: string;
 	payerAddress: Address; platformFeeAtomic?: string; networkFeeAtomic?: string;
 }): Promise<{ applied: boolean; intent: PaymentIntent | null; eventId: string | null }> {
-	const attempt = await getAttempt(env, input.attemptId);
-	if (!attempt) return { applied: false, intent: null, eventId: null };
-	const intent = await getPaymentIntent(env, attempt.intentId);
-	if (!intent) return { applied: false, intent: null, eventId: null };
-	const eventId = `evt_${attempt.id}`;
-	if (attempt.status === "paid" || attempt.status === "overpaid") return { applied: false, intent, eventId };
-	const platformFeeAtomic = input.platformFeeAtomic ?? attempt.platformFeeAtomic;
-	if (attempt.route !== "local" && input.networkFeeAtomic === undefined) {
+	const initialAttempt = await getAttempt(env, input.attemptId);
+	if (!initialAttempt) return { applied: false, intent: null, eventId: null };
+	const eventId = `evt_${initialAttempt.id}`;
+	const initialIntent = await getPaymentIntent(env, initialAttempt.intentId);
+	if (!initialIntent) return { applied: false, intent: null, eventId: null };
+	if (initialAttempt.status === "paid" || initialAttempt.status === "overpaid") {
+		return { applied: false, intent: initialIntent, eventId };
+	}
+	const settledAmount = BigInt(input.settledAmountAtomic);
+	if (settledAmount <= 0n) throw new Error("Settled amount must be positive");
+	const platformFeeAtomic = input.platformFeeAtomic ?? initialAttempt.platformFeeAtomic;
+	if (initialAttempt.route !== "local" && input.networkFeeAtomic === undefined) {
 		throw new Error("Actual CCTP network fee is required before settlement");
 	}
 	const networkFeeAtomic = input.networkFeeAtomic ?? "0";
-	await recordAttemptFeeEvidence(env, { attemptId: attempt.id, platformFeeAtomic, networkFeeAtomic,
+	await recordAttemptFeeEvidence(env, { attemptId: initialAttempt.id, platformFeeAtomic, networkFeeAtomic,
 		chargedTxHash: input.sourceTxHash });
-	const fees = actualFeeBreakdown(attempt, platformFeeAtomic, networkFeeAtomic);
-	const expected = BigInt(intent.amountAtomic);
-	const paid = BigInt(intent.paidAmountAtomic) + BigInt(input.settledAmountAtomic);
-	const overpaid = paid > expected ? paid - expected : 0n;
-	const status = paid > expected ? "overpaid" : "paid";
-	const eventType = status === "overpaid" ? "payment.overpaid" : "payment.paid";
-	const timestamp = nowIso();
-	const payload = JSON.stringify({ id: intent.id, object: "payment_intent", status, amount: intent.amount,
-		currency: intent.currency, reference: intent.reference, metadata: intent.metadata,
-		expected_amount_atomic: intent.amountAtomic, settled_amount_atomic: input.settledAmountAtomic,
-		paid_amount_atomic: paid.toString(), overpaid_amount_atomic: overpaid.toString(),
-		source_tx_hash: input.sourceTxHash.toLowerCase(), destination_tx_hash: input.destinationTxHash ?? null,
-		fee_breakdown: publicFeeBreakdown(fees) });
-	const endpoints = await env.PAYMENTS_DB.prepare(
-		"SELECT id FROM webhook_endpoints WHERE merchant_id = ? AND status = 'active' AND mode = ? AND (enabled_events IS NULL OR EXISTS (SELECT 1 FROM json_each(enabled_events) WHERE value = ?))",
-	).bind(intent.merchantId, intent.mode, eventType).all<{ id: string }>();
-	const statements: D1PreparedStatement[] = [
-		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_attempts SET status = ?, source_tx_hash = COALESCE(source_tx_hash, ?), destination_tx_hash = COALESCE(destination_tx_hash, ?), settled_amount_atomic = ?, updated_at = ? WHERE id = ? AND status IN ('reserved','submitted','processing')",
-		).bind(status, input.sourceTxHash.toLowerCase(), input.destinationTxHash?.toLowerCase() ?? null, input.settledAmountAtomic, timestamp, attempt.id),
-		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_intents SET status = ?, paid_amount_atomic = ?, paid_tx_hash = ?, paid_at = ?, updated_at = ? WHERE id = ? AND status IN ('awaiting_payment','processing','paid','overpaid')",
-		).bind(status, paid.toString(), (input.destinationTxHash ?? input.sourceTxHash).toLowerCase(), timestamp, timestamp, intent.id),
-		env.PAYMENTS_DB.prepare(
-			"UPDATE payment_links SET status = 'paid', tx_hash = ?, paid_at = ?, paid_by = ?, updated_at = ? WHERE intent_id = ? AND status = 'pending'",
-		).bind((input.destinationTxHash ?? input.sourceTxHash).toLowerCase(), timestamp, input.payerAddress, timestamp, intent.id),
-		env.PAYMENTS_DB.prepare(
-			"INSERT OR IGNORE INTO events(id, merchant_id, type, object_id, dedupe_key, mode, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		).bind(eventId, intent.merchantId, eventType, intent.id, `settlement:${attempt.id}`, intent.mode, payload, timestamp),
-		env.PAYMENTS_DB.prepare(
-			"INSERT OR IGNORE INTO payment_outbox(id, topic, resource_id, payload, status, next_attempt_at, created_at, updated_at) VALUES (?, 'webhook_delivery', ?, ?, 'pending', ?, ?, ?)",
-		).bind(`out_${eventId}`, eventId, JSON.stringify({ eventId }), timestamp, timestamp, timestamp),
-	];
-	for (const endpoint of endpoints.results) {
-		statements.push(env.PAYMENTS_DB.prepare(
-			"INSERT OR IGNORE INTO webhook_deliveries(id, event_id, endpoint_id, status, next_retry_at, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
-		).bind(`whd_${crypto.randomUUID()}`, eventId, endpoint.id, timestamp, timestamp, timestamp));
+	const fees = actualFeeBreakdown(initialAttempt, platformFeeAtomic, networkFeeAtomic);
+
+	for (let retry = 0; retry < 5; retry += 1) {
+		const attempt = await getAttempt(env, input.attemptId);
+		if (!attempt) return { applied: false, intent: null, eventId: null };
+		const intent = await getPaymentIntent(env, attempt.intentId);
+		if (!intent) return { applied: false, intent: null, eventId: null };
+		if (attempt.status === "paid" || attempt.status === "overpaid") {
+			return { applied: false, intent, eventId };
+		}
+		if (!(["reserved", "submitted", "processing"] as PaymentAttemptStatus[]).includes(attempt.status)) {
+			return { applied: false, intent, eventId };
+		}
+
+		const previousPaid = BigInt(intent.paidAmountAtomic);
+		const firstOpenSettlement = intent.amountMode === "payer_defined" && previousPaid === 0n;
+		const expected = firstOpenSettlement ? BigInt(attempt.settlementAmountAtomic) : BigInt(intent.amountAtomic);
+		const paid = previousPaid + settledAmount;
+		const overpaid = paid > expected ? paid - expected : 0n;
+		const status = paid > expected ? "overpaid" : "paid";
+		const eventType = status === "overpaid" ? "payment.overpaid" : "payment.paid";
+		const canonicalAmount = firstOpenSettlement ? formatUnits(expected, 6) : intent.amount;
+		const timestamp = nowIso();
+		const settlementTxHash = (input.destinationTxHash ?? input.sourceTxHash).toLowerCase();
+		const commitId = `stc_${crypto.randomUUID()}`;
+		const payload = JSON.stringify({ id: intent.id, object: "payment_intent", status,
+			amount: canonicalAmount, currency: intent.currency, reference: intent.reference,
+			metadata: intent.metadata, expected_amount_atomic: expected.toString(),
+			settled_amount_atomic: settledAmount.toString(), paid_amount_atomic: paid.toString(),
+			overpaid_amount_atomic: overpaid.toString(), source_tx_hash: input.sourceTxHash.toLowerCase(),
+			destination_tx_hash: input.destinationTxHash?.toLowerCase() ?? null,
+			fee_breakdown: publicFeeBreakdown(fees) });
+		const endpoints = await env.PAYMENTS_DB.prepare(
+			"SELECT id FROM webhook_endpoints WHERE merchant_id = ? AND status = 'active' AND mode = ? AND (enabled_events IS NULL OR EXISTS (SELECT 1 FROM json_each(enabled_events) WHERE value = ?))",
+		).bind(intent.merchantId, intent.mode, eventType).all<{ id: string }>();
+		const commitExists = "EXISTS (SELECT 1 FROM payment_settlement_commits WHERE commit_id = ?)";
+		const statements: D1PreparedStatement[] = [
+			env.PAYMENTS_DB.prepare(
+				`INSERT OR IGNORE INTO payment_settlement_commits(commit_id, attempt_id, intent_id,
+				 previous_paid_amount_atomic, settled_amount_atomic, resulting_paid_amount_atomic,
+				 expected_amount_atomic, resulting_status, created_at)
+				 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+				 WHERE EXISTS (
+					 SELECT 1 FROM payment_intents AS payment_intent
+					 JOIN payment_attempts AS payment_attempt ON payment_attempt.intent_id = payment_intent.id
+					 WHERE payment_intent.id = ? AND payment_intent.paid_amount_atomic = ?
+					 AND payment_intent.status IN ('awaiting_payment','processing','paid','overpaid','canceled')
+					 AND payment_attempt.id = ? AND payment_attempt.status IN ('reserved','submitted','processing')
+				 )`,
+			).bind(commitId, attempt.id, intent.id, previousPaid.toString(), settledAmount.toString(),
+				paid.toString(), expected.toString(), status, timestamp, intent.id,
+				previousPaid.toString(), attempt.id),
+			env.PAYMENTS_DB.prepare(
+				`UPDATE payment_attempts SET status = ?, source_tx_hash = COALESCE(source_tx_hash, ?),
+				 destination_tx_hash = COALESCE(destination_tx_hash, ?), settled_amount_atomic = ?, updated_at = ?
+				 WHERE id = ? AND ${commitExists}`,
+			).bind(status, input.sourceTxHash.toLowerCase(), input.destinationTxHash?.toLowerCase() ?? null,
+				settledAmount.toString(), timestamp, attempt.id, commitId),
+			env.PAYMENTS_DB.prepare(
+				`UPDATE payment_intents SET amount = ?, amount_atomic = ?, status = ?, paid_amount_atomic = ?,
+				 paid_tx_hash = COALESCE(paid_tx_hash, ?), paid_at = COALESCE(paid_at, ?), updated_at = ?
+				 WHERE id = ? AND ${commitExists}`,
+			).bind(canonicalAmount, expected.toString(), status, paid.toString(), settlementTxHash,
+				timestamp, timestamp, intent.id, commitId),
+			env.PAYMENTS_DB.prepare(
+				`UPDATE payment_links SET amount = CASE WHEN amount = '0' THEN ? ELSE amount END,
+				 status = 'paid', tx_hash = COALESCE(tx_hash, ?), paid_at = COALESCE(paid_at, ?),
+				 paid_by = COALESCE(paid_by, ?), updated_at = ? WHERE intent_id = ? AND ${commitExists}`,
+			).bind(canonicalAmount, settlementTxHash, timestamp, input.payerAddress, timestamp, intent.id, commitId),
+			env.PAYMENTS_DB.prepare(
+				`INSERT OR IGNORE INTO events(id, merchant_id, type, object_id, dedupe_key, mode, payload, created_at)
+				 SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${commitExists}`,
+			).bind(eventId, intent.merchantId, eventType, intent.id, `settlement:${attempt.id}`,
+				intent.mode, payload, timestamp, commitId),
+			env.PAYMENTS_DB.prepare(
+				`INSERT OR IGNORE INTO payment_outbox(id, topic, resource_id, payload, status,
+				 next_attempt_at, created_at, updated_at)
+				 SELECT ?, 'webhook_delivery', ?, ?, 'pending', ?, ?, ? WHERE ${commitExists}`,
+			).bind(`out_${eventId}`, eventId, JSON.stringify({ eventId }), timestamp, timestamp, timestamp, commitId),
+		];
+		for (const endpoint of endpoints.results) {
+			statements.push(env.PAYMENTS_DB.prepare(
+				`INSERT OR IGNORE INTO webhook_deliveries(id, event_id, endpoint_id, status,
+				 next_retry_at, created_at, updated_at)
+				 SELECT ?, ?, ?, 'pending', ?, ?, ? WHERE ${commitExists}`,
+			).bind(`whd_${eventId}_${endpoint.id}`, eventId, endpoint.id, timestamp, timestamp, timestamp, commitId));
+		}
+		const results = await env.PAYMENTS_DB.batch(statements);
+		if (changed(results[0])) {
+			return { applied: true, intent: await getPaymentIntent(env, intent.id), eventId };
+		}
 	}
-	const results = await env.PAYMENTS_DB.batch(statements);
-	return { applied: changed(results[0]), intent: await getPaymentIntent(env, intent.id), eventId };
+
+	const latestAttempt = await getAttempt(env, input.attemptId);
+	const latestIntent = latestAttempt ? await getPaymentIntent(env, latestAttempt.intentId) : null;
+	if (latestAttempt?.status === "paid" || latestAttempt?.status === "overpaid") {
+		return { applied: false, intent: latestIntent, eventId };
+	}
+	throw new Error("Payment settlement compare-and-set retries were exhausted");
 }
 
 export async function simulatePaymentIntent(env: Bindings, merchantId: string, id: string): Promise<PaymentIntent | null> {
@@ -891,9 +926,12 @@ export async function simulatePaymentIntent(env: Bindings, merchantId: string, i
 }
 
 export function publicIntent(intent: PaymentIntent): Record<string, unknown> {
-	const expected = BigInt(intent.amountAtomic);
+	const unconfirmedOpenAmount = intent.amountMode === "payer_defined" && intent.paidAmountAtomic === "0";
+	const publicAmount = unconfirmedOpenAmount ? "0" : intent.amount;
+	const publicAmountAtomic = unconfirmedOpenAmount ? "0" : intent.amountAtomic;
+	const expected = BigInt(publicAmountAtomic);
 	const paid = BigInt(intent.paidAmountAtomic);
-	return { id: intent.id, object: "payment_intent", amount: intent.amount, amount_atomic: intent.amountAtomic,
+	return { id: intent.id, object: "payment_intent", amount: publicAmount, amount_atomic: publicAmountAtomic,
 		amount_mode: intent.amountMode,
 		currency: intent.currency, reference: intent.reference, metadata: intent.metadata, status: intent.status,
 		mode: intent.mode, tx_hash: intent.paidTxHash, paid_at: intent.paidAt,

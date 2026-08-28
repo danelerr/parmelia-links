@@ -55,7 +55,7 @@ authRoutes.post("/email-code/request", async (c) => {
 			return c.json({ error: "Too many code requests", error_code: ERR.RATE_LIMITED }, 429);
 		}
 
-		const human = await verifyTurnstile(c.env, body.turnstileToken, ip);
+		const human = await verifyTurnstile(c.env, body.turnstileToken, ip, "email_login");
 		if (!human) {
 			return c.json({ error: "Human verification failed", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
 		}

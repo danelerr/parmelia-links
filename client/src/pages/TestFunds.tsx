@@ -30,6 +30,7 @@ export default function TestFunds({ user }: { user: User }) {
 		status: "loading",
 		token: null,
 	});
+	const [challengeRevision, setChallengeRevision] = useState(0);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -64,6 +65,8 @@ export default function TestFunds({ user }: { user: User }) {
 				return;
 			}
 			notifyError(error, t("settings.faucetError"));
+			setTurnstile({ status: "loading", token: null });
+			setChallengeRevision((value) => value + 1);
 		} finally {
 			setClaiming(false);
 		}
@@ -105,7 +108,7 @@ export default function TestFunds({ user }: { user: User }) {
 						{t("settings.faucetIntro")}
 					</p>
 					<div className="mb-4">
-						<Turnstile onStateChange={setTurnstile} />
+						<Turnstile key={challengeRevision} action="test_funds" onStateChange={setTurnstile} />
 					</div>
 					<button
 						type="button"

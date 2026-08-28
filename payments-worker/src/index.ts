@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
-import { isHash, keccak256, toBytes } from "viem";
+import { formatUnits, isHash, keccak256, toBytes } from "viem";
 import {
 	ERR,
 	PAYMENTS_CONTRACT_VERSION,
@@ -29,7 +29,6 @@ import v1Routes from "./routes/v1.routes";
 import merchantRoutes from "./routes/merchant.routes";
 import { amount, DomainValidationError, walletAddress } from "./domain/validation";
 import {
-	getActiveAttempt,
 	getAttemptByIdempotency,
 	getIntentByLink,
 	getPaymentLink,
@@ -270,9 +269,7 @@ export default class PaymentsWorker extends WorkerEntrypoint<Bindings> implement
 			if (!replay) await releaseExpiredPayerDefinedAmount(this.env, initialIntent.id);
 			const intent = await getIntentByLink(this.env, link.id);
 			if (!intent) return rpcError("NOT_FOUND", "Payment intent not found");
-			const active = replay ?? await getActiveAttempt(this.env, intent.id);
-			if (active && !replay) return rpcError("CONFLICT", "Another payment attempt is active");
-			const attempt = active ?? await (async () => {
+			const attempt = replay ?? await (async () => {
 				const effectiveIntent = intent.amountMode === "payer_defined"
 					? (() => {
 						const selected = amount(normalized.amount);
@@ -287,7 +284,7 @@ export default class PaymentsWorker extends WorkerEntrypoint<Bindings> implement
 			})();
 			return { ok: true, contractVersion: 2, value: {
 				attemptId: attempt.id, intentId: intent.id, linkId: link.id, merchant: intent.settlementWallet,
-				amount: intent.amount, currency: "USDC", sourceChainId: attempt.sourceChainId,
+				amount: formatUnits(BigInt(attempt.settlementAmountAtomic), 6), currency: "USDC", sourceChainId: attempt.sourceChainId,
 				router: attempt.routerAddress, authorization: attempt.authorization as ReservedAppPaymentAttempt["authorization"],
 				signature: attempt.signature, authorizationHash: attempt.authorizationHash,
 				expiresAt: attempt.expiresAt,

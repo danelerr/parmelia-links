@@ -22,7 +22,7 @@ import {
 	getAttemptByHash,
 	getCrosschainOperation,
 	getPaymentIntent,
-	listActiveAttemptsByChain,
+	listActiveRouterAddressesByChain,
 	clearRevertedCrosschainMint,
 	markAttemptProcessing,
 	recordCrosschainMintBroadcast,
@@ -470,12 +470,12 @@ export async function scanPaymentRouters(env: Bindings, chainId: number): Promis
 	const confirmedTip = current - BigInt(requiredConfirmations(env, chainId) - 1);
 	const storedCheckpoint = await getRouterCheckpoint(env, chainId);
 	const checkpoint = await verifyRouterCheckpoint(env, chainId, client, storedCheckpoint ?? null);
-	const active = await listActiveAttemptsByChain(env, chainId, 100);
-	if (active.length === 0) return true;
+	const activeRouterAddresses = await listActiveRouterAddressesByChain(env, chainId);
+	if (activeRouterAddresses.length === 0) return true;
 	const fromBlock = checkpoint ? BigInt(checkpoint.block_number + 1) : confirmedTip > 2_000n ? confirmedTip - 2_000n : 0n;
 	if (fromBlock > confirmedTip) return false;
 	const toBlock = fromBlock + 1_999n < confirmedTip ? fromBlock + 1_999n : confirmedTip;
-	const addresses = [...new Set(active.map((attempt) => getAddress(attempt.routerAddress)))] as Address[];
+	const addresses = activeRouterAddresses.map((address) => getAddress(address)) as Address[];
 	const logs = await client.getLogs({ address: addresses, fromBlock, toBlock });
 	for (const log of logs) {
 		const local = eventArgs(log, paymentRouterV2Abi, "PaymentSettled");
@@ -497,5 +497,8 @@ export async function scanPaymentRouters(env: Bindings, chainId: number): Promis
 	await commitRouterCheckpoint(env, { chainId, blockNumber: Number(toBlock), blockHash: block.hash,
 		parentHash: block.parentHash, blockTimestamp: new Date(Number(block.timestamp) * 1_000).toISOString() });
 	logInfo("payment_router_scan_completed", { chainId, fromBlock: fromBlock.toString(), toBlock: toBlock.toString(), logs: logs.length });
-	return toBlock >= confirmedTip && (await listActiveAttemptsByChain(env, chainId, 1)).length === 0;
+	// A completed scan should release its Queue lease even while signed but
+	// unbroadcast reservations exist. The scheduler enqueues one bounded scan per
+	// active chain on the next tick, while attempt_reconcile owns receipt retries.
+	return toBlock >= confirmedTip;
 }

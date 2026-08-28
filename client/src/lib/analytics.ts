@@ -12,7 +12,10 @@ async function loadAnalytics(cancelled: () => boolean) {
 		const module = await import("firebase/analytics");
 		if (cancelled() || !(await module.isSupported())) return;
 		analyticsModule = module;
-		analytics = module.getAnalytics(app);
+		analytics = module.initializeAnalytics(app, { config: {
+			allow_google_signals: false,
+			allow_ad_personalization_signals: false,
+		} });
 	} catch {
 		/* analytics is optional and must never affect product flows */
 	}

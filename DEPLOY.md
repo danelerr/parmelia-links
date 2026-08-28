@@ -10,7 +10,8 @@
 están ejecutados y verificados. `server` usa
 `PAYMENTS_CUTOVER_MODE=payments`; Payments apunta a
 `gatopago-payments-semantic-20260826`, tiene bootstrap desactivado, migraciones
-`0001`–`0006` y checksum semántico fijado. `app.parmelia.me` y
+`0001`–`0006` y checksum semántico fijado. La promoción correctiva siguiente debe
+aplicar `0007_concurrent_payment_attempts.sql` antes del nuevo Payments Worker. `app.parmelia.me` y
 `dashboard.parmelia.me` responden anónimamente; el dashboard muestra el login de
 GatoPago y no Vercel SSO. `PAYMENT_LIVE_ENABLED=false` permanece sin cambios.
 La D1 histórica no se borra ni se reimporta. El procedimiento que produjo este
@@ -39,7 +40,7 @@ Orden de promoción (no intercambiarlo):
    del binding sólo con el ID nuevo devuelto y mediante un diff versionado.
 3. Sobre la D1 Payments todavía vacía, aplicar con Wrangler **todas** las
    migraciones descubiertas en `payments-worker/migrations/` (actualmente
-   `0001`–`0006`) y comprobar que figuran en `d1_migrations`. No importar un dump de schema ni insertar
+   `0001`–`0007`) y comprobar que figuran en `d1_migrations`. No importar un dump de schema ni insertar
    manualmente en la tabla de historial de Wrangler.
 
    ```powershell

@@ -250,7 +250,7 @@ paths:
     post:
       operationId: createCheckoutAttempt
       tags: [Checkout]
-      summary: Reserve one signed payment attempt
+      summary: Create an independent signed payment attempt
       security: []
       parameters:
         - { $ref: "#/components/parameters/LinkId" }

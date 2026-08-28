@@ -13,6 +13,27 @@ const VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const VERIFY_TIMEOUT_MS = 5_000;
 const VERIFY_RESPONSE_MAX_BYTES = 16 * 1024;
 
+export type TurnstileAction = "email_login" | "account_create" | "test_funds";
+
+type TurnstileVerification = {
+	success?: boolean;
+	action?: string;
+	hostname?: string;
+};
+
+function allowedTurnstileHostnames(env: Bindings): Set<string> {
+	const hostnames = new Set<string>();
+	for (const value of (env.ALLOWED_ORIGINS ?? "").split(",")) {
+		try {
+			const origin = new URL(value.trim());
+			if (origin.protocol === "https:" || origin.protocol === "http:") {
+				hostnames.add(origin.hostname.toLowerCase());
+			}
+		} catch { /* Invalid origins are rejected by the main config validator. */ }
+	}
+	return hostnames;
+}
+
 /**
  * Returns true if the Turnstile token is valid. Without a configured secret:
  * true on testnets (dev convenience), false on mainnet (fail closed).
@@ -22,6 +43,7 @@ export async function verifyTurnstile(
 	env: Bindings,
 	token: unknown,
 	remoteIp?: string | null,
+	expectedAction: TurnstileAction = "email_login",
 ): Promise<boolean> {
 	const secret = env.TURNSTILE_SECRET_KEY;
 	if (!secret) {
@@ -48,8 +70,10 @@ export async function verifyTurnstile(
 			await discardResponseBody(res);
 			return false;
 		}
-		const data = await readJsonBounded<{ success?: boolean }>(res, VERIFY_RESPONSE_MAX_BYTES);
-		return data.success === true;
+		const data = await readJsonBounded<TurnstileVerification>(res, VERIFY_RESPONSE_MAX_BYTES);
+		const hostname = data.hostname?.trim().toLowerCase();
+		return data.success === true && data.action === expectedAction && !!hostname &&
+			allowedTurnstileHostnames(env).has(hostname);
 	} catch {
 		return false;
 	}

@@ -224,10 +224,12 @@ wallet no lo soporta, usa autorización exacta más pago. El hash se persiste an
 del registro HTTP y, si ese registro falla, una recarga vuelve a registrar el
 mismo hash sin volver a transmitir la operación.
 
-Los links de monto abierto usan `amount_mode=payer_defined`. El primer attempt
-activo fija temporalmente el monto y los attempts concurrentes no pueden cambiar
-la obligación; una cancelación o expiración libera la reserva. La migración
-`0005_payer_defined_amounts.sql` hace explícita esta semántica.
+Los links de monto abierto usan `amount_mode=payer_defined`. Quotes y attempts
+son autorizaciones provisionales independientes: no fijan el monto ni reservan
+el link frente a otro payer. El primer settlement confirmado fija la obligación;
+los siguientes settlements válidos se registran como sobrepago. `0005` introdujo
+el modo y `0007_concurrent_payment_attempts.sql` elimina el lock global y añade el
+commit CAS auditable que serializa la contabilidad D1.
 
 ## 19. Qué se evitó deliberadamente
 
@@ -318,3 +320,31 @@ ausencia de RPC.
 El gate remoto posterior ejecutó 197 pruebas Foundry sin fallos ni omisiones,
 preflights Cloudflare/Vercel y smokes de checkout/direct proxy. No ejecutó un
 pago E2E: esa evidencia permanece como el alcance de Fase 4.
+
+## 22. Tercera revisión: disponibilidad, Turnstile y aislamiento RPC
+
+La firma del payer demuestra control de wallet, pero no que vaya a pagar. Por eso
+ninguna reserva pública puede ser un mutex del intent. `0007` permite múltiples
+attempts, mantiene idempotencia por payer/chain/key y deja que cada router acepte
+atómicamente el primer pago en su chain. Como routers de chains distintas no
+comparten storage, Payments contabiliza cada settlement confirmado mediante un
+commit append-only y compare-and-set; cualquier segundo pago se conserva como
+sobrepago en vez de sobrescribir al primero. Una reserva tampoco impide que el
+merchant cancele. La cancelación corta nuevas firmas, pero un pago con firma ya
+emitida puede aterrizar hasta `valid_until` y debe reconciliarse.
+
+App y Dashboard dejan de esperar Turnstile indefinidamente: la carga del script
+tiene límite de 10 s, el challenge de 15 s y los estados error/timeout/unsupported
+ofrecen retry. El backend exige además que el token tenga la action esperada y un
+hostname incluido en `ALLOWED_ORIGINS`, evitando reutilización entre login,
+creación de cuenta y faucet.
+
+La caché de salud RPC ya no almacena Promises pendientes en scope global. Sólo
+retiene observaciones resueltas; misses concurrentes pueden repetir una lectura,
+pero ninguna request comparte I/O creado por el contexto de otra. La autorización
+monetaria sigue fallando cerrada y sólo health puede usar la última observación
+válida como degradada.
+
+Wrangler permanece en `4.125.0`: las releases `4.126.0`/`4.127.0` aún no cumplen
+la cuarentena de siete días de `minimumReleaseAge`. No se añadió una excepción de
+supply chain ni se adelantó TypeScript 7.

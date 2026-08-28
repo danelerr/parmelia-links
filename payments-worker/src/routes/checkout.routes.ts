@@ -6,7 +6,6 @@ import type { PaymentsContext } from "../middlewares/auth";
 import { amount, walletAddress } from "../domain/validation";
 import {
 	cancelAttempt,
-	getActiveAttempt,
 	getAttempt,
 	getAttemptByIdempotency,
 	getCheckoutAttempt,
@@ -64,8 +63,8 @@ function quoteIntent(
 ): NonNullable<Awaited<ReturnType<typeof getPaymentIntent>>> {
 	if (intent.amountMode === "fixed") return intent;
 	const normalized = amount(requestedAmount);
-	if (intent.amountAtomic !== "0" && intent.amountAtomic !== normalized.atomic) {
-		throw new QuoteError("ATTEMPT_ACTIVE", "This open payment link already has an active amount");
+	if (intent.status !== "awaiting_payment" || intent.paidAmountAtomic !== "0") {
+		throw new QuoteError("INTENT_NOT_PAYABLE", "Payment intent is not payable");
 	}
 	return { ...intent, amount: normalized.decimal, amountAtomic: normalized.atomic };
 }
@@ -80,8 +79,8 @@ function attemptIntent(
 		}
 		return intent;
 	}
-	if (intent.amountAtomic !== "0" && intent.amountAtomic !== settlementAmountAtomic) {
-		throw new QuoteError("ATTEMPT_ACTIVE", "This open payment link already has an active amount");
+	if (intent.status !== "awaiting_payment" || intent.paidAmountAtomic !== "0") {
+		throw new QuoteError("INTENT_NOT_PAYABLE", "Payment intent is not payable");
 	}
 	return { ...intent, amount: formatUnits(BigInt(settlementAmountAtomic), 6), amountAtomic: settlementAmountAtomic };
 }
@@ -182,7 +181,9 @@ routes.get("/:linkId", async (c) => {
 		.map((network) => ({ chain_id: network.chainId, name: network.name,
 			routes: network.isHomeChain ? ["local"] : [network.cctpFast ? "cctp_fast" : null, network.cctpStandard ? "cctp_standard" : null].filter(Boolean),
 			usdc: network.usdc, permit_mode: network.permitMode }));
-	return c.json({ link: publicLink(link), intent: checkoutIntent(intent), networks });
+	const linkPayload = publicLink(link);
+	if (intent.amountMode === "payer_defined" && intent.paidAmountAtomic === "0") linkPayload.amount = "0";
+	return c.json({ link: linkPayload, intent: checkoutIntent(intent), networks });
 });
 
 routes.post("/:linkId/quotes", async (c) => {
@@ -244,9 +245,9 @@ routes.post("/:linkId/attempts", async (c) => {
 		return c.json({ error: "Checkout wallet proof is invalid", error_code: ERR.AUTHORIZATION_INVALID,
 			requestId: c.get("requestId") }, 400);
 	}
-	const active = await getActiveAttempt(c.env, intent.id);
-	if (active) return c.json({ error: "An active payment attempt already exists", error_code: ERR.ATTEMPT_ACTIVE,
-		requestId: c.get("requestId") }, 409);
+	const payerLimited = await enforceRateLimit(c, { scope: "checkout_attempt_payer",
+		key: `${intent.id}:${quote.payer.toLowerCase()}`, limit: 5, windowSeconds: 10 * 60 });
+	if (payerLimited) return payerLimited;
 	const attempt = await authorizeAttempt(c.env, {
 		intent: attemptIntent(intent, quote.settlementAmountAtomic),
 		quote,
@@ -258,11 +259,19 @@ routes.post("/:linkId/attempts", async (c) => {
 				payerProofMessageHash: payerProof.messageHash } });
 		return c.json(attemptPayload(stored), 201);
 	} catch (error) {
-		// Retry with a direct attempt insert is intentionally not attempted: a D1
-		// uniqueness conflict means another caller won the active-attempt race.
-		const winner = await getActiveAttempt(c.env, intent.id);
-		if (winner) return c.json({ error: "An active payment attempt already exists", error_code: ERR.ATTEMPT_ACTIVE,
-			requestId: c.get("requestId") }, 409);
+		const replayAfterRace = await getAttemptByIdempotency(c.env, { intentId: intent.id,
+			payerAddress: quote.payer, sourceChainId: quote.sourceChainId, idempotencyKey });
+		if (replayAfterRace) {
+			if (replayAfterRace.checkoutCapabilityHash?.toLowerCase() !== capabilityHash.toLowerCase()) {
+				return attemptNotFound(c);
+			}
+			return c.json({ ...attemptPayload(replayAfterRace), idempotent_replay: true });
+		}
+		const currentIntent = await getPaymentIntent(c.env, intent.id);
+		if (!currentIntent || currentIntent.status !== "awaiting_payment") {
+			return c.json({ error: "Payment intent is not payable", error_code: ERR.INTENT_NOT_PAYABLE,
+				requestId: c.get("requestId") }, 409);
+		}
 		throw error;
 	}
 });

@@ -222,7 +222,7 @@ export default function Login() {
 								className="meli-field text-[15px] placeholder:text-text-faint"
 							/>
 						</label>
-						<Turnstile key={challengeRevision} onStateChange={setTurnstile} />
+						<Turnstile key={challengeRevision} action="email_login" onStateChange={setTurnstile} />
 						<button
 							type="submit"
 							disabled={busy !== null || !isTurnstileReady(turnstile)}
@@ -271,7 +271,7 @@ export default function Login() {
 						</button>
 
 						<div className="w-full">
-							<Turnstile key={challengeRevision} onStateChange={setTurnstile} />
+							<Turnstile key={challengeRevision} action="email_login" onStateChange={setTurnstile} />
 						</div>
 						{resendSeconds > 0 ? (
 							<p className="text-[12px] tabular-nums text-text-faint">

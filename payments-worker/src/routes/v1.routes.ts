@@ -7,7 +7,7 @@ import { amount, futureExpiry, metadata, shortText, walletAddress } from "../dom
 import {
 	cancelPaymentIntent,
 	createIntentAndLink,
-	getActiveAttempt,
+	getAttemptByIdempotency,
 	getMerchantById,
 	getPaymentIntent,
 	getPaymentIntentFeeBreakdown,
@@ -86,9 +86,10 @@ routes.get("/payment_intents/:id/onchain", async (c) => {
 	const payer = walletAddress(c.req.query("payer"));
 	const sourceChainId = Number(c.req.query("source_chain_id") ?? intent.settlementChainId);
 	const idempotencyKey = c.req.header("Idempotency-Key") ?? `legacy-onchain:${intent.id}:${payer}:${sourceChainId}`;
-	const active = await getActiveAttempt(c.env, intent.id);
-	if (active) return c.json({ id: active.id, router: active.routerAddress, authorization: active.authorization,
-		signature: active.signature, authorization_hash: active.authorizationHash, deprecated: true });
+	const replay = await getAttemptByIdempotency(c.env, { intentId: intent.id, payerAddress: payer,
+		sourceChainId, idempotencyKey });
+	if (replay) return c.json({ id: replay.id, router: replay.routerAddress, authorization: replay.authorization,
+		signature: replay.signature, authorization_hash: replay.authorizationHash, deprecated: true });
 	const quote = await buildQuote(c.env, { intent, payer, sourceChainId, requestedRoute: "auto" });
 	await insertQuote(c.env, quote);
 	const attempt = await authorizeAttempt(c.env, { intent, quote });

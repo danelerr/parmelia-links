@@ -78,10 +78,12 @@ Las correcciones operativas/documentales posteriores no cambian los bundles ni
 los Workers. La matriz CI debe quedar verde sobre el HEAD documental antes de
 dar por cerrado este registro.
 
-No se rotó ningún secreto. El helper reutilizó el material ya protegido con
-DPAPI y comprobó que `wallet-0x75` coincide con el signer testnet desplegado;
-ningún valor secreto se imprimió ni se escribió en el repositorio. La procedencia
-y recuperación de cada nombre están en el
+En ese corte no se generó intencionalmente material secreto nuevo. El helper usó
+el material ya protegido con DPAPI y comprobó que `wallet-0x75` coincide con el
+signer testnet desplegado; ningún valor secreto se imprimió ni se escribió en el
+repositorio. Esta evidencia no permite afirmar desde fuera que ningún proveedor
+haya creado una nueva versión administrativa de un secret. La procedencia y
+recuperación de cada nombre están en el
 [inventario canónico](./worker-variables.md).
 
 ## Cómo seguimos

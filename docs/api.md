@@ -240,7 +240,9 @@ The canonical flow is public and scoped to the checkout link:
 3. Ask that exact payer to `personal_sign` the returned `payer_proof_message`.
    `POST /checkout/{linkId}/attempts` with `quote_id`,
    `payer_proof_signature`, the required `Idempotency-Key` and the raw capability
-   in `X-GatoPago-Checkout-Capability`. Only one unexpired attempt can be active.
+   in `X-GatoPago-Checkout-Capability`. Attempts are independent: one wallet
+   preparing a signed authorization never reserves the link against another
+   payer.
 4. Build calldata from the returned `router`, `authorization`, and `signature`;
    do not create calldata before the attempt exists.
 5. After the wallet sees a successful receipt, call
@@ -251,10 +253,18 @@ The canonical flow is public and scoped to the checkout link:
    request never arrives.
 
 Reading, registering or canceling an attempt requires the same capability and
-returns `404` for a missing or incorrect value. An active-attempt conflict never
-reveals the winner's authorization. Reservations without a broadcast can be
-canceled immediately; stale `submitted` rows expire automatically if canonical
-evidence never appears.
+returns `404` for a missing or incorrect value. Reservations without a broadcast
+can be canceled immediately; stale `reserved`/`submitted` rows expire after the
+evidence grace window. Canceling an intent stops new authorizations, but cannot
+revoke a signature already returned to a payer; if that payment lands before its
+on-chain expiry, it is still reconciled and the intent moves from `canceled` to
+`paid`/`overpaid`.
+
+For `amount_mode=payer_defined`, quotes and attempts do not mutate the public
+amount. The first confirmed settlement fixes the canonical expected amount.
+Later valid settlements are retained as overpayment evidence. Multiple routers
+can observe different chains, so Payments serializes their D1 accounting with a
+compare-and-set commit instead of pretending there is one global on-chain lock.
 
 The signature binds payer, merchant, source chain, route, exact settlement
 amount, fee ceiling, validity window, metadata and router. `GET
@@ -467,7 +477,7 @@ Errors use standard HTTP status codes and a JSON body:
 | 404 | `INTENT_NOT_FOUND` | No such payment intent for this account. |
 | 404 | `EVENT_NOT_FOUND` | No such event for this account. |
 | 409 | `INTENT_NOT_PAYABLE` | Intent is not in a state that allows the action (already paid, canceled, or past `expires_at`). |
-| 409 | `ATTEMPT_ACTIVE` | Another unexpired attempt already reserves the intent. |
+| 409 | `ATTEMPT_ACTIVE` | This attempt can no longer be canceled because its authorization or transaction is already active. It never means another payer reserved the intent. |
 | 503 | `FEE_UNAVAILABLE` | Circle did not provide a current valid fee; no hidden fallback was used. |
 | 503 | `INVALID_FEE_POLICY` | The versioned platform-fee policy is malformed or incomplete. |
 | 503 | `AMBIGUOUS_FEE_POLICY` | Top-priority rules disagree; GatoPago refuses to choose silently. |

@@ -1,4 +1,5 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import type { Page, TestInfo } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectNoWcagViolations, tabTo } from "./accessibility";
 
 async function openLogin(page: Page, testInfo: TestInfo) {
@@ -117,4 +118,31 @@ test("dashboard exposes invalid email errors through an alert", async ({ page },
 
 	const alert = page.getByRole("alert");
 	await expect(alert).toContainText("Escribe un correo válido");
+});
+
+test("Turnstile times out visibly and recovers in place", async ({ page }, testInfo) => {
+	await page.clock.install();
+	await page.addInitScript(() => {
+		(window as Window & { __turnstileTestMode?: string }).__turnstileTestMode = "hang";
+	});
+	await openLogin(page, testInfo);
+	await page.getByRole("button", { name: /correo|email/i }).first().click();
+	await expect(page.getByText(/Comprobando seguridad|Checking security/i)).toBeVisible();
+
+	await page.clock.fastForward(15_100);
+	const retry = page.getByRole("button", { name: /Intentar de nuevo|Try again/i });
+	await expect(page.getByRole("alert")).toBeVisible();
+	await expect(retry).toBeVisible();
+
+	await page.evaluate(() => {
+		(window as Window & { __turnstileTestMode?: string }).__turnstileTestMode = "unsupported";
+	});
+	await retry.click();
+	await expect(page.getByRole("alert")).toBeVisible();
+
+	await page.evaluate(() => {
+		(window as Window & { __turnstileTestMode?: string }).__turnstileTestMode = "verified";
+	});
+	await retry.click();
+	await expect(page.getByRole("button", { name: /código|code/i })).toBeEnabled();
 });

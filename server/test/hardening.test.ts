@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import { getCctpChainByChainId, NETWORKS } from "../../shared";
 import { validateCctpMessage } from "../src/services/crosschainRelayer";
@@ -695,6 +695,38 @@ describe("verifyTurnstile without a configured secret", () => {
 
 	it("fails closed on mainnet", async () => {
 		await expect(verifyTurnstile(envFor("arbitrum-one"), "tok")).resolves.toBe(false);
+	});
+});
+
+describe("verifyTurnstile response binding", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	function environment(): Bindings {
+		return envFor("arbitrum-sepolia", {
+			TURNSTILE_SECRET_KEY: "turnstile-test-secret",
+			ALLOWED_ORIGINS: "https://app.parmelia.me,https://dashboard.parmelia.me",
+		});
+	}
+
+	function response(value: Record<string, unknown>) {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(value), {
+			status: 200, headers: { "Content-Type": "application/json" },
+		})));
+	}
+
+	it("accepts only the requested action on an approved hostname", async () => {
+		response({ success: true, action: "account_create", hostname: "app.parmelia.me" });
+		await expect(verifyTurnstile(environment(), "token", null, "account_create")).resolves.toBe(true);
+	});
+
+	it("rejects a valid token replayed across actions", async () => {
+		response({ success: true, action: "email_login", hostname: "app.parmelia.me" });
+		await expect(verifyTurnstile(environment(), "token", null, "test_funds")).resolves.toBe(false);
+	});
+
+	it("rejects a token solved on an unapproved hostname", async () => {
+		response({ success: true, action: "email_login", hostname: "attacker.example" });
+		await expect(verifyTurnstile(environment(), "token", null, "email_login")).resolves.toBe(false);
 	});
 });
 

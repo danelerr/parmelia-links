@@ -34,19 +34,20 @@ async function seedCheckout(suffix: string): Promise<{ linkId: string; intentId:
 	return { linkId, intentId };
 }
 
-async function quote(linkId: string, chainId = 421614, selectedAmount?: string): Promise<Record<string, unknown>> {
+async function quote(linkId: string, chainId = 421614, selectedAmount?: string,
+	payerAddress = payer, capability = checkoutCapability): Promise<Record<string, unknown>> {
 	const response = await SELF.fetch(`https://payments.test/checkout/${linkId}/quotes`, {
 		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ payer, source_chain_id: chainId, amount: selectedAmount,
-			attempt_capability_hash: await hashCheckoutCapability(checkoutCapability) }),
+		body: JSON.stringify({ payer: payerAddress, source_chain_id: chainId, amount: selectedAmount,
+			attempt_capability_hash: await hashCheckoutCapability(capability) }),
 	});
 	expect(response.status).toBe(chainId === 421614 ? 201 : 400);
 	return response.json<Record<string, unknown>>();
 }
 
 async function attempt(linkId: string, quoted: Record<string, unknown>, key: string,
-	capability = checkoutCapability): Promise<Response> {
-	const proof = await payerAccount.signMessage({ message: String(quoted.payer_proof_message) });
+	capability = checkoutCapability, signingAccount = payerAccount): Promise<Response> {
+	const proof = await signingAccount.signMessage({ message: String(quoted.payer_proof_message) });
 	return SELF.fetch(`https://payments.test/checkout/${linkId}/attempts`, {
 		method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key,
 			"X-GatoPago-Checkout-Capability": capability },
@@ -55,7 +56,7 @@ async function attempt(linkId: string, quoted: Record<string, unknown>, key: str
 }
 
 beforeEach(async () => {
-	await env.PAYMENTS_DB.exec("DELETE FROM rate_limits; DELETE FROM webhook_deliveries; DELETE FROM payment_outbox; DELETE FROM events; DELETE FROM webhook_endpoints; DELETE FROM payment_job_runs; DELETE FROM payment_signer_leases; DELETE FROM app_execution_commands; DELETE FROM crosschain_operations; DELETE FROM payment_fee_ledger; DELETE FROM payment_attempts; DELETE FROM payment_quotes; DELETE FROM payment_links; DELETE FROM payment_intents; DELETE FROM api_keys; DELETE FROM settlement_account_commands; DELETE FROM merchants;");
+	await env.PAYMENTS_DB.exec("DELETE FROM rate_limits; DELETE FROM webhook_deliveries; DELETE FROM payment_outbox; DELETE FROM events; DELETE FROM webhook_endpoints; DELETE FROM payment_job_runs; DELETE FROM payment_signer_leases; DELETE FROM app_execution_commands; DELETE FROM crosschain_operations; DELETE FROM payment_settlement_commits; DELETE FROM payment_fee_ledger; DELETE FROM payment_attempts; DELETE FROM payment_quotes; DELETE FROM payment_links; DELETE FROM payment_intents; DELETE FROM api_keys; DELETE FROM settlement_account_commands; DELETE FROM merchants;");
 	await env.PAYMENTS_DB.prepare(
 		"UPDATE payment_migration_control SET legacy_copy_version = 1, legacy_copy_completed_at = ?, legacy_source_checksum = ?, legacy_target_checksum = ?, updated_at = ? WHERE id = 1",
 	).bind("2026-08-25T00:00:00.000Z", dataCutoverChecksum, dataCutoverChecksum,
@@ -74,7 +75,7 @@ describe("independent Payments Worker", () => {
 		expect(await response.json()).toMatchObject({ intent: { amount: "10", status: "awaiting_payment" } });
 	});
 
-	it("locks a payer-defined amount atomically with the first authorized attempt", async () => {
+	it("keeps open reservations independent and fixes the amount at first settlement", async () => {
 		const { linkId, intentId } = await seedCheckout("open-amount");
 		await env.PAYMENTS_DB.batch([
 			env.PAYMENTS_DB.prepare(
@@ -101,21 +102,34 @@ describe("independent Payments Worker", () => {
 			attempt(linkId, twelve, "open-amount-12"),
 			attempt(linkId, nineteen, "open-amount-19"),
 		]);
-		expect(responses.filter((response) => response.status === 201)).toHaveLength(1);
-		expect(responses.filter((response) => response.status === 409)).toHaveLength(1);
-
-		const winner = await responses.find((response) => response.status === 201)!.json<Record<string, unknown>>();
-		const lockedAtomic = String((winner.authorization as Record<string, unknown>).settlementAmount);
+		expect(responses.every((response) => response.status === 201)).toBe(true);
+		const [twelveAttempt, nineteenAttempt] = await Promise.all(
+			responses.map((response) => response.json<Record<string, unknown>>()),
+		);
 		const stored = await env.PAYMENTS_DB.prepare(
 			"SELECT amount, amount_atomic, amount_mode FROM payment_intents WHERE id = ?",
 		).bind(intentId).first();
-		expect(stored).toEqual({
-			amount: lockedAtomic === "12500000" ? "12.5" : "19",
-			amount_atomic: lockedAtomic,
-			amount_mode: "payer_defined",
-		});
+		expect(stored).toEqual({ amount: "0", amount_atomic: "0", amount_mode: "payer_defined" });
 		expect(await env.PAYMENTS_DB.prepare("SELECT amount FROM payment_links WHERE id = ?").bind(linkId).first())
-			.toEqual({ amount: stored!.amount });
+			.toEqual({ amount: "0" });
+
+		expect((await settleAttempt(env, { attemptId: String(twelveAttempt.id),
+			sourceTxHash: `0x${"41".repeat(32)}`, settledAmountAtomic: "12500000",
+			payerAddress: payer })).applied).toBe(true);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT amount, amount_atomic, paid_amount_atomic, status FROM payment_intents WHERE id = ?",
+		).bind(intentId).first()).toEqual({ amount: "12.5", amount_atomic: "12500000",
+			paid_amount_atomic: "12500000", status: "paid" });
+		expect(await env.PAYMENTS_DB.prepare("SELECT amount, status FROM payment_links WHERE id = ?")
+			.bind(linkId).first()).toEqual({ amount: "12.5", status: "paid" });
+
+		expect((await settleAttempt(env, { attemptId: String(nineteenAttempt.id),
+			sourceTxHash: `0x${"42".repeat(32)}`, settledAmountAtomic: "19000000",
+			payerAddress: payer })).applied).toBe(true);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT amount_atomic, paid_amount_atomic, status FROM payment_intents WHERE id = ?",
+		).bind(intentId).first()).toEqual({ amount_atomic: "12500000",
+			paid_amount_atomic: "31500000", status: "overpaid" });
 	});
 
 	it("keeps detailed health hidden behind a 32+ character operations token", async () => {
@@ -225,7 +239,7 @@ describe("independent Payments Worker", () => {
 		).bind("mrc_concurrent-intent", "same-concurrent-order").first()).toEqual({ count: 1 });
 	});
 
-	it("enforces idempotency and one active attempt", async () => {
+	it("enforces idempotency without letting one reservation monopolize an intent", async () => {
 		const { linkId } = await seedCheckout("active");
 		const quoted = await quote(linkId);
 		const first = await attempt(linkId, quoted, "idem-1");
@@ -249,9 +263,75 @@ describe("independent Payments Worker", () => {
 		const replay = await attempt(linkId, quoted, "idem-1");
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toMatchObject({ id: firstBody.id, idempotent_replay: true });
-		const conflict = await attempt(linkId, quoted, "idem-2");
-		expect(conflict.status).toBe(409);
-		expect(await conflict.json()).toMatchObject({ error_code: "ATTEMPT_ACTIVE" });
+		const independent = await attempt(linkId, quoted, "idem-2");
+		expect(independent.status).toBe(201);
+		const independentBody = await independent.json<Record<string, unknown>>();
+		expect(independentBody.id).not.toBe(firstBody.id);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT COUNT(*) AS count FROM payment_attempts WHERE intent_id = ? AND status = 'reserved'",
+		).bind("pi_active").first()).toEqual({ count: 2 });
+	});
+
+	it("does not let an attacker reservation block a legitimate payer", async () => {
+		const attacker = privateKeyToAccount(`0x${"33".repeat(32)}`);
+		const attackerCapability = "C".repeat(43);
+		const { linkId } = await seedCheckout("adversarial-reservation");
+		const attackerQuote = await quote(linkId, 421614, undefined, attacker.address, attackerCapability);
+		const attackerAttempt = await attempt(linkId, attackerQuote, "attacker-reservation",
+			attackerCapability, attacker);
+		expect(attackerAttempt.status).toBe(201);
+
+		const legitimateQuote = await quote(linkId);
+		const legitimateAttempt = await attempt(linkId, legitimateQuote, "legitimate-reservation");
+		expect(legitimateAttempt.status).toBe(201);
+		const [attackerBody, legitimateBody] = await Promise.all([
+			attackerAttempt.json<Record<string, unknown>>(), legitimateAttempt.json<Record<string, unknown>>(),
+		]);
+		expect(attackerBody.id).not.toBe(legitimateBody.id);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT COUNT(*) AS count FROM payment_attempts WHERE intent_id = ? AND status = 'reserved'",
+		).bind("pi_adversarial-reservation").first()).toEqual({ count: 2 });
+	});
+
+	it("does not let an attacker reservation block merchant cancellation", async () => {
+		const attacker = privateKeyToAccount(`0x${"44".repeat(32)}`);
+		const attackerCapability = "D".repeat(43);
+		const { linkId, intentId } = await seedCheckout("cancel-with-reservation");
+		const key = await createApiKey(env, "mrc_cancel-with-reservation", "test", "Cancel");
+		await env.PAYMENTS_DB.batch([
+			env.PAYMENTS_DB.prepare(
+				"UPDATE payment_intents SET amount = '0', amount_atomic = '0', amount_mode = 'payer_defined' WHERE id = ?",
+			).bind(intentId),
+			env.PAYMENTS_DB.prepare("UPDATE payment_links SET amount = '0' WHERE id = ?").bind(linkId),
+		]);
+		const attackerQuote = await quote(linkId, 421614, "10", attacker.address, attackerCapability);
+		const attackerAttempt = await attempt(linkId, attackerQuote, "cancel-attacker",
+			attackerCapability, attacker);
+		expect(attackerAttempt.status).toBe(201);
+		const attackerBody = await attackerAttempt.json<Record<string, unknown>>();
+
+		const canceled = await SELF.fetch(`https://payments.test/v1/payment_intents/${intentId}/cancel`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${key.secret}` },
+		});
+		expect(canceled.status).toBe(200);
+		expect(await canceled.json()).toMatchObject({ id: intentId, status: "canceled" });
+		expect((await SELF.fetch(`https://payments.test/checkout/${linkId}/quotes`, {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ payer, source_chain_id: 421614, amount: "10",
+				attempt_capability_hash: await hashCheckoutCapability(checkoutCapability) }),
+		})).status).toBe(409);
+
+		// Cancellation cannot revoke a signature already returned to a payer. If it
+		// executes before expiry, reconciliation must account for the late payment.
+		expect((await settleAttempt(env, { attemptId: String(attackerBody.id),
+			sourceTxHash: `0x${"43".repeat(32)}`, settledAmountAtomic: "10000000",
+			payerAddress: attacker.address })).applied).toBe(true);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT amount, status, paid_amount_atomic FROM payment_intents WHERE id = ?",
+		).bind(intentId).first()).toEqual({ amount: "10", status: "paid", paid_amount_atomic: "10000000" });
+		expect(await env.PAYMENTS_DB.prepare("SELECT amount, status FROM payment_links WHERE id = ?")
+			.bind(linkId).first()).toEqual({ amount: "10", status: "paid" });
 	});
 
 	it("requires wallet proof and a scoped capability for public attempts", async () => {
@@ -282,12 +362,11 @@ describe("independent Payments Worker", () => {
 
 		const replayWithWrongCapability = await attempt(linkId, quoted, "protected-attempt", wrongCapability);
 		expect(replayWithWrongCapability.status).toBe(404);
-		const conflict = await attempt(linkId, quoted, "another-protected-attempt");
-		expect(conflict.status).toBe(409);
-		const conflictBody = await conflict.json<Record<string, unknown>>();
-		expect(conflictBody).toMatchObject({ error_code: "ATTEMPT_ACTIVE" });
-		expect(conflictBody).not.toHaveProperty("attempt");
-		expect(JSON.stringify(conflictBody)).not.toContain("authorization");
+		const independent = await attempt(linkId, quoted, "another-protected-attempt");
+		expect(independent.status).toBe(201);
+		const independentBody = await independent.json<Record<string, unknown>>();
+		expect(independentBody.id).not.toBe(attemptId);
+		expect(JSON.stringify(independentBody)).not.toContain(String(body.authorization_hash));
 	});
 
 	it("does not accept unverified hashes, uses compare-and-set, and releases stale submitted attempts", async () => {
@@ -335,6 +414,26 @@ describe("independent Payments Worker", () => {
 		expect(await env.PAYMENTS_DB.prepare(
 			"SELECT status, last_error_code FROM payment_attempts WHERE id = ?",
 		).bind(attemptId).first()).toEqual({ status: "expired", last_error_code: "PAYMENT_EVIDENCE_TIMEOUT" });
+	});
+
+	it("keeps an expired authorization observable during the receipt evidence grace window", async () => {
+		const { linkId } = await seedCheckout("reserved-grace");
+		const quoted = await quote(linkId);
+		const created = await attempt(linkId, quoted, "reserved-grace-attempt");
+		const body = await created.json<Record<string, unknown>>();
+		const attemptId = String(body.id);
+		await env.PAYMENTS_DB.prepare("UPDATE payment_attempts SET valid_until = ? WHERE id = ?")
+			.bind(Math.floor(Date.now() / 1000) - 60, attemptId).run();
+
+		expect((await SELF.fetch(`https://payments.test/checkout/${linkId}`)).status).toBe(200);
+		expect(await env.PAYMENTS_DB.prepare("SELECT status FROM payment_attempts WHERE id = ?")
+			.bind(attemptId).first()).toEqual({ status: "reserved" });
+
+		await env.PAYMENTS_DB.prepare("UPDATE payment_attempts SET valid_until = ? WHERE id = ?")
+			.bind(Math.floor(Date.now() / 1000) - 16 * 60, attemptId).run();
+		expect((await SELF.fetch(`https://payments.test/checkout/${linkId}`)).status).toBe(200);
+		expect(await env.PAYMENTS_DB.prepare("SELECT status, last_error_code FROM payment_attempts WHERE id = ?")
+			.bind(attemptId).first()).toEqual({ status: "expired", last_error_code: "PAYMENT_EVIDENCE_TIMEOUT" });
 	});
 
 	it("lets the proven checkout session cancel an unbroadcast reservation immediately", async () => {
@@ -394,6 +493,44 @@ describe("independent Payments Worker", () => {
 			platform: { status: "waived", actual_amount_atomic: "0" },
 			network: { status: "waived", actual_amount_atomic: "0" },
 		} });
+	});
+
+	it("serializes concurrent settlements without losing paid value", async () => {
+		const { linkId, intentId } = await seedCheckout("settlement-cas");
+		const quoted = await quote(linkId);
+		const first = await attempt(linkId, quoted, "settlement-cas-first");
+		const second = await attempt(linkId, quoted, "settlement-cas-second");
+		expect([first.status, second.status]).toEqual([201, 201]);
+		const [firstBody, secondBody] = await Promise.all([
+			first.json<Record<string, unknown>>(), second.json<Record<string, unknown>>(),
+		]);
+
+		const results = await Promise.all([
+			settleAttempt(env, { attemptId: String(firstBody.id), sourceTxHash: `0x${"51".repeat(32)}`,
+				settledAmountAtomic: "10000000", payerAddress: payer }),
+			settleAttempt(env, { attemptId: String(secondBody.id), sourceTxHash: `0x${"52".repeat(32)}`,
+				settledAmountAtomic: "10000000", payerAddress: payer }),
+		]);
+		expect(results.every((result) => result.applied)).toBe(true);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT status, paid_amount_atomic FROM payment_intents WHERE id = ?",
+		).bind(intentId).first()).toEqual({ status: "overpaid", paid_amount_atomic: "20000000" });
+		const attempts = await env.PAYMENTS_DB.prepare(
+			"SELECT status FROM payment_attempts WHERE intent_id = ? ORDER BY status",
+		).bind(intentId).all<{ status: string }>();
+		expect(attempts.results.map((row) => row.status).sort()).toEqual(["overpaid", "paid"]);
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT COUNT(*) AS count FROM payment_settlement_commits WHERE intent_id = ?",
+		).bind(intentId).first()).toEqual({ count: 2 });
+		expect(await env.PAYMENTS_DB.prepare(
+			"SELECT COUNT(*) AS count FROM events WHERE object_id = ? AND type IN ('payment.paid','payment.overpaid')",
+		).bind(intentId).first()).toEqual({ count: 2 });
+
+		const replay = await settleAttempt(env, { attemptId: String(firstBody.id),
+			sourceTxHash: `0x${"51".repeat(32)}`, settledAmountAtomic: "10000000", payerAddress: payer });
+		expect(replay.applied).toBe(false);
+		expect(await env.PAYMENTS_DB.prepare("SELECT paid_amount_atomic FROM payment_intents WHERE id = ?")
+			.bind(intentId).first()).toEqual({ paid_amount_atomic: "20000000" });
 	});
 
 	it("records the actual delivered amount and exposes CCTP-style overpayment coherently", async () => {

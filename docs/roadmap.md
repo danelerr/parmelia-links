@@ -1,7 +1,7 @@
 # Roadmap técnico de GatoPago
 
-**Última revisión:** 26 de agosto de 2026
-**Estado:** Fase 2.1 corregida y promovida; hardening de Fase 3 remoto; Fase 4 transaccional pendiente
+**Última revisión:** 28 de agosto de 2026
+**Estado:** Fase 2.1 promovida; Fase 3 reabierta por tercera revisión y con candidato local; Fase 4 transaccional pendiente
 **Fuente inicial:** [auditoría técnica del 23 de agosto de 2026](./audits/2026-08-23.md)
 
 Este archivo es la única lista de trabajo técnico. El cierre remoto comprobado se
@@ -11,6 +11,15 @@ pago E2E con evidencia on-chain.
 
 ## P0 — Requiere acción operativa antes del despliegue
 
+- [ ] **Cerrar la tercera revisión de Fase 3.** El candidato local elimina el lock
+  global de reservations con `0007`, permite attempts independientes y serializa
+  settlements concurrentes mediante commits CAS auditables. También impide que
+  una reserva bloquee la cancelación merchant, conserva pagos tardíos ya firmados,
+  limita Turnstile a 10 s de script/15 s de challenge con retry, valida
+  action+hostname en el Worker y conserva sólo resultados RPC resueltos en caché
+  global. Falta completar `verify:all`, versionar, aplicar `0007`, desplegar sin
+  cambiar secrets ni contratos, probar OTP real App/Dashboard y repetir smokes
+  remotos con `PAYMENT_LIVE_ENABLED=false`.
 - [x] **Cerrar la auditoría posterior a Fase 2.1.** El candidato exige
   prueba de wallet y capability por attempt; valida receipt/emisor/router/evento
   antes de persistir un hash; aplica CAS y expiración de `submitted`; no filtra
@@ -96,7 +105,7 @@ pago E2E con evidencia on-chain.
 - [x] **Passkeys y recovery endurecidos.** Registro y verificación son server-bound con `@simplewebauthn/server`; las credenciales se pueden listar, renombrar y revocar. Recovery exige step-up, no consume el desafío en el preflight y lo consume atómicamente al proponer la recuperación.
 - [x] **Economía extensible sin cambiar la política gratuita.** Payments usa `free-default` cuando no hay policy, reglas versionadas/acotadas con máximo 100 bps, snapshots inmutables, ledger separado de plataforma/red, desglose API/webhook/dashboard y preflight on-chain obligatorio antes de una comisión positiva.
 - [x] **Paymaster reemplazable sin migrar cuentas.** App abstrae Parmelia, ERC-7677 y self-funded; todo fallback reconstruye/reestima antes de la firma, mainnet fija el contrato externo esperado y D1/health conservan provider + dirección exacta para drenar rotaciones.
-- [x] **Frontera Payments escalable promovida.** RPC App→Payments usa una única interfaz versionada compartida; health de App no consulta tablas de Payments; reintentos diferidos se compactan por partición en Durable Object con fallback Queue; el cutover descubre todas las migraciones, exige índices críticos y diez planes de consulta hot-path se validan automáticamente. La máquina de estados terminó en `cutover`, el checksum runtime coincide con el control D1 y la separación física por dominio está desplegada. No equivale a sharding horizontal ni sustituye pruebas de carga.
+- [x] **Frontera Payments escalable promovida.** RPC App→Payments usa una única interfaz versionada compartida; health de App no consulta tablas de Payments; reintentos diferidos se compactan por partición en Durable Object con fallback Queue; el cutover descubre todas las migraciones, exige índices críticos y once planes de consulta hot-path se validan automáticamente. La máquina de estados terminó en `cutover`, el checksum runtime coincide con el control D1 y la separación física por dominio está desplegada. No equivale a sharding horizontal ni sustituye pruebas de carga.
 - [x] **Hardening 3A promovido.** Queue/Wrangler, bootstrap/sync, preflight,
   recuperación y nonces CCTP, monto realmente acuñado, webhooks at-least-once,
   rotación de claves e idempotencia concurrente tienen migraciones y pruebas de
@@ -112,8 +121,10 @@ pago E2E con evidencia on-chain.
   externo de conexión. El E2E local cubre teclado, wallet injected, fallback de permit,
   registro, caída HTTP, recarga, re-registro del mismo hash y reconciliación a
   `paid`. El smoke remoto A→B retuvo B y demostró 0 acciones disponibles mientras
-  cargaba; el fallback sin provider también se verificó en Chromium limpio.
-- [x] **Gates 3C revalidados y promovidos después de la segunda auditoría.**
+  cargaba; el fallback sin provider también se verificó en Chromium limpio. La
+  tercera revisión detectó que la firma aún tomaba un lock global; `0007` lo
+  elimina localmente, pero la promoción anterior no cubre ese nuevo delta.
+- [ ] **Gates 3C revalidados y promovidos después de la tercera auditoría.**
   `pnpm verify:all` pasa con 253+22 pruebas App, 52+19 Payments, 36 E2E
   aprobadas/16 omisiones de matriz, audit sin vulnerabilidades conocidas,
   split/restore semántico, 10 diagramas, OpenAPI, bundle, storage, coverage y
@@ -125,8 +136,10 @@ pago E2E con evidencia on-chain.
   compatibilidad N/N-1, import data-only sobre base vacía, checksum, rechazo de
   replay y restores independientes. La evidencia remota histórica ejecutó 197
   pruebas sin omisiones, incluidas 6 forks vivas. La D1 de reemplazo, la
-  migración `0006`, los Workers y ambos frontends ya están promovidos. Permanece
-  pendiente Fase 4: pagos testnet reales con evidencia completa y fault injection.
+  migración `0006`, los Workers y ambos frontends de aquel corte fueron
+  promovidos. Falta repetir la matriz para `0007`, Turnstile y caché RPC, aplicar
+  la migración y promover el nuevo commit. Permanece pendiente Fase 4: pagos
+  testnet reales con evidencia monetaria completa y fault injection.
 
 ## P2 — Mantenibilidad y cobertura
 
@@ -146,7 +159,7 @@ pago E2E con evidencia on-chain.
 1. Commit y push revisados; CI y security workflows verdes en GitHub.
 2. Backup D1 cifrado y restore drill verificado antes de aplicar migraciones.
 3. Migraciones App `0030`–`0034` y todas las migraciones Payments descubiertas
-   en `payments-worker/migrations/` (actualmente `0001`–`0006`) aplicadas en su
+   en `payments-worker/migrations/` (actualmente `0001`–`0007`) aplicadas en su
    orden, con health operativo sin dead letters ni operaciones activas en
    contratos retirados.
 4. Manifest v4/checksum semántico v2 sobre una D1 Payments nueva, seguido de

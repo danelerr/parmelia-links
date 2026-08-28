@@ -224,8 +224,10 @@ async function readPaymentRouter(env: Bindings, target: PaymentRouterTarget): Pr
 }
 
 // Public on-chain configuration only. Bounded by the static payment-network
-// manifest; never stores user data or secrets and coalesces concurrent checks.
-const observationCache = new Map<string, { expiresAt: number; value: Promise<PaymentRouterObservation> }>();
+// manifest; never stores user data, secrets, Promises or request-scoped I/O.
+// Concurrent misses may perform duplicate reads, which is safer in Workers
+// than sharing an unresolved operation across request contexts.
+const observationCache = new Map<string, { expiresAt: number; value: PaymentRouterObservation }>();
 const lastKnownObservations = new Map<string, { observedAt: number; value: PaymentRouterObservation }>();
 const OBSERVATION_TTL_MS = 15_000;
 const STALE_HEALTH_OBSERVATION_TTL_MS = 5 * 60_000;
@@ -244,15 +246,11 @@ async function cachedObservation(env: Bindings, target: PaymentRouterTarget,
 	}
 	const cached = observationCache.get(key);
 	if (cached && cached.expiresAt > Date.now()) return cached.value;
-	const value = reader(env, target).then((observation) => {
-		lastKnownObservations.set(key, { observedAt: Date.now(), value: observation });
-		return observation;
-	}).catch((error) => {
-		observationCache.delete(key);
-		throw error;
-	});
-	observationCache.set(key, { expiresAt: Date.now() + OBSERVATION_TTL_MS, value });
-	return value;
+	const observation = await reader(env, target);
+	const observedAt = Date.now();
+	lastKnownObservations.set(key, { observedAt, value: observation });
+	observationCache.set(key, { expiresAt: observedAt + OBSERVATION_TTL_MS, value: observation });
+	return observation;
 }
 
 function recentObservation(target: PaymentRouterTarget): PaymentRouterObservation | null {

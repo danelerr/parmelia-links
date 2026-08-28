@@ -424,8 +424,9 @@ Migración de links:
 
 - Todo link nuevo crea `PaymentIntent` en la misma transacción D1.
 - Un link de monto abierto usa `amount_mode=payer_defined`. Las quotes son
-  provisionales y el monto queda bloqueado atómicamente al crear el primer
-  attempt autorizable; si ese attempt expira sin broadcast, puede liberarse.
+  provisionales y ningún attempt bloquea el link ni fija su obligación. El primer
+  settlement confirmado fija el monto esperado; settlements válidos posteriores
+  se conservan y contabilizan como sobrepago.
 - Links pending antiguos se elevan de forma idempotente al abrirlos; links paid
   antiguos quedan como historial.
 - No borrar datos de testnet automáticamente. Cualquier reset se decide aparte y
@@ -904,7 +905,9 @@ negocio, no una condición para corregir el software.
 
 ### Fase 3 — hardening de Payments + checkout público (8–12 días)
 
-**Estado al 26-08-2026: hardening y checkout promovidos; evidencia transaccional completa aún pertenece a Fase 4.** Esta fase absorbe los
+**Estado al 28-08-2026: reabierta por la tercera revisión; candidato correctivo
+local en validación y promoción pendiente.** La evidencia transaccional monetaria
+completa aún pertenece a Fase 4. Esta fase absorbe los
 hallazgos de la auditoría posterior a Fase 2. Primero cierra seguridad económica,
 recuperación y cutover; después amplía la UX pública. Ningún test verde anterior
 permite omitir los gates de esta sección.
@@ -916,9 +919,11 @@ como opción, y el E2E prueba injected wallet, fallback EIP-2612 →
 `approve + pay`, caída del registro y reanudación después de recargar. 3C pasó
 la verificación integral y el ensayo local compuesto de cutover/rollback: modos
 bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksum,
-    outbox y restores independientes. La promoción correctiva aplicó `0006`,
-    desplegó ambos Workers/frontends y repitió gates remotos. Acceso anónimo y la
-    regresión A→B se probaron en navegador; una transacción E2E sigue en Fase 4.
+    outbox y restores independientes. La promoción correctiva anterior aplicó
+    `0006`, desplegó ambos Workers/frontends y repitió gates remotos. La revisión
+    del 28-08 añadió `0007`: reservations concurrentes sin monopolio, settlement
+    CAS auditable, Turnstile recuperable y caché RPC sólo de resultados resueltos.
+    Este delta no se considera promovido hasta repetir todos los gates remotos.
 
 #### 3A. Bloqueadores de backend y operación
 
@@ -988,8 +993,13 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
 4. Capability por sesión y firma del payer antes de reservar; lectura/registro/
    cancelación scopeadas. El hash sólo se persiste después de validar receipt,
    sender, router y evento por RPC de Payments.
-5. Flujos local/CCTP, simulación, fallback de permit y resume de attempt.
-6. Copy ES/EN y accesibilidad teclado/móvil.
+5. Ningún attempt sin evidencia toma un lock global. Múltiples autorizaciones
+   pueden coexistir; el contrato decide por router/chain y Payments serializa
+   settlements concurrentes por CAS, conservando sobrepagos multichain.
+6. Turnstile falla cerrado con timeout visible, retry y validación server-side de
+   action/hostname; App y Dashboard requieren evidencia OTP real desplegada.
+7. Flujos local/CCTP, simulación, fallback de permit y resume de attempt.
+8. Copy ES/EN y accesibilidad teclado/móvil.
 
 #### 3C. Gates de aceptación de Fase 3
 
@@ -1008,6 +1018,13 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
   backup, creación/migración/import, deploy target→caller, health y smokes. Sin
   autorización, la fase puede cerrar solo su componente local y queda la promoción
   marcada como pendiente.
+- [ ] Migración `0007` aplicada y prueba adversarial remota confirma que un payer
+  no bloquea a otro ni la cancelación merchant; settlements concurrentes no
+  pierden monto ni duplican eventos.
+- [ ] Turnstile deja de esperar a los 15 s, ofrece retry en App/Dashboard y un OTP
+  real completa envío, recepción, verificación y sesión Firebase en producción.
+- [ ] Payments desplegado sin Promises RPC globales; liveness/readiness, RPC,
+  queues y scheduler permanecen estables con `PAYMENT_LIVE_ENABLED=false`.
 
 **Evidencia histórica previa a la auditoría (25-08-2026):** `pnpm verify:all` pasó sobre la
 implementación anterior; después del ajuste final de recuperación volvieron a pasar
@@ -1037,13 +1054,14 @@ mobile, split/restore semántico, guards de deploy y las suites completas citada
 arriba. Esa segunda revisión fue la entrada del recut remoto registrado el
 26-08-2026; no equivale a readiness de mainnet.
 
-**Cierre de Fase 3 promovido:** ningún job App se pierde por drift de nombre; CCTP y webhooks se
+**Cierre anterior reabierto el 28-08-2026:** ningún job App se pierde por drift de nombre; CCTP y webhooks se
 recuperan tras crash sin duplicación económica; nonces concurrentes son seguros;
 ledger/API/webhook reflejan el monto realmente acuñado; idempotencia concurrente
 y rotación de claves están probadas; el runbook tiene un único cutover ejecutable;
 y el mismo link admite pago sin login con wallet externa o saldo GatoPago. La
 integración de contratos en las tres testnets tiene prueba fork viva y los
-Workers promovidos pasan smokes directos/proxy. El pago testnet completo con
+Workers promovidos pasaban smokes directos/proxy, pero el cierre final exige los
+tres nuevos gates de 3C antes de volver a declararse promovido. El pago testnet completo con
 source tx, settlement, D1 y webhook pertenece a Fase 4; el cierre testnet no
 equivale a readiness de mainnet.
 

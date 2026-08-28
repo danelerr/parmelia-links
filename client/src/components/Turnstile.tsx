@@ -8,6 +8,10 @@ import type { TurnstileState } from "./turnstileState";
 const SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
 const SCRIPT_ID = "gatopago-turnstile-script";
 const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const SCRIPT_LOAD_TIMEOUT_MS = 10_000;
+const CHALLENGE_TIMEOUT_MS = 15_000;
+
+export type TurnstileAction = "email_login" | "account_create" | "test_funds";
 
 type TurnstileApi = {
 	render: (
@@ -17,6 +21,9 @@ type TurnstileApi = {
 			callback: (token: string) => void;
 			"expired-callback"?: () => void;
 			"error-callback"?: () => void;
+			"timeout-callback"?: () => void;
+			"unsupported-callback"?: () => void;
+			action: TurnstileAction;
 			theme?: "auto" | "light" | "dark";
 		},
 	) => string;
@@ -42,8 +49,20 @@ function loadScript(): Promise<void> {
 		script.src = SCRIPT_SRC;
 		script.async = true;
 		script.defer = true;
-		script.onload = () => resolve();
-		script.onerror = () => reject(new Error("Turnstile script failed"));
+		let settled = false;
+		const finish = (result: "loaded" | "failed") => {
+			if (settled) return;
+			settled = true;
+			window.clearTimeout(timeout);
+			if (result === "loaded") resolve();
+			else reject(new Error("Turnstile script failed"));
+		};
+		const timeout = window.setTimeout(() => {
+			script.remove();
+			finish("failed");
+		}, SCRIPT_LOAD_TIMEOUT_MS);
+		script.onload = () => finish("loaded");
+		script.onerror = () => finish("failed");
 		document.head.appendChild(script);
 	}).catch((error) => {
 		window.__turnstileLoading = undefined;
@@ -53,8 +72,10 @@ function loadScript(): Promise<void> {
 }
 
 export default function Turnstile({
+	action,
 	onStateChange,
 }: {
+	action: TurnstileAction;
 	onStateChange: (state: TurnstileState) => void;
 }) {
 	const { t } = useTranslation();
@@ -79,35 +100,54 @@ export default function Turnstile({
 			return () => { cancelled = true; };
 		}
 		let cancelled = false;
+		let completed = false;
+		const challengeTimeout = window.setTimeout(() => {
+			if (cancelled || completed) return;
+			completed = true;
+			if (widgetId.current && window.turnstile) window.turnstile.remove(widgetId.current);
+			widgetId.current = null;
+			publish({ status: "error", token: null });
+		}, CHALLENGE_TIMEOUT_MS);
+		const finish = (next: TurnstileState) => {
+			if (cancelled || completed) return;
+			completed = true;
+			window.clearTimeout(challengeTimeout);
+			publish(next);
+		};
 		loadScript()
 			.then(() => {
-				if (cancelled || !ref.current || !window.turnstile) return;
-				widgetId.current = window.turnstile.render(ref.current, {
-					sitekey: SITE_KEY,
-					theme: "dark",
-					callback: (token) => publish({ status: "verified", token }),
-					"expired-callback": () => publish({ status: "expired", token: null }),
-					"error-callback": () => publish({ status: "error", token: null }),
-				});
+				if (cancelled || !ref.current || !window.turnstile) throw new Error("Turnstile API unavailable");
+				try {
+					widgetId.current = window.turnstile.render(ref.current, {
+						sitekey: SITE_KEY,
+						action,
+						theme: "dark",
+						callback: (token) => finish({ status: "verified", token }),
+						"expired-callback": () => finish({ status: "expired", token: null }),
+						"error-callback": () => finish({ status: "error", token: null }),
+						"timeout-callback": () => finish({ status: "error", token: null }),
+						"unsupported-callback": () => finish({ status: "error", token: null }),
+					});
+				} catch {
+					finish({ status: "error", token: null });
+				}
 			})
 			.catch(() => {
-				if (!cancelled) publish({ status: "error", token: null });
+				finish({ status: "error", token: null });
 			});
 		return () => {
 			cancelled = true;
+			completed = true;
+			window.clearTimeout(challengeTimeout);
 			if (widgetId.current && window.turnstile) {
 				window.turnstile.remove(widgetId.current);
 				widgetId.current = null;
 			}
 		};
-	}, [onStateChange, publish, revision]);
+	}, [action, onStateChange, publish, revision]);
 
 	function retry() {
 		publish({ status: "loading", token: null });
-		if (widgetId.current && window.turnstile) {
-			window.turnstile.reset(widgetId.current);
-			return;
-		}
 		setRevision((value) => value + 1);
 	}
 
@@ -120,7 +160,7 @@ export default function Turnstile({
 			) : null}
 			{state.status === "expired" || state.status === "error" ? (
 				<div className="text-center">
-					<p className="mb-1 text-[12px] text-danger">
+					<p role="alert" className="mb-1 text-[12px] text-danger">
 						{state.status === "expired" ? t("turnstile.expired") : t("turnstile.error")}
 					</p>
 					<button type="button" className="btn-text" onClick={retry}>

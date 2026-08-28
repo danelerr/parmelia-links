@@ -510,7 +510,7 @@ function verify(target, manifest, webhookKeyring) {
   if (quick.quick_check !== "ok") throw new Error(`Payments quick_check failed: ${quick.quick_check}`);
   const foreign = target.prepare("PRAGMA foreign_key_check").all();
   if (foreign.length) throw new Error(`Payments foreign_key_check failed: ${JSON.stringify(foreign)}`);
-  for (const required of ["payment_quotes", "payment_attempts", "payment_fee_ledger"]) {
+  for (const required of ["payment_quotes", "payment_attempts", "payment_fee_ledger", "payment_settlement_commits"]) {
     if (!table(target, required)) throw new Error(`Payments table missing after migrations: ${required}`);
   }
   const indexes = new Set(rows(target, "SELECT name FROM sqlite_schema WHERE type = 'index'").map((row) => row.name));
@@ -522,8 +522,13 @@ function verify(target, manifest, webhookKeyring) {
     "idx_rate_limits_window_start",
     "idx_payment_fee_ledger_status_created",
     "idx_attempts_submitted_expiry",
+    "idx_attempts_intent_active_created",
+    "idx_payment_settlement_commits_intent",
   ]) {
     if (!indexes.has(required)) throw new Error(`Payments scale index missing after migrations: ${required}`);
+  }
+  if (indexes.has("idx_attempts_one_active_per_intent")) {
+    throw new Error("Payments schema still lets one reservation monopolize an intent");
   }
   for (const required of ["fee_policy_id", "fee_policy_version", "platform_fee_bps", "route_fee_cap_bps"]) {
     if (!columns(target, "payment_attempts").has(required)) {

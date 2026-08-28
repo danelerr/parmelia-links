@@ -176,7 +176,7 @@ export default function Onboarding({
 				className="flex flex-col items-center gap-4 animate-fade-up"
 				style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }}
 			>
-				<Turnstile key={challengeRevision} onStateChange={setTurnstile} />
+				<Turnstile key={challengeRevision} action="account_create" onStateChange={setTurnstile} />
 				<button
 					onClick={handleCreateWallet}
 					disabled={creatingWallet || !isTurnstileReady(turnstile)}

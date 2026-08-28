@@ -185,7 +185,7 @@ accountRoutes.post("/create/preflight", requireAuth, async (c) => {
 	if (!userAllowed || !ipAllowed) {
 		return c.json({ error: "Demasiados intentos. Espera un momento.", error_code: ERR.RATE_LIMITED }, 429);
 	}
-	if (!(await verifyTurnstile(c.env, body.turnstileToken, c.req.header("CF-Connecting-IP")))) {
+	if (!(await verifyTurnstile(c.env, body.turnstileToken, c.req.header("CF-Connecting-IP"), "account_create"))) {
 		return c.json({ error: "No pudimos verificar que eres humano.", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
 	}
 	const expectedOrigin = validWebAuthnRegistrationOrigin(c.env, c.req.header("Origin"));
@@ -575,7 +575,7 @@ accountRoutes.post("/fund", requireAuth, async (c) => {
 	}
 
 	const { turnstileToken } = await c.req.json().catch(() => ({ turnstileToken: undefined }));
-	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"));
+	const humanOk = await verifyTurnstile(c.env, turnstileToken, c.req.header("CF-Connecting-IP"), "test_funds");
 	if (!humanOk) {
 		return c.json({ error: "No pudimos verificar que eres humano. Recarga e intenta de nuevo.", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
 	}
