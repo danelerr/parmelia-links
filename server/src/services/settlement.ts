@@ -258,6 +258,20 @@ export async function settlePayment(
 			transports: Array.isArray(meta.transports)
 				? meta.transports.filter((item): item is string => typeof item === "string")
 				: [],
+			rpId: typeof meta.rpId === "string" ? meta.rpId : null,
+			aaguid: typeof meta.aaguid === "string" ? meta.aaguid : null,
+			providerName: typeof meta.providerName === "string" ? meta.providerName : null,
+			credentialDeviceType:
+				meta.credentialDeviceType === "singleDevice" || meta.credentialDeviceType === "multiDevice"
+					? meta.credentialDeviceType
+					: null,
+			credentialBackedUp: typeof meta.credentialBackedUp === "boolean"
+				? meta.credentialBackedUp
+				: null,
+			authenticatorAttachment:
+				meta.authenticatorAttachment === "platform" || meta.authenticatorAttachment === "cross-platform"
+					? meta.authenticatorAttachment
+					: null,
 		});
 	} else if (pending.currency === "PASSKEY_REMOVE") {
 		const credentialId = pending.meta?.credentialId;

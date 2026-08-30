@@ -7,6 +7,8 @@ const serverPackage = JSON.parse(readFileSync(resolve(root, "server", "package.j
 const paymentsPackage = JSON.parse(readFileSync(resolve(root, "payments-worker", "package.json"), "utf8"));
 const appWebDeploy = readFileSync(resolve(root, "scripts", "deploy-phase3-app-web.ps1"), "utf8");
 const sourceGuard = readFileSync(resolve(root, "scripts", "assert-reproducible-deploy-source.mjs"), "utf8");
+const appMigrationGuard = readFileSync(resolve(root, "scripts", "assert-app-remote-migrations.mjs"), "utf8");
+const appD1Evidence = readFileSync(resolve(root, "scripts", "app-d1-security-evidence.mjs"), "utf8");
 
 function assert(condition, message) {
 	if (!condition) throw new Error(message);
@@ -32,6 +34,13 @@ for (const [name, command] of [
 		command.includes("assert-") && command.includes("wrangler deploy"),
 	`${name} deploy script must preserve source, configuration and Wrangler guards in one entrypoint`);
 }
+
+assert(serverPackage.scripts.deploy.includes("assert-app-remote-migrations.mjs"),
+	"The App Worker deploy entrypoint must fail closed on pending App D1 migrations");
+assert(appMigrationGuard.includes('"--remote", "--json", "--command", APP_D1_SECURITY_EVIDENCE_QUERY') &&
+	appMigrationGuard.includes("assertPasskeySecuritySchemaEvidence(evidence)") &&
+	!/(?:INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|CREATE\s+TABLE|REPLACE\s+INTO|migrations\s+apply)/iu.test(`${appMigrationGuard}\n${appD1Evidence}`),
+"The App migration deploy guard must remain strictly read-only");
 
 assert(appWebDeploy.includes("assert-reproducible-deploy-source.mjs') client") &&
 	appWebDeploy.includes("'deploy', '--prod'") && appWebDeploy.includes("remoteMutationPerformed = $false"),

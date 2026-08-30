@@ -140,15 +140,44 @@ test("security treats an unavailable status as unknown and blocks key changes", 
 	await expect(statusAlert).toContainText(/No pudimos verificar tu protección|couldn't verify your protection/i);
 	await expect(page.getByText(/Estado no verificado|Status not verified/i)).toBeVisible();
 	await expect(page.getByText(/Plan de respaldo sin verificar|Backup plan not verified/i)).toBeVisible();
-	await expect(page.getByRole("button", { name: /Agregar otra llave|Add another key/i })).toBeDisabled();
+	await expect(page.getByRole("button", { name: /Agregar passkey de respaldo|Add a backup passkey/i })).toBeDisabled();
 	await expect(page.getByRole("button", { name: /Volver a comprobar|Check again/i })).toBeEnabled();
 	await expectNoWcagViolations(page);
 
 	await openPreview(page, testInfo, "security-chain-error");
 	await expect(page.getByText(/Estado no verificado|Status not verified/i)).toBeVisible();
 	await expect(page.getByText(/Plan de respaldo sin verificar|Backup plan not verified/i)).toBeVisible();
-	await expect(page.getByRole("button", { name: /Agregar otra llave|Add another key/i })).toBeDisabled();
+	await expect(page.getByRole("button", { name: /Agregar passkey de respaldo|Add a backup passkey/i })).toBeDisabled();
 	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).first()).toBeDisabled();
+	await expectNoWcagViolations(page);
+});
+
+test("settings is the single entry point for keys and recovery", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "settings");
+
+	const securityLink = page.getByRole("link", { name: /centro de seguridad|security center/i });
+	await expect(securityLink).toBeVisible();
+	await expect(securityLink).toHaveAttribute("href", "/settings/security");
+	await expectNoWcagViolations(page);
+});
+
+test("a missing signing key guides money flows to Settings instead of Recovery", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "passkey-guidance");
+	await page.getByRole("button", { name: "Trigger passkey guidance" }).click();
+
+	await expect(page.getByText(/No pudimos usar una llave|couldn't use a key/i)).toBeVisible();
+	await expect(page.getByRole("button", { name: /Ir a Configuración|Open Settings/i })).toBeVisible();
+	await expect(page.getByText(/Configuración → Seguridad|Settings → Security/i)).toBeVisible();
+	await expectNoWcagViolations(page);
+});
+
+test("an account without a registered key shows the Security path on Home", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "home-no-keys");
+
+	const securityLink = page.getByRole("link", { name: /Revisa tus llaves antes de pagar|Review your keys before paying/i });
+	await expect(securityLink).toBeVisible();
+	await expect(securityLink).toHaveAttribute("href", "/settings/security");
+	await expect(page.getByText(/Configuración → Seguridad|Settings → Security/i)).toBeVisible();
 	await expectNoWcagViolations(page);
 });
 
@@ -159,6 +188,149 @@ test("security explains why the last active key cannot be removed", async ({ pag
 	await expect(removeButton).toBeDisabled();
 	await expect(page.getByText(/última llave activa|last active key/i)).toBeVisible();
 	await expectNoWcagViolations(page);
+});
+
+test("security discloses passkey storage, metadata, and physical-key options progressively", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security");
+
+	await expect(page.getByRole("button", { name: /Agregar passkey de respaldo|Add a backup passkey/i })).toBeVisible();
+	await expect(page.getByRole("button", { name: /Agregar llave física|Add a physical key/i })).toHaveCount(0);
+
+	await page.getByRole("button", { name: /Dónde se guarda|Where is it stored/i }).click();
+	const storageDialog = page.getByRole("dialog", { name: /Dónde vive tu passkey|Where your passkey lives/i });
+	await expect(storageDialog).toContainText(/GatoPago no puede verla|GatoPago cannot see it/i);
+	await storageDialog.getByRole("button", { name: /Cerrar|Close/i }).click();
+
+	await page.getByRole("button", { name: /Otras opciones|Other options/i }).click();
+	const optionsDialog = page.getByRole("dialog", { name: /Otra forma de guardar|Another way to store/i });
+	await expect(optionsDialog.getByRole("button", { name: /Agregar llave física|Add a physical key/i })).toBeVisible();
+	await optionsDialog.getByRole("button", { name: /Cancelar|Cancel/i }).click();
+
+	await page.getByRole("button", { name: /Más información|More information/i }).first().click();
+	const detailsDialog = page.getByRole("dialog", { name: /Información de esta llave|Information about this key/i });
+	await expect(detailsDialog).toContainText("Google Password Manager");
+	await expect(detailsDialog).toContainText("app.parmelia.me");
+	await expectNoWcagViolations(page);
+});
+
+test("security accepts only same-origin return destinations", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security&returnTo=%2Fpay%3Fid%3Dsafe-link");
+	const returnLink = page.getByRole("link", { name: /Volver a la operación|Return to operation/i });
+	await expect(returnLink).toHaveAttribute("href", "/pay?id=safe-link");
+
+	for (const malicious of [
+		"https%3A%2F%2Fevil.example",
+		"%2F%2Fevil.example",
+		"%2F%255Cevil.example",
+	]) {
+		await openPreview(page, testInfo, `security&returnTo=${malicious}`);
+		await expect(page.getByRole("link", { name: /Volver a la operación|Return to operation/i })).toHaveCount(0);
+	}
+});
+
+test("security signals only a complete credential inventory to the passkey manager", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
+	await page.addInitScript(() => {
+		const calls: Array<{ method: string; options: unknown }> = [];
+		Object.defineProperty(window, "__passkeySignalCalls", { value: calls, configurable: true });
+		if (typeof PublicKeyCredential === "undefined") return;
+		Object.defineProperty(PublicKeyCredential, "signalCurrentUserDetails", {
+			configurable: true,
+			value: async (options: unknown) => { calls.push({ method: "current", options }); },
+		});
+		Object.defineProperty(PublicKeyCredential, "signalAllAcceptedCredentials", {
+			configurable: true,
+			value: async (options: unknown) => { calls.push({ method: "all", options }); },
+		});
+	});
+	await openPreview(page, testInfo, "security");
+	await expect.poll(async () => page.evaluate(() =>
+		(window as unknown as { __passkeySignalCalls: Array<{ method: string }> })
+			.__passkeySignalCalls.map((call) => call.method),
+	)).toEqual(expect.arrayContaining(["current", "all"]));
+	const inventory = await page.evaluate(() =>
+		(window as unknown as {
+			__passkeySignalCalls: Array<{ method: string; options: { allAcceptedCredentialIds?: string[] } }>;
+		}).__passkeySignalCalls.find((call) => call.method === "all")?.options,
+	);
+	expect(inventory?.allAcceptedCredentialIds).toEqual([
+		"preview-primary-key",
+		"preview-backup-key",
+	]);
+
+	await openPreview(page, testInfo, "security-chain-error");
+	await expect.poll(async () => page.evaluate(() =>
+		(window as unknown as { __passkeySignalCalls: Array<{ method: string }> })
+			.__passkeySignalCalls.map((call) => call.method),
+	)).toContain("current");
+	const degradedMethods = await page.evaluate(() =>
+		(window as unknown as { __passkeySignalCalls: Array<{ method: string }> })
+			.__passkeySignalCalls.map((call) => call.method),
+	);
+	expect(degradedMethods).not.toContain("all");
+});
+
+test("security requests the intended WebAuthn authenticator for each creation option", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
+	await page.addInitScript(() => {
+		Object.defineProperty(window, "__passkeyCreateOptions", { value: [], configurable: true });
+		Object.defineProperty(navigator.credentials, "create", {
+			configurable: true,
+			value: async (options: CredentialCreationOptions) => {
+				(window as unknown as { __passkeyCreateOptions: CredentialCreationOptions[] })
+					.__passkeyCreateOptions.push(options);
+				throw new DOMException("Test cancellation", "NotAllowedError");
+			},
+		});
+	});
+	await page.route("**/account/passkey/registration/preflight", async (route) => {
+		await route.fulfill({
+			contentType: "application/json",
+			body: JSON.stringify({
+				registrationId: "test-registration",
+				challenge: "AQIDBAUGBwgJCgsMDQ4PEA",
+				rpId: "127.0.0.1",
+				excludeCredentials: [{ id: "cHJldmlldy1wcmltYXJ5LWtleQ", transports: ["internal"] }],
+			}),
+		});
+	});
+	await openPreview(page, testInfo, "security");
+
+	await page.getByRole("button", { name: /Agregar passkey de respaldo|Add a backup passkey/i }).click();
+	await expect.poll(async () => page.evaluate(() =>
+		(window as unknown as { __passkeyCreateOptions: CredentialCreationOptions[] })
+			.__passkeyCreateOptions.length,
+	)).toBe(1);
+	let selection = await page.evaluate(() => {
+		const options = (window as unknown as { __passkeyCreateOptions: Array<{
+			publicKey?: PublicKeyCredentialCreationOptions & { hints?: string[] };
+		}> }).__passkeyCreateOptions[0].publicKey;
+		return {
+			attachment: options?.authenticatorSelection?.authenticatorAttachment,
+			hints: options?.hints,
+			exclusions: options?.excludeCredentials?.length,
+		};
+	});
+	expect(selection).toEqual({ attachment: "platform", hints: ["client-device"], exclusions: 1 });
+
+	await page.getByRole("button", { name: /Otras opciones|Other options/i }).click();
+	await page.getByRole("dialog", { name: /Otra forma de guardar|Another way to store/i })
+		.getByRole("button", { name: /Agregar llave física|Add a physical key/i }).click();
+	await expect.poll(async () => page.evaluate(() =>
+		(window as unknown as { __passkeyCreateOptions: CredentialCreationOptions[] })
+			.__passkeyCreateOptions.length,
+	)).toBe(2);
+	selection = await page.evaluate(() => {
+		const options = (window as unknown as { __passkeyCreateOptions: Array<{
+			publicKey?: PublicKeyCredentialCreationOptions & { hints?: string[] };
+		}> }).__passkeyCreateOptions[1].publicKey;
+		return {
+			attachment: options?.authenticatorSelection?.authenticatorAttachment,
+			hints: options?.hints,
+			exclusions: options?.excludeCredentials?.length,
+		};
+	});
+	expect(selection).toEqual({ attachment: "cross-platform", hints: ["security-key"], exclusions: 1 });
 });
 
 test("security keeps failed rename and removal actions open for retry", async ({ page }, testInfo) => {

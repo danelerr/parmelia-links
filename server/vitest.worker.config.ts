@@ -30,6 +30,8 @@ export default defineConfig({
 					}),
 					FIREBASE_WEB_API_KEY: "runtime-test-key",
 					APP_URL: "https://app.parmelia.me",
+					PASSKEY_RP_ID: "app.parmelia.me",
+					PASSKEY_ALLOWED_ORIGINS: "https://app.parmelia.me",
 					TURNSTILE_SECRET_KEY: "runtime-turnstile-secret",
 					AUTH_EMAIL_FROM: "runtime@example.com",
 					TEST_MIGRATIONS: await readD1Migrations(`${serverRoot}migrations`),

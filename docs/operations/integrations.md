@@ -94,15 +94,48 @@ los tres nombres remotos; no lee ni imprime sus valores.
 3. El cliente guarda localmente el correo, nunca lo incluye en la URL, y consume
    el link con `signInWithEmailLink`. Si lo abre en otro dispositivo, debe volver
    a escribir el correo.
-4. Recovery solicita `/auth/step-up/email-link/request`. El link lleva sólo un
-   challenge aleatorio; después de reautenticar, el Worker exige UID y
-   `auth_time` recientes y lo canjea una vez por un proof limitado a recovery.
+4. El login termina en la App. No muestra ni dispara recovery, no crea una
+   passkey y no envía un segundo correo.
+5. Si una operación monetaria no puede usar una llave, o Home no encuentra una
+   llave registrada, la App dirige a `Configuración → Seguridad`. Ese es el
+   único hub para revisar llaves, agregar un respaldo o elegir recuperación.
+6. Sólo cuando la persona elige recovery dentro de Seguridad se solicita
+   `/auth/step-up/email-link/request`. El link lleva un challenge aleatorio;
+   después de reautenticar, el Worker exige UID y `auth_time` recientes y lo
+   canjea una vez por un proof limitado a recovery. Consumir el link muestra
+   “Identidad confirmada” y espera otro gesto explícito: nunca abre WebAuthn ni
+   propone/ejecuta recovery automáticamente.
 
 La tabla `auth_email_link_challenges` sólo conserva HMAC, UID, acción, TTL y
 estado de consumo. La migración `0035_firebase_email_links.sql` invalida códigos
 legacy activos al hacer el corte de la App. Las rutas numéricas se conservan de
 forma temporal únicamente para el Dashboard/Business y no son parte del login
 de consumo.
+
+### Google Auth no es Google Password Manager
+
+`Continuar con Google` sólo prueba la identidad Firebase. No guarda ni sincroniza
+la passkey de pago. La passkey se guarda en el proveedor que el sistema operativo
+o navegador ofrezca al crearla:
+
+- Google Password Manager la sincroniza con la misma cuenta de Google en Android
+  y Chrome. En iOS 17 o posterior puede usarse si Google/Chrome está habilitado
+  como proveedor de contraseñas y autocompletado; no basta con haber iniciado
+  sesión en Google.
+- En iPhone, el proveedor predeterminado suele ser Passwords/iCloud Keychain. Esa
+  passkey se sincroniza entre dispositivos Apple con la misma Apple Account, no
+  automáticamente hacia Android.
+- WebAuthn vincula cada passkey a un Relying Party ID. Hoy GatoPago registra con
+  el host de la App (`app.parmelia.me`). Antes de migrar a `app.gatopago.com` se
+  debe definir y probar una estrategia de RP ID; cambiar sólo DNS o Vercel no
+  hace que las llaves existentes sean válidas en el dominio nuevo.
+
+Referencias oficiales: [entornos soportados por Google Password
+Manager](https://developers.google.com/identity/passkeys/supported-environments),
+[Google Password Manager en
+iPhone](https://support.google.com/accounts/answer/17301064), [passkeys de Apple
+e iCloud Keychain](https://support.apple.com/guide/iphone/use-passkeys-iphf538ea8d0/ios)
+y [WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/).
 
 ---
 
@@ -156,9 +189,12 @@ código local.
 
 ## Orden sugerido de ejecución
 
-1. Aplicar todas las migraciones D1 hasta `0035_firebase_email_links.sql` antes
-   de desplegar el App Worker que consulta la nueva tabla.
-2. Validar Turnstile, `APP_URL`, Google, Email Link y los tres secretos ya
+1. Aplicar todas las migraciones D1 hasta
+   `0036_passkey_security_metadata.sql` antes de desplegar el App Worker; el
+   entrypoint de deploy lo comprueba de forma remota y falla cerrado.
+2. Validar `PASSKEY_RP_ID=app.parmelia.me`,
+   `PASSKEY_ALLOWED_ORIGINS=https://app.parmelia.me`, Turnstile, `APP_URL`,
+   Google, Email Link y los tres secretos ya
    existentes de Firebase/challenges. No crear una credencial de correo externa.
 3. Validar FCM (VAPID + service account) y GA4 si se mantiene Analytics.
 4. Confirmar Queue, DLQ y migraciones del Durable Object.

@@ -18,6 +18,7 @@ import {
 	validateAlchemyAddressWebhookConfigs,
 } from "./alchemyWebhookConfig";
 import { sponsorshipProviderNames, validateSponsorshipConfig } from "./sponsorship";
+import { originMatchesPasskeyRpId, validPasskeyRpId } from "./passkeyConfig";
 
 export type RuntimeConfigIssue = {
 	code: string;
@@ -96,6 +97,44 @@ function configuredFeeBps(raw: string | undefined): bigint | null {
 	} catch { return null; }
 }
 
+export function validatePasskeySecurityConfig(
+	env: Bindings,
+	options: { requireExplicit?: boolean; requireHttps?: boolean } = {},
+): RuntimeConfigIssue[] {
+	const issues: RuntimeConfigIssue[] = [];
+	const rpId = env.PASSKEY_RP_ID?.trim().toLowerCase();
+	const developmentOnlyRpId = rpId === "localhost" || /^127(?:\.\d{1,3}){3}$/u.test(rpId ?? "");
+	const productionScope = options.requireHttps ?? options.requireExplicit === true;
+	if (!rpId) {
+		if (options.requireExplicit) {
+			issues.push(issue("PASSKEY_RP_ID_MISSING", "PASSKEY_RP_ID must be configured explicitly"));
+		}
+	} else if (!validPasskeyRpId(rpId) || (productionScope && developmentOnlyRpId)) {
+		issues.push(issue("PASSKEY_RP_ID_INVALID", "PASSKEY_RP_ID must be a non-local hostname without scheme, port, or path in production"));
+	}
+
+	const rawOrigins = env.PASSKEY_ALLOWED_ORIGINS?.trim();
+	const origins = rawOrigins?.split(",").map((origin) => origin.trim()).filter(Boolean) ?? [];
+	if (origins.length === 0) {
+		if (options.requireExplicit) {
+			issues.push(issue("PASSKEY_ORIGINS_MISSING", "PASSKEY_ALLOWED_ORIGINS must be configured explicitly"));
+		}
+		return issues;
+	}
+
+	const invalidOrigin = origins.some((origin) =>
+		!validExactOrigin(origin, productionScope) ||
+		(Boolean(rpId) && validPasskeyRpId(rpId) && !originMatchesPasskeyRpId(origin, rpId!)),
+	);
+	if (invalidOrigin) {
+		issues.push(issue(
+			"PASSKEY_ORIGINS_INVALID",
+			"PASSKEY_ALLOWED_ORIGINS must contain exact compatible origins for PASSKEY_RP_ID",
+		));
+	}
+	return issues;
+}
+
 /** Dependencies required by Firebase magic links and recovery step-up proofs. */
 export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[] {
 	const issues: RuntimeConfigIssue[] = [];
@@ -141,6 +180,10 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 
 	const network = getNetworkConfig(chainKey as SupportedChainKey);
 	const mainnet = !network.isTestnet;
+	issues.push(...validatePasskeySecurityConfig(env, {
+		requireExplicit: true,
+		requireHttps: mainnet,
+	}));
 	for (const code of validateSponsorshipConfig(env)) {
 		issues.push(issue(code, "Sponsorship provider configuration is invalid"));
 	}

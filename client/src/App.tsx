@@ -15,15 +15,9 @@ import {
 	loadHomeCache,
 	saveHomeCache,
 } from "./lib/homeData";
-import {
-	readMigratedStorage,
-	removeMigratedStorage,
-	writeStorage,
-} from "./lib/storageMigration";
+import { writeStorage } from "./lib/storageMigration";
 
 const REF_STORAGE_KEY = "gatopago:ref";
-const RECOVER_INTENT_KEY = "gatopago:recover-intent";
-const LEGACY_RECOVER_INTENT_KEY = "parmelia:recover-intent";
 
 // Lazy-load pages so each route ships as its own chunk and the initial bundle stays small.
 const Login = lazy(() => import("./pages/Login"));
@@ -225,14 +219,6 @@ function App() {
 			return splash;
 		}
 		if (user) {
-			// "Lost your key?" tapped before signing in (Login saves the flag, same
-			// pattern as gatopago:ref): consume it once and land on /recover instead
-			// of Home. If email auth completes in another browser the flag is simply
-			// absent - the Home banner is the fallback entry.
-			if (readMigratedStorage(RECOVER_INTENT_KEY, LEGACY_RECOVER_INTENT_KEY)) {
-				removeMigratedStorage(RECOVER_INTENT_KEY, LEGACY_RECOVER_INTENT_KEY);
-				return <Navigate to="/recover" />;
-			}
 			return <Navigate to="/" />;
 		}
 		return <Login />;
@@ -296,16 +282,24 @@ function App() {
 						element={renderProtectedRoute(user ? <Settings user={user} /> : null)}
 					/>
 					<Route
+						path="/settings/security"
+						element={renderProtectedRoute(user ? <Security user={user} /> : null)}
+					/>
+					<Route
+						path="/settings/security/recovery"
+						element={renderProtectedRoute(user ? <Recover user={user} /> : null)}
+					/>
+					<Route
 						path="/test-funds"
 						element={renderProtectedRoute(user ? <TestFunds user={user} /> : null)}
 					/>
 					<Route
 						path="/recover"
-						element={renderProtectedRoute(user ? <Recover user={user} /> : null)}
+						element={renderProtectedRoute(<Navigate to="/settings/security/recovery" replace />)}
 					/>
 					<Route
 						path="/security"
-						element={renderProtectedRoute(user ? <Security user={user} /> : null)}
+						element={renderProtectedRoute(<Navigate to="/settings/security" replace />)}
 					/>
 					<Route path="/pay" element={<PayPage user={user} />} />
 					<Route path="/pay/status" element={<PaymentStatus user={user} />} />

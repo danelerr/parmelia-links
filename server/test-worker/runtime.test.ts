@@ -100,9 +100,13 @@ function cborBytes(value: Uint8Array): Uint8Array {
 async function registrationFixture(input: {
 	challenge: string;
 	origin: string;
+	rpId?: string;
 	credentialLabel: string;
 	qxByte?: number;
 	qyByte?: number;
+	aaguid?: string;
+	backedUp?: boolean;
+	authenticatorAttachment?: "platform" | "cross-platform";
 }) {
 	const encoder = new TextEncoder();
 	const credentialIdBytes = encoder.encode(input.credentialLabel);
@@ -112,7 +116,7 @@ async function registrationFixture(input: {
 	const rpIdHash = new Uint8Array(
 		await crypto.subtle.digest(
 			"SHA-256",
-			encoder.encode(new URL(input.origin).hostname),
+			encoder.encode(input.rpId ?? new URL(input.origin).hostname),
 		),
 	);
 	const credentialLength = new Uint8Array([
@@ -126,10 +130,13 @@ async function registrationFixture(input: {
 		new Uint8Array([0x22]),
 		cborBytes(y),
 	);
+	const aaguid = input.aaguid
+		? new Uint8Array(input.aaguid.replace(/-/gu, "").match(/.{2}/gu)!.map((value) => Number.parseInt(value, 16)))
+		: new Uint8Array(16);
 	const authData = bytes(
 		rpIdHash,
-		new Uint8Array([0x45, 0, 0, 0, 0]), // UP + UV + attested credential data
-		new Uint8Array(16),
+		new Uint8Array([input.backedUp ? 0x5d : 0x45, 0, 0, 0, 0]), // UP + UV + AT (+ BE/BS)
+		aaguid,
 		credentialLength,
 		credentialIdBytes,
 		coseKey,
@@ -158,7 +165,7 @@ async function registrationFixture(input: {
 		clientDataJSON: base64url(clientData),
 		attestationObject: base64url(attestationObject),
 		clientExtensionResults: {},
-		authenticatorAttachment: "platform" as const,
+		authenticatorAttachment: input.authenticatorAttachment ?? "platform" as const,
 	};
 }
 
@@ -311,6 +318,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0033_payments_worker_boundary.sql",
 			"0034_sponsorship_observability.sql",
 			"0035_firebase_email_links.sql",
+			"0036_passkey_security_metadata.sql",
 		]);
 	});
 
@@ -399,7 +407,19 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"PRAGMA table_info(passkeys)",
 		).all<{ name: string }>();
 		expect(passkeyColumns.results.map((row) => row.name)).toEqual(
-			expect.arrayContaining(["name", "registration_source", "transports_json", "revoked_at"]),
+			expect.arrayContaining([
+				"name",
+				"registration_source",
+				"transports_json",
+				"rp_id",
+				"aaguid",
+				"provider_name",
+				"credential_device_type",
+				"credential_backed_up",
+				"authenticator_attachment",
+				"metadata_updated_at",
+				"revoked_at",
+			]),
 		);
 		const emailCodeColumns = await env.GATOPAGO_DB.prepare(
 			"PRAGMA table_info(auth_email_codes)",
@@ -408,8 +428,16 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const registrationColumns = await env.GATOPAGO_DB.prepare(
 			"PRAGMA table_info(webauthn_registration_challenges)",
 		).all<{ name: string }>();
-		expect(registrationColumns.results.map((row) => row.name)).toContain(
-			"verification_attempts",
+		expect(registrationColumns.results.map((row) => row.name)).toEqual(
+			expect.arrayContaining([
+				"verification_attempts",
+				"expected_rp_id",
+				"aaguid",
+				"provider_name",
+				"credential_device_type",
+				"credential_backed_up",
+				"authenticator_attachment",
+			]),
 		);
 
 		await expect(
@@ -559,10 +587,15 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const origin = "https://app.parmelia.me";
 		expect(validWebAuthnRegistrationOrigin(env, origin)).toBe(origin);
 		expect(validWebAuthnRegistrationOrigin(env, "https://evil.example")).toBeNull();
+		expect(validWebAuthnRegistrationOrigin(env, "https://dashboard.parmelia.me")).toBeNull();
 		const issued = await issueWebAuthnRegistration(env, {
 			uid,
 			purpose: "passkey_add",
 			expectedOrigin: origin,
+		});
+		expect(issued).toMatchObject({
+			rpId: "app.parmelia.me",
+			excludeCredentials: [],
 		});
 		const credential = {
 			registrationId: issued.registrationId,
@@ -584,6 +617,12 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			credentialId: credential.credentialId,
 			name: "Runtime key",
 			transports: ["internal"],
+			rpId: "app.parmelia.me",
+			aaguid: null,
+			providerName: null,
+			credentialDeviceType: "singleDevice",
+			credentialBackedUp: false,
+			authenticatorAttachment: "platform",
 		});
 		await expect(finalizeWebAuthnRegistration(env, {
 			uid,
@@ -595,6 +634,33 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			purpose: "passkey_add",
 			credential: { ...credential, credentialId: "different_credential" },
 		})).rejects.toBeInstanceOf(InvalidWebAuthnRegistrationError);
+
+		const syncedIssued = await issueWebAuthnRegistration(env, {
+			uid: `${uid}-synced`,
+			purpose: "passkey_add",
+			expectedOrigin: origin,
+		});
+		const syncedCredential = {
+			registrationId: syncedIssued.registrationId,
+			...(await registrationFixture({
+				challenge: syncedIssued.challenge,
+				origin,
+				rpId: syncedIssued.rpId,
+				credentialLabel: "runtime_synced_credential",
+				aaguid: "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+				backedUp: true,
+			})),
+		};
+		await expect(finalizeWebAuthnRegistration(env, {
+			uid: `${uid}-synced`,
+			purpose: "passkey_add",
+			credential: syncedCredential,
+		})).resolves.toMatchObject({
+			aaguid: "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+			providerName: "Google Password Manager",
+			credentialDeviceType: "multiDevice",
+			credentialBackedUp: true,
+		});
 	});
 
 	it("persists passkey addition and revocation only from confirmed settlement", async () => {
@@ -633,11 +699,39 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			qy: `0x${"32".repeat(32)}`,
 			name: "Backup phone",
 			transports: ["internal"],
+			rpId: "app.parmelia.me",
+			aaguid: "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+			providerName: "Google Password Manager",
+			credentialDeviceType: "multiDevice",
+			credentialBackedUp: true,
+			authenticatorAttachment: "platform",
 		}), `0x${"81".repeat(32)}`);
 		const active = await env.GATOPAGO_DB.prepare(
-			"SELECT name, registration_source, revoked_at FROM passkeys WHERE credential_id = ?",
-		).bind(credentialId).first<{ name: string; registration_source: string; revoked_at: string | null }>();
-		expect(active).toEqual({ name: "Backup phone", registration_source: "backup", revoked_at: null });
+			`SELECT name, registration_source, rp_id, aaguid, provider_name,
+			        credential_device_type, credential_backed_up,
+			        authenticator_attachment, revoked_at
+			 FROM passkeys WHERE credential_id = ?`,
+		).bind(credentialId).first<Record<string, unknown>>();
+		expect(active).toEqual({
+			name: "Backup phone",
+			registration_source: "backup",
+			rp_id: "app.parmelia.me",
+			aaguid: "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+			provider_name: "Google Password Manager",
+			credential_device_type: "multiDevice",
+			credential_backed_up: 1,
+			authenticator_attachment: "platform",
+			revoked_at: null,
+		});
+		const nextRegistration = await issueWebAuthnRegistration(env, {
+			uid,
+			purpose: "passkey_add",
+			expectedOrigin: "https://app.parmelia.me",
+		});
+		expect(nextRegistration.excludeCredentials).toContainEqual({
+			id: credentialId,
+			transports: ["internal"],
+		});
 
 		await settlePayment(env, pending("PASSKEY_REMOVE", { credentialId }), `0x${"82".repeat(32)}`);
 		const revoked = await env.GATOPAGO_DB.prepare(

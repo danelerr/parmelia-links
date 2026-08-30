@@ -2,7 +2,7 @@ import type { TFunction } from "i18next";
 import { activeNetwork } from "./activeNetwork";
 import { APP_URL } from "./brand";
 
-export const PAYMENT_APP_HOST = new URL(APP_URL).hostname;
+const PAYMENT_APP_HOST = new URL(APP_URL).hostname;
 
 /** Translate known ERC-4337, WebAuthn and balance errors; bound unknown text. */
 export function parsePaymentError(message: string, t: TFunction): string {

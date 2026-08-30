@@ -40,8 +40,8 @@ worker -> firebase : verifica firma, UID y claims
 firebase --> worker : identidad válida
 worker --> app : sesión App autorizada
 
-opt Recovery con magic link
-  person -> app : solicita reautenticación
+opt Recovery elegida en Configuración > Seguridad
+  person -> app : elige recovery y confirma enviar el link
   app -> worker : POST /auth/step-up/email-link/request
   worker -> d1 : guarda hash de challenge, UID y expiración
   worker -> firebase : solicita EMAIL_SIGNIN con challenge opaco
@@ -50,19 +50,26 @@ opt Recovery con magic link
   app -> worker : canje + ID token reciente
   worker -> d1 : compara UID/auth_time y consume una vez (CAS)
   worker --> app : proof step-up acotada
-  app -> worker : segundo canje del mismo challenge
-  worker --> app : rechazo de replay
+  app -> person : Identidad confirmada; espera CTA explícito
+  person -> app : confirma crear/activar llave
+  app -> worker : preflight/propose/execute con proof
+  worker -> d1 : consume proof una vez (CAS)
+  worker --> app : operación aceptada
+  app -> worker : replay del mismo challenge/proof
+  worker --> app : rechazo
 end
 
 note over app,firebase
   Firebase envía y consume el magic link.
   No hay Resend, SMTP ni código de seis dígitos.
+  El login normal nunca inicia recovery ni crea una passkey.
   La prueba remota debe confirmar el mismo UID con Google y Email Link.
 end note
 
 note over worker,d1
-  Estado amarillo: candidato local verificado.
-  La migración 0035 y el deploy App siguen pendientes.
+  0035 y el login App están promovidos.
+  La UX centralizada de llaves está verificada localmente,
+  pendiente de versionar, desplegar y validar en producción.
 end note
 
 @enduml

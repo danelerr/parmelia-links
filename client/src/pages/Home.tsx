@@ -80,6 +80,23 @@ export default function Home({ user, previewModel }: { user: User; previewModel?
 				</div>
 			</header>
 
+			{home?.security.hasRegisteredPasskey === false ? (
+				<LinkButton
+					to="/settings/security"
+					className="meli-paper-card interactive-surface mb-5 border-l-4 border-l-pending p-4 text-left"
+				>
+					<span className="block font-display text-[16px] text-pending">
+						{t("passkeyGuidance.noneTitle")}
+					</span>
+					<span className="mt-1 block text-[12px] leading-relaxed text-text-muted">
+						{t("passkeyGuidance.noneBody")}
+					</span>
+					<span className="mt-3 inline-block font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-pending">
+						{t("passkeyGuidance.noneCta")} →
+					</span>
+				</LinkButton>
+			) : null}
+
 			<section aria-labelledby="available-heading" className="meli-balance-card-app p-5">
 				<div className="mb-3 flex items-center justify-between gap-3">
 					<h1 id="available-heading" className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">{t("home.available")}</h1>

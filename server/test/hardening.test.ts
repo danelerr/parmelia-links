@@ -17,8 +17,13 @@ import { validateWebhookUrl } from "../src/routes/merchant.routes";
 import { routerAuthorizationDeadline, RouterError } from "../src/services/paymentRouter";
 import {
 	validateEmailSecurityConfig,
+	validatePasskeySecurityConfig,
 	validateRuntimeConfig,
 } from "../src/services/runtimeConfig";
+import {
+	configuredPasskeyOrigins,
+	configuredPasskeyRpId,
+} from "../src/services/passkeyConfig";
 import { internalTransferSenderAddresses } from "../src/services/indexer";
 import { getRpcEndpointCapabilities } from "../src/services/rpcProviders";
 import { __test as healthTest } from "../src/services/health";
@@ -57,6 +62,8 @@ function envFor(chainKey: string, extra: Partial<Bindings> = {}): Bindings {
 		FIREBASE_PROJECT_ID: "test",
 		GATOPAGO_DB: emptyDb,
 		CHAIN_KEY: chainKey as Bindings["CHAIN_KEY"],
+		PASSKEY_RP_ID: "localhost",
+		PASSKEY_ALLOWED_ORIGINS: "http://localhost:5173",
 		...extra,
 	};
 }
@@ -386,6 +393,50 @@ describe("webhook hardening", () => {
 describe("runtime configuration", () => {
 	it("accepts a minimal valid testnet configuration", () => {
 		expect(validateRuntimeConfig(envFor("arbitrum-sepolia"))).toEqual([]);
+	});
+
+	it("keeps WebAuthn on an explicit, compatible RP ID and origin set", () => {
+		expect(validatePasskeySecurityConfig(envFor("arbitrum-sepolia", {
+			PASSKEY_RP_ID: "app.parmelia.me",
+			PASSKEY_ALLOWED_ORIGINS: "https://app.parmelia.me,https://rescue.app.parmelia.me",
+		}))).toEqual([]);
+		expect(validatePasskeySecurityConfig(envFor("arbitrum-sepolia", {
+			PASSKEY_RP_ID: "https://app.parmelia.me",
+			PASSKEY_ALLOWED_ORIGINS: "https://app.parmelia.me",
+		})).map((entry) => entry.code)).toContain("PASSKEY_RP_ID_INVALID");
+		expect(validatePasskeySecurityConfig(envFor("arbitrum-sepolia", {
+			PASSKEY_RP_ID: "app.parmelia.me",
+			PASSKEY_ALLOWED_ORIGINS: "https://dashboard.parmelia.me",
+		})).map((entry) => entry.code)).toContain("PASSKEY_ORIGINS_INVALID");
+		const missingProduction = validatePasskeySecurityConfig(
+			envFor("arbitrum-one", {
+				PASSKEY_RP_ID: undefined,
+				PASSKEY_ALLOWED_ORIGINS: undefined,
+			}),
+			{ requireExplicit: true },
+		).map((entry) => entry.code);
+		expect(missingProduction).toEqual(expect.arrayContaining([
+			"PASSKEY_RP_ID_MISSING",
+			"PASSKEY_ORIGINS_MISSING",
+		]));
+		expect(validateRuntimeConfig(envFor("arbitrum-sepolia", {
+			PASSKEY_RP_ID: undefined,
+			PASSKEY_ALLOWED_ORIGINS: undefined,
+		})).map((entry) => entry.code)).toEqual(expect.arrayContaining([
+			"PASSKEY_RP_ID_MISSING",
+			"PASSKEY_ORIGINS_MISSING",
+		]));
+	});
+
+	it("never derives WebAuthn scope from APP_URL or the CORS allowlist", () => {
+		const env = envFor("arbitrum-sepolia", {
+			APP_URL: "https://app.parmelia.me",
+			ALLOWED_ORIGINS: "https://app.parmelia.me,https://dashboard.parmelia.me",
+			PASSKEY_RP_ID: undefined,
+			PASSKEY_ALLOWED_ORIGINS: undefined,
+		});
+		expect(configuredPasskeyOrigins(env)).toEqual([]);
+		expect(() => configuredPasskeyRpId(env)).toThrow("PASSKEY_RP_ID");
 	});
 
 	it("fails closed for incomplete mainnet configuration", () => {

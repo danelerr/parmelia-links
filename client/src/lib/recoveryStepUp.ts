@@ -1,6 +1,6 @@
 export type RecoveryStepUpAction = "start" | "execute";
 
-type StoredRecoveryStepUp = {
+export type StoredRecoveryStepUp = {
 	stepUpToken: string;
 	action: RecoveryStepUpAction;
 	expiresAt: number;

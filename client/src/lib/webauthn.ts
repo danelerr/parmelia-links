@@ -10,8 +10,19 @@ export type RememberedPasskey = {
 	credentialId: string;
 	qx: string;
 	qy: string;
+	rpId?: string;
 	createdAt: string;
 	lastUsedAt: string;
+};
+
+export type PasskeyCreationMode = "device" | "security-key";
+
+export type PasskeyRegistrationChallenge = {
+	registrationId: string;
+	challenge: string;
+	rpId: string;
+	excludeCredentials?: Array<{ id: string; transports?: string[] }>;
+	name?: string;
 };
 
 function bufferToBase64url(buffer: ArrayBuffer): string {
@@ -34,29 +45,21 @@ function bytesToHex(bytes: Uint8Array): string {
 	return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function getConfiguredAppHost() {
-	const appUrl = import.meta.env.VITE_APP_URL;
-	if (!appUrl) return null;
-
-	try {
-		return new URL(appUrl).hostname;
-	} catch {
-		return null;
-	}
-}
-
-function getRelyingPartyId() {
-	const currentHost = window.location.hostname;
-	const configuredHost = getConfiguredAppHost();
-
+function assertRpIdForCurrentOrigin(value: string): string {
+	const rpId = value.trim().toLowerCase();
+	const currentHost = window.location.hostname.toLowerCase();
+	const localDevelopmentHost =
+		currentHost === "localhost" ||
+		currentHost.endsWith(".localhost") ||
+		/^127(?:\.\d{1,3}){3}$/u.test(currentHost);
 	if (
-		configuredHost &&
-		(currentHost === configuredHost || currentHost.endsWith(`.${configuredHost}`))
+		!rpId ||
+		(currentHost !== rpId && !currentHost.endsWith(`.${rpId}`)) ||
+		(window.location.protocol !== "https:" && !localDevelopmentHost)
 	) {
-		return configuredHost;
+		throw new Error(i18n.t("webauthn.invalidRpId"));
 	}
-
-	return currentHost;
+	return rpId;
 }
 
 function canUseLocalStorage() {
@@ -84,6 +87,16 @@ function writeRememberedPasskeys(passkeys: Record<string, RememberedPasskey>) {
 }
 
 /**
+ * Local hint only. A passkey synchronized by Google Password Manager or iCloud
+ * may be usable even when this browser has no GatoPago metadata for it.
+ */
+export function hasRememberedPasskeyHint(credentialId?: string | null): boolean {
+	const remembered = readRememberedPasskeys();
+	if (credentialId) return Boolean(remembered[credentialId]);
+	return Object.keys(remembered).length > 0;
+}
+
+/**
  * Whether any passkey remembered on this device is a REGISTERED signer of the
  * account. Signers are ERC-7913 bytes (verifier(20) || qx(32) || qy(32)), so
  * matching by qx||qy suffix works across verifier redeploys. Precise where
@@ -106,7 +119,7 @@ export function hasUsableKeyForSigners(signers: readonly string[]): boolean {
 	});
 }
 
-export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string }) {
+export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string; rpId?: string }) {
 	const remembered = readRememberedPasskeys();
 	const existing = remembered[passkey.credentialId];
 	const now = new Date().toISOString();
@@ -115,6 +128,7 @@ export function rememberPasskey(passkey: { credentialId: string; qx: string; qy:
 		credentialId: passkey.credentialId,
 		qx: passkey.qx,
 		qy: passkey.qy,
+		...(passkey.rpId ? { rpId: passkey.rpId } : {}),
 		createdAt: existing?.createdAt || now,
 		lastUsedAt: now,
 	};
@@ -166,7 +180,8 @@ function resolveRememberedPasskey(
 export async function createPasskey(
 	userId: string,
 	label?: string,
-	registration?: { registrationId: string; challenge: string; name?: string },
+	registration?: PasskeyRegistrationChallenge,
+	mode: PasskeyCreationMode = "device",
 ): Promise<{
 	registrationId: string;
 	credentialId: string;
@@ -177,33 +192,55 @@ export async function createPasskey(
 	clientExtensionResults: AuthenticationExtensionsClientOutputs;
 	authenticatorAttachment?: AuthenticatorAttachment;
 	transports: string[];
+	rpId: string;
+	creationMode: PasskeyCreationMode;
 	name?: string;
 }> {
-	if (!registration?.registrationId || !registration.challenge) {
+	if (!registration?.registrationId || !registration.challenge || !registration.rpId) {
 		throw new Error(i18n.t("webauthn.registrationExpired"));
 	}
 	const challenge = new Uint8Array(base64urlToBuffer(registration.challenge));
-	const rpId = getRelyingPartyId();
+	const rpId = assertRpIdForCurrentOrigin(registration.rpId);
 	const displayLabel = label?.trim() || i18n.t("webauthn.accountLabel");
+	const transportValues = new Set<AuthenticatorTransport>([
+		"ble",
+		"hybrid",
+		"internal",
+		"nfc",
+		"usb",
+	]);
+	const excludeCredentials = (registration.excludeCredentials ?? [])
+		.filter((entry) => Boolean(entry.id))
+		.map((entry): PublicKeyCredentialDescriptor => ({
+			id: base64urlToBuffer(entry.id),
+			type: "public-key",
+			transports: entry.transports
+				?.filter((transport): transport is AuthenticatorTransport =>
+					transportValues.has(transport as AuthenticatorTransport),
+				),
+		}));
+	const publicKey: PublicKeyCredentialCreationOptions & { hints?: string[] } = {
+		rp: { name: "GatoPago", id: rpId },
+		user: {
+			id: new TextEncoder().encode(userId),
+			name: displayLabel,
+			displayName: displayLabel,
+		},
+		challenge,
+		pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+		authenticatorSelection: {
+			authenticatorAttachment: mode === "security-key" ? "cross-platform" : "platform",
+			residentKey: "required",
+			userVerification: "required",
+		},
+		attestation: "none",
+		timeout: 60000,
+		...(excludeCredentials.length > 0 ? { excludeCredentials } : {}),
+		hints: [mode === "security-key" ? "security-key" : "client-device"],
+	};
 
 	const credential = (await navigator.credentials.create({
-		publicKey: {
-			rp: { name: "GatoPago", id: rpId },
-			user: {
-				id: new TextEncoder().encode(userId),
-				name: displayLabel,
-				displayName: displayLabel,
-			},
-			challenge,
-			pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-			authenticatorSelection: {
-				authenticatorAttachment: "platform",
-				residentKey: "required",
-				userVerification: "required",
-			},
-			attestation: "none",
-			timeout: 60000,
-		},
+		publicKey,
 	})) as PublicKeyCredential | null;
 
 	if (!credential) throw new Error(i18n.t("webauthn.createError"));
@@ -229,6 +266,8 @@ export async function createPasskey(
 		transports: typeof attestation.getTransports === "function"
 			? attestation.getTransports()
 			: [],
+		rpId,
+		creationMode: mode,
 		...(registration.name ? { name: registration.name } : {}),
 	};
 }
@@ -250,11 +289,12 @@ function extractP256PublicKey(attestation: AuthenticatorAttestationResponse): { 
 
 async function requestAssertion(
 	challenge: Uint8Array,
+	rpId: string,
 	credentialId?: string | null,
 ): Promise<PublicKeyCredential | null> {
 	const publicKey: PublicKeyCredentialRequestOptions = {
 		challenge: challenge.buffer as ArrayBuffer,
-		rpId: getRelyingPartyId(),
+		rpId: assertRpIdForCurrentOrigin(rpId),
 		userVerification: "required",
 		timeout: 60000,
 	};
@@ -264,7 +304,6 @@ async function requestAssertion(
 			{
 				id: base64urlToBuffer(credentialId),
 				type: "public-key",
-				transports: ["internal", "hybrid"],
 			},
 		];
 	}
@@ -283,7 +322,8 @@ async function requestAssertion(
  */
 export async function signWithPasskey(
 	challenge: Uint8Array,
-	credentialId?: string | null,
+	credentialId: string | null | undefined,
+	rpId: string,
 ): Promise<{
 	authenticatorData: string;
 	clientDataJSON: string;
@@ -298,10 +338,10 @@ export async function signWithPasskey(
 
 	const attempts = credentialId
 		? [
-			() => requestAssertion(challenge, credentialId),
-			() => requestAssertion(challenge),
+			() => requestAssertion(challenge, rpId, credentialId),
+			() => requestAssertion(challenge, rpId),
 		]
-		: [() => requestAssertion(challenge)];
+		: [() => requestAssertion(challenge, rpId)];
 
 	for (const attempt of attempts) {
 		try {

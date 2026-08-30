@@ -203,7 +203,7 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 				? buildDepositCalls(network, account, amountRaw!)
 				: buildWithdrawCalls(network, account, withdrawAll ? null : amountRaw);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
 			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: encodeExecuteBatch(calls),
@@ -230,6 +230,7 @@ earnRoutes.post("/prepare", requireAuth, async (c) => {
 		return c.json({
 			userOpHash,
 			credentialId: profile?.credentialId ?? null,
+			rpId,
 			submissionTransport,
 			signingPayload,
 			summary: { action, amount: ledgerAmount, apyPercent: status.apyPercent, withdrawAll },

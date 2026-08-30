@@ -16,9 +16,6 @@ import {
 } from "../lib/firebase";
 import { humanizeError, isUserCancelled } from "../lib/notify";
 import { storeRecoveryStepUp } from "../lib/recoveryStepUp";
-import { writeStorage } from "../lib/storageMigration";
-
-const RECOVER_INTENT_KEY = "gatopago:recover-intent";
 
 type Mode = "buttons" | "email" | "sent" | "completing" | "need-email";
 type BusyAction = "google" | "request" | "resend" | "complete" | null;
@@ -67,7 +64,6 @@ export default function Login() {
 	const [email, setEmail] = useState(storedEmail);
 	const [busy, setBusy] = useState<BusyAction>(null);
 	const [inlineError, setInlineError] = useState<string | null>(null);
-	const [recoverIntent, setRecoverIntent] = useState(false);
 	const [resendAt, setResendAt] = useState(0);
 	const [clock, setClock] = useState(() => Date.now());
 	const [challengeRevision, setChallengeRevision] = useState(0);
@@ -119,7 +115,7 @@ export default function Login() {
 				});
 				storeRecoveryStepUp(proof);
 				clearPendingEmailLinkRequest();
-				window.location.replace("/recover");
+				window.location.replace("/settings/security/recovery");
 				return;
 			}
 			clearPendingEmailLinkRequest();
@@ -269,11 +265,6 @@ export default function Login() {
 						<button type="button" onClick={() => void handleGoogle()} disabled={busy !== null} aria-busy={busy === "google"} className="btn btn-primary btn-block"><GoogleIcon />{busy === "google" ? t("login.signingIn") : t("login.continueGoogle")}</button>
 						<button type="button" onClick={openEmailMode} disabled={busy !== null} className="btn btn-ghost btn-block"><MailIcon />{t("login.continueEmail")}</button>
 						<p className="mt-1 max-w-[340px] text-[12px] leading-relaxed text-text-faint">{t("login.identityNote")}</p>
-						{recoverIntent ? (
-							<p className="max-w-[300px] text-center text-[13px] leading-relaxed text-text-muted">{t("recover.loginHint")}</p>
-						) : (
-							<button type="button" onClick={() => { writeStorage(RECOVER_INTENT_KEY, "1"); setRecoverIntent(true); }} className="btn-text">{t("recover.loginLink")}</button>
-						)}
 					</>
 				)}
 

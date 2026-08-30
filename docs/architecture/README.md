@@ -99,8 +99,10 @@ Las decisiones y fundamentos de esta corrección están en
 [runbook de cutover](../runbooks/payments-cutover.md); la producción histórica
 debe pasar primero por el
 [reemplazo semántico](../runbooks/payments-semantic-recut.md).
-El corte pendiente de autenticación usa el
-[runbook App-only](../runbooks/phase-3-app-magic-link-cutover.md).
+El corte histórico de autenticación está en el
+[runbook de magic links](../runbooks/phase-3-app-magic-link-cutover.md); la
+promoción vigente del modelo de llaves usa el
+[runbook Passkey v2](../runbooks/phase-3-app-passkey-v2-cutover.md).
 
 ## Fronteras que no deben romperse
 

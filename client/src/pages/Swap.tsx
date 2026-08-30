@@ -10,6 +10,7 @@ import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { useTranslation } from "react-i18next";
 import { formatAmount, formatNumber } from "../lib/format";
@@ -75,6 +76,7 @@ function maxAmountForInput(value: string): string {
 
 export default function Swap({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const guideToPasskeys = usePasskeyGuidance();
 	const { t } = useTranslation();
 	const [tokens, setTokens] = useState<SwapToken[]>([]);
 	const [swapsEnabled, setSwapsEnabled] = useState(true);
@@ -262,6 +264,7 @@ export default function Swap({ user }: { user: User }) {
 			const assertion = await signWithPasskey(
 				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
+				prep.rpId,
 			);
 
 			setStage("sending");
@@ -278,7 +281,9 @@ export default function Swap({ user }: { user: User }) {
 			setUseMax(false);
 			if (submit.confirmed) void loadBalances(true);
 		} catch (err) {
-			notifyError(err, t("swap.swapError"));
+			if (!guideToPasskeys(err, prep.credentialId)) {
+				notifyError(err, t("swap.swapError"));
+			}
 		} finally {
 			setStage("idle");
 		}

@@ -7,8 +7,14 @@ import {
 	cose,
 	decodeCredentialPublicKey,
 } from "@simplewebauthn/server/helpers";
-import { getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../env";
+import {
+	configuredPasskeyOrigins,
+	configuredPasskeyRpId,
+	originMatchesPasskeyRpId,
+} from "./passkeyConfig";
+import { passkeyProviderMetadata } from "./passkeyMetadata";
+import { listPasskeysByUid } from "./storage/passkeys";
 
 const REGISTRATION_TTL_SECONDS = 5 * 60;
 const CREDENTIAL_ID_RE = /^[A-Za-z0-9_-]{8,1024}$/;
@@ -29,11 +35,17 @@ type RegistrationRow = {
 	purpose: WebAuthnRegistrationPurpose;
 	challenge: string;
 	expected_origin: string;
+	expected_rp_id: string | null;
 	credential_id: string | null;
 	qx: string | null;
 	qy: string | null;
 	name: string | null;
 	transports_json: string | null;
+	aaguid: string | null;
+	provider_name: string | null;
+	credential_device_type: "singleDevice" | "multiDevice" | null;
+	credential_backed_up: number | null;
+	authenticator_attachment: "platform" | "cross-platform" | null;
 	claim_id: string | null;
 	verification_attempts: number;
 	finalized_at: string | null;
@@ -61,6 +73,12 @@ export type FinalizedWebAuthnRegistration = {
 	qy: string;
 	name: string | null;
 	transports: string[];
+	rpId: string;
+	aaguid: string | null;
+	providerName: string | null;
+	credentialDeviceType: "singleDevice" | "multiDevice" | null;
+	credentialBackedUp: boolean | null;
+	authenticatorAttachment: "platform" | "cross-platform" | null;
 };
 
 export class InvalidWebAuthnRegistrationError extends Error {
@@ -74,10 +92,6 @@ function base64url(bytes: Uint8Array): string {
 	let binary = "";
 	for (const byte of bytes) binary += String.fromCharCode(byte);
 	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function allowedOrigins(env: Bindings): string[] {
-	return env.ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
 }
 
 /** Resolve the browser origin that a registration challenge may be bound to. */
@@ -95,13 +109,19 @@ export function validWebAuthnRegistrationOrigin(
 		return null;
 	}
 
-	const configured = allowedOrigins(env);
-	if (configured.length > 0) return configured.includes(normalized) ? normalized : null;
+	const configured = configuredPasskeyOrigins(env);
+	if (configured.length > 0) {
+		if (!configured.includes(normalized)) return null;
+		try {
+			return originMatchesPasskeyRpId(normalized, configuredPasskeyRpId(env))
+				? normalized
+				: null;
+		} catch {
+			return null;
+		}
+	}
 
-	// An open origin is a local/testnet convenience only. Runtime configuration
-	// already requires an exact HTTPS allowlist before mainnet traffic is served.
-	const network = getNetworkConfig(env.CHAIN_KEY);
-	return network.isTestnet ? normalized : null;
+	return null;
 }
 
 export async function issueWebAuthnRegistration(
@@ -111,13 +131,24 @@ export async function issueWebAuthnRegistration(
 		purpose: WebAuthnRegistrationPurpose;
 		expectedOrigin: string;
 	},
-): Promise<{ registrationId: string; challenge: string; expiresInSeconds: number }> {
+): Promise<{
+	registrationId: string;
+	challenge: string;
+	expiresInSeconds: number;
+	rpId: string;
+	excludeCredentials: Array<{ id: string; transports: string[] }>;
+}> {
 	const id = crypto.randomUUID();
 	const challengeBytes = crypto.getRandomValues(new Uint8Array(32));
 	const challenge = base64url(challengeBytes);
 	const now = new Date();
 	const createdAt = now.toISOString();
 	const expiresAt = new Date(now.getTime() + REGISTRATION_TTL_SECONDS * 1_000).toISOString();
+	const rpId = configuredPasskeyRpId(env);
+	if (!originMatchesPasskeyRpId(input.expectedOrigin, rpId)) {
+		throw new Error("WebAuthn origin is outside the configured RP ID");
+	}
+	const existingPasskeys = await listPasskeysByUid(env, input.uid);
 
 	await env.GATOPAGO_DB.batch([
 		env.GATOPAGO_DB.prepare(
@@ -127,20 +158,30 @@ export async function issueWebAuthnRegistration(
 		).bind(createdAt, input.uid, input.purpose),
 		env.GATOPAGO_DB.prepare(
 			`INSERT INTO webauthn_registration_challenges (
-				id, uid, purpose, challenge, expected_origin, expires_at, created_at
-			 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				id, uid, purpose, challenge, expected_origin, expected_rp_id,
+				expires_at, created_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		).bind(
 			id,
 			input.uid,
 			input.purpose,
 			challenge,
 			input.expectedOrigin,
+			rpId,
 			expiresAt,
 			createdAt,
 		),
 	]);
 
-	return { registrationId: id, challenge, expiresInSeconds: REGISTRATION_TTL_SECONDS };
+	return {
+		registrationId: id,
+		challenge,
+		expiresInSeconds: REGISTRATION_TTL_SECONDS,
+		rpId,
+		excludeCredentials: existingPasskeys
+			.filter((passkey) => !passkey.rpId || passkey.rpId === rpId)
+			.map((passkey) => ({ id: passkey.credentialId, transports: passkey.transports })),
+	};
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -167,12 +208,18 @@ function validEncodedResponse(credential: WebAuthnRegistrationCredential): boole
 async function verifyCredentialResponse(
 	row: RegistrationRow,
 	credential: WebAuthnRegistrationCredential,
-): Promise<{ qx: string; qy: string }> {
+): Promise<{
+	qx: string;
+	qy: string;
+	aaguid: string | null;
+	providerName: string | null;
+	credentialDeviceType: "singleDevice" | "multiDevice";
+	credentialBackedUp: boolean;
+	authenticatorAttachment: "platform" | "cross-platform" | null;
+}> {
 	if (!validEncodedResponse(credential)) throw new InvalidWebAuthnRegistrationError();
-	let rpId: string;
-	try {
-		rpId = new URL(row.expected_origin).hostname;
-	} catch {
+	const rpId = row.expected_rp_id;
+	if (!rpId || !originMatchesPasskeyRpId(row.expected_origin, rpId)) {
 		throw new InvalidWebAuthnRegistrationError();
 	}
 
@@ -229,7 +276,16 @@ async function verifyCredentialResponse(
 		) {
 			throw new InvalidWebAuthnRegistrationError();
 		}
-		return { qx, qy };
+		const provider = passkeyProviderMetadata(verification.registrationInfo.aaguid);
+		return {
+			qx,
+			qy,
+			aaguid: provider.aaguid,
+			providerName: provider.providerName,
+			credentialDeviceType: verification.registrationInfo.credentialDeviceType,
+			credentialBackedUp: verification.registrationInfo.credentialBackedUp,
+			authenticatorAttachment: credential.authenticatorAttachment ?? null,
+		};
 	} catch (error) {
 		if (error instanceof InvalidWebAuthnRegistrationError) throw error;
 		throw new InvalidWebAuthnRegistrationError();
@@ -257,8 +313,10 @@ async function claimWebAuthnRegistration(
 
 	const now = new Date().toISOString();
 	const row = await env.GATOPAGO_DB.prepare(
-		`SELECT id, uid, purpose, challenge, expected_origin,
+		`SELECT id, uid, purpose, challenge, expected_origin, expected_rp_id,
 		        credential_id, qx, qy, name, transports_json,
+		        aaguid, provider_name, credential_device_type,
+		        credential_backed_up, authenticator_attachment,
 		        claim_id, verification_attempts, finalized_at, expires_at, consumed_at
 		 FROM webauthn_registration_challenges
 		 WHERE id = ? AND uid = ? AND purpose = ?
@@ -334,6 +392,14 @@ function finalizedFromRow(row: RegistrationRow): FinalizedWebAuthnRegistration |
 		qy: row.qy,
 		name: row.name,
 		transports,
+		rpId: row.expected_rp_id!,
+		aaguid: row.aaguid,
+		providerName: row.provider_name,
+		credentialDeviceType: row.credential_device_type,
+		credentialBackedUp: row.credential_backed_up === null
+			? null
+			: row.credential_backed_up === 1,
+		authenticatorAttachment: row.authenticator_attachment,
 	};
 }
 
@@ -342,8 +408,10 @@ async function readRegistration(
 	input: { registrationId: string; uid: string; purpose: WebAuthnRegistrationPurpose },
 ): Promise<RegistrationRow | null> {
 	return env.GATOPAGO_DB.prepare(
-		`SELECT id, uid, purpose, challenge, expected_origin,
+		`SELECT id, uid, purpose, challenge, expected_origin, expected_rp_id,
 		        credential_id, qx, qy, name, transports_json,
+		        aaguid, provider_name, credential_device_type,
+		        credential_backed_up, authenticator_attachment,
 		        claim_id, verification_attempts, finalized_at, expires_at, consumed_at
 		 FROM webauthn_registration_challenges
 		 WHERE id = ? AND uid = ? AND purpose = ?
@@ -377,6 +445,33 @@ export async function finalizeWebAuthnRegistration(
 			alreadyFinalized.qx.toLowerCase() !== verified.qx ||
 			alreadyFinalized.qy.toLowerCase() !== verified.qy
 		) throw new InvalidWebAuthnRegistrationError();
+		if (
+			alreadyFinalized.credentialDeviceType === null ||
+			alreadyFinalized.credentialBackedUp === null
+		) {
+			await env.GATOPAGO_DB.prepare(
+				`UPDATE webauthn_registration_challenges
+				 SET aaguid = ?, provider_name = ?, credential_device_type = ?,
+				     credential_backed_up = ?, authenticator_attachment = ?
+				 WHERE id = ? AND uid = ? AND finalized_at IS NOT NULL`,
+			).bind(
+				verified.aaguid,
+				verified.providerName,
+				verified.credentialDeviceType,
+				verified.credentialBackedUp ? 1 : 0,
+				verified.authenticatorAttachment,
+				alreadyFinalized.registrationId,
+				input.uid,
+			).run();
+			return {
+				...alreadyFinalized,
+				aaguid: verified.aaguid,
+				providerName: verified.providerName,
+				credentialDeviceType: verified.credentialDeviceType,
+				credentialBackedUp: verified.credentialBackedUp,
+				authenticatorAttachment: verified.authenticatorAttachment,
+			};
+		}
 		return alreadyFinalized;
 	}
 
@@ -389,6 +484,8 @@ export async function finalizeWebAuthnRegistration(
 		const completed = await env.GATOPAGO_DB.prepare(
 			`UPDATE webauthn_registration_challenges
 			 SET credential_id = ?, qx = ?, qy = ?, name = ?, transports_json = ?,
+			     aaguid = ?, provider_name = ?, credential_device_type = ?,
+			     credential_backed_up = ?, authenticator_attachment = ?,
 			     finalized_at = ?, consumed_at = ?
 			 WHERE id = ? AND claim_id = ? AND consumed_at IS NULL`,
 		).bind(
@@ -397,6 +494,11 @@ export async function finalizeWebAuthnRegistration(
 			verified.qy,
 			name,
 			JSON.stringify(transports),
+			verified.aaguid,
+			verified.providerName,
+			verified.credentialDeviceType,
+			verified.credentialBackedUp ? 1 : 0,
+			verified.authenticatorAttachment,
 			finalizedAt,
 			finalizedAt,
 			claim.registrationId,
@@ -412,6 +514,12 @@ export async function finalizeWebAuthnRegistration(
 			qy: verified.qy,
 			name,
 			transports,
+			rpId: claim.row.expected_rp_id!,
+			aaguid: verified.aaguid,
+			providerName: verified.providerName,
+			credentialDeviceType: verified.credentialDeviceType,
+			credentialBackedUp: verified.credentialBackedUp,
+			authenticatorAttachment: verified.authenticatorAttachment,
 		};
 	} catch (error) {
 		await releaseWebAuthnRegistration(env, claim).catch(() => undefined);

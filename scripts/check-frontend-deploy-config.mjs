@@ -31,13 +31,22 @@ function requireSources(policy, directive, expected, label) {
   assert.ok(!sources.includes("*"), `${label} ${directive} must not use a global wildcard`);
 }
 
-const [clientConfig, dashboardConfig, clientEnv, dashboardEnv, appWrangler, deployHelper] = await Promise.all([
+const [
+  clientConfig,
+  dashboardConfig,
+  clientEnv,
+  dashboardEnv,
+  appWrangler,
+  deployHelper,
+  clientFirebase,
+] = await Promise.all([
   readJson("client/vercel.json"),
   readJson("dashboard/vercel.json"),
   readFile("client/.env.example", "utf8"),
   readFile("dashboard/.env.example", "utf8"),
   readFile("server/wrangler.jsonc", "utf8"),
   readFile("scripts/deploy-phase2-frontends.ps1", "utf8"),
+  readFile("client/src/lib/firebase.ts", "utf8"),
 ]);
 
 const clientPolicy = cspFrom(clientConfig, "Client");
@@ -85,5 +94,14 @@ assert.ok(!deployHelper.includes("--token"), "Frontend deploy helper must never 
 assert.ok(!deployHelper.includes("'--team'"), "Frontend deploy helper must use Vercel's current --scope option");
 assert.ok(!/git\s+(?:commit|push)/u.test(deployHelper),
   "Frontend deploy helper must not infer commit/push authorization");
+
+assert.match(clientFirebase, /initializeAuth\(app,\s*\{[\s\S]*?persistence:\s*browserLocalPersistence,[\s\S]*?popupRedirectResolver:\s*browserPopupRedirectResolver,[\s\S]*?\}\)/u,
+  "Client must select durable persistence and the redirect resolver atomically during Firebase Auth initialization");
+assert.doesNotMatch(clientFirebase, /\bgetAuth\s*\(/u,
+  "Client must not start Firebase Auth before choosing persistence");
+assert.doesNotMatch(clientFirebase, /\bsetPersistence\s*\(/u,
+  "Client must not race a late persistence change against redirect recovery");
+assert.ok(clientFirebase.indexOf("initializeAuth(app") < clientFirebase.indexOf("getRedirectResult(auth)"),
+  "Firebase Auth must be initialized before redirect recovery starts");
 
 console.log("Frontend deployment boundaries and API origins are configured consistently.");

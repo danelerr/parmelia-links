@@ -17,7 +17,11 @@ import { useTranslation } from "react-i18next";
 import type { User } from "../lib/firebase";
 import { ApiError, apiFetch } from "../lib/api";
 import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
-import { createPasskey, rememberPasskey } from "../lib/webauthn";
+import {
+	createPasskey,
+	rememberPasskey,
+	type PasskeyRegistrationChallenge,
+} from "../lib/webauthn";
 import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
 import { formatDateTime } from "../lib/format";
 import { useViewTransitionNavigate } from "../hooks/useNav";
@@ -33,15 +37,22 @@ import {
 	removeMigratedStorage,
 	writeStorage,
 } from "../lib/storageMigration";
-import { clearRecoveryStepUp, readRecoveryStepUp } from "../lib/recoveryStepUp";
+import {
+	clearRecoveryStepUp,
+	readRecoveryStepUp,
+	type RecoveryStepUpAction,
+	type StoredRecoveryStepUp,
+} from "../lib/recoveryStepUp";
 
 const POINTER_KEY = "gatopago:recovery-credential:v1";
 const LEGACY_POINTER_KEY = "parmelia:recovery-credential:v1";
 
 type RecoveryPointer = {
+	registrationId?: string;
 	credentialId: string;
 	qx: string;
 	qy: string;
+	rpId?: string;
 	proposedAt: string;
 };
 
@@ -116,8 +127,8 @@ export default function Recover({ user }: { user: User }) {
 	// Inline double-tap confirmation for cancel (no ConfirmSheet: no amount here).
 	const [cancelArmed, setCancelArmed] = useState(false);
 	const [stepUpAction, setStepUpAction] = useState<"start" | "execute" | null>(null);
+	const [stepUpProof, setStepUpProof] = useState<StoredRecoveryStepUp | null>(() => readRecoveryStepUp());
 	const cancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const stepUpHandled = useRef(false);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -166,9 +177,9 @@ export default function Recover({ user }: { user: User }) {
 
 	const handleStart = useCallback(async (stepUpToken: string) => {
 		setPhase("proposing");
-		let preflight: { registrationId: string; challenge: string };
+		let preflight: PasskeyRegistrationChallenge;
 		try {
-			preflight = await apiFetch<{ registrationId: string; challenge: string }>(
+			preflight = await apiFetch<PasskeyRegistrationChallenge>(
 				"/account/recovery/preflight",
 				{
 					user,
@@ -245,7 +256,12 @@ export default function Recover({ user }: { user: User }) {
 		try {
 			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/execute", {
 				user,
-				body: { credentialId: pointer.credentialId, qx: pointer.qx, qy: pointer.qy },
+				body: {
+					registrationId: pointer.registrationId,
+					credentialId: pointer.credentialId,
+					qx: pointer.qx,
+					qy: pointer.qy,
+				},
 				headers: { "X-Step-Up-Token": stepUpToken },
 			});
 			await waitForAccountOperation(user, operation);
@@ -291,30 +307,23 @@ export default function Recover({ user }: { user: User }) {
 		}
 	}, [refresh, user]);
 
-	useEffect(() => {
-		if (stepUpHandled.current) return;
-		const proof = readRecoveryStepUp();
-		if (!proof) return;
-		if (proof.action === "start" && visiblePhase === "intro") {
-			stepUpHandled.current = true;
-			clearRecoveryStepUp();
-			queueMicrotask(() => void handleStart(proof.stepUpToken));
+	function runVerifiedStep(
+		action: RecoveryStepUpAction,
+		handler: (token: string) => Promise<void>,
+	) {
+		if (stepUpProof?.action !== action) {
+			if (stepUpProof) {
+				clearRecoveryStepUp();
+				setStepUpProof(null);
+			}
+			setStepUpAction(action);
 			return;
 		}
-		if (proof.action === "execute" && visiblePhase === "ready") {
-			stepUpHandled.current = true;
-			clearRecoveryStepUp();
-			queueMicrotask(() => void handleExecute(proof.stepUpToken));
-			return;
-		}
-		if (
-			visiblePhase !== "loading" &&
-			!(proof.action === "execute" && visiblePhase === "pending")
-		) {
-			stepUpHandled.current = true;
-			clearRecoveryStepUp();
-		}
-	}, [handleExecute, handleStart, visiblePhase]);
+		const token = stepUpProof.stepUpToken;
+		clearRecoveryStepUp();
+		setStepUpProof(null);
+		void handler(token);
+	}
 
 	async function handleCancel() {
 		if (!cancelArmed) {
@@ -372,7 +381,7 @@ export default function Recover({ user }: { user: User }) {
 	if (visiblePhase === "loading") {
 		return (
 			<Screen>
-				<BackHeader to="/" replace />
+				<BackHeader to="/settings/security" replace />
 				<FormPageSkeleton />
 			</Screen>
 		);
@@ -381,7 +390,7 @@ export default function Recover({ user }: { user: User }) {
 	if (visiblePhase === "no-wallet") {
 		return (
 			<Screen>
-				<BackHeader to="/" replace title={t("recover.title")} />
+				<BackHeader to="/settings/security" replace title={t("recover.title")} />
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<p className="text-[14px] text-text-muted mb-6">{t("recover.noWalletBody")}</p>
 					<LinkButton to="/" replace className="btn btn-primary">
@@ -397,7 +406,7 @@ export default function Recover({ user }: { user: User }) {
 		return (
 			<>
 			<Screen>
-				<BackHeader to="/" replace title={t("recover.title")} />
+				<BackHeader to="/settings/security" replace title={t("recover.title")} />
 
 				<p className="text-[14px] text-text leading-relaxed mb-6">{t("recover.promise")}</p>
 
@@ -422,10 +431,17 @@ export default function Recover({ user }: { user: User }) {
 					<p className="text-[12px] text-text-muted leading-relaxed">{t("recover.warning")}</p>
 				</div>
 
+				{stepUpProof?.action === "start" ? (
+					<div className="mb-5 border-2 border-growth bg-growth/10 p-3.5" role="status">
+						<p className="font-display text-[14px] text-growth">{t("recover.identityConfirmedTitle")}</p>
+						<p className="mt-1 text-[12px] leading-relaxed text-text-muted">{t("recover.identityConfirmedBody")}</p>
+					</div>
+				) : null}
+
 				<div className="flex-1" />
 
-				<button onClick={() => setStepUpAction("start")} className="btn btn-primary btn-block">
-					{t("recover.cta")}
+				<button onClick={() => runVerifiedStep("start", handleStart)} className="btn btn-primary btn-block">
+					{stepUpProof?.action === "start" ? t("recover.ctaConfirmed") : t("recover.cta")}
 				</button>
 			</Screen>
 			{stepUpAction === "start" ? (
@@ -443,7 +459,7 @@ export default function Recover({ user }: { user: User }) {
 		const msLeft = Math.max(0, executableAt - now);
 		return (
 			<Screen>
-				<BackHeader to="/" replace />
+				<BackHeader to="/settings/security" replace />
 				<TxResult
 					state="progress"
 					lead={t("recover.pendingLead")}
@@ -484,7 +500,7 @@ export default function Recover({ user }: { user: User }) {
 		return (
 			<>
 			<Screen>
-				<BackHeader to="/" replace />
+				<BackHeader to="/settings/security" replace />
 				<TxResult
 					state="progress"
 					lead={t("recover.readyLead")}
@@ -492,8 +508,8 @@ export default function Recover({ user }: { user: User }) {
 				>
 					{visiblePhase === "ready" ? (
 						<>
-							<button onClick={() => setStepUpAction("execute")} className="btn btn-primary btn-block mt-6">
-								{t("recover.readyCta")}
+							<button onClick={() => runVerifiedStep("execute", handleExecute)} className="btn btn-primary btn-block mt-6">
+								{stepUpProof?.action === "execute" ? t("recover.readyCtaConfirmed") : t("recover.readyCta")}
 							</button>
 							{cancelButton}
 						</>
@@ -544,7 +560,7 @@ export default function Recover({ user }: { user: User }) {
 	// error: retry re-reads the server state and lands on the right actionable phase.
 	return (
 		<Screen>
-			<BackHeader to="/" replace />
+			<BackHeader to="/settings/security" replace />
 			<TxResult state="failed" lead={t("recover.errorLead")} body={t("recover.errorBody")}>
 				<button
 					onClick={() => {

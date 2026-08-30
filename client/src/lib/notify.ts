@@ -99,9 +99,15 @@ export function notifySuccess(title: string, description?: string, action?: Toas
 	});
 }
 
-export function notifyWarning(title: string, description?: string) {
+export function notifyWarning(title: string, description?: string, action?: ToastAction) {
 	if (deduped(`w:${title}:${description ?? ""}`)) return;
-	pushToast({ kind: "warning", title, description, duration: DURATION.warning });
+	pushToast({
+		kind: "warning",
+		title,
+		description,
+		action,
+		duration: action ? DURATION.actionable : DURATION.warning,
+	});
 }
 
 /**

@@ -342,7 +342,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		];
 		const executeCalldata = encodeExecuteBatch(calls);
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
 			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: account,
 			callData: executeCalldata,
@@ -432,6 +432,7 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			// For GET /crosschain/status/:opId once the burn is submitted.
 			opId,
 			credentialId: profile?.credentialId ?? null,
+			rpId,
 			signingPayload,
 			summary: {
 				token: "USDC",

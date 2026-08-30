@@ -2,14 +2,14 @@ import { initializeApp } from "firebase/app";
 import { clearHomeCache } from "./homeData";
 import {
 	browserLocalPersistence,
+	browserPopupRedirectResolver,
 	EmailAuthProvider,
-	getAuth,
 	GoogleAuthProvider,
 	getRedirectResult,
+	initializeAuth,
 	isSignInWithEmailLink,
 	onAuthStateChanged,
 	reauthenticateWithCredential,
-	setPersistence,
 	signInWithEmailLink,
 	signInWithPopup,
 	signInWithRedirect,
@@ -29,7 +29,13 @@ const firebaseConfig = {
 };
 
 export const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+// Select persistence before Auth starts. Calling setPersistence after getAuth
+// races the SDK's initial user/redirect reads and can surface transient
+// IndexedDB errors during fast navigation or page shutdown.
+const auth = initializeAuth(app, {
+	persistence: browserLocalPersistence,
+	popupRedirectResolver: browserPopupRedirectResolver,
+});
 const EMAIL_LINK_REQUEST_KEY = "gatopago:firebase-email-link:v1";
 const EMAIL_LINK_REQUEST_TTL_MS = 60 * 60 * 1_000;
 
@@ -42,10 +48,6 @@ type PendingEmailLinkRequest = {
 };
 
 const emailLinkCompletions = new Map<string, Promise<UserCredential>>();
-
-void setPersistence(auth, browserLocalPersistence).catch((error) => {
-	console.error("Failed to set Firebase auth persistence", error);
-});
 
 // Complete any pending redirect sign-in (used by the popup fallback and inside
 // installed PWAs). The signed-in user surfaces through onAuthChange; this call

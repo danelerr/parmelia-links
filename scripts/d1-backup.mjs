@@ -23,6 +23,11 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import {
+  APP_D1_SECURITY_EVIDENCE_QUERY,
+  appliedMigrationNamesFromEvidence,
+  assertPasskeySecuritySchemaEvidence,
+} from "./app-d1-security-evidence.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverDir = resolve(rootDir, "server");
@@ -340,6 +345,12 @@ async function runDrill() {
   try {
     writeDrillConfig(sourceDir);
     wrangler(["d1", "migrations", "apply", database, ...localArgs(sourceDir)]);
+    const securityEvidence = queryLocal(sourceDir, APP_D1_SECURITY_EVIDENCE_QUERY);
+    assertPasskeySecuritySchemaEvidence(securityEvidence);
+    if (!appliedMigrationNamesFromEvidence(securityEvidence)
+      .includes("0036_passkey_security_metadata.sql")) {
+      throw new Error("D1 restore drill did not apply Passkey Security migration 0036");
+    }
     wrangler([
       "d1",
       "execute",

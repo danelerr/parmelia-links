@@ -67,6 +67,8 @@ export default function Onboarding({
 			const preflight = await apiFetch<{
 				registrationId?: string;
 				challenge?: string;
+				rpId?: string;
+				excludeCredentials?: Array<{ id: string; transports?: string[] }>;
 				alreadyExists?: boolean;
 				existingOperation?: AccountOperationResponse;
 			}>("/account/create/preflight", {
@@ -84,13 +86,15 @@ export default function Onboarding({
 				navigate("/", { replace: true });
 				return;
 			}
-			if (!preflight.registrationId || !preflight.challenge) {
+			if (!preflight.registrationId || !preflight.challenge || !preflight.rpId) {
 				throw new Error(t("webauthn.registrationExpired"));
 			}
 			const passkeyLabel = user.email || user.displayName || undefined;
 			const credential = await createPasskey(user.uid, passkeyLabel, {
 				registrationId: preflight.registrationId,
 				challenge: preflight.challenge,
+				rpId: preflight.rpId,
+				excludeCredentials: preflight.excludeCredentials,
 				name: t("webauthn.primaryKeyName"),
 			});
 

@@ -16,6 +16,7 @@ import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { useTranslation } from "react-i18next";
 import { formatAmount, formatNumber } from "../lib/format";
 import Logo from "../components/Logo";
@@ -97,6 +98,7 @@ const TRACK_MAX_DURATION_MS = 30 * 60_000;
 
 export default function CrosschainSend({ user }: { user: User }) {
 	const navigate = useViewTransitionNavigate();
+	const guideToPasskeys = usePasskeyGuidance();
 	const [searchParams] = useSearchParams();
 	const { t } = useTranslation();
 	const recipientParam = searchParams.get("recipient") ?? "";
@@ -289,6 +291,7 @@ export default function CrosschainSend({ user }: { user: User }) {
 			const assertion = await signWithPasskey(
 				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
+				prep.rpId,
 			);
 
 			setStage("sending");
@@ -307,7 +310,9 @@ export default function CrosschainSend({ user }: { user: User }) {
 			setAmount("");
 			void loadBalance(true);
 		} catch (err) {
-			notifyError(err, t("crosschain.sendError"));
+			if (!guideToPasskeys(err, prep.credentialId)) {
+				notifyError(err, t("crosschain.sendError"));
+			}
 		} finally {
 			setStage("idle");
 			setPrepared(null);

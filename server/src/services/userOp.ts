@@ -18,6 +18,7 @@ import {
 } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { getPublicClient } from "./clients";
+import { configuredPasskeyRpId } from "./passkeyConfig";
 import {
 	PAYMASTER_POST_OP_GAS_LIMIT,
 	PAYMASTER_VERIFICATION_GAS_LIMIT,
@@ -97,6 +98,30 @@ export function matchOnchainSigner(signers: readonly Hex[], qx: Hex, qy: Hex): H
 		if (typeof signer === "string" && signer.toLowerCase().endsWith(suffix)) return signer;
 	}
 	return null;
+}
+
+/**
+ * Prove that the management inventory is an exact one-to-one view of every
+ * active signer before exposing it to destructive browser reconciliation APIs.
+ * `signers` may be a paginated slice, so the independent on-chain count is a
+ * mandatory part of the proof.
+ */
+export function isCompletePasskeyInventory(input: {
+	signerCount: bigint;
+	signers: readonly Hex[];
+	passkeys: readonly { qx: string; qy: string; rpId: string | null }[];
+}): boolean {
+	if (
+		input.signerCount !== BigInt(input.signers.length) ||
+		input.signers.length !== input.passkeys.length ||
+		input.passkeys.some((passkey) => !passkey.rpId)
+	) return false;
+
+	const matched = input.passkeys.map((passkey) =>
+		matchOnchainSigner(input.signers, passkey.qx as Hex, passkey.qy as Hex),
+	);
+	return matched.every(Boolean) &&
+		new Set(matched.map((signer) => signer!.toLowerCase())).size === input.signers.length;
 }
 
 /** Replace bigints with hex strings so a UserOp can be persisted as JSON. */
@@ -219,11 +244,13 @@ export async function buildSponsoredUserOp(
 	userOp: PackedUserOp;
 	userOpHash: Hex;
 	chainId: number;
+	rpId: string;
 	signingPayload: UserOperationSigningPayload;
 	sponsorshipProvider: SponsorshipProviderName;
 	sponsorshipPaymasterAddress: Address | null;
 }> {
 	const network = getNetworkConfig(env.CHAIN_KEY);
+	const rpId = configuredPasskeyRpId(env);
 	// Fail closed on half-configured networks (TODO_DEPLOY placeholders).
 	assertContractsDeployed(network, ["entryPoint"]);
 	const { contracts } = network;
@@ -348,7 +375,7 @@ export async function buildSponsoredUserOp(
 		);
 	}
 
-	return { userOp, userOpHash, chainId, signingPayload,
+	return { userOp, userOpHash, chainId, rpId, signingPayload,
 		sponsorshipProvider: sponsored.provider,
 		sponsorshipPaymasterAddress: sponsorshipPaymasterAddress(userOp.paymasterAndData) };
 }

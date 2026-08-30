@@ -4,6 +4,7 @@ import {
 	PACKED_USER_OPERATION_EIP712_TYPES,
 	P256_N,
 	buildUserOperationSigningPayload,
+	isCompletePasskeyInventory,
 	matchOnchainSigner,
 	maximumSelfFundedUserOpCost,
 	normalizeLowS,
@@ -164,5 +165,37 @@ describe("matchOnchainSigner", () => {
 	it("returns null for malformed key coordinates", () => {
 		const onchain = [signer(OLD_VERIFIER, QX, QY)];
 		expect(matchOnchainSigner(onchain, "0x1234" as Hex, QY)).toBeNull();
+	});
+});
+
+describe("isCompletePasskeyInventory", () => {
+	type Hex = `0x${string}`;
+	const VERIFIER = "0xb7fa10dee75042d6973676a7d7882e4621b806d6";
+	const qx = ("0x" + "11".repeat(32)) as Hex;
+	const qy = ("0x" + "22".repeat(32)) as Hex;
+	const signer = (VERIFIER + qx.slice(2) + qy.slice(2)) as Hex;
+	const passkey = { qx, qy, rpId: "app.parmelia.me" };
+
+	it("accepts only an exact one-to-one signer inventory", () => {
+		expect(isCompletePasskeyInventory({ signerCount: 1n, signers: [signer], passkeys: [passkey] }))
+			.toBe(true);
+	});
+
+	it("fails closed when the signer page is shorter than the on-chain count", () => {
+		expect(isCompletePasskeyInventory({ signerCount: 33n, signers: [signer], passkeys: [passkey] }))
+			.toBe(false);
+	});
+
+	it("fails closed for unscoped or duplicate management records", () => {
+		expect(isCompletePasskeyInventory({
+			signerCount: 1n,
+			signers: [signer],
+			passkeys: [{ ...passkey, rpId: null }],
+		})).toBe(false);
+		expect(isCompletePasskeyInventory({
+			signerCount: 2n,
+			signers: [signer, signer],
+			passkeys: [passkey, passkey],
+		})).toBe(false);
 	});
 });

@@ -291,6 +291,11 @@ function optionalStringArray(metadata: Record<string, unknown>, key: string): st
 		: [];
 }
 
+function optionalBoolean(metadata: Record<string, unknown>, key: string): boolean | null {
+	const value = metadata[key];
+	return typeof value === "boolean" ? value : null;
+}
+
 async function enqueueAccountSecurityEvent(
 	env: Bindings,
 	effect: Parameters<typeof enqueueUserEvent>[1],
@@ -323,6 +328,18 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 			name: optionalString(metadata, "passkeyName"),
 			registrationSource: "onboarding",
 			transports: optionalStringArray(metadata, "passkeyTransports"),
+			rpId: optionalString(metadata, "passkeyRpId"),
+			aaguid: optionalString(metadata, "passkeyAaguid"),
+			providerName: optionalString(metadata, "passkeyProviderName"),
+			credentialDeviceType: optionalString(metadata, "passkeyCredentialDeviceType") as
+				| "singleDevice"
+				| "multiDevice"
+				| null,
+			credentialBackedUp: optionalBoolean(metadata, "passkeyCredentialBackedUp"),
+			authenticatorAttachment: optionalString(metadata, "passkeyAuthenticatorAttachment") as
+				| "platform"
+				| "cross-platform"
+				| null,
 		});
 		await ensureReferralCode(env, operation.uid).catch(() => null);
 
@@ -377,6 +394,20 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 			qx,
 			qy,
 			registrationSource: "recovery",
+			name: optionalString(metadata, "passkeyName"),
+			transports: optionalStringArray(metadata, "passkeyTransports"),
+			rpId: optionalString(metadata, "passkeyRpId"),
+			aaguid: optionalString(metadata, "passkeyAaguid"),
+			providerName: optionalString(metadata, "passkeyProviderName"),
+			credentialDeviceType: optionalString(metadata, "passkeyCredentialDeviceType") as
+				| "singleDevice"
+				| "multiDevice"
+				| null,
+			credentialBackedUp: optionalBoolean(metadata, "passkeyCredentialBackedUp"),
+			authenticatorAttachment: optionalString(metadata, "passkeyAuthenticatorAttachment") as
+				| "platform"
+				| "cross-platform"
+				| null,
 		});
 		await enqueueAccountSecurityEvent(env, {
 			dedupeKey: `account-operation:${operation.id}:security.recovery_executed`,

@@ -32,10 +32,16 @@ import {
 	submitAccountOperation,
 	toAccountOperationView,
 } from "../services/accountOperations";
-import { buildSponsoredUserOp, matchOnchainSigner, serializeBigInts } from "../services/userOp";
+import {
+	buildSponsoredUserOp,
+	isCompletePasskeyInventory,
+	matchOnchainSigner,
+	serializeBigInts,
+} from "../services/userOp";
 import { verifyTurnstile } from "../services/turnstile";
 import { logError } from "../services/logger";
 import { selectUserOperationTransport } from "../services/userOperationTransport";
+import { configuredPasskeyRpId } from "../services/passkeyConfig";
 import {
 	consumeRecoveryStepUp,
 	validateRecoveryStepUp,
@@ -248,6 +254,12 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 				passkeyName: registration.name,
 				passkeySource: "onboarding",
 				passkeyTransports: registration.transports,
+				passkeyRpId: registration.rpId,
+				passkeyAaguid: registration.aaguid,
+				passkeyProviderName: registration.providerName,
+				passkeyCredentialDeviceType: registration.credentialDeviceType,
+				passkeyCredentialBackedUp: registration.credentialBackedUp,
+				passkeyAuthenticatorAttachment: registration.authenticatorAttachment,
 				ref: typeof body.ref === "string" ? body.ref.trim() : "",
 			},
 		});
@@ -272,6 +284,7 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 	const storedPasskeys = await listPasskeysByUid(c.env, user.sub);
 
 	const base = {
+		rpId: configuredPasskeyRpId(c.env),
 		hasStoredCredential: !!profile?.credentialId,
 		hasWallet: !!walletAddress,
 		chainStatus: walletAddress ? "unavailable" as const : "not_applicable" as const,
@@ -286,11 +299,19 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 		// Settings said "1 llave activa" while paying said "no key" — both true,
 		// one on-chain, one per-device).
 		signers: null as string[] | null,
+		credentialInventoryComplete: false,
 		passkeys: storedPasskeys.map((passkey) => ({
 			credentialId: passkey.credentialId,
 			name: passkey.name,
 			registrationSource: passkey.registrationSource,
 			transports: passkey.transports,
+			rpId: passkey.rpId,
+			aaguid: passkey.aaguid,
+			providerName: passkey.providerName,
+			credentialDeviceType: passkey.credentialDeviceType,
+			credentialBackedUp: passkey.credentialBackedUp,
+			authenticatorAttachment: passkey.authenticatorAttachment,
+			metadataUpdatedAt: passkey.metadataUpdatedAt,
 			createdAt: passkey.createdAt,
 			lastUsedAt: passkey.lastUsedAt,
 			currentHint: passkey.credentialId === profile?.credentialId,
@@ -314,6 +335,11 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			]);
 
 		const executeAfter = Number(pendingRecovery[0]);
+		const credentialInventoryComplete = isCompletePasskeyInventory({
+			signerCount,
+			signers,
+			passkeys: storedPasskeys,
+		});
 		return c.json({
 			...base,
 			chainStatus: "available" as const,
@@ -323,6 +349,7 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			recoveryPending,
 			recoveryExecutableAfter: executeAfter > 0 ? new Date(executeAfter * 1000).toISOString() : null,
 			signers,
+			credentialInventoryComplete,
 		});
 	} catch (error) {
 		// Wallet recorded but on-chain reads failed (RPC issue or not yet mined).
@@ -425,7 +452,7 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 			args: [[newSigner]],
 		});
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
 			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData: callData as Hex,
@@ -454,12 +481,19 @@ accountRoutes.post("/passkey/prepare", requireAuth, async (c) => {
 				name: registration.name,
 				registrationSource: "backup",
 				transports: registration.transports,
+				rpId: registration.rpId,
+				aaguid: registration.aaguid,
+				providerName: registration.providerName,
+				credentialDeviceType: registration.credentialDeviceType,
+				credentialBackedUp: registration.credentialBackedUp,
+				authenticatorAttachment: registration.authenticatorAttachment,
 			},
 		});
 
 		return c.json({
 			userOpHash,
 			credentialId: profile?.credentialId ?? null,
+			rpId,
 			submissionTransport,
 			signingPayload,
 		});
@@ -520,7 +554,7 @@ accountRoutes.post("/passkeys/:credentialId/remove/prepare", requireAuth, async 
 			args: [[onchainSigner]],
 		});
 		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const { userOp, userOpHash, signingPayload, sponsorshipProvider,
+		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
 			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: walletAddress as `0x${string}`,
 			callData,
@@ -545,6 +579,7 @@ accountRoutes.post("/passkeys/:credentialId/remove/prepare", requireAuth, async 
 		return c.json({
 			userOpHash,
 			credentialId: profile.credentialId ?? null,
+			rpId,
 			submissionTransport,
 			signingPayload,
 		});
@@ -745,6 +780,12 @@ accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
 				passkeyName: registration.name,
 				passkeySource: "recovery",
 				passkeyTransports: registration.transports,
+				passkeyRpId: registration.rpId,
+				passkeyAaguid: registration.aaguid,
+				passkeyProviderName: registration.providerName,
+				passkeyCredentialDeviceType: registration.credentialDeviceType,
+				passkeyCredentialBackedUp: registration.credentialBackedUp,
+				passkeyAuthenticatorAttachment: registration.authenticatorAttachment,
 			},
 			signer,
 		});
@@ -777,6 +818,7 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 	const credentialId = typeof body.credentialId === "string" ? body.credentialId : "";
 	const qx = typeof body.qx === "string" ? body.qx : "";
 	const qy = typeof body.qy === "string" ? body.qy : "";
+	const registrationId = typeof body.registrationId === "string" ? body.registrationId : "";
 	if (!credentialId || !qx || !qy) {
 		return c.json({ error: "Missing credentialId, qx, or qy", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 	}
@@ -812,6 +854,22 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 		if (!matchOnchainSigner(pendingRecovery[1], qx as Hex, qy as Hex)) {
 			return c.json({ error: "La llave no coincide con la recuperación propuesta. Cancela y vuelve a empezar.", error_code: ERR.RECOVERY_SIGNER_MISMATCH }, 409);
 		}
+		const registration = registrationId
+			? await getFinalizedWebAuthnRegistration(c.env, {
+				registrationId,
+				uid: user.sub,
+				purpose: "recovery_propose",
+			})
+			: null;
+		if (
+			registrationId &&
+			(!registration ||
+				registration.credentialId !== credentialId ||
+				registration.qx.toLowerCase() !== qx.toLowerCase() ||
+				registration.qy.toLowerCase() !== qy.toLowerCase())
+		) {
+			return c.json({ error: "La metadata de la llave no coincide con la recuperación.", error_code: ERR.WEBAUTHN_REGISTRATION_INVALID }, 409);
+		}
 		const stepUpToken = c.req.header("X-Step-Up-Token");
 		if (!stepUpToken) {
 			return c.json({ error: "Security verification is required", error_code: ERR.STEP_UP_REQUIRED }, 403);
@@ -828,7 +886,20 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 				abi: accountWebAuthnV2Abi,
 				functionName: "executeRecovery",
 			}),
-			metadata: { walletAddress, credentialId, qx, qy },
+			metadata: {
+				walletAddress,
+				credentialId,
+				qx,
+				qy,
+				passkeyName: registration?.name ?? null,
+				passkeyTransports: registration?.transports ?? [],
+				passkeyRpId: registration?.rpId ?? null,
+				passkeyAaguid: registration?.aaguid ?? null,
+				passkeyProviderName: registration?.providerName ?? null,
+				passkeyCredentialDeviceType: registration?.credentialDeviceType ?? null,
+				passkeyCredentialBackedUp: registration?.credentialBackedUp ?? null,
+				passkeyAuthenticatorAttachment: registration?.authenticatorAttachment ?? null,
+			},
 		});
 		return c.json({ ...operationPayload(operation), message: "Recuperación enviada." }, 202);
 	} catch (error) {

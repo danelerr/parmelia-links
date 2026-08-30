@@ -1,6 +1,16 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { validateAppDeployConfig } from "./assert-app-deploy-config.mjs";
+import { STABLE_PASSKEY_RP_ID, validateAppDeployConfig } from "./assert-app-deploy-config.mjs";
+import {
+	assertNoPendingAppMigrations,
+	parseD1JsonOutput,
+	pendingAppMigrations,
+} from "./assert-app-remote-migrations.mjs";
+import {
+	PASSKEY_SECURITY_SCHEMA_EVIDENCE,
+	PASSKEY_SECURITY_SCHEMA_ITEMS,
+	assertPasskeySecuritySchemaEvidence,
+} from "./app-d1-security-evidence.mjs";
 import { missingAppSecretNames, requiredAppSecretNames } from "./assert-app-remote-secrets.mjs";
 import { PAYMENTS_DB_SENTINEL } from "./assert-payments-deploy-config.mjs";
 
@@ -26,7 +36,7 @@ if (currentPayments.includes(PAYMENTS_DB_SENTINEL)) {
 
 const databaseId = "11111111-2222-4333-8444-555555555555";
 const checksum = "11".repeat(32);
-const app = (mode, sync) => `{"vars":{"APP_URL":"https://app.gatopago.com","PAYMENTS_CUTOVER_MODE":"${mode}","PAYMENTS_SYNC_ENABLED":"${sync}"},"services":[{"binding":"PAYMENTS","service":"gatopago-payments-api"}]}`;
+const app = (mode, sync) => `{"vars":{"APP_URL":"https://app.parmelia.me","PASSKEY_RP_ID":"${STABLE_PASSKEY_RP_ID}","PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me","PAYMENTS_CUTOVER_MODE":"${mode}","PAYMENTS_SYNC_ENABLED":"${sync}"},"services":[{"binding":"PAYMENTS","service":"gatopago-payments-api"}]}`;
 const payments = (bootstrap, proof) => `{"vars":{"PAYMENTS_BOOTSTRAP_MODE":"${bootstrap}","PAYMENTS_DATA_CUTOVER_CHECKSUM":"${proof}"},"d1_databases":[{"binding":"PAYMENTS_DB","database_id":"${databaseId}"}]}`;
 
 for (const [mode, sync, bootstrap, proof, stage] of [
@@ -51,8 +61,36 @@ for (const [mode, sync, bootstrap, proof] of [
 }
 
 expectRefused(
-	() => validateAppDeployConfig(app("payments", "true").replace("https://app.gatopago.com", "http://app.gatopago.com"), payments("false", checksum)),
-	"APP_URL must be an exact HTTPS origin",
+	() => validateAppDeployConfig(app("payments", "true").replaceAll("https://app.parmelia.me", "http://app.parmelia.me"), payments("false", checksum)),
+	"APP_URL must be an exact public HTTPS origin",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		`"PASSKEY_RP_ID":"${STABLE_PASSKEY_RP_ID}"`,
+		'"PASSKEY_RP_ID":"app.gatopago.com"',
+	), payments("false", checksum)),
+	"PASSKEY_RP_ID must remain",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		'"PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me"',
+		'"PASSKEY_ALLOWED_ORIGINS":"https://dashboard.parmelia.me"',
+	), payments("false", checksum)),
+	"must be the RP ID or one of its subdomains",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		'"PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me"',
+		'"PASSKEY_ALLOWED_ORIGINS":"http://app.parmelia.me"',
+	), payments("false", checksum)),
+	"exact public HTTPS origin",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		'"PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me"',
+		'"PASSKEY_ALLOWED_ORIGINS":"https://login.app.parmelia.me"',
+	), payments("false", checksum)),
+	"must include APP_URL",
 );
 const cloudflareWrongSender = app("payments", "true").replace(
 	'"services"',
@@ -86,4 +124,34 @@ assert(missingAppSecretNames(app("payments", "true"), required.filter((name) => 
 
 assert(PAYMENTS_DB_SENTINEL === "00000000-0000-0000-0000-000000000002",
 	"Deploy guards disagree about the Payments sentinel");
+assert(JSON.stringify(pendingAppMigrations(["0035.sql", "0036.sql"], ["0035.sql"])) ===
+	JSON.stringify(["0036.sql"]), "The remote migration guard must discover every local pending migration");
+expectRefused(
+	() => assertNoPendingAppMigrations(["0035.sql", "0036.sql"], ["0035.sql"]),
+	"0036.sql",
+);
+expectRefused(
+	() => assertNoPendingAppMigrations([], []),
+	"no local App migrations were discovered",
+);
+assert(assertNoPendingAppMigrations(["0035.sql", "0036.sql"], ["0035.sql", "0036.sql"]).local === 2,
+	"A complete remote migration inventory should pass");
+const parsedD1 = parseD1JsonOutput('Wrangler banner\n[{"results":[{"name":"0036.sql"}]}]');
+assert(parsedD1[0].results[0].name === "0036.sql", "D1 JSON parsing must tolerate a Wrangler banner");
+expectRefused(
+	() => assertPasskeySecuritySchemaEvidence([]),
+	"Passkey Security v2 schema evidence",
+);
+const completeSchemaEvidence = PASSKEY_SECURITY_SCHEMA_EVIDENCE.map(({ kind, item }) => ({
+	kind,
+	item,
+	present: 1,
+}));
+assert(assertPasskeySecuritySchemaEvidence(completeSchemaEvidence).schemaEvidence ===
+	PASSKEY_SECURITY_SCHEMA_ITEMS.length, "A complete Passkey v2 schema inventory should pass");
+expectRefused(
+	() => assertPasskeySecuritySchemaEvidence(completeSchemaEvidence.map((row) =>
+		row.kind === "index" ? { ...row, kind: "migration" } : row)),
+	"idx_passkeys_uid_rp_active",
+);
 console.log("App deploy guard check passed for every supported cutover stage.");

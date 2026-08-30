@@ -48,6 +48,7 @@ export type UserOperationSigningPayload = {
 export type PreparedUserOperation = {
 	userOpHash: Hex;
 	credentialId: string | null;
+	rpId: string;
 	signingPayload: UserOperationSigningPayload;
 };
 

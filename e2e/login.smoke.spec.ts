@@ -251,6 +251,7 @@ test("a recovery magic link exchanges its opaque challenge and sanitizes the URL
 	test.skip(testInfo.project.name.startsWith("dashboard"), "Consumer App recovery-link flow");
 	const challenge = "r".repeat(43);
 	const stepUpToken = "s".repeat(43);
+	let preflightCalls = 0;
 	await mockFirebaseEmailLinkCompletion(page, {
 		email: "qa@example.com",
 		oobCode: "e2e-recovery",
@@ -269,6 +270,41 @@ test("a recovery magic link exchanges its opaque challenge and sanitizes the URL
 			}),
 		});
 	});
+	await page.route("**/home", (route) => route.fulfill({
+		status: 200,
+		contentType: "application/json",
+		body: JSON.stringify({
+			schemaVersion: 1,
+			identity: { uid: "e2e-recovery-user", username: null, displayName: null, socialUrl: null },
+			account: {
+				walletAddress: "0x00000000000000000000000000000000000000aa",
+				chainId: 421614,
+				chainKey: "arbitrum-sepolia",
+				networkName: "Arbitrum Sepolia",
+			},
+			balance: { tokens: {}, savings: null, status: "fresh", observedAt: null, consistentThroughBlock: null, refreshing: false, assets: {} },
+			security: { status: "fresh", hasRegisteredPasskey: true },
+			activity: { status: "fresh", sent: [], received: [], source: "ledger" },
+			operations: { status: "fresh", payments: [], account: [] },
+			alerts: [],
+			stateVersion: "e2e",
+			observedAt: new Date().toISOString(),
+			consistentThroughBlock: null,
+		}),
+	}));
+	await page.route("**/account/passkey", (route) => route.fulfill({
+		status: 200,
+		contentType: "application/json",
+		body: JSON.stringify({
+			hasWallet: true,
+			recoveryPending: false,
+			recoveryExecutableAfter: null,
+		}),
+	}));
+	await page.route("**/account/recovery/preflight", (route) => {
+		preflightCalls += 1;
+		return route.fulfill({ status: 500, body: "must not start automatically" });
+	});
 
 	await openLogin(page, testInfo);
 	await page.evaluate(() => localStorage.setItem("gatopago:firebase-email-link:v1", JSON.stringify({
@@ -280,7 +316,10 @@ test("a recovery magic link exchanges its opaque challenge and sanitizes the URL
 		`https://app.parmelia.me/login?flow=recovery&challenge=${challenge}`,
 	);
 	await page.goto(`/login?mode=signIn&oobCode=e2e-recovery&apiKey=e2e-key&continueUrl=${continueUrl}`);
-	await expect(page).toHaveURL(/\/recover$/, { timeout: 10_000 });
+	await expect(page).toHaveURL(/\/settings\/security\/recovery$/, { timeout: 10_000 });
+	await expect(page.getByText(/Identidad confirmada|Identity confirmed/i)).toBeVisible();
+	await expect(page.getByRole("button", { name: /Crear llave y comenzar|Create a key and start/i })).toBeVisible();
+	expect(preflightCalls).toBe(0);
 	const proof = await page.evaluate(() => sessionStorage.getItem("gatopago:recovery-email-link-proof:v1"));
 	expect(JSON.parse(proof ?? "null")).toMatchObject({
 		stepUpToken,

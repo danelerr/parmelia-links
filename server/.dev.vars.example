@@ -153,6 +153,11 @@ AUTH_EMAIL_FROM=acceso@parmelia.me
 # enlaces de checkout. En desarrollo puede ser http://localhost:5173.
 APP_URL=https://app.parmelia.me
 
+# Contrato publico WebAuthn. El RP ID no es un secret y NO debe derivarse del
+# host del frontend. Para desarrollo local usar localhost y su origen exacto.
+PASSKEY_RP_ID=localhost
+PASSKEY_ALLOWED_ORIGINS=http://localhost:5173
+
 # Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).
 CCTP_RPC_URLS=
 

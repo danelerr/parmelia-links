@@ -1,6 +1,6 @@
 # Inventario canónico de secretos y configuración
 
-**Última verificación:** 26 de agosto de 2026
+**Última verificación:** 30 de agosto de 2026
 **Alcance:** App Worker (`server`), Payments Worker
 (`gatopago-payments-api`), cliente, dashboard, contratos y credenciales de
 operación  
@@ -142,6 +142,20 @@ versionada y debe coincidir exactamente con un dominio autorizado en Firebase.
 `AUTH_EMAIL_FROM=acceso@parmelia.me` y el binding `EMAIL` quedan únicamente como
 canal opcional de alertas de seguridad/compatibilidad Business: una falla allí
 no impide el login ni detiene la entrega FCM del outbox.
+
+El candidato Passkey Security v2 agrega dos **vars públicas**, no Secrets:
+
+| Nombre | Valor del candidato | Procedencia y obtención | ¿Está en Git? |
+|---|---|---|---|
+| `PASSKEY_RP_ID` | `app.parmelia.me` | Es el RP ID de las passkeys existentes y debe permanecer estable. Se obtiene de la decisión de dominio WebAuthn, no de Cloudflare, Vercel ni Firebase | Sí, en `server/wrangler.jsonc` |
+| `PASSKEY_ALLOWED_ORIGINS` | `https://app.parmelia.me` | Origen exacto desde el que la App permite ceremonias WebAuthn. Sólo se amplía después de demostrar compatibilidad con el mismo RP ID | Sí, en `server/wrangler.jsonc` |
+
+No se debe duplicar el RP ID en `VITE_*`: el Worker lo liga al challenge y lo
+devuelve también con cada operación que requiere firma. `VITE_APP_URL` conserva
+otros usos del frontend, pero ya no decide el alcance WebAuthn. Para desarrollo,
+`.dev.vars.example` usa `PASSKEY_RP_ID=localhost` y
+`PASSKEY_ALLOWED_ORIGINS=http://localhost:5173`. Su ausencia falla cerrado en
+cualquier entorno; mainnet rechaza además HTTP, `localhost` y loopback.
 
 No todos los nombres de esa tabla son intrínsecamente secretos. Por ejemplo,
 `ALCHEMY_WEBHOOK_NETWORK`, `WEBHOOK_SECRET_ENCRYPTION_KEY_ID`,

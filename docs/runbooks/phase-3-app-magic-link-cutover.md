@@ -1,5 +1,10 @@
 # Runbook de corte — Fase 3 App con Firebase Magic Link
 
+> **Registro histórico ejecutado para `0035`.** No reutilizar este procedimiento
+> ni su autorización para el candidato Passkey Security v2. La promoción vigente
+> de `0036`, RP ID y UX de llaves está en
+> [phase-3-app-passkey-v2-cutover.md](./phase-3-app-passkey-v2-cutover.md).
+
 **Alcance:** App de consumo, App Worker y App D1.
 
 **Dominio vigente:** `https://app.parmelia.me`.

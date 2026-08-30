@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { PASSKEY_SECURITY_SCHEMA_ITEMS } from "./app-d1-security-evidence.mjs";
 
 const source = readFileSync(resolve(import.meta.dirname, "preflight-phase3-app-remote.mjs"), "utf8");
+const d1EvidenceSource = readFileSync(resolve(import.meta.dirname, "app-d1-security-evidence.mjs"), "utf8");
 
 function assert(condition, message) {
 	if (!condition) throw new Error(message);
@@ -19,15 +21,44 @@ for (const forbidden of [
 	/"secret"\s*,\s*"put"/u,
 	/"queues"\s*,\s*"create"/u,
 	/"(?:deploy|delete|rollback)"\s*,/u,
-	/\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|REPLACE|CREATE|VACUUM)\b/iu,
+	/\b(?:INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM|DROP\s+(?:TABLE|INDEX)|ALTER\s+TABLE|REPLACE\s+INTO|CREATE\s+(?:TABLE|INDEX)|VACUUM)\b/iu,
 ]) {
-	assert(!forbidden.test(source), `Phase 3 App preflight contains a mutating operation: ${forbidden}`);
+	assert(!forbidden.test(`${source}\n${d1EvidenceSource}`),
+		`Phase 3 App preflight contains a mutating operation: ${forbidden}`);
 }
 
 assert((source.match(/"--command"/gu) ?? []).length === 1,
 	"Phase 3 App preflight must execute exactly one guarded D1 statement");
-assert(source.includes("SELECT name FROM d1_migrations WHERE name = '${expectedMigration}';"),
-	"Phase 3 App preflight must limit D1 access to the migration-presence SELECT");
+assert(source.includes("APP_D1_SECURITY_EVIDENCE_QUERY"),
+	"Phase 3 App preflight must use the shared migration and schema evidence query");
+assert(d1EvidenceSource.includes("pragma_table_info"),
+	"D1 security evidence must inspect real remote table columns");
+for (const evidence of [
+	"webauthn_registration_challenges.expected_rp_id",
+	"passkeys.metadata_updated_at",
+	"webauthn_registration_challenges.credential_device_type.allowed",
+	"webauthn_registration_challenges.credential_backed_up.allowed",
+	"webauthn_registration_challenges.authenticator_attachment.allowed",
+	"passkeys.credential_device_type.allowed",
+	"passkeys.credential_backed_up.allowed",
+	"passkeys.authenticator_attachment.allowed",
+	"idx_passkeys_uid_rp_active",
+]) {
+	assert(PASSKEY_SECURITY_SCHEMA_ITEMS.includes(evidence),
+		`D1 security evidence is incomplete: ${evidence}`);
+}
+assert(source.includes('"app-passkey-schema-0036"'),
+	"Phase 3 App preflight must expose a dedicated Passkey v2 schema gate");
+assert(source.includes('"deployments", "status", "--name", workerName, "--json"'),
+	"Phase 3 App preflight must discover every active Worker version");
+assert(source.includes('"versions", "view", activeVersion.version_id'),
+	"Phase 3 App preflight must inspect bindings on every active Worker version");
+assert(source.includes('bindingValue(version, "PASSKEY_RP_ID") === passkeyRpId'),
+	"Phase 3 App preflight must verify the deployed stable RP ID");
+assert(source.includes('bindingValue(version, "PASSKEY_ALLOWED_ORIGINS") === passkeyAllowedOrigins'),
+	"Phase 3 App preflight must verify the deployed WebAuthn origin allowlist");
+assert(source.includes('"app-webauthn-bindings"'),
+	"Phase 3 App preflight must expose a dedicated WebAuthn binding gate");
 assert((source.match(/method:\s*"POST"/gu) ?? []).length === 1,
 	"Phase 3 App preflight must contain exactly one non-GET HTTP probe");
 assert(source.includes('body: JSON.stringify({ email: "invalid" })'),

@@ -7,19 +7,28 @@
 ## 0. Corte de Fase 2: dos Workers y dos D1
 
 **Estado al 30-08-2026:** el recut semántico Cloudflare, la promoción Vercel y
-los tres fixes originales de Fase 3 están ejecutados y verificados. El cierre de
-autenticación sigue abierto: el candidato App ahora usa Google + magic links
-nativos de Firebase, sin Resend, SMTP ni códigos de seis dígitos. La configuración
-Firebase ya admite Email Link y `app.parmelia.me`; falta versionar el candidato,
-aplicar `0035`, desplegar sólo App Worker + App Web y recibir/consumir un enlace
-real. `server` usa
+los tres fixes originales de Fase 3 están ejecutados y verificados. La App con
+Google + magic links nativos de Firebase fue publicada desde `b976acb`, sin
+Resend, SMTP ni códigos de seis dígitos. Se verificó un backup cifrado de App D1,
+se aplicó únicamente `0035`, App Worker quedó en
+`6e8ce042-c76a-4fe1-b5d5-e0efe6988547` y `app.parmelia.me` apunta a
+`parmelia-7t1eguai2-danelerrs-projects.vercel.app`. El preflight remoto está
+completamente verde y un magic link real abrió una sesión válida; Firebase
+conserva Google y Email Link en el mismo UID. Existe un delta App posterior,
+verificado sólo en local, que elimina la entrada de recovery del login, concentra
+llaves/recuperación en `Configuración → Seguridad`, evita iniciar WebAuthn al
+consumir un link de recovery y fija el contrato WebAuthn. Requiere `0036` antes
+del Worker y sigue el
+[runbook Passkey v2](./docs/runbooks/phase-3-app-passkey-v2-cutover.md); debe
+versionarse y promoverse antes de atribuir ese comportamiento a producción. El
+drill real de recovery/replay será una acción
+deliberada de Fase 4 y nunca parte automática del login. `server` usa
 `PAYMENTS_CUTOVER_MODE=payments`; Payments apunta a
 `gatopago-payments-semantic-20260826`, tiene bootstrap desactivado, migraciones
 `0001`–`0007` y checksum semántico fijado. Payments corre
-`9f65035e-4ba4-4b4e-bdac-54a21cff8f24`; App usa el código
-`5ad32fad-b365-4d12-9f89-5163f06659d0` y la versión secret-only
-`196e4123-1b15-4503-a72d-5b67b896f9c8`, que añadió el secret Turnstile ya
-existente sin rotarlo. `app.parmelia.me` y
+`9f65035e-4ba4-4b4e-bdac-54a21cff8f24`; App usa la versión indicada arriba y
+conserva `196e4123-1b15-4503-a72d-5b67b896f9c8` como rollback previo al corte.
+`app.parmelia.me` y
 `dashboard.parmelia.me` responden anónimamente; el dashboard muestra el login de
 GatoPago y no Vercel SSO. `PAYMENT_LIVE_ENABLED=false` permanece sin cambios.
 La D1 histórica no se borra ni se reimporta. El procedimiento que produjo este
@@ -72,7 +81,8 @@ Orden de promoción (no intercambiarlo):
 5. Desplegar **primero** `gatopago-payments-api` en bootstrap. `/health/live`
    debe mostrar `bootstrapActive=true`; `/health` degradado es deliberado porque
    todavía no puede aceptar escrituras. Esto crea el target antes que el caller.
-6. Aplicar las migraciones expand-first App `0033`, `0034` y `0035`, y desplegar App con
+6. Aplicar las migraciones expand-first App `0033`–`0036` requeridas por el
+   candidato, y desplegar App con
    `PAYMENTS_CUTOVER_MODE=legacy` + `PAYMENTS_SYNC_ENABLED=false`. Comprobar que
    no cambió el comportamiento. Después desplegar
    `PAYMENTS_CUTOVER_MODE=frozen`, manteniendo sync apagado: todos los
@@ -366,7 +376,9 @@ npx wrangler d1 migrations apply GATOPAGO_DB --remote
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
 `npx wrangler d1 migrations list GATOPAGO_DB --remote` y aplica, en orden, todo
-lo que falte hasta `0035_firebase_email_links.sql`. El Worker actual requiere
+lo que falte hasta la migración requerida por el candidato. Producción está en
+`0035_firebase_email_links.sql`; el candidato local Passkey Security v2 requiere
+además `0036_passkey_security_metadata.sql` antes de desplegar su App Worker. El Worker requiere
 la cadena completa: además del hardening y los ciclos durables originales,
 `0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
 rollback de reorg, shards del indexador, suscripciones de proveedor, control
@@ -378,6 +390,11 @@ atómico, registro WebAuthn ligado al servidor y step-up de recuperación. `0033
 establece la frontera con Payments, `0034` persiste proveedor y dirección exacta
 de sponsorship y `0035` incorpora challenges de magic link para recovery e
 invalida códigos legacy activos durante el cutover App.
+`0036` fija `expected_rp_id` por ceremonia y conserva metadata de gestión de
+passkeys. Debe aplicarse con `PASSKEY_RP_ID=app.parmelia.me` y
+`PASSKEY_ALLOWED_ORIGINS=https://app.parmelia.me`; ninguna de las dos es Secret.
+El entrypoint guardado no acepta sólo la fila de `d1_migrations`: exige también
+las columnas, restricciones `CHECK` y el índice parcial de `0036`.
 REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
 El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
 nunca replicar ese patrón hacia producción.

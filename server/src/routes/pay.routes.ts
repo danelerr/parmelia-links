@@ -307,7 +307,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			executeCalldata = buildExecuteCalldata(recipientAddress, ethAmount, "0x");
 		}
 
-		const { userOp, userOpHash, chainId, signingPayload, sponsorshipProvider,
+		const { userOp, userOpHash, chainId, rpId, signingPayload, sponsorshipProvider,
 			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
 			sender: senderAddress as `0x${string}`,
 			callData: executeCalldata,
@@ -347,7 +347,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 			submissionTransport,
 			sponsorshipProvider,
 		});
-		return c.json({ userOpHash, credentialId, submissionTransport, signingPayload,
+		return c.json({ userOpHash, credentialId, rpId, submissionTransport, signingPayload,
 			paymentAttemptId: paymentAttempt?.attemptId });
 	} catch (error) {
 		const user = c.get("user");

@@ -9,6 +9,13 @@ export type ManagedPasskey = {
 	name: string | null;
 	registrationSource: "onboarding" | "backup" | "recovery" | "observed" | "unknown";
 	transports: string[];
+	rpId: string | null;
+	aaguid: string | null;
+	providerName: string | null;
+	credentialDeviceType: "singleDevice" | "multiDevice" | null;
+	credentialBackedUp: boolean | null;
+	authenticatorAttachment: "platform" | "cross-platform" | null;
+	metadataUpdatedAt: string | null;
 	createdAt: string;
 	lastUsedAt: string;
 	currentHint: boolean;
@@ -39,6 +46,7 @@ export default function PasskeyList({
 	const [renameErrorId, setRenameErrorId] = useState<string | null>(null);
 	const [removeKey, setRemoveKey] = useState<ManagedPasskey | null>(null);
 	const [removeFailed, setRemoveFailed] = useState(false);
+	const [detailsKey, setDetailsKey] = useState<ManagedPasskey | null>(null);
 	const unknownSignerCount = chainAvailable && signerCount !== null
 		? Math.max(0, signerCount - passkeys.length)
 		: 0;
@@ -105,6 +113,13 @@ export default function PasskeyList({
 					const fallbackName = t("security.keyFallbackName", { number: index + 1 });
 					const renameError = renameErrorId === passkey.credentialId;
 					const renameErrorDomId = `passkey-name-error-${index}`;
+					const syncLabel = passkey.credentialDeviceType === "singleDevice"
+						? t("security.keyStorage.singleDevice")
+						: passkey.credentialDeviceType === "multiDevice" && passkey.credentialBackedUp
+							? t("security.keyStorage.synced")
+							: passkey.credentialDeviceType === "multiDevice"
+								? t("security.keyStorage.syncCapable")
+								: t("security.keyStorage.unknown");
 					return (
 						<div key={passkey.credentialId} className="px-5 py-4">
 							{editing ? (
@@ -184,6 +199,18 @@ export default function PasskeyList({
 									<p className="mt-2 text-[10px] text-text-faint">
 										{t("security.keyLastUsed", { date: formatDateTime(passkey.lastUsedAt) })}
 									</p>
+									<p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+										{passkey.providerName
+											? t("security.keyProviderDetected", { provider: passkey.providerName })
+											: t("security.keyProviderUnknown")} · {syncLabel}
+									</p>
+									<button
+										type="button"
+										onClick={() => setDetailsKey(passkey)}
+										className="mt-1 min-h-11 text-[12px] text-cat-700 underline underline-offset-2"
+									>
+										{t("security.keyMoreInfo")}
+									</button>
 								</>
 							)}
 						</div>
@@ -212,6 +239,79 @@ export default function PasskeyList({
 					onConfirm={() => void confirmRemove()}
 				/>
 			) : null}
+
+			{detailsKey ? (
+				<PasskeyDetailsDialog
+					passkey={detailsKey}
+					onClose={() => setDetailsKey(null)}
+				/>
+			) : null}
+		</div>
+	);
+}
+
+function PasskeyDetailsDialog({
+	passkey,
+	onClose,
+}: {
+	passkey: ManagedPasskey;
+	onClose: () => void;
+}) {
+	const { t } = useTranslation();
+	const dialogRef = useDialog<HTMLDivElement>(onClose);
+	const storage = passkey.credentialDeviceType === "singleDevice"
+		? t("security.keyStorage.singleDeviceLong")
+		: passkey.credentialDeviceType === "multiDevice" && passkey.credentialBackedUp
+			? t("security.keyStorage.syncedLong")
+			: passkey.credentialDeviceType === "multiDevice"
+				? t("security.keyStorage.syncCapableLong")
+				: t("security.keyStorage.unknownLong");
+	const type = passkey.authenticatorAttachment === "cross-platform"
+		? t("security.keyType.securityKey")
+		: passkey.authenticatorAttachment === "platform"
+			? t("security.keyType.device")
+			: t("security.keyType.unknown");
+	const transports = passkey.transports.length > 0
+		? passkey.transports.map((value) => value.toUpperCase()).join(", ")
+		: t("security.keyMetadataUnavailable");
+	return createPortal(
+		<div className="dialog-backdrop fixed inset-0 z-50 flex items-end justify-center px-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }} onClick={onClose}>
+			<div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="passkey-details-title" aria-describedby="passkey-details-body" tabIndex={-1} className="dialog-panel max-h-[85dvh] w-full max-w-sm overflow-y-auto p-6 animate-sheet-up" onClick={(event) => event.stopPropagation()}>
+				<div className="sheet-handle mb-5" aria-hidden="true" />
+				<h2 id="passkey-details-title" className="font-display text-[22px]">{t("security.keyDetailsTitle")}</h2>
+				<p id="passkey-details-body" className="mt-2 text-[12px] leading-relaxed text-text-muted">{t("security.keyDetailsBody")}</p>
+				<dl className="mt-5 divide-y divide-border border-y border-border text-[12px]">
+					<Detail
+						label={t("security.keyProviderLabel")}
+						value={passkey.providerName
+							? t("security.keyProviderDetected", { provider: passkey.providerName })
+							: t("security.keyProviderUnknown")}
+					/>
+					<Detail label={t("security.keyStorageLabel")} value={storage} />
+					<Detail label={t("security.keyTypeLabel")} value={type} />
+					<Detail label={t("security.keyScopeLabel")} value={passkey.rpId || t("security.keyMetadataUnavailable")} mono />
+					<Detail label={t("security.keyCreatedLabel")} value={formatDateTime(passkey.createdAt)} />
+					<Detail label={t("security.keyLastUsedLabel")} value={formatDateTime(passkey.lastUsedAt)} />
+					<Detail label={t("security.keyTransportsLabel")} value={transports} />
+					<Detail label="AAGUID" value={passkey.aaguid || t("security.keyMetadataUnavailable")} mono />
+					{passkey.metadataUpdatedAt ? (
+						<Detail label={t("security.keyMetadataUpdatedLabel")} value={formatDateTime(passkey.metadataUpdatedAt)} />
+					) : null}
+				</dl>
+				<p className="mt-4 border-l-4 border-info bg-info/8 px-3 py-2 text-[11px] leading-relaxed text-text-muted">{t("security.keyPrivateDataNotice")}</p>
+				<p className="mt-3 text-[10px] leading-relaxed text-text-faint">{t("security.keyProviderNotice")}</p>
+				<button type="button" onClick={onClose} className="btn btn-primary btn-block mt-5">{t("common.close")}</button>
+			</div>
+		</div>,
+		document.body,
+	);
+}
+
+function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+	return (
+		<div className="grid grid-cols-[112px_1fr] gap-3 py-3">
+			<dt className="text-text-faint">{label}</dt>
+			<dd className={`break-words text-right text-text ${mono ? "font-mono text-[10px]" : ""}`}>{value}</dd>
 		</div>
 	);
 }

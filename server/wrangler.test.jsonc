@@ -11,7 +11,9 @@
         "FIREBASE_PROJECT_ID": "runtime-test-project",
         "CHAIN_KEY": "arbitrum-sepolia",
         "PAYMENTS_SYNC_ENABLED": "false",
-        "ALLOWED_ORIGINS": "https://app.parmelia.me"
+        "ALLOWED_ORIGINS": "https://app.parmelia.me",
+        "PASSKEY_RP_ID": "app.parmelia.me",
+        "PASSKEY_ALLOWED_ORIGINS": "https://app.parmelia.me"
       },
       "d1_databases": [
         {

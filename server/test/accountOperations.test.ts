@@ -210,6 +210,14 @@ describe("durable account operations", () => {
 			qx: "0x11",
 			qy: "0x22",
 			registrationSource: "recovery",
+			name: null,
+			transports: [],
+			rpId: null,
+			aaguid: null,
+			providerName: null,
+			credentialDeviceType: null,
+			credentialBackedUp: null,
+			authenticatorAttachment: null,
 		});
 		expect(result?.status).toBe("confirmed");
 	});

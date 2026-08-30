@@ -12,6 +12,7 @@ import { apiFetch } from "../lib/api";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
+import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork } from "../lib/activeNetwork";
 import { notifyError } from "../lib/notify";
@@ -59,6 +60,7 @@ type PreparedEarn = PreparedUserOperation & {
 
 export default function Earn({ user }: { user: User }) {
 	const { t } = useTranslation();
+	const guideToPasskeys = usePasskeyGuidance();
 	const [config, setConfig] = useState<EarnConfig | null>(null);
 	const [loadFailed, setLoadFailed] = useState(false);
 	const [action, setAction] = useState<Action>("deposit");
@@ -184,6 +186,7 @@ export default function Earn({ user }: { user: User }) {
 			const assertion = await signWithPasskey(
 				userOperationChallenge(prep, activeNetwork.chainId),
 				prep.credentialId,
+				prep.rpId,
 			);
 
 			setStage("sending");
@@ -200,7 +203,9 @@ export default function Earn({ user }: { user: User }) {
 			setUseMax(false);
 			if (submit.confirmed) void loadConfig(true);
 		} catch (err) {
-			notifyError(err, t("earn.error"));
+			if (!guideToPasskeys(err, prep.credentialId)) {
+				notifyError(err, t("earn.error"));
+			}
 		} finally {
 			setStage("idle");
 		}

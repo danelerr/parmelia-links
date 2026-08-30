@@ -99,7 +99,7 @@ npx wrangler d1 migrations apply parmeliadb --local
 npx wrangler d1 migrations apply parmeliadb --remote
 ```
 
-`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones hasta `0032_recovery_step_up.sql` ANTES de desplegar el Worker que las usa.
+`0001_schema.sql` es el esquema consolidado (con prólogo `DROP`, **solo aceptable sobre una DB de testnet** — nunca replicar ese patrón en migraciones para producción; las siguientes migraciones son aditivas o rebuilds copy-swap sin pérdida). Nuevas features = nueva migración numerada. **Orden de deploy:** listar y aplicar todas las migraciones locales —actualmente hasta `0036_passkey_security_metadata.sql`— ANTES de desplegar el Worker que las usa. El entrypoint `pnpm --filter server run deploy` consulta `d1_migrations` remotamente, rechaza cualquier pendiente y valida el esquema semántico Passkey v2.
 
 **Ciclo de vida de un pago (`pending_payments.status`):** `prepared → submitting → submitted → confirmed | failed`. Cada transición es un compare-and-set atómico (un doble submit recibe 409 `PAYMENT_IN_PROGRESS`), el tx se registra inmediatamente después del broadcast y `/pay/submit` devuelve 202 sin mantener el request abierto. El éxito se decide por el **`UserOperationEvent` del EntryPoint** (no por `receipt.status`, que solo refleja el bundle: una ejecución interna revertida minaría igual). La contabilidad vive en `services/settlement.ts` (idempotente). El **watcher compartido** resuelve todos los `UserOperationEvent` mediante rangos acotados del indexador —no hace una búsqueda histórica por pago— y el reconciliador durable consulta esa proyección en D1. Sólo entonces liquida o marca `failed`, repara el hand-off CCTP y expira lo que ya no puede aterrizar. `GET /pay/status/:userOpHash` expone el estado para polling.
 
@@ -131,9 +131,17 @@ Cloudflare permite listar nombres, pero no recuperar ni demostrar la procedencia
 de sus valores.
 
 `vars` (en `wrangler.jsonc`) contiene configuración no sensible:
-`FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`, políticas de
+`FIREBASE_PROJECT_ID`, `CHAIN_KEY`, `ALLOWED_ORIGINS`, `APP_URL`,
+`PASSKEY_RP_ID`, `PASSKEY_ALLOWED_ORIGINS`, políticas de
 fees (`GATOPAGO_*`), flags cross-chain y descriptores de capacidad RPC sin URLs
 ni tokens. Una URL pasa a tratarse como Secret cuando incluye una credencial.
+
+`PASSKEY_RP_ID` no se deriva del host del frontend: es el contrato público y
+estable que permite volver a usar una passkey. `PASSKEY_ALLOWED_ORIGINS` es una
+allowlist WebAuthn separada de CORS. El candidato actual conserva
+`app.parmelia.me`; cambiar esa var exige una migración de credenciales, no sólo
+un cambio de DNS. Ambos valores son obligatorios también en testnet y local;
+producción exige un RP no local y orígenes HTTPS.
 
 App soporta Secrets opcionales para pools RPC/bundler, claves onchain separadas,
 Turnstile, Firebase/FCM y Alchemy. En testnet varios están deshabilitados o usan

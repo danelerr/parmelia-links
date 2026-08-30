@@ -400,11 +400,12 @@ signers, cambiar threshold, cambiar guardian o actualizar la implementación.
 Todos sus valores críticos deben revalidarse onchain al abrirlo; nunca se trata
 como fuente de autorización.
 
-El esquema canónico `passkeys` actual conserva credential ID y coordenadas, pero
-no conserva el RP ID como atributo permanente de cada passkey. Para recuperación
-multiorigen se debe persistir/exportar explícitamente ese dato. Las ceremonias de
-registro sí guardan temporalmente `expected_origin`, pero no deben ser el único
-registro de continuidad.
+El candidato local Passkey Security v2 añade `rp_id` al esquema canónico
+`passkeys` y `expected_rp_id` a cada ceremonia mediante la migración `0036`.
+También devuelve el RP ID fijado por el Worker en registro y firma, en lugar de
+derivarlo del host del frontend. Todavía falta publicarlo y añadir `rp_id` al
+manifest exportable del cliente de rescate; D1 no debe ser su única fuente de
+continuidad.
 
 ## 7. Qué se puede prometer al usuario
 
@@ -441,10 +442,11 @@ sido probada técnicamente.
 
 ### P0 — antes de una promesa fuerte de autocustodia/mainnet
 
-1. Fijar y registrar el RP ID canónico para toda passkey nueva; bloquear altas en
-   previews u orígenes que produzcan credentials no recuperables desde el origen
-   de continuidad.
-2. Añadir `rp_id` al registro canónico de passkeys y al manifest exportable.
+1. **Candidato local completo:** fijar y registrar el RP ID canónico para toda
+   passkey nueva; bloquear altas en previews u orígenes fuera de la allowlist
+   WebAuthn. Falta publicación y prueba real.
+2. **Parcial:** `rp_id` ya está en el registro canónico local; falta incorporarlo
+   al manifest exportable y probar la restauración independiente.
 3. Construir el cliente de rescate independiente y reproducible.
 4. Implementar gas por prefund externo y envío por al menos dos transportes.
 5. Añadir el signer de salida EOA/ERC-1271 y prueba de posesión.

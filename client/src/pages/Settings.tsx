@@ -7,8 +7,15 @@ import Screen from "../components/Screen";
 import { useTranslation } from "react-i18next";
 import i18n from "../lib/i18n";
 import { SettingsSection as Section } from "../components/SettingsSection";
+import LinkButton from "../components/LinkButton";
 
 const ICON = {
+	shield: (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z" />
+			<path d="m9 12 2 2 4-4" />
+		</svg>
+	),
 	bell: (
 		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 			<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -59,6 +66,17 @@ export default function Settings({ user }: { user: User }) {
 		<Screen className="pb-[calc(env(safe-area-inset-bottom)_+_3rem)]">
 			<BackHeader title={t("common.settings")} />
 			<div className="animate-fade-up">
+					<Section title={t("settings.security")} icon={ICON.shield} tone="pending">
+						<div className="p-5">
+							<p className="mb-4 text-[13px] leading-relaxed text-text-muted">
+								{t("settings.securityDesc")}
+							</p>
+							<LinkButton to="/settings/security" className="btn btn-primary btn-block">
+								{t("settings.securityCta")}
+							</LinkButton>
+						</div>
+					</Section>
+
 					{/* Notifications */}
 					{pushAvailable && !pushOn && (
 						<Section title={t("settings.notifications")} icon={ICON.bell} tone="info">

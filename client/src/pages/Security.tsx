@@ -1,14 +1,23 @@
-// Security center (/security): its own destination, not a Settings section.
+// Security center (/settings/security): the single Settings destination for
 // Everything about keys and recovery lives here - the on-chain tiles, the
 // account-vs-device warning, the add-backup-key flow, the non-custodial
 // promise, and plain-words explanations for people who don't know what a
 // passkey is. The menu, Settings and the recovery flow all point here.
 
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router";
 import type { User } from "../lib/firebase";
 import { apiFetch } from "../lib/api";
-import { createPasskey, hasUsableKeyForSigners, rememberPasskey, signWithPasskey } from "../lib/webauthn";
+import {
+	createPasskey,
+	hasUsableKeyForSigners,
+	rememberPasskey,
+	signWithPasskey,
+	type PasskeyCreationMode,
+	type PasskeyRegistrationChallenge,
+} from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork } from "../lib/activeNetwork";
@@ -20,8 +29,16 @@ import LinkButton from "../components/LinkButton";
 import { FormPageSkeleton } from "../components/Skeleton";
 import MeliSprite from "../components/brand/MeliSprite";
 import PasskeyList, { type ManagedPasskey } from "../components/PasskeyList";
+import { useDialog } from "../hooks/useDialog";
+import { safeReturnTo } from "../lib/safeReturnTo";
+import {
+	signalCompletePasskeyInventory,
+	signalCurrentPasskeyUser,
+	signalRemovedPasskey,
+} from "../lib/passkeySignals";
 
 export interface PasskeyStatusResponse {
+	rpId: string;
 	hasWallet: boolean;
 	chainStatus: "available" | "unavailable" | "not_applicable";
 	signerCount: number | null;
@@ -31,6 +48,7 @@ export interface PasskeyStatusResponse {
 	recoveryExecutableAfter: string | null;
 	/** Registered ERC-7913 signer bytes; null while the chain read fails. */
 	signers: string[] | null;
+	credentialInventoryComplete: boolean;
 	passkeys: ManagedPasskey[];
 }
 
@@ -58,6 +76,8 @@ function Faq({ question, children }: { question: string; children: React.ReactNo
 
 export default function Security({ user, previewStatus }: { user: User; previewStatus?: PasskeyStatusResponse | null }) {
 	const { t } = useTranslation();
+	const location = useLocation();
+	const returnTo = safeReturnTo(new URLSearchParams(location.search).get("returnTo"));
 	const previewing = previewStatus !== undefined;
 	const [status, setStatus] = useState<PasskeyStatusResponse | null>(previewStatus ?? null);
 	const [loading, setLoading] = useState(!previewing);
@@ -66,6 +86,8 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [pendingPasskey, setPendingPasskey] = useState<Awaited<ReturnType<typeof createPasskey>> | null>(null);
 	const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
+	const [showPasskeyInfo, setShowPasskeyInfo] = useState(false);
+	const [showPasskeyOptions, setShowPasskeyOptions] = useState(false);
 	const fetchStatus = useCallback(
 		() => apiFetch<PasskeyStatusResponse>("/account/passkey", { user }),
 		[user],
@@ -89,6 +111,24 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			return false;
 		}
 	}, [fetchStatus, previewStatus, previewing]);
+
+	useEffect(() => {
+		if (!status?.rpId || !user.uid) return;
+		void signalCurrentPasskeyUser({
+			rpId: status.rpId,
+			uid: user.uid,
+			name: user.email || user.uid,
+			displayName: user.displayName || user.email || t("webauthn.accountLabel"),
+		});
+		void signalCompletePasskeyInventory({
+			rpId: status.rpId,
+			uid: user.uid,
+			credentialIds: status.passkeys
+				.filter((passkey) => passkey.rpId === status.rpId)
+				.map((passkey) => passkey.credentialId),
+			inventoryComplete: status.chainStatus === "available" && status.credentialInventoryComplete,
+		});
+	}, [status, t, user.displayName, user.email, user.uid]);
 
 	useEffect(() => {
 		if (previewing) return;
@@ -122,21 +162,23 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		}
 	}
 
-	async function handleAddPasskey() {
+	async function handleAddPasskey(mode: PasskeyCreationMode = "device") {
 		setUpdatingPasskey(true);
 		try {
 			if (!user.uid) throw new Error(t("common.sessionExpired"));
-			let nextPasskey = pendingPasskey;
+			let nextPasskey = pendingPasskey?.creationMode === mode ? pendingPasskey : null;
 			if (!nextPasskey) {
-				const preflight = await apiFetch<{ registrationId: string; challenge: string }>(
+				const preflight = await apiFetch<PasskeyRegistrationChallenge>(
 					"/account/passkey/registration/preflight",
 					{ user, body: {} },
 				);
 				const passkeyLabel = user.email || user.displayName || undefined;
 				nextPasskey = await createPasskey(user.uid, passkeyLabel, {
 					...preflight,
-					name: t("webauthn.backupKeyName"),
-				});
+					name: mode === "security-key"
+						? t("webauthn.securityKeyName")
+						: t("webauthn.backupKeyName"),
+				}, mode);
 				setPendingPasskey(nextPasskey);
 			}
 
@@ -156,6 +198,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			const assertion = await signWithPasskey(
 				userOperationChallenge(prepared, activeNetwork.chainId),
 				prepared.credentialId,
+				prepared.rpId,
 			);
 			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
 			rememberPasskey(nextPasskey);
@@ -197,6 +240,9 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	async function handleRemovePasskey(credentialId: string): Promise<boolean> {
 		setBusyKeyId(credentialId);
 		try {
+			const removedPasskeyRpId = status?.passkeys.find(
+				(passkey) => passkey.credentialId === credentialId,
+			)?.rpId;
 			const prepared = await apiFetch<PreparedUserOperation>(
 				`/account/passkeys/${encodeURIComponent(credentialId)}/remove/prepare`,
 				{ user, body: {} },
@@ -204,9 +250,13 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			const assertion = await signWithPasskey(
 				userOperationChallenge(prepared, activeNetwork.chainId),
 				prepared.credentialId,
+				prepared.rpId,
 			);
 			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
 			await refresh();
+			if (submit.confirmed && removedPasskeyRpId && removedPasskeyRpId === status?.rpId) {
+				await signalRemovedPasskey(removedPasskeyRpId, credentialId);
+			}
 			notifySuccess(
 				submit.confirmed ? t("security.keyRemoved") : t("security.keyRemovalPending"),
 				submit.confirmed ? undefined : t("security.keyRemovalPendingBody"),
@@ -264,12 +314,21 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 
 	return (
 		<Screen>
-			<BackHeader title={t("menu.security")} />
+			<BackHeader to="/settings" title={t("menu.security")} />
 
 			{loading ? (
 				<FormPageSkeleton />
 			) : (
 				<div className="animate-fade-up">
+					{returnTo ? (
+						<div className="mb-5 border-2 border-info bg-info/8 p-4">
+							<p className="font-display text-[15px] text-info">{t("security.returnTitle")}</p>
+							<p className="mt-1 text-[12px] leading-relaxed text-text-muted">{t("security.returnBody")}</p>
+							<LinkButton to={returnTo} className="btn btn-ghost mt-3 min-h-10 px-4 text-[12px]">
+								{t("security.returnCta")}
+							</LinkButton>
+						</div>
+					) : null}
 					<section className="meli-ink-card relative mb-6 min-h-[196px] overflow-hidden p-5" aria-labelledby="security-hero-title">
 						<div className="relative z-1 max-w-[270px] pr-10">
 							<p className="meli-kicker mb-3 !text-cat-500">{t("security.eyebrow")}</p>
@@ -337,12 +396,12 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 								<p className="text-[13px] leading-relaxed text-danger">
 									{t("settings.deviceNoKey")}
 								</p>
-								<LinkButton
-									to="/recover"
+								<a
+									href="#security-recovery"
 									className="mt-1.5 inline-block text-[13px] text-danger underline underline-offset-2"
 								>
-									{t("recover.bannerCta")}
-								</LinkButton>
+									{t("recover.reviewOptions")}
+								</a>
 							</div>
 							) : null}
 
@@ -354,7 +413,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 								</p>
 								{/* The cancel action lives ONLY in /recover: one surface for it. */}
 								<LinkButton
-									to="/recover"
+									to="/settings/security/recovery"
 									className="mt-1.5 inline-block text-[13px] text-pending underline underline-offset-2"
 								>
 									{t("recover.settingsView")}
@@ -364,13 +423,30 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 
 							<button
 								type="button"
-								onClick={handleAddPasskey}
+								onClick={() => void handleAddPasskey("device")}
 								disabled={updatingPasskey || !canAddPasskey}
 								aria-describedby="add-passkey-help"
 								className="btn btn-primary btn-block"
 							>
-								{updatingPasskey ? t("settings.addingKey") : t("settings.addBackupKey")}
+								{updatingPasskey ? t("settings.addingKey") : t("security.addDevicePasskey")}
 							</button>
+							<div className="mt-2 grid grid-cols-2 gap-2">
+								<button
+									type="button"
+									onClick={() => setShowPasskeyInfo(true)}
+									className="btn-text min-h-11 px-2 text-[12px]"
+								>
+									{t("security.whereStored")}
+								</button>
+								<button
+									type="button"
+									onClick={() => setShowPasskeyOptions(true)}
+									disabled={updatingPasskey || !canAddPasskey}
+									className="btn-text min-h-11 px-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									{t("security.otherPasskeyOptions")}
+								</button>
+							</div>
 							<p id="add-passkey-help" className={`text-[12px] leading-relaxed mt-3 px-0.5 ${canAddPasskey ? "text-text-faint" : "text-pending"}`}>
 								{addPasskeyHelp}
 							</p>
@@ -388,7 +464,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 						/>
 					</section>
 
-					<LinkButton to="/recover" className="meli-path-card-app interactive-surface mb-6 min-h-[104px] p-4 text-left">
+					<LinkButton id="security-recovery" to="/settings/security/recovery" className="meli-path-card-app interactive-surface mb-6 min-h-[104px] scroll-mt-4 p-4 text-left">
 						<span aria-hidden="true">
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 								<path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" />
@@ -435,8 +511,73 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 						</Faq>
 						</div>
 					</section>
+
+					{showPasskeyInfo ? (
+						<PasskeyStorageDialog onClose={() => setShowPasskeyInfo(false)} />
+					) : null}
+					{showPasskeyOptions ? (
+						<PasskeyOptionsDialog
+							busy={updatingPasskey}
+							onClose={() => setShowPasskeyOptions(false)}
+							onSecurityKey={() => {
+								setShowPasskeyOptions(false);
+								void handleAddPasskey("security-key");
+							}}
+						/>
+					) : null}
 				</div>
 			)}
 		</Screen>
+	);
+}
+
+function PasskeyStorageDialog({ onClose }: { onClose: () => void }) {
+	const { t } = useTranslation();
+	const dialogRef = useDialog<HTMLDivElement>(onClose);
+	return createPortal(
+		<div className="dialog-backdrop fixed inset-0 z-50 flex items-end justify-center px-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }} onClick={onClose}>
+			<div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="passkey-storage-title" aria-describedby="passkey-storage-body" tabIndex={-1} className="dialog-panel w-full max-w-sm p-6 animate-sheet-up" onClick={(event) => event.stopPropagation()}>
+				<div className="sheet-handle mb-5" aria-hidden="true" />
+				<h2 id="passkey-storage-title" className="font-display text-[22px]">{t("security.whereStoredTitle")}</h2>
+				<div id="passkey-storage-body" className="mt-3 space-y-3 text-[12px] leading-relaxed text-text-muted">
+					<p>{t("security.whereStoredBody1")}</p>
+					<p>{t("security.whereStoredBody2")}</p>
+					<p className="border-l-4 border-info bg-info/8 px-3 py-2">{t("security.whereStoredBody3")}</p>
+				</div>
+				<button type="button" onClick={onClose} className="btn btn-primary btn-block mt-5">{t("common.close")}</button>
+			</div>
+		</div>,
+		document.body,
+	);
+}
+
+function PasskeyOptionsDialog({
+	busy,
+	onClose,
+	onSecurityKey,
+}: {
+	busy: boolean;
+	onClose: () => void;
+	onSecurityKey: () => void;
+}) {
+	const { t } = useTranslation();
+	const requestClose = () => {
+		if (!busy) onClose();
+	};
+	const dialogRef = useDialog<HTMLDivElement>(requestClose);
+	return createPortal(
+		<div className="dialog-backdrop fixed inset-0 z-50 flex items-end justify-center px-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }} onClick={requestClose}>
+			<div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="passkey-options-title" aria-describedby="passkey-options-body" tabIndex={-1} className="dialog-panel w-full max-w-sm p-6 animate-sheet-up" onClick={(event) => event.stopPropagation()}>
+				<div className="sheet-handle mb-5" aria-hidden="true" />
+				<h2 id="passkey-options-title" className="font-display text-[22px]">{t("security.otherPasskeyOptionsTitle")}</h2>
+				<p id="passkey-options-body" className="mt-2 text-[12px] leading-relaxed text-text-muted">{t("security.otherPasskeyOptionsBody")}</p>
+				<button type="button" disabled={busy} onClick={onSecurityKey} className="btn btn-primary btn-block mt-5">
+					{t("security.addPhysicalSecurityKey")}
+				</button>
+				<p className="mt-2 text-[11px] leading-relaxed text-text-faint">{t("security.addPhysicalSecurityKeyHelp")}</p>
+				<button type="button" disabled={busy} onClick={onClose} className="btn-text mt-2 w-full">{t("common.cancel")}</button>
+			</div>
+		</div>,
+		document.body,
 	);
 }

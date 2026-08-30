@@ -25,6 +25,10 @@
     // Firebase sends passwordless links itself. APP_URL must also exist in the
     // Firebase authorized-domain list; it is not a secret.
     "APP_URL": "https://app.parmelia.me",
+    // Public WebAuthn contract. Keep RP_ID stable even if hosting/provider or
+    // API domains change; changing it requires an explicit passkey migration.
+    "PASSKEY_RP_ID": "app.parmelia.me",
+    "PASSKEY_ALLOWED_ORIGINS": "https://app.parmelia.me",
     // Optional security-alert/legacy Business sender. Consumer authentication
     // does not depend on this Cloudflare Email binding.
     "AUTH_EMAIL_FROM": "acceso@parmelia.me",

@@ -9,6 +9,7 @@ import { submitUserOp } from "../lib/submit";
 import { activeNetwork } from "../lib/activeNetwork";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { useViewTransitionNavigate } from "../hooks/useNav";
+import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { useTranslation } from "react-i18next";
 import { formatAmount } from "../lib/format";
 import { parseTransactions, type Transaction } from "../lib/transactions";
@@ -22,7 +23,7 @@ import ConfirmSheet from "../components/ConfirmSheet";
 import SigningDetails from "../components/SigningDetails";
 import { MoneyPanel, PanelActions, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
 import TokenSelect from "../components/TokenSelect";
-import { parsePaymentError, PAYMENT_APP_HOST } from "../lib/paymentErrors";
+import { parsePaymentError } from "../lib/paymentErrors";
 import ExternalWalletCheckout from "../features/checkout/ExternalWalletCheckout";
 import PaymentMethodSelector, { type CheckoutPaymentMethod } from "../features/checkout/PaymentMethodSelector";
 import { getCheckout } from "../features/checkout/api";
@@ -53,6 +54,7 @@ function PayPageContent({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
 	const { username } = useParams();
 	const navigate = useViewTransitionNavigate();
+	const guideToPasskeys = usePasskeyGuidance();
 	const { t } = useTranslation();
 	const withdrawIntent = searchParams.get("intent") === "withdraw";
 	const [linkData, setLinkData] = useState<LinkData | null>(null);
@@ -291,6 +293,7 @@ function PayPageContent({ user }: { user: User | null }) {
 			const assertion = await signWithPasskey(
 				userOperationChallenge(tx.prepared, activeNetwork.chainId),
 				tx.prepared.credentialId,
+				tx.prepared.rpId,
 			);
 			setPayStage("securing");
 			const submit = await submitUserOp(user, tx.prepared.userOpHash, assertion);
@@ -304,14 +307,26 @@ function PayPageContent({ user }: { user: User | null }) {
 			}
 			navigate(`/pay/status?${q.toString()}`);
 		} catch (err) {
-			reportPayError(err, () => void preparePay(tx, { isAddress: tx.isAddress, username: tx.username }));
+			reportPayError(
+				err,
+				() => void preparePay(tx, { isAddress: tx.isAddress, username: tx.username }),
+				tx.prepared.credentialId,
+			);
 		} finally {
 			setPaying(false);
 			setPayStage("idle");
 		}
 	}
 
-	function reportPayError(err: unknown, retry: () => void) {
+	function reportPayError(
+		err: unknown,
+		retry: () => void,
+		credentialId?: string | null,
+	) {
+		if (guideToPasskeys(err, credentialId)) {
+			setError("");
+			return;
+		}
 		if (isUserCancelled(err)) {
 			notifyWarning(t("notify.cancelled"), t("pay.paymentNotMade"));
 			setError("");
@@ -321,16 +336,13 @@ function PayPageContent({ user }: { user: User | null }) {
 		const msg = code
 			? t(`err.${code}`, { defaultValue: err instanceof Error ? err.message : t("pay.processError") })
 			: parsePaymentError(err instanceof Error ? err.message : t("pay.processError"), t);
-		const noKeyOnDevice = msg === t("pay.errNoPasskeys", { host: PAYMENT_APP_HOST });
 		notifyError(
 			new ApiError(msg, {
 				status: 400,
 				requestId: err instanceof ApiError ? err.requestId : undefined,
 			}),
 			t("pay.payError"),
-			noKeyOnDevice && user
-				? { title: t("recover.bannerCta"), onClick: () => navigate("/recover") }
-				: { title: t("common.retry"), onClick: retry },
+			{ title: t("common.retry"), onClick: retry },
 		);
 		setError(msg);
 	}

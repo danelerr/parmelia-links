@@ -1,12 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+	APP_D1_SECURITY_EVIDENCE_QUERY,
+	appliedMigrationNamesFromEvidence,
+	d1EvidenceRows,
+	missingPasskeySecuritySchemaEvidence,
+} from "./app-d1-security-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const serverDirectory = resolve(root, "server");
 const serverConfig = readFileSync(resolve(serverDirectory, "wrangler.jsonc"), "utf8");
 const wranglerCli = resolve(serverDirectory, "node_modules", "wrangler", "bin", "wrangler.js");
-const expectedMigration = "0035_firebase_email_links.sql";
+const expectedMigrations = [
+	"0035_firebase_email_links.sql",
+	"0036_passkey_security_metadata.sql",
+];
 const expectedFirebaseProject = "proyecto-prueba-push-firebase";
 const checks = [];
 const allowedCommands = new Set([process.execPath, "gcloud", "pwsh.exe"]);
@@ -19,6 +28,11 @@ function configValue(pattern, label) {
 
 const workerName = configValue(/"name"\s*:\s*"([^"]+)"/u, "Worker name");
 const appUrl = configValue(/"APP_URL"\s*:\s*"([^"]+)"/u, "APP_URL");
+const passkeyRpId = configValue(/"PASSKEY_RP_ID"\s*:\s*"([^"]+)"/u, "PASSKEY_RP_ID");
+const passkeyAllowedOrigins = configValue(
+	/"PASSKEY_ALLOWED_ORIGINS"\s*:\s*"([^"]+)"/u,
+	"PASSKEY_ALLOWED_ORIGINS",
+);
 const firebaseProject = configValue(/"FIREBASE_PROJECT_ID"\s*:\s*"([^"]+)"/u, "Firebase project");
 const workersSubdomain = process.env.CLOUDFLARE_WORKERS_SUBDOMAIN?.trim() || "parmelia";
 const workerUrl = `https://${workerName}.${workersSubdomain}.workers.dev`;
@@ -66,6 +80,12 @@ function parseJsonOutput(output) {
 
 function record(id, ok, detail) {
 	checks.push({ id, status: ok ? "ready" : "pending", detail });
+}
+
+function bindingValue(version, name) {
+	const binding = version?.resources?.bindings?.find((entry) =>
+		entry?.name === name && entry?.type === "plain_text");
+	return typeof binding?.text === "string" ? binding.text : null;
 }
 
 function cspSources(policy, directive) {
@@ -173,21 +193,85 @@ async function main() {
 
 	const migrationResult = runWrangler([
 		"d1", "execute", "GATOPAGO_DB", "--remote", "--json", "--command",
-		`SELECT name FROM d1_migrations WHERE name = '${expectedMigration}';`,
+		APP_D1_SECURITY_EVIDENCE_QUERY,
 	], { allowFailure: true });
-	let migrationApplied = false;
+	const appliedMigrations = new Set();
+	let d1Evidence = [];
 	if (migrationResult.ok) {
 		try {
 			const payload = parseJsonOutput(migrationResult.stdout);
-			migrationApplied = payload?.[0]?.results?.some((row) => row.name === expectedMigration) === true;
+			d1Evidence = d1EvidenceRows(payload);
+			for (const name of appliedMigrationNamesFromEvidence(d1Evidence)) appliedMigrations.add(name);
 		} catch {
-			migrationApplied = false;
+			appliedMigrations.clear();
+			d1Evidence = [];
+		}
+	}
+	for (const migration of expectedMigrations) {
+		const applied = appliedMigrations.has(migration);
+		record(
+			`app-migration-${migration.slice(0, 4)}`,
+			applied,
+			applied ? `${migration} is applied` : `${migration} is still pending`,
+		);
+	}
+	const missingPasskeySchema = missingPasskeySecuritySchemaEvidence(d1Evidence);
+	record(
+		"app-passkey-schema-0036",
+		missingPasskeySchema.length === 0,
+		missingPasskeySchema.length === 0
+			? "Passkey Security v2 columns, constraints and partial index are present"
+			: `Passkey Security v2 schema evidence is missing: ${missingPasskeySchema.join(", ")}`,
+	);
+
+	const deploymentResult = runWrangler([
+		"deployments", "status", "--name", workerName, "--json",
+	], { allowFailure: true });
+	let activeVersions = [];
+	if (deploymentResult.ok) {
+		try {
+			const deployment = parseJsonOutput(deploymentResult.stdout);
+			activeVersions = (deployment?.versions ?? []).filter((version) =>
+				typeof version?.version_id === "string" && Number(version?.percentage) > 0);
+		} catch {
+			activeVersions = [];
+		}
+	}
+	let passkeyBindingsReady = activeVersions.length > 0;
+	const passkeyBindingFailures = [];
+	for (const activeVersion of activeVersions) {
+		const versionResult = runWrangler([
+			"versions", "view", activeVersion.version_id,
+			"--name", workerName, "--json",
+		], { allowFailure: true });
+		if (!versionResult.ok) {
+			passkeyBindingsReady = false;
+			passkeyBindingFailures.push(`${activeVersion.version_id}: unreadable`);
+			continue;
+		}
+		try {
+			const version = parseJsonOutput(versionResult.stdout);
+			const rpMatches = bindingValue(version, "PASSKEY_RP_ID") === passkeyRpId;
+			const originsMatch = bindingValue(version, "PASSKEY_ALLOWED_ORIGINS") === passkeyAllowedOrigins;
+			if (!rpMatches || !originsMatch) {
+				passkeyBindingsReady = false;
+				passkeyBindingFailures.push(
+					`${activeVersion.version_id}: ${!rpMatches ? "RP ID" : ""}${!rpMatches && !originsMatch ? " and " : ""}${!originsMatch ? "origins" : ""} mismatch`,
+				);
+			}
+		} catch {
+			passkeyBindingsReady = false;
+			passkeyBindingFailures.push(`${activeVersion.version_id}: invalid version JSON`);
 		}
 	}
 	record(
-		"app-migration-0035",
-		migrationApplied,
-		migrationApplied ? `${expectedMigration} is applied` : `${expectedMigration} is still pending`,
+		"app-webauthn-bindings",
+		passkeyBindingsReady,
+		passkeyBindingsReady
+			? `Every active App Worker version uses RP ${passkeyRpId} and ${passkeyAllowedOrigins}`
+			: passkeyBindingFailures.length > 0
+				? `Active App Worker WebAuthn bindings are not ready: ${passkeyBindingFailures.join("; ")}`
+				: "No active App Worker version could be verified",
 	);
 
 	const [live, health, appSurface, routeProof] = await Promise.all([
