@@ -212,7 +212,7 @@ Payments, Dashboard, contratos, DNS, secrets ni la política monetaria.
   `a2ea1d70-0553-48fd-8501-201bfe7e5143`, 100 % del tráfico, mensaje
   `phase3 passkey-v2 246d967923f81eca910ff11dc6c138d16df5c891`.
   Rollback inmediato: `5a7849e4-53f7-47f9-ab78-cb2b07a03fb9`; baseline anterior
-  a Passkey v2: `6e8ce042-c76a-4fe1-b5d5-e0efe6988547`.
+  a Passkey v2: `6e8ce042…` (el ID completo permanece en la evidencia histórica).
 - App Web definitiva:
   `parmelia-4ezj8lobg-danelerrs-projects.vercel.app`, deployment
   `dpl_9kr3Si4kjH57KndiMJWUCvcL9X5X`, `READY` y alias

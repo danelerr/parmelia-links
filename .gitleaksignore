@@ -16,3 +16,6 @@ f5b7b148b80e6192b411e2e0728f789bffccabb1:server/.dev.vars.example:generic-api-ke
 e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:14
 e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:17
 e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:18
+
+# Public Cloudflare Worker version UUID recorded as release evidence.
+a362b822143f1ff36874258f4fd4827ed25a58c9:docs/operations/phase-3-release-readiness-2026-08-28.md:generic-api-key:215
