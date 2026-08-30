@@ -9,6 +9,7 @@ const wranglerCli = resolve(serverDirectory, "node_modules", "wrangler", "bin", 
 const expectedMigration = "0035_firebase_email_links.sql";
 const expectedFirebaseProject = "proyecto-prueba-push-firebase";
 const checks = [];
+const allowedCommands = new Set([process.execPath, "gcloud", "pwsh.exe"]);
 
 function configValue(pattern, label) {
 	const match = serverConfig.match(pattern);
@@ -26,13 +27,21 @@ function clean(output) {
 	return String(output ?? "").replaceAll(/\u001b\[[0-9;]*m/gu, "").trim();
 }
 
-function run(command, args, { cwd = root, allowFailure = false, shell = false } = {}) {
+function run(command, args, { cwd = root, allowFailure = false } = {}) {
+	if (!allowedCommands.has(command)) {
+		throw new Error(`Refusing to execute a non-allowlisted command: ${command}`);
+	}
+	if (!Array.isArray(args) || args.some((argument) => typeof argument !== "string")) {
+		throw new TypeError("Command arguments must be an array of strings");
+	}
+	// The executable is allowlisted above, arguments are internal values, and no
+	// shell is involved. Semgrep cannot infer that constraint through this helper.
+	// nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
 	const result = spawnSync(command, args, {
 		cwd,
 		encoding: "utf8",
 		windowsHide: true,
 		maxBuffer: 8 * 1024 * 1024,
-		shell,
 	});
 	const stdout = clean(result.stdout);
 	const stderr = clean(result.stderr);
