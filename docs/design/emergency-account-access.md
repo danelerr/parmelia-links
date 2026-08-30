@@ -400,12 +400,11 @@ signers, cambiar threshold, cambiar guardian o actualizar la implementación.
 Todos sus valores críticos deben revalidarse onchain al abrirlo; nunca se trata
 como fuente de autorización.
 
-El candidato local Passkey Security v2 añade `rp_id` al esquema canónico
+Passkey Security v2 desplegado añade `rp_id` al esquema canónico
 `passkeys` y `expected_rp_id` a cada ceremonia mediante la migración `0036`.
 También devuelve el RP ID fijado por el Worker en registro y firma, en lugar de
-derivarlo del host del frontend. Todavía falta publicarlo y añadir `rp_id` al
-manifest exportable del cliente de rescate; D1 no debe ser su única fuente de
-continuidad.
+derivarlo del host del frontend. Todavía falta añadir `rp_id` al manifest
+exportable del cliente de rescate; D1 no debe ser su única fuente de continuidad.
 
 ## 7. Qué se puede prometer al usuario
 

@@ -1,6 +1,6 @@
 # Passkey Security v2 — alcance, metadata y opciones
 
-**Estado:** candidato local, no desplegado
+**Estado:** desplegado en App Worker y App Web; aceptación WebAuthn manual pendiente
 
 **Fecha:** 30 de agosto de 2026
 **Alcance:** App Worker y App Web; no modifica Payments, Dashboard ni contratos
@@ -124,8 +124,11 @@ La matriz se ejecutó el 30 de agosto de 2026 sobre este candidato y terminó co
 exit `0`: App Worker 265 unitarias + 26 runtime, Payments 52 + 23, Playwright 60
 aprobadas/40 omisiones deliberadas, backup/restore de 60 tablas D1, audit sin
 vulnerabilidades conocidas y 191 pruebas Foundry finales aprobadas/4 forks
-omitidos por no inyectar RPC. Esto demuestra el candidato local; no demuestra
-que `0036`, el Worker o la App Web estén publicados.
+omitidos por no inyectar RPC. Después se aplicó `0036`, se promovieron App Worker
+`a2ea1d70-0553-48fd-8501-201bfe7e5143` y App Web
+`parmelia-4ezj8lobg-danelerrs-projects.vercel.app`, y el preflight remoto terminó
+con 12 checks listos. Una ceremonia real no se simula: requiere la sesión, el
+autenticador y el gesto del usuario.
 
 Referencias primarias:
 

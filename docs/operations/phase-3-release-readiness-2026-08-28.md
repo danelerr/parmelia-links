@@ -4,13 +4,13 @@
 
 **Actualización:** 30 de agosto de 2026
 
-**Estado:** la infraestructura y autenticación App de Fase 3 están promovidas;
-login real y UID común Google/Email Link verificados. El delta UX que elimina la
-recuperación automática y el candidato Passkey Security v2 están verificados
-localmente, pero todavía no fueron promovidos. Passkey v2 requiere primero la
-migración App D1 `0036_passkey_security_metadata.sql`.
-El recovery/replay real pasa a ser un drill deliberado de Fase 4, no un segundo
-paso automático del login.
+**Estado:** la promoción técnica de la App en Fase 3 está completa; login real y
+UID común Google/Email Link, UX centralizada y Passkey Security v2 están
+desplegados. `0036_passkey_security_metadata.sql`, sus 20 evidencias semánticas
+y los bindings WebAuthn están activos. Una ceremonia WebAuthn real sigue siendo
+aceptación interactiva del usuario: requiere su sesión, gesto y autenticador y
+no fue simulada por el agente. El recovery/replay real pasa a ser un drill
+deliberado de Fase 4, no un segundo paso automático del login.
 
 **Política monetaria:** `PAYMENT_LIVE_ENABLED=false`; fees y mainnet apagados
 
@@ -47,7 +47,7 @@ dominio deberá agregarse a Firebase y reflejarse en `APP_URL`, CORS, Vercel y
 Turnstile. Comprar o gestionar el dominio en Cloudflare no mueve el frontend:
 Vercel puede seguir alojándolo mediante registros DNS.
 
-## Implementación local actual
+## Implementación promovida
 
 - `/auth/email-link/request` valida Turnstile, aplica cuotas por IP/email/global
   y llama `accounts:sendOobCode` con `EMAIL_SIGNIN`.
@@ -135,8 +135,8 @@ se debe crear una cuenta Resend, tocar SPF/DKIM ni mover DNS para este flujo.
 - Foundry final: 191 pruebas aprobadas y 4 forks omitidos por no inyectar RPC en
   la corrida local; lint y límites de bytecode verdes.
 
-La matriz integral demuestra la coherencia del candidato local. La promoción y
-el correo real se documentan a continuación como evidencia separada.
+La matriz integral demuestra la coherencia del candidato. La promoción y la
+evidencia real se documentan a continuación por separado.
 
 ## Promoción App del 30 de agosto
 
@@ -168,7 +168,7 @@ el correo real se documentan a continuación como evidencia separada.
 - Payments, Dashboard, contratos, DNS y secrets no fueron desplegados ni
   modificados; `PAYMENT_LIVE_ENABLED=false` permanece intacto.
 
-## Delta UX local posterior a la promoción
+## Delta UX y Passkey v2 promovidos
 
 Después de observar la sesión real se retiró la redundancia entre login y
 recovery:
@@ -182,8 +182,60 @@ recovery:
 - consumir un magic link de recovery muestra la prueba confirmada, pero no abre
   el prompt del sistema ni inicia una operación hasta pulsar el CTA explícito.
 
-Este delta no cambió Worker, D1, Payments, Dashboard, contratos, DNS ni secrets.
-Tampoco fue versionado, publicado o validado en producción en este corte.
+El delta fue versionado y promovido junto con Passkey Security v2. No cambió
+Payments, Dashboard, contratos, DNS, secrets ni la política monetaria.
+
+## Promoción App Passkey Security v2 del 30 de agosto
+
+- Candidato de seguridad: `e3b195c12c7b3855ad5c5fba5e193ef721738e44`;
+  clasificación de AAGUID públicos: `96b44d4541cb011448be64323355e0a2bd31ecb6`;
+  guard definitivo de despliegue: `246d967923f81eca910ff11dc6c138d16df5c891`.
+- Los 6 checks GitHub del commit desplegable quedaron verdes: Quality,
+  navegador/accesibilidad, Secret scan, Semgrep, Slither y CodeQL. La matriz
+  local final pasó con 265+26 pruebas App Worker, 52+23 Payments, 60 Playwright
+  aprobadas/40 omisiones deliberadas, audit sin CVE conocidas, restore D1 de 60
+  tablas y 191 Foundry aprobadas/4 forks omitidos sin RPC local.
+- Por instrucción explícita del usuario no se creó un segundo backup cifrado
+  manual antes de `0036`. La migración fue aditiva y Wrangler registró el backup
+  automático de D1; esta excepción se conserva aquí y no cambia la recomendación
+  general del runbook.
+- `0036_passkey_security_metadata.sql` quedó aplicada; no hay migraciones App
+  pendientes. El guard remoto verificó 36 migraciones y 20 elementos semánticos
+  del esquema, además de los 7 nombres de secrets requeridos sin leer valores.
+- Un comando documentado con un separador extra hizo que el primer supuesto
+  `dry-run` publicara la versión intermedia
+  `5a7849e4-53f7-47f9-ab78-cb2b07a03fb9`. La fuente era el candidato correcto y
+  estaba autorizada, pero se corrigió el entrypoint para rechazar esa sintaxis.
+  El nuevo ensayo terminó con `--dry-run: exiting now` y demostró que el ID
+  activo no cambió.
+- App Worker definitivo:
+  `a2ea1d70-0553-48fd-8501-201bfe7e5143`, 100 % del tráfico, mensaje
+  `phase3 passkey-v2 246d967923f81eca910ff11dc6c138d16df5c891`.
+  Rollback inmediato: `5a7849e4-53f7-47f9-ab78-cb2b07a03fb9`; baseline anterior
+  a Passkey v2: `6e8ce042-c76a-4fe1-b5d5-e0efe6988547`.
+- App Web definitiva:
+  `parmelia-4ezj8lobg-danelerrs-projects.vercel.app`, deployment
+  `dpl_9kr3Si4kjH57KndiMJWUCvcL9X5X`, `READY` y alias
+  `https://app.parmelia.me`. Rollback anterior:
+  `parmelia-7t1eguai2-danelerrs-projects.vercel.app` /
+  `dpl_JAUzm9PNGE3EnkZ8foZfJcWY5ndT`.
+- El preflight App-only quedó `ready=true` a
+  `2026-08-30T23:15:14.550Z`, con 12 checks `ready`, cero pendientes y ninguna
+  mutación o buzón real durante esa verificación.
+- Tres lecturas inmediatas del health devolvieron `status=ok` e `issueCount=0`.
+  La consulta D1 redactada confirmó 0 dead letters, 0 outbox App/Payments activos,
+  0 operaciones de cuenta activas y 0 fallas de refresh/indexer/reorg.
+- En Chromium limpio, producción mostró Google y Email Link sin errores propios.
+  Turnstile no emitió token bajo automatización, pero a los 15 segundos presentó
+  error visible y `Intentar de nuevo`; el retry reinició el widget. Los únicos
+  errores de consola procedían del iframe de Turnstile.
+- HTML y `sw.js` respondieron 200 y revalidan; los assets usan caché inmutable.
+  El chunk productivo `Security-kytAM-xN.js` contiene selección de autenticador,
+  Signal API y retorno same-origin. Computer Use no pudo conectarse al helper de
+  Windows, por lo que no se atribuye una inspección autenticada de la sesión del
+  usuario ni una ceremonia biométrica que no ocurrió.
+- Payments, Dashboard, contratos, DNS y secrets no fueron desplegados ni
+  modificados. `PAYMENT_LIVE_ENABLED=false` permanece intacto.
 
 ## Preflight remoto App-only
 
@@ -202,7 +254,7 @@ CSP Google, ruta Email Link, Vercel y Firebase. El despliegue corrige la CSP
 anterior que bloqueaba `https://apis.google.com`; el preflight rechaza una
 regresión que vuelva a omitirla.
 
-La versión endurecida posterior, ejecutada en modo read-only a
+La versión endurecida previa al corte, ejecutada en modo read-only a
 `2026-08-30T22:22:57Z`, refleja el estado vigente con `ready=false`,
 `remoteMutationPerformed=false` y exactamente cuatro pendientes: fuente local
 aún no publicada, `0036` no aplicada, su esquema semántico ausente y bindings
@@ -212,6 +264,11 @@ WebAuthn ausentes en la versión Worker activa
 cadena de migraciones. No es una regresión del corte de magic links: es el
 bloqueo esperado que evita atribuir el candidato Passkey v2 a producción antes
 de promoverlo completo.
+
+Después del corte, el mismo preflight quedó `ready=true` a
+`2026-08-30T23:15:14.550Z`: `0035`/`0036`, esquema Passkey v2, bindings exactos
+en la única versión con tráfico, health, App pública, CSP, ruta Email Link,
+Vercel y Firebase pasaron sin pendientes.
 
 La evidencia histórica está en el
 [runbook de magic links](../runbooks/phase-3-app-magic-link-cutover.md). La
@@ -235,25 +292,29 @@ Se conservan como evidencia histórica:
 
 Nada de esa evidencia autoriza `PAYMENT_LIVE_ENABLED=true` ni sustituye Fase 4.
 
-## Gates abiertos antes de declarar la App 100 % cerrada
+## Gates de promoción y aceptación
 
 1. [x] Versionar el árbol exacto y obtener CI/security verdes.
 2. [x] Backup y restore drill de App D1; aplicar `0035` antes del nuevo Worker.
 3. [x] Desplegar **sólo App Worker y App Web** desde esa versión.
 4. [x] Verificar Turnstile, CSP Google, recepción/consumo real y UID único entre
    Google/Email Link.
-5. [ ] Versionar y promover el delta UX App; verificar en producción que login no
-   dispara recovery, que la falta de llave dirige a Seguridad y que un link de
-   recovery consumido espera confirmación explícita.
+5. [x] Versionar y promover el delta UX App. El bundle productivo contiene la
+   guía única a Seguridad, el recovery explícito y retorno same-origin; la matriz
+   de navegador cubre esos comportamientos sin mutaciones reales.
 6. [x] Confirmar health/readiness, cero dead letters nuevas y rollback
    identificable.
-7. [ ] Respaldar App D1, aplicar sólo `0036`, obtener
-   `app-passkey-schema-0036=ready`, desplegar el candidato Passkey v2 y obtener
-   `app-webauthn-bindings=ready` sobre todas las versiones con tráfico.
+7. [x] Aplicar sólo `0036`, obtener `app-passkey-schema-0036=ready`, desplegar el
+   candidato Passkey v2 y obtener `app-webauthn-bindings=ready` sobre todas las
+   versiones con tráfico. El usuario descartó expresamente el backup manual
+   adicional y esa excepción está registrada arriba.
 8. [ ] En Fase 4, ejecutar deliberadamente el drill recovery/replay completo y
    detenerse antes de una mutación onchain salvo autorización separada.
+9. [ ] Aceptación manual: en una sesión autenticada, abrir Seguridad y completar
+   al menos una ceremonia con el autenticador del usuario. Crear, renombrar o
+   revocar una llave requiere autorización separada y gesto físico.
 
-Los gates 5 y 7 cierran la promoción de Fase 3; el gate 8 pertenece a Fase 4 y no
-debe confundirse con esa promoción. Hasta completar 5 y 7, la frase correcta es:
-**autenticación App promovida y login real verificado; nueva UX y Passkey
-Security v2 verificados sólo en local**.
+Los gates 5 y 7 cierran la promoción técnica de Fase 3. El gate 8 pertenece a
+Fase 4 y no debe confundirse con esa promoción. El gate 9 no es trabajo remoto
+del agente: es la aceptación WebAuthn real del usuario y no se declara ejecutada
+hasta observar su autenticador.

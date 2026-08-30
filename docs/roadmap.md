@@ -1,7 +1,7 @@
 # Roadmap técnico de GatoPago
 
 **Última revisión:** 30 de agosto de 2026
-**Estado:** base de Fase 3 promovida; App Google + Email Link activa y login real verificado; Passkey Security v2/UX de llaves esperan `0036` y promoción; API/Business y Fase 4 transaccional pendientes
+**Estado:** Fase 3 App promovida; Google + Email Link, UX de llaves y Passkey Security v2 activos; aceptación WebAuthn manual y Fase 4 transaccional pendientes; API/Business continúan después
 **Fuente inicial:** [auditoría técnica del 23 de agosto de 2026](./audits/2026-08-23.md)
 
 Este archivo es la única lista de trabajo técnico. El corte de Fase 2.1 está en el
@@ -13,7 +13,7 @@ pago E2E con evidencia on-chain.
 
 ## P0 — Requiere acción operativa antes del despliegue
 
-- [ ] **Cerrar la App de consumo con Google + Firebase Email Link.** La
+- [x] **Cerrar la promoción técnica de la App de consumo.** La
   infraestructura de la tercera revisión ya eliminó el lock global de attempts,
   endureció Turnstile y retiró Promises RPC globales; permanece desplegada con
   `PAYMENT_LIVE_ENABLED=false`. El 30-08 el alcance cambió: primero se cierra la
@@ -26,10 +26,11 @@ pago E2E con evidencia on-chain.
   identidad verificada con Google y Email Link. El candidato inicializa Firebase
   Auth con persistencia local y resolver de redirect en una sola operación; el
   gate de frontend impide reintroducir la carrera `getAuth`/`setPersistence` que
-  podía cerrar IndexedDB durante la recuperación de sesión. Falta
-  versionar/promover la UX de
-  llaves y Passkey Security v2 después del backup y `0036`; sus ceremonias reales
-  requieren autorización específica. Recovery/replay queda como drill de Fase 4,
+  podía cerrar IndexedDB durante la recuperación de sesión. La UX de llaves y
+  Passkey Security v2 fueron versionados, `0036` fue aplicada y App Worker/App
+  Web quedaron promovidos desde `246d967`; el preflight remoto tiene 12/12
+  checks listos. Sus ceremonias reales requieren autorización específica y gesto
+  del usuario. Recovery/replay queda como drill de Fase 4,
   deteniéndose antes de proponer onchain. El smoke adversarial remoto de Payments conserva
   su evidencia histórica y no necesita repetirse para este cambio de App. El
   preflight `preflight:phase3-app:remote` ya delimita el estado sin mutar nada.
@@ -119,19 +120,21 @@ pago E2E con evidencia on-chain.
 ## P1 — Implementado localmente
 
 - [x] **Magic links de Firebase implementados para la App.** Turnstile y cuotas protegen la solicitud; Firebase envía/consume el enlace, el correo no aparece en la URL y otro dispositivo debe confirmarlo. El login nunca inicia recovery ni crea una passkey. Recovery usa challenge opaco, UID + `auth_time` reciente y proof acotado de un solo uso sólo después de elegirlo explícitamente en `Configuración → Seguridad`. Las rutas OTP quedan sólo como compatibilidad temporal Business.
-- [x] **UX de acceso a llaves centralizada localmente.** Home sin llave registrada y los flujos pagar/enviar/swap/cross-chain/Earn sin llave utilizable muestran un único camino hacia `Configuración → Seguridad`. Consumir un link de recovery sólo confirma identidad y espera un CTA; no abre WebAuthn ni muta la cuenta automáticamente. Falta versionar/promover este delta y validarlo en la App real.
+- [x] **UX de acceso a llaves centralizada y promovida.** Home sin llave registrada y los flujos pagar/enviar/swap/cross-chain/Earn sin llave utilizable muestran un único camino hacia `Configuración → Seguridad`. Consumir un link de recovery sólo confirma identidad y espera un CTA; no abre WebAuthn ni muta la cuenta automáticamente. El bundle productivo y la matriz de navegador verifican este contrato; la aceptación WebAuthn real requiere gesto del usuario.
 - [x] **CI reproducible en Node 24/Linux.** Node 24, pnpm congelado, Foundry, verificación integral, E2E y scanners están versionados; las Actions usan commits inmutables y se ejecutan sobre cada HEAD publicado.
 - [x] **Cabeceras y health separado.** CSP y cabeceras defensivas están declaradas; `/health/live` es mínimo, `/health` expone sólo estado agregado y `/health/ops` requiere el token operativo. Los health remotos pasan y Payments sostuvo 30/30 lecturas consecutivas tras el ajuste RPC/Multicall3.
 - [x] **Caché y service worker.** Chunks con hash son inmutables; HTML/manifest/SW se revalidan; las escrituras de Cache Storage se esperan y las rutas de Firebase Auth no se interceptan. El gate automatizado cubre instalación, fetch, invalidación y notificaciones.
 - [x] **PWA y formulario de perfil.** La PWA usa únicamente la cara original de Meli en PNG, expone instalación desde navegador y conserva instrucciones para iOS. El perfil memoiza el modelo inicial para que nombre y red social no se reinicien durante la escritura; el selector de red usa estado controlado estable.
 - [x] **Passkeys y recovery endurecidos.** Registro y verificación son server-bound con `@simplewebauthn/server`; las credenciales se pueden listar, renombrar y revocar. Recovery exige step-up, no consume el desafío en el preflight y lo consume atómicamente al proponer la recuperación.
-- [x] **Passkey Security v2 implementado localmente.** El Worker fija RP ID y
+- [x] **Passkey Security v2 promovido.** El Worker fija RP ID y
   allowlist WebAuthn separados de CORS, cada UserOperation devuelve el RP ID,
   `0036` persiste AAGUID/BE/BS/tipo/proveedor sólo como metadata, la UI distingue
   incertidumbre y ofrece llave física bajo divulgación progresiva. Signal API
   recibe el inventario únicamente cuando D1 y signers onchain coinciden uno a
-  uno; el retorno a una operación valida mismo origen. No está desplegado.
-- [x] **Gates de promoción Passkey v2 implementados localmente.** El deploy del
+  uno; el retorno a una operación valida mismo origen. Está activo en App Worker
+  `a2ea1d70-0553-48fd-8501-201bfe7e5143` y App Web
+  `parmelia-4ezj8lobg-danelerrs-projects.vercel.app`.
+- [x] **Gates de promoción Passkey v2 promovidos.** El deploy del
   Worker rechaza cambios accidentales de RP/orígenes y cualquier migración App
   local pendiente; además verifica 13 columnas, 6 restricciones y el índice
   parcial de `0036`. El preflight remoto comprueba `0035`, `0036`, ese esquema
@@ -158,7 +161,7 @@ pago E2E con evidencia on-chain.
   tercera revisión detectó que la firma aún tomaba un lock global; `0007` lo
   elimina y el delta ya está desplegado en Payments versión
   `9f65035e-4ba4-4b4e-bdac-54a21cff8f24`.
-- [ ] **Gates 3C revalidados y promovidos después de la tercera auditoría.**
+- [x] **Gates 3C revalidados y promovidos después de la tercera auditoría.**
   `pnpm verify` y `pnpm test:e2e` pasan en el delta local actual con 260+26
   pruebas App, 52+23 Payments y 52 E2E aprobadas/32 omisiones deliberadas de
   matriz, además de 11 diagramas, OpenAPI y límites de bundle. El candidato
@@ -184,7 +187,9 @@ pago E2E con evidencia on-chain.
   Worker/App Web y el preflight remoto quedó completamente verde. La CSP Google
   está corregida y el enlace real fue recibido/consumido bajo el mismo UID
   vinculado a Google. La observación real produjo el delta UX de llaves descrito
-  arriba: está verde localmente y pendiente de publicación. Recovery/replay real
+  arriba quedó publicado. `0036`, Worker/Web y el preflight de 12 checks están
+  verdes; la consulta redactada confirma 0 dead letters y 0 trabajos activos.
+  Recovery/replay real
   será un drill deliberado de Fase 4, junto con pagos testnet reales, evidencia
   monetaria completa y fault injection.
 
@@ -193,7 +198,7 @@ pago E2E con evidencia on-chain.
 - [x] **Reducir hotspots por dominio.** `storage.ts` bajó de 3.159 a menos de 1.000 líneas y delega ledger, merchants/webhooks, passkeys, cross-chain, leases, cursores, operaciones de cuenta y features de usuario. `indexer.ts` bajó de 1.664 a menos de 750 líneas al separar los tres watchers. `ScanQR.tsx` y `PayPage.tsx` quedaron por debajo de 700 líneas mediante extracción de lógica y vistas.
 - [x] **Unificar lógica sensible.** Esquemas EIP-712 y autorizaciones de pago viven en `shared`; los fixtures de TypeScript/Solidity comprueban la misma codificación. Los watchers comparten ventanas, finality, journal, reorg guards y cursores; el outbox permanece en la misma transacción que el cambio de estado correspondiente.
 - [x] **Eliminar código muerto y deuda de efectos React.** Knip y el gate de ciclos pasan; `react-hooks/set-state-in-effect` es error, no warning. Se retiraron dependencias, assets PWA y exports sin consumidores solo después de comprobar su uso.
-- [ ] **Flujos reales autenticados (producción).** El magic link real ya fue recibido/consumido y comparte UID con Google. Falta aplicar `0036`, promover/validar la UX centralizada y ejecutar ceremonias de llave bajo autorización específica; recovery/replay deliberado, perfil, red, envío, swap, cross-chain y webhooks reales pertenecen a Fase 4 cuando requieran cuentas, APIs, chains u operaciones monetarias.
+- [ ] **Aceptación autenticada y Fase 4 (producción).** El magic link real ya fue recibido/consumido y comparte UID con Google; `0036` y la UX centralizada están promovidas. Falta que el usuario complete una ceremonia WebAuthn real bajo autorización específica. Recovery/replay deliberado, perfil, red, envío, swap, cross-chain y webhooks reales pertenecen a Fase 4 cuando requieran cuentas, APIs, chains u operaciones monetarias.
 - [ ] **Migración de RP ID antes de cambiar el dominio App.** Google Auth no sincroniza passkeys: Google Password Manager/iCloud lo hacen según el dispositivo. El candidato ya evita derivar RP ID del host y conserva explícitamente `app.parmelia.me`, pero eso no migra credenciales. Antes de usar `app.gatopago.com` se necesita coexistencia, registro y firma con llaves nuevas, cobertura medible y rollback. DNS por sí solo no migra WebAuthn.
 
 ## P3 — Rendimiento, dependencias y mainnet

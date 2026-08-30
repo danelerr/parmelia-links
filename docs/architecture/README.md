@@ -1,8 +1,8 @@
 # Arquitectura visual de GatoPago
 
 **Fecha de corte:** 30 de agosto de 2026
-**Estado:** Fase 2.1 promovida; candidato App Google + Email Link verificado
-localmente y todavía no promovido; ejecución monetaria desactivada
+**Estado:** Fase 3 App promovida con Google + Email Link y Passkey Security v2;
+ejecución monetaria desactivada
 **Propósito:** explicar el sistema con un único vocabulario y separar con claridad
 lo que está desplegado, lo que está listo en código y lo que sólo es futuro.
 

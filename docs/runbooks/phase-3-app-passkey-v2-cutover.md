@@ -5,10 +5,11 @@
 **Contrato WebAuthn vigente:** RP ID `app.parmelia.me`, origen
 `https://app.parmelia.me`.
 
-**Baseline al 30-08-2026:** el candidato local está verificado; producción sigue
-en el corte de magic links, tiene `0035` pero no `0036`, y la versión activa del
-Worker todavía no publica `PASSKEY_RP_ID` ni `PASSKEY_ALLOWED_ORIGINS`.
-`PAYMENT_LIVE_ENABLED=false` permanece fuera de alcance.
+**Corte ejecutado el 30-08-2026:** `0035` y `0036` están aplicadas; App Worker
+`a2ea1d70-0553-48fd-8501-201bfe7e5143` y App Web
+`parmelia-4ezj8lobg-danelerrs-projects.vercel.app` publican Passkey Security v2.
+El preflight quedó con 12 checks listos. `PAYMENT_LIVE_ENABLED=false` permanece
+fuera de alcance.
 
 El bundle candidato selecciona `browserLocalPersistence` y el resolver de
 redirect dentro de `initializeAuth`; no cambia persistencia después de iniciar
@@ -32,6 +33,11 @@ Los primeros cuatro puntos no autorizan el quinto. Registrar o revocar un signer
 puede producir una operación on-chain aunque no sea un pago. No se autoriza
 Payments Worker/D1, Dashboard, contratos, DNS, secrets, buzones, fees, mainnet ni
 movimientos monetarios. No reutilizar la autorización histórica de `0035`.
+
+En este corte el usuario descartó explícitamente el backup cifrado manual del
+punto 2. Wrangler registró el backup automático de D1 y `0036` es aditiva. La
+excepción queda en el readiness; no se elimina la recomendación para cortes
+futuros ni se afirma que existió un backup manual.
 
 ## 1. Preflight local y remoto de solo lectura
 
@@ -249,3 +255,5 @@ Passkey Security v2 sólo queda promovido cuando existe evidencia de:
 - health estable sin dead letters nuevas.
 
 Esto no activa pagos ni reemplaza los E2E monetarios y fault injection de Fase 4.
+La promoción técnica fue versionada y validada; la ceremonia WebAuthn real sigue
+requiriendo la sesión, el autenticador y el gesto del usuario.

@@ -143,9 +143,9 @@ versionada y debe coincidir exactamente con un dominio autorizado en Firebase.
 canal opcional de alertas de seguridad/compatibilidad Business: una falla allí
 no impide el login ni detiene la entrega FCM del outbox.
 
-El candidato Passkey Security v2 agrega dos **vars públicas**, no Secrets:
+Passkey Security v2 desplegado agrega dos **vars públicas**, no Secrets:
 
-| Nombre | Valor del candidato | Procedencia y obtención | ¿Está en Git? |
+| Nombre | Valor activo | Procedencia y obtención | ¿Está en Git? |
 |---|---|---|---|
 | `PASSKEY_RP_ID` | `app.parmelia.me` | Es el RP ID de las passkeys existentes y debe permanecer estable. Se obtiene de la decisión de dominio WebAuthn, no de Cloudflare, Vercel ni Firebase | Sí, en `server/wrangler.jsonc` |
 | `PASSKEY_ALLOWED_ORIGINS` | `https://app.parmelia.me` | Origen exacto desde el que la App permite ceremonias WebAuthn. Sólo se amplía después de demostrar compatibilidad con el mismo RP ID | Sí, en `server/wrangler.jsonc` |
