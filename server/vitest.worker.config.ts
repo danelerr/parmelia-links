@@ -29,6 +29,8 @@ export default defineConfig({
 						token_uri: "https://oauth2.googleapis.com/token",
 					}),
 					FIREBASE_WEB_API_KEY: "runtime-test-key",
+					APP_URL: "https://app.parmelia.me",
+					TURNSTILE_SECRET_KEY: "runtime-turnstile-secret",
 					AUTH_EMAIL_FROM: "runtime@example.com",
 					TEST_MIGRATIONS: await readD1Migrations(`${serverRoot}migrations`),
 				},

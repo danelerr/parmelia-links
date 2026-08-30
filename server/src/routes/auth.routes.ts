@@ -14,6 +14,16 @@ import {
 	verifyEmailStepUpCode,
 } from "../services/emailOtp";
 import {
+	emailLinkContinueUrl,
+	exchangeRecoveryEmailLink,
+	FirebaseEmailLinkConfigurationError,
+	FirebaseEmailLinkUnavailableError,
+	InvalidEmailLinkChallengeError,
+	issueRecoveryEmailLink,
+	sendFirebaseEmailLink,
+	type RecoveryEmailLinkAction,
+} from "../services/firebaseEmailLink";
+import {
 	FirebaseAccountDisabledError,
 	FirebaseAdminConfigurationError,
 	FirebaseVerifiedEmailUnavailableError,
@@ -25,6 +35,7 @@ import { TransactionalEmailUnavailableError } from "../services/transactionalEma
 import { verifyTurnstile } from "../services/turnstile";
 
 const authRoutes = new Hono<AppContext>();
+const EMAIL_LINK_RESEND_AFTER_SECONDS = 60;
 
 function requestIp(c: Context<AppContext>): string {
 	return c.req.header("CF-Connecting-IP") || "unknown";
@@ -35,6 +46,70 @@ function maskEmail(email: string): string {
 	const visible = local.slice(0, Math.min(2, local.length));
 	return `${visible}${"*".repeat(Math.max(1, Math.min(6, local.length - visible.length)))}@${domain}`;
 }
+
+function recoveryAction(value: unknown): RecoveryEmailLinkAction | null {
+	return value === "start" || value === "execute" ? value : null;
+}
+
+authRoutes.post("/email-link/request", async (c) => {
+	const body = await c.req
+		.json<Record<string, unknown>>()
+		.catch(() => ({} as Record<string, unknown>));
+	const email = normalizeEmail(body.email);
+	if (!email) {
+		return c.json({ error: "Invalid email address", error_code: ERR.INVALID_EMAIL }, 400);
+	}
+	const ip = requestIp(c);
+	try {
+		const keys = await emailOtpRateLimitKeys(c.env, email, ip);
+		const ipAllowed = await rateLimitConsume(
+			c.env,
+			"auth-email-link-ip",
+			keys.ip,
+			20,
+			60 * 60,
+			{ failClosed: true },
+		);
+		if (!ipAllowed) {
+			return c.json({ error: "Too many link requests", error_code: ERR.RATE_LIMITED }, 429);
+		}
+
+		const human = await verifyTurnstile(c.env, body.turnstileToken, ip, "email_login");
+		if (!human) {
+			return c.json({ error: "Human verification failed", error_code: ERR.HUMAN_VERIFY_FAILED }, 403);
+		}
+		// A request that did not prove humanity may consume only its own IP
+		// budget. Global and address-specific counters are protected from being
+		// exhausted by invalid Turnstile tokens.
+		const [globalAllowed, emailAllowed] = await Promise.all([
+			rateLimitConsume(c.env, "auth-email-link-global", "all", 2_000, 60 * 60, { failClosed: true }),
+			rateLimitConsume(c.env, "auth-email-link", keys.email, 3, 15 * 60, { failClosed: true }),
+		]);
+		if (!globalAllowed || !emailAllowed) {
+			return c.json({ error: "Too many link requests", error_code: ERR.RATE_LIMITED }, 429);
+		}
+
+		const locale = body.locale === "en" ? "en" as const : "es" as const;
+		await sendFirebaseEmailLink(c.env, {
+			email,
+			locale,
+			continueUrl: emailLinkContinueUrl(c.env, { flow: "signin" }),
+		});
+		return c.json({ sent: true, resendAfterSeconds: EMAIL_LINK_RESEND_AFTER_SECONDS }, 202);
+	} catch (error) {
+		logError("auth_email_link_request_failed", error, {
+			requestId: c.get("requestId"),
+		});
+		if (
+			error instanceof EmailOtpConfigurationError ||
+			error instanceof FirebaseEmailLinkConfigurationError ||
+			error instanceof FirebaseEmailLinkUnavailableError
+		) {
+			return c.json({ error: "Email sign-in is unavailable", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+		}
+		return c.json({ error: "Unable to send sign-in link", error_code: ERR.SERVER_ERROR }, 500);
+	}
+});
 
 authRoutes.post("/email-code/request", async (c) => {
 	const body = await c.req
@@ -136,6 +211,111 @@ authRoutes.post("/email-code/verify", async (c) => {
 	}
 });
 
+authRoutes.post("/step-up/email-link/request", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const body = await c.req
+		.json<Record<string, unknown>>()
+		.catch(() => ({} as Record<string, unknown>));
+	const action = recoveryAction(body.action);
+	if (!action) {
+		return c.json({ error: "Invalid recovery action", error_code: ERR.STEP_UP_INVALID }, 403);
+	}
+	const ip = requestIp(c);
+	try {
+		const anonymousKeys = await emailOtpRateLimitKeys(c.env, "step-up-link", ip);
+		const [userAllowed, ipAllowed, globalAllowed] = await Promise.all([
+			rateLimitConsume(c.env, "auth-step-up-link-user", user.sub, 4, 15 * 60, { failClosed: true }),
+			rateLimitConsume(c.env, "auth-step-up-link-ip", anonymousKeys.ip, 20, 60 * 60, { failClosed: true }),
+			rateLimitConsume(c.env, "auth-step-up-link-global", "all", 2_000, 60 * 60, { failClosed: true }),
+		]);
+		if (!userAllowed || !ipAllowed || !globalAllowed) {
+			return c.json({ error: "Too many link requests", error_code: ERR.RATE_LIMITED }, 429);
+		}
+
+		const email = await getVerifiedFirebaseEmailForUid(c.env, user.sub);
+		const emailKeys = await emailOtpRateLimitKeys(c.env, email, ip);
+		const emailAllowed = await rateLimitConsume(
+			c.env,
+			"auth-step-up-link-email",
+			emailKeys.email,
+			4,
+			15 * 60,
+			{ failClosed: true },
+		);
+		if (!emailAllowed) {
+			return c.json({ error: "Too many link requests", error_code: ERR.RATE_LIMITED }, 429);
+		}
+
+		const locale = body.locale === "en" ? "en" as const : "es" as const;
+		const result = await issueRecoveryEmailLink(c.env, {
+			uid: user.sub,
+			email,
+			action,
+			locale,
+		});
+		c.executionCtx.waitUntil(deleteExpiredEmailCodes(c.env).catch(() => undefined));
+		return c.json({ sent: true, maskedEmail: maskEmail(email), ...result }, 202);
+	} catch (error) {
+		if (error instanceof FirebaseAccountDisabledError) {
+			return c.json({ error: "Account is disabled", error_code: ERR.AUTH_ACCOUNT_DISABLED }, 403);
+		}
+		if (error instanceof FirebaseVerifiedEmailUnavailableError) {
+			return c.json({ error: "A verified email is required", error_code: ERR.STEP_UP_UNAVAILABLE }, 403);
+		}
+		logError("auth_step_up_email_link_request_failed", error, {
+			requestId: c.get("requestId"),
+			uid: user.sub,
+		});
+		if (
+			error instanceof EmailOtpConfigurationError ||
+			error instanceof FirebaseEmailLinkConfigurationError ||
+			error instanceof FirebaseEmailLinkUnavailableError ||
+			error instanceof FirebaseAdminConfigurationError
+		) {
+			return c.json({ error: "Security verification is unavailable", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+		}
+		return c.json({ error: "Unable to send security link", error_code: ERR.SERVER_ERROR }, 500);
+	}
+});
+
+authRoutes.post("/step-up/email-link/exchange", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const body = await c.req
+		.json<Record<string, unknown>>()
+		.catch(() => ({} as Record<string, unknown>));
+	const challenge = typeof body.challenge === "string" ? body.challenge.trim() : "";
+	const ip = requestIp(c);
+	try {
+		const anonymousKeys = await emailOtpRateLimitKeys(c.env, "step-up-link-exchange", ip);
+		const [userAllowed, ipAllowed] = await Promise.all([
+			rateLimitConsume(c.env, "auth-step-up-link-exchange-user", user.sub, 12, 15 * 60, { failClosed: true }),
+			rateLimitConsume(c.env, "auth-step-up-link-exchange-ip", anonymousKeys.ip, 40, 15 * 60, { failClosed: true }),
+		]);
+		if (!userAllowed || !ipAllowed) {
+			return c.json({ error: "Too many verification attempts", error_code: ERR.RATE_LIMITED }, 429);
+		}
+		return c.json(await exchangeRecoveryEmailLink(c.env, {
+			uid: user.sub,
+			challenge,
+			authTime: user.auth_time,
+		}));
+	} catch (error) {
+		if (error instanceof InvalidEmailLinkChallengeError) {
+			return c.json({ error: "Invalid or expired security link", error_code: ERR.STEP_UP_INVALID }, 403);
+		}
+		logError("auth_step_up_email_link_exchange_failed", error, {
+			requestId: c.get("requestId"),
+			uid: user.sub,
+		});
+		if (error instanceof EmailOtpConfigurationError) {
+			return c.json({ error: "Security verification is unavailable", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+		}
+		return c.json({ error: "Unable to verify security link", error_code: ERR.SERVER_ERROR }, 500);
+	}
+});
+
+// Legacy six-digit step-up remains temporarily for the separately scoped
+// Business migration. The consumer App uses the Firebase email-link routes.
 authRoutes.post("/step-up/request", requireAuth, async (c) => {
 	const user = c.get("user")!;
 	const body = await c.req

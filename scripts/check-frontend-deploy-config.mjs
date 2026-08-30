@@ -42,12 +42,19 @@ const [clientConfig, dashboardConfig, clientEnv, dashboardEnv, appWrangler, depl
 
 const clientPolicy = cspFrom(clientConfig, "Client");
 assert.equal(dashboardConfig.outputDirectory, "dist", "Dashboard must publish Vite's dist directory");
+requireSources(clientPolicy, "script-src", [
+  "https://apis.google.com",
+  "https://www.gstatic.com",
+], "Client");
 requireSources(clientPolicy, "connect-src", [
   APP_API,
   PAYMENTS_API,
 ], "Client");
 
 const dashboardPolicy = cspFrom(dashboardConfig, "Dashboard");
+requireSources(dashboardPolicy, "script-src", [
+	"https://www.gstatic.com",
+], "Dashboard");
 requireSources(dashboardPolicy, "connect-src", [APP_API, PAYMENTS_API], "Dashboard");
 
 for (const [contents, variable, label] of [

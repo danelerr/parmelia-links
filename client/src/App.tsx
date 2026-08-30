@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { mutate as mutateSWR } from "swr";
-import { onAuthChange, type User } from "./lib/firebase";
+import { isFirebaseEmailLink, onAuthChange, type User } from "./lib/firebase";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DesktopNotice from "./components/DesktopNotice";
 import AccountLaunchScreen from "./components/AccountLaunchScreen";
@@ -216,6 +216,11 @@ function App() {
 	}
 
 	function renderLoginRoute() {
+		// Firebase may update auth state before Login has exchanged a recovery
+		// challenge. Keep the action-link landing mounted until it sanitizes the URL.
+		if (isFirebaseEmailLink()) {
+			return <Login />;
+		}
 		if (loading) {
 			return splash;
 		}

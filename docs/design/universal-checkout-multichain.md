@@ -905,8 +905,8 @@ negocio, no una condición para corregir el software.
 
 ### Fase 3 — hardening de Payments + checkout público (8–12 días)
 
-**Estado al 28-08-2026: reabierta por la tercera revisión; candidato correctivo
-local en validación y promoción pendiente.** La evidencia transaccional monetaria
+**Estado al 28-08-2026: fixes originales de la tercera revisión promovidos;
+canal de correo corregido localmente pero aún sin proveedor operativo.** La evidencia transaccional monetaria
 completa aún pertenece a Fase 4. Esta fase absorbe los
 hallazgos de la auditoría posterior a Fase 2. Primero cierra seguridad económica,
 recuperación y cutover; después amplía la UX pública. Ningún test verde anterior
@@ -923,7 +923,12 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
     `0006`, desplegó ambos Workers/frontends y repitió gates remotos. La revisión
     del 28-08 añadió `0007`: reservations concurrentes sin monopolio, settlement
     CAS auditable, Turnstile recuperable y caché RPC sólo de resultados resueltos.
-    Este delta no se considera promovido hasta repetir todos los gates remotos.
+    Ese delta quedó publicado desde `762c933`: Payments
+    `9f65035e-4ba4-4b4e-bdac-54a21cff8f24`, App
+    `5ad32fad-b365-4d12-9f89-5163f06659d0` y frontends Vercel `READY`. El gate
+    remoto integral pasó. El diagnóstico posterior del binding de correo quedó
+    supersedido el 30-08 por la decisión de usar Email Link nativo de Firebase
+    para la App: no requiere adapter, DNS de correo ni secret adicional.
 
 #### 3A. Bloqueadores de backend y operación
 
@@ -997,7 +1002,8 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
    pueden coexistir; el contrato decide por router/chain y Payments serializa
    settlements concurrentes por CAS, conservando sobrepagos multichain.
 6. Turnstile falla cerrado con timeout visible, retry y validación server-side de
-   action/hostname; App y Dashboard requieren evidencia OTP real desplegada.
+   action/hostname. La App requiere evidencia real de Firebase Email Link; la
+   autenticación legacy de Dashboard/Business queda fuera del corte App-only.
 7. Flujos local/CCTP, simulación, fallback de permit y resume de attempt.
 8. Copy ES/EN y accesibilidad teclado/móvil.
 
@@ -1018,13 +1024,21 @@ bootstrap/sync/freeze, compatibilidad N/N-1, base vacía, import único, checksu
   backup, creación/migración/import, deploy target→caller, health y smokes. Sin
   autorización, la fase puede cerrar solo su componente local y queda la promoción
   marcada como pendiente.
-- [ ] Migración `0007` aplicada y prueba adversarial remota confirma que un payer
-  no bloquea a otro ni la cancelación merchant; settlements concurrentes no
-  pierden monto ni duplican eventos.
-- [ ] Turnstile deja de esperar a los 15 s, ofrece retry en App/Dashboard y un OTP
-  real completa envío, recepción, verificación y sesión Firebase en producción.
-- [ ] Payments desplegado sin Promises RPC globales; liveness/readiness, RPC,
+- [x] Migración `0007` aplicada y smoke adversarial remoto completado sobre un
+  link `test` aislado: dos wallets efímeras conservaron reservations simultáneas,
+  la cancelación merchant no quedó bloqueada y ambas capabilities cancelaron sus
+  attempts. La fixture terminó en cero filas, `quick_check=ok` y cero errores FK.
+  Los tests runtime del artefacto desplegado prueban además que settlements
+  concurrentes no pierden monto ni duplican eventos.
+- [ ] Turnstile deja de esperar a los 15 s y ofrece retry en App/Dashboard. Ese
+  componente ya pasó en producción. El candidato App del 30-08 usa magic links
+  nativos de Firebase sin proveedor externo; para cerrar el gate falta aplicar
+  `0035`, promover sólo App y completar envío, recepción, consumo del link y
+  sesión Firebase reales.
+- [x] Payments desplegado sin Promises RPC globales; liveness/readiness, RPC,
   queues y scheduler permanecen estables con `PAYMENT_LIVE_ENABLED=false`.
+  Los preflights directo/proxy pasan y 160 solicitudes concurrentes de readiness
+  terminaron 200/`ready` sin fallos.
 
 **Evidencia histórica previa a la auditoría (25-08-2026):** `pnpm verify:all` pasó sobre la
 implementación anterior; después del ajuste final de recuperación volvieron a pasar
@@ -1042,6 +1056,22 @@ D1: restore de 59 tablas y checksum semántico con tamper negativo. Foundry:
 191 aprobadas + 4 forks omitidos sin RPC. La promoción posterior aplicó `0006`,
 desplegó runtime/frontends y completó el smoke remoto compuesto; el gate remoto
 ejecutó 197 pruebas Foundry sin fallos ni omisiones.
+
+**Evidencia correctiva publicada (28-08-2026):** `pnpm verify:all` pasó con App
+256+22, Payments 52+23, Playwright 40 aprobadas/16 omisiones deliberadas,
+Foundry 191 aprobadas/4 forks omitidos en el gate local y audit sin CVE conocidas.
+El gate remoto ejecutó 197/197 Foundry con forks públicos, validó Vercel y
+Cloudflare, checksum semántico, checkout directo/proxy, queues y health. D1 tiene
+`0001`–`0007`, `quick_check=ok` y cero errores FK. Turnstile completó el challenge
+real del Dashboard y la consola de App no mostró errores CSP de Analytics. Un
+smoke remoto aislado confirmó dos reservations concurrentes y cancelación
+merchant sin lock; después eliminó toda la fixture y volvió a verificar D1. Un
+segundo smoke no personal resolvió Turnstile pero recibió
+`Email sign-in is unavailable`; confirmó que el bloqueo no era sólo permiso para
+usar un buzón real. Cloudflare Email Service exige Cloudflare DNS y el dominio
+usa Vercel DNS. Esa alternativa se retiró el 30-08: la App usa magic links
+nativos de Firebase. El trabajo abierto es aplicar `0035`, promover App y
+verificar recepción/consumo real, no crear cuenta, DNS ni API key de correo.
 
 **Segunda revisión local (26-08-2026):** reabrió el gate porque el primer reset
 A→B esperaba la respuesta de B, el helper RPC sólo duplicaba Base, el checksum

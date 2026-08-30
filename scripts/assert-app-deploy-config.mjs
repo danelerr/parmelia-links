@@ -15,6 +15,28 @@ function requiredValue(config, pattern, label) {
 
 export function validateAppDeployConfig(appConfig, paymentsConfig) {
 	validatePaymentsDeployConfig(paymentsConfig);
+	const appUrl = requiredValue(appConfig, /"APP_URL"\s*:\s*"([^"]+)"/u, "APP_URL");
+	try {
+		const parsed = new URL(appUrl);
+		if (parsed.protocol !== "https:" || parsed.origin !== appUrl) throw new Error("invalid origin");
+	} catch {
+		throw new Error("Refusing App deployment: APP_URL must be an exact HTTPS origin.");
+	}
+	const hasEmailBinding = /"send_email"\s*:\s*\[[\s\S]*?"name"\s*:\s*"EMAIL"/u.test(appConfig);
+	const emailFrom = appConfig.match(/"AUTH_EMAIL_FROM"\s*:\s*"([^"]+)"/u)?.[1];
+	if (hasEmailBinding || emailFrom) {
+		if (!emailFrom || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(emailFrom) || emailFrom.length > 254) {
+			throw new Error("Refusing App deployment: AUTH_EMAIL_FROM is invalid.");
+		}
+	}
+	if (hasEmailBinding) {
+		const senderBlock = appConfig.match(/"send_email"\s*:\s*\[([\s\S]*?)\]\s*,/u)?.[1] ?? "";
+		const allowedSenders = [...senderBlock.matchAll(/"([^"\s@]+@[^"\s@]+\.[^"\s@]+)"/gu)]
+			.map((match) => match[1]);
+		if (!allowedSenders.includes(emailFrom)) {
+			throw new Error("Refusing App deployment: AUTH_EMAIL_FROM is not allowed by the EMAIL binding.");
+		}
+	}
 	if (!/"binding"\s*:\s*"PAYMENTS"[\s\S]{0,240}?"service"\s*:\s*"gatopago-payments-api"/u.test(appConfig)) {
 		throw new Error("Refusing App deployment: the PAYMENTS Service Binding target is missing or unexpected.");
 	}

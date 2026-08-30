@@ -7,8 +7,18 @@ import { logWarn } from "../services/logger";
 
 export type { Bindings } from "../env";
 
+type FirebaseIdentity = {
+	sub: string;
+	email?: string;
+	email_verified?: boolean;
+	name?: string;
+	picture?: string;
+	auth_time?: number;
+	firebase?: { sign_in_provider?: string };
+};
+
 type Variables = {
-	user: { sub: string; email?: string; name?: string; picture?: string } | null;
+	user: FirebaseIdentity | null;
 	requestId: string;
 	/** Set by the API-key middleware on /v1 routes. */
 	merchantId?: string;
@@ -44,7 +54,7 @@ async function verifyFirebaseToken(token: string, projectId: string) {
 		issuer: `https://securetoken.google.com/${projectId}`,
 		audience: projectId,
 	});
-	return payload as { sub: string; email?: string; name?: string; picture?: string };
+	return payload as FirebaseIdentity;
 }
 
 export const authMiddleware = async (c: Context<AppContext>, next: Next) => {

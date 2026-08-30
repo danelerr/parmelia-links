@@ -4,10 +4,10 @@
 > variables que debe recibir el despliegue. La ausencia de una integración
 > sensible degrada testnet y falla cerrado en mainnet.
 >
-> **Código del 24-ago-2026; verificar consola antes de operar:** Turnstile,
-> acceso con código de 6 dígitos, FCM, Analytics, Queues y Email Sending están
-> integrados. Este documento no confirma que sus credenciales remotas sigan
-> vigentes. **Login con Apple está descartado.**
+> **Estado local verificado el 30-ago-2026:** la App de consumo usa Google y
+> magic links nativos de Firebase. No usa Resend, SMTP, códigos de seis dígitos
+> ni Cloudflare Email Service para autenticación. Turnstile, FCM, Analytics y
+> Queues permanecen integrados. **Login con Apple está descartado.**
 > Verificar que `VITE_FIREBASE_MEASUREMENT_ID` esté también en Vercel (no solo local).
 
 ---
@@ -36,22 +36,32 @@ cd server && npx wrangler secret put TURNSTILE_SECRET_KEY
 Me avisas "Turnstile listo" + me pasas la **site key** (la secret no - esa ya quedó en wrangler).
 
 ### Qué implemento yo después
-- Cliente: widget de Turnstile en onboarding, faucet y solicitud de código de acceso; el token se renueva tras cada intento porque es de un solo uso.
+- Cliente: widget de Turnstile en onboarding, faucet y solicitud de magic link; el token se renueva tras cada intento porque es de un solo uso.
 - Server: verificación contra Siteverify. En testnet sin secret se permite desarrollo local; en mainnet la configuración incompleta falla cerrado.
 
 ---
 
-## 2. Login por correo con código de 6 dígitos
+## 2. Login por correo con magic link de Firebase
 
-> El login es Google o código numérico. El correo nunca contiene un enlace de
-> acceso y Firebase no genera el código: lo genera y valida el Worker.
+> El login de la App es Google o enlace de un solo uso. Firebase genera, envía
+> y consume el enlace. GatoPago conserva Turnstile y rate limits en su Worker,
+> pero no necesita contratar ni guardar credenciales de otro proveedor de correo.
 
-### Parte A - Firebase y Cloudflare
+### Parte A - Firebase
 1. https://console.firebase.google.com → proyecto **proyecto-prueba-push-firebase**.
-2. **Authentication → Sign-in method:** habilita Google. No habilites acceso por enlace de correo.
+2. **Authentication → Sign-in method:** habilita Google y Email/Password con
+   **Email link (passwordless sign-in)**. No hace falta permitir contraseñas.
 3. **Authentication → Settings → Authorized domains:** verifica `app.parmelia.me`, `parmelia.me` y `localhost`.
-4. **Project settings → Service accounts:** crea una cuenta de servicio dedicada al Worker y conserva el JSON fuera del repo/OneDrive.
-5. En Cloudflare Email Sending valida el remitente `acceso@parmelia.me`; el binding `EMAIL` ya está declarado en `server/wrangler.jsonc`.
+4. **Authentication → Templates → Email address sign-in:** revisa nombre,
+   idioma y remitente que Firebase permita configurar. El remitente efectivo es
+   administrado por Firebase; no se agrega una API key de correo a GatoPago.
+5. **Project settings → Service accounts:** conserva el JSON del Worker fuera
+   del repo/OneDrive. Se usa para Admin API y recovery, no para enviar el link.
+
+El 30-ago-2026 se verificó por API de configuración que Email está habilitado,
+`passwordRequired=false`, Google está habilitado y `app.parmelia.me` pertenece a
+los dominios autorizados. Un nuevo dominio como `app.gatopago.com` deberá
+agregarse antes del cutover; comprarlo o alojar la SPA no lo autoriza solo.
 
 ### Parte B - Configuración del Worker
 
@@ -63,19 +73,36 @@ pnpm exec wrangler secret put AUTH_CODE_PEPPER
 ```
 
 `FIREBASE_SERVICE_ACCOUNT` es el JSON completo; `FIREBASE_WEB_API_KEY` es la
-clave pública usada para canjear el Custom Token; `AUTH_CODE_PEPPER` debe ser un
-valor aleatorio de al menos 32 caracteres. No los prefijes con `VITE_`.
+misma clave pública de la aplicación web, almacenada además en el Worker para
+solicitar `EMAIL_SIGNIN`; `AUTH_CODE_PEPPER` debe ser aleatorio y tener al menos
+32 caracteres, pues protege los challenges opacos de recovery. El navegador usa
+la clave pública como `VITE_FIREBASE_API_KEY`; los otros dos valores nunca usan
+prefijo `VITE_`.
+
+La configuración pública versionada es:
+
+`APP_URL=https://app.parmelia.me` es configuración pública versionada y debe ser
+un origen HTTPS exacto también autorizado en Firebase. El comando
+`node scripts/assert-app-remote-secrets.mjs` bloquea el deploy si falta alguno de
+los tres nombres remotos; no lee ni imprime sus valores.
 
 ### Flujo implementado
 
-1. El cliente resuelve Turnstile y llama `POST /auth/email-code/request`.
-2. El Worker genera seis dígitos con Web Crypto, persiste solo HMAC + TTL + intentos y envía el correo mediante el binding `EMAIL`.
-3. `POST /auth/email-code/verify` consume el código atómicamente y devuelve un Firebase Custom Token.
-4. El cliente llama `signInWithCustomToken`; desde ahí usa el mismo Firebase ID token que el login Google.
+1. El cliente resuelve Turnstile y llama `POST /auth/email-link/request`.
+2. El Worker aplica quotas por IP/email/global y solicita `EMAIL_SIGNIN` al
+   endpoint oficial `accounts:sendOobCode` de Firebase.
+3. El cliente guarda localmente el correo, nunca lo incluye en la URL, y consume
+   el link con `signInWithEmailLink`. Si lo abre en otro dispositivo, debe volver
+   a escribir el correo.
+4. Recovery solicita `/auth/step-up/email-link/request`. El link lleva sólo un
+   challenge aleatorio; después de reautenticar, el Worker exige UID y
+   `auth_time` recientes y lo canjea una vez por un proof limitado a recovery.
 
-Los códigos expiran en 10 minutos, tienen cinco intentos totales y son de un
-solo uso. Recovery exige otro código ligado al UID y entrega un proof distinto,
-también de un solo uso; nunca se acepta un correo elegido por el cliente.
+La tabla `auth_email_link_challenges` sólo conserva HMAC, UID, acción, TTL y
+estado de consumo. La migración `0035_firebase_email_links.sql` invalida códigos
+legacy activos al hacer el corte de la App. Las rutas numéricas se conservan de
+forma temporal únicamente para el Dashboard/Business y no son parte del login
+de consumo.
 
 ---
 
@@ -129,8 +156,11 @@ código local.
 
 ## Orden sugerido de ejecución
 
-1. Aplicar todas las migraciones D1 hasta `0032_recovery_step_up.sql`.
-2. Validar Turnstile, Email Sending y los tres secretos de Firebase/OTP.
+1. Aplicar todas las migraciones D1 hasta `0035_firebase_email_links.sql` antes
+   de desplegar el App Worker que consulta la nueva tabla.
+2. Validar Turnstile, `APP_URL`, Google, Email Link y los tres secretos ya
+   existentes de Firebase/challenges. No crear una credencial de correo externa.
 3. Validar FCM (VAPID + service account) y GA4 si se mantiene Analytics.
 4. Confirmar Queue, DLQ y migraciones del Durable Object.
-5. Ejecutar `pnpm verify:all`, dry-run del Worker y pruebas reales en preview antes de producción.
+5. Ejecutar `pnpm verify:all`, el guard remoto, dry-run del Worker y pruebas
+   reales de envío, recepción y consumo del magic link antes de producción.

@@ -134,18 +134,23 @@ FAUCET_DAILY_BUDGET_USDC=500
 # JSON del service account de FCM en 1 linea (opcional; sin definir = sin push).
 FCM_SERVICE_ACCOUNT=
 
-# Autenticacion por codigo de 6 digitos. FIREBASE_SERVICE_ACCOUNT puede usar la
-# misma cuenta de servicio que FCM, pero se mantiene separado para rotacion y
-# minimo privilegio. FIREBASE_WEB_API_KEY es la clave publica del SDK web.
+# Autenticacion por Google y magic links nativos de Firebase.
+# FIREBASE_SERVICE_ACCOUNT puede usar la misma cuenta de servicio que FCM, pero
+# se mantiene separado para rotacion y minimo privilegio. FIREBASE_WEB_API_KEY
+# es la clave publica del SDK web y permite solicitar EMAIL_SIGNIN al endpoint
+# oficial de Firebase; no es una credencial de un proveedor de correo externo.
 FIREBASE_SERVICE_ACCOUNT=
 FIREBASE_WEB_API_KEY=
-# Secreto aleatorio de al menos 32 caracteres; HMAC de emails y codigos en D1.
+# Secreto aleatorio de al menos 32 caracteres; HMAC de desafios de recovery y
+# compatibilidad temporal con los codigos legacy del futuro producto Business.
 # Ejemplo: openssl rand -base64 48
 AUTH_CODE_PEPPER=
-# Debe pertenecer a un dominio dado de alta en Cloudflare Email Sending.
+# Opcional: remitente de alertas de seguridad/compatibilidad legacy mediante el
+# binding EMAIL. El inicio de sesion de la App no depende de este valor.
 AUTH_EMAIL_FROM=acceso@parmelia.me
 
-# URL publica del cliente usada para links de checkout.
+# Origen publico exacto autorizado en Firebase; destino de los magic links y
+# enlaces de checkout. En desarrollo puede ser http://localhost:5173.
 APP_URL=https://app.parmelia.me
 
 # Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).

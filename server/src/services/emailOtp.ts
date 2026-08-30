@@ -117,11 +117,11 @@ async function codeHash(
 	return hmacHex(pepper(env), `code:${input.id}:${input.emailHash}:${input.code}`);
 }
 
-async function stepUpTokenHash(env: Bindings, token: string): Promise<string> {
+export async function stepUpTokenHash(env: Bindings, token: string): Promise<string> {
 	return hmacHex(pepper(env), `step-up:${token}`);
 }
 
-function randomStepUpToken(): string {
+export function randomStepUpToken(): string {
 	const bytes = new Uint8Array(32);
 	crypto.getRandomValues(bytes);
 	let binary = "";
@@ -178,6 +178,7 @@ async function issueEmailCode(
 			code,
 			locale: input.locale,
 			expiresInMinutes: CODE_TTL_SECONDS / 60,
+			idempotencyKey: `auth_code_${id.replaceAll("-", "_")}`,
 		});
 	} catch (error) {
 		await env.GATOPAGO_DB.prepare("DELETE FROM auth_email_codes WHERE id = ?")
@@ -438,6 +439,9 @@ export async function deleteExpiredEmailCodes(env: Bindings): Promise<void> {
 		env.GATOPAGO_DB.prepare(
 			"DELETE FROM auth_step_up_sessions WHERE expires_at < ?",
 		).bind(cutoff),
+		env.GATOPAGO_DB.prepare(
+			"DELETE FROM auth_email_link_challenges WHERE expires_at < ?",
+		).bind(cutoff),
 	]);
 }
 
@@ -451,3 +455,5 @@ export const __test = {
 	STEP_UP_TTL_SECONDS,
 	MAX_ATTEMPTS,
 };
+
+export { STEP_UP_TTL_SECONDS };

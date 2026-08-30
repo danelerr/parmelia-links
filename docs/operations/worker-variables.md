@@ -64,9 +64,10 @@ hay dos niveles de procedencia:
 
 1. **Procedencia exacta comprobada:** el helper de Fase 2.1 muestra cómo creó y
    cargó los siete valores de Payments.
-2. **Nombre remoto comprobado, origen histórico no demostrable:** los siete
-   valores de App ya existían. Un archivo local con el mismo nombre es sólo un
-   candidato; no demuestra que sea idéntico al valor remoto.
+2. **Nombre remoto comprobado, origen histórico no demostrable:** siete valores
+   de App ya existían; `TURNSTILE_SECRET_KEY` se añadió desde el candidato local
+   ya existente, sin regenerarlo. Un archivo local con el mismo nombre no
+   demuestra por sí solo que sea idéntico al valor remoto.
 
 Cuando se perdió la fuente original de un secreto, la solución correcta es
 rotarlo. No se debe «adivinar» copiando un valor de otro Worker o de otro
@@ -76,7 +77,7 @@ archivo.
 
 | Ubicación | Estado comprobado | Contenido sensible |
 |---|---|---|
-| Cloudflare `server` | Remoto, 7 nombres | Sí; valores no recuperables |
+| Cloudflare `server` | Remoto, 8 nombres; el candidato magic-link no agrega ningún Secret | Sí; valores no recuperables |
 | Cloudflare `gatopago-payments-api` | Remoto, 7 nombres | Sí; valores no recuperables |
 | Vercel `parmelia` y `gatopago-dashboard` | Remoto | Sólo `VITE_*` pública en estos frontends |
 | `server/.dev.vars` | Existe, ignorado, dentro de OneDrive | RPC, Turnstile y FCM poblados; las dos private-key entries presentes están vacías |
@@ -105,13 +106,14 @@ gestor de secretos que no esté sincronizado por OneDrive.
 
 | Nombre | Clasificación y uso | Procedencia actual | Cómo obtener o regenerar | ¿Está en el checkout? |
 |---|---|---|---|---|
-| `AUTH_CODE_PEPPER` | Secreto aleatorio; HMAC de correo, IP, códigos y proofs | Ya existía en App; origen exacto no verificable | Generar 48 bytes aleatorios en un gestor seguro. Rotarlo invalida OTP/proofs pendientes | Nombre en la plantilla; no hay valor local poblado |
+| `AUTH_CODE_PEPPER` | Secreto aleatorio; HMAC de correo, IP, challenges de recovery y compatibilidad OTP legacy | Ya existía en App; origen exacto no verificable | Generar 48 bytes aleatorios en un gestor seguro. Rotarlo invalida challenges/proofs y OTP legacy pendientes | Nombre en la plantilla; no hay valor local poblado |
 | `FCM_SERVICE_ACCOUNT` | JSON privado para Firebase Cloud Messaging | Ya existía; `server/.dev.vars` tiene un candidato local, pero no se puede probar igualdad | Firebase Console → Project settings → Service accounts → generar una clave nueva para una cuenta de mínimo privilegio | Sí, valor local ignorado; no en Git |
-| `FIREBASE_SERVICE_ACCOUNT` | JSON privado para Custom Tokens/Admin API | Ya existía; origen exacto no verificable | Mismo flujo de Service Accounts; preferentemente una cuenta separada de FCM | Sólo nombre/plantilla local |
-| `FIREBASE_WEB_API_KEY` | Identificador web público de Firebase almacenado como Secret por compatibilidad | Ya existía; no se puede comparar con Vercel | Firebase Console → Project settings → General → aplicación web → `apiKey` | Sí como `VITE_FIREBASE_API_KEY` pública; el valor remoto no es legible |
+| `FIREBASE_SERVICE_ACCOUNT` | JSON privado para Admin API: consultar el correo verificado del UID durante recovery | Ya existía; origen exacto no verificable | Mismo flujo de Service Accounts; preferentemente una cuenta separada de FCM | Sólo nombre/plantilla local |
+| `FIREBASE_WEB_API_KEY` | Identificador público Firebase que el Worker usa para solicitar `EMAIL_SIGNIN`; se conserva como Secret sólo para no ampliar su exposición operativa | Ya existía; no se puede comparar con Vercel | Firebase Console → Project settings → General → aplicación web → `apiKey` | Sí como `VITE_FIREBASE_API_KEY` pública; el valor remoto no es legible |
 | `OPS_HEALTH_TOKEN` | Bearer secreto de `/health/ops` | Ya existía; origen exacto no verificable | Generar 48 bytes aleatorios y actualizar juntos Worker y monitor | Sólo nombre/plantilla local |
 | `PRIVATE_KEY` | EOA de App para `handleOps` y CCTP personal | Ya existía; Cloudflare no permite recuperarla | Crear una EOA relayer dedicada, financiarla, drenar nonces pendientes y rotar el Secret | `server/.dev.vars` tiene el campo vacío; `contracts/.env` tiene otra key cuyo vínculo no está demostrado |
 | `RPC_URL` | Endpoint EVM; sensible si contiene credencial del proveedor | Ya existía; hay un candidato local poblado, sin prueba de igualdad | Usar el RPC público de la red o crear un endpoint en el proveedor RPC elegido | Sí, valor local ignorado; no en Git |
+| `TURNSTILE_SECRET_KEY` | Secret del widget que permite validar token, action y hostname | El 28-08-2026 se cargó en Cloudflare desde la entrada ya poblada de `server/.dev.vars`; no se generó ni rotó y el valor no se imprimió | Cloudflare Dashboard → Turnstile → widget → Secret key; actualizar coordinadamente con la sitekey si se reemplaza el widget | Sí, valor ignorado; no en Git |
 
 La [configuración web de Firebase](https://firebase.google.com/docs/web/setup)
 es pública por diseño; la autorización real depende de IAM, Security Rules y
@@ -127,11 +129,19 @@ service-account JSON, en cambio, sí contiene una private key y es secreto. Véa
 | RPC por rol | `RPC_READ_URLS`, `RPC_WRITE_URLS`, `RPC_INDEXER_URLS`, `RPC_ARCHIVE_URLS` | Del proveedor RPC elegido. Se separan por capacidad; pueden heredar `RPC_URL` mientras no haya un plan dedicado |
 | Bundler y CCTP | `BUNDLER_RPC_URLS`, `CCTP_RPC_URLS` | Dashboard del bundler ERC-4337 o proveedor RPC. Hoy `RELAYER_MODE=self` y CCTP puede usar RPC público |
 | Roles onchain dedicados | `FAUCET_PRIVATE_KEY`, `RECOVERY_GUARDIAN_PRIVATE_KEY`, `PAYMASTER_SIGNER_PRIVATE_KEY`, `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` | Keystores/gestor de claves creados por GatoPago. Hoy testnet permite fallback; mainnet exige separación y falla cerrado |
-| Turnstile | `TURNSTILE_SECRET_KEY` | Secret key del widget en Cloudflare Turnstile. Existe en `server/.dev.vars`, pero **no** en el Worker remoto. Testnet puede omitirlo; mainnet no |
 | Alchemy Address Activity | `ALCHEMY_WEBHOOK_ID`, `ALCHEMY_WEBHOOK_SIGNING_KEY`, `ALCHEMY_ADDRESS_WEBHOOKS_JSON`, `ALCHEMY_NOTIFY_AUTH_TOKEN` | Dashboard Alchemy → Webhooks. Los flags remotos están apagados, por lo que hoy no se usan |
 | Alchemy Custom Webhook | `ALCHEMY_CUSTOM_WEBHOOK_ID`, `ALCHEMY_CUSTOM_WEBHOOK_SIGNING_KEY` | Mismo dashboard; hoy deshabilitado |
 | Paymaster ERC-7677 | `PAYMASTER_SERVICE_URL`, `PAYMASTER_SERVICE_CONTEXT_JSON` | Proveedor de paymaster seleccionado. No hay proveedor externo configurado; App usa `SPONSORSHIP_PROVIDER=parmelia` |
 | Webhooks merchant legacy | `WEBHOOK_SECRET_ENCRYPTION_KEY`, `WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS` | Claves históricas sólo para rollback/soak del dominio que ahora pertenece a Payments |
+
+La autenticación de la App no tiene `AUTH_EMAIL_PROVIDER`,
+`AUTH_EMAIL_TIMEOUT_MS` ni `RESEND_API_KEY`. Firebase entrega los magic links con
+la configuración del proyecto; por tanto no hay credencial de correo externa
+que obtener, cargar o rotar. `APP_URL=https://app.parmelia.me` es una var pública
+versionada y debe coincidir exactamente con un dominio autorizado en Firebase.
+`AUTH_EMAIL_FROM=acceso@parmelia.me` y el binding `EMAIL` quedan únicamente como
+canal opcional de alertas de seguridad/compatibilidad Business: una falla allí
+no impide el login ni detiene la entrega FCM del outbox.
 
 No todos los nombres de esa tabla son intrínsecamente secretos. Por ejemplo,
 `ALCHEMY_WEBHOOK_NETWORK`, `WEBHOOK_SECRET_ENCRYPTION_KEY_ID`,

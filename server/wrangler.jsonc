@@ -22,6 +22,11 @@
     // Non-sensitive runtime config only. Secrets like PRIVATE_KEY and RPC_URL
     // must be configured via `wrangler secret put` or local `.dev.vars`.
     "FIREBASE_PROJECT_ID": "proyecto-prueba-push-firebase",
+    // Firebase sends passwordless links itself. APP_URL must also exist in the
+    // Firebase authorized-domain list; it is not a secret.
+    "APP_URL": "https://app.parmelia.me",
+    // Optional security-alert/legacy Business sender. Consumer authentication
+    // does not depend on this Cloudflare Email binding.
     "AUTH_EMAIL_FROM": "acceso@parmelia.me",
     "CHAIN_KEY": "arbitrum-sepolia",
     "PAYMENTS_CUTOVER_MODE": "payments",

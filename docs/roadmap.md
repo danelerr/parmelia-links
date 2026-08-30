@@ -1,25 +1,33 @@
 # Roadmap técnico de GatoPago
 
-**Última revisión:** 28 de agosto de 2026
-**Estado:** Fase 2.1 promovida; Fase 3 reabierta por tercera revisión y con candidato local; Fase 4 transaccional pendiente
+**Última revisión:** 30 de agosto de 2026
+**Estado:** Fases 2.1/3 de infraestructura promovidas; candidato de App con Google + magic links verificado localmente; API/Business y Fase 4 transaccional pendientes
 **Fuente inicial:** [auditoría técnica del 23 de agosto de 2026](./audits/2026-08-23.md)
 
-Este archivo es la única lista de trabajo técnico. El cierre remoto comprobado se
-documenta en el [registro del 26-08-2026](./operations/phase-2-1-live-readiness-2026-08-26.md).
+Este archivo es la única lista de trabajo técnico. El corte de Fase 2.1 está en el
+[registro del 26-08-2026](./operations/phase-2-1-live-readiness-2026-08-26.md) y
+la promoción correctiva actual en el
+[registro de Fase 3 del 28-08-2026](./operations/phase-3-release-readiness-2026-08-28.md).
 Un testnet desplegado y sano no demuestra readiness de mainnet ni sustituye un
 pago E2E con evidencia on-chain.
 
 ## P0 — Requiere acción operativa antes del despliegue
 
-- [ ] **Cerrar la tercera revisión de Fase 3.** El candidato local elimina el lock
-  global de reservations con `0007`, permite attempts independientes y serializa
-  settlements concurrentes mediante commits CAS auditables. También impide que
-  una reserva bloquee la cancelación merchant, conserva pagos tardíos ya firmados,
-  limita Turnstile a 10 s de script/15 s de challenge con retry, valida
-  action+hostname en el Worker y conserva sólo resultados RPC resueltos en caché
-  global. Falta completar `verify:all`, versionar, aplicar `0007`, desplegar sin
-  cambiar secrets ni contratos, probar OTP real App/Dashboard y repetir smokes
-  remotos con `PAYMENT_LIVE_ENABLED=false`.
+- [ ] **Cerrar la App de consumo con Google + Firebase Email Link.** La
+  infraestructura de la tercera revisión ya eliminó el lock global de attempts,
+  endureció Turnstile y retiró Promises RPC globales; permanece desplegada con
+  `PAYMENT_LIVE_ENABLED=false`. El 30-08 el alcance cambió: primero se cierra la
+  App y API/Business/Dashboard continúan después. El candidato local reemplaza
+  OTP por magic links nativos de Firebase, no usa Resend ni otro proveedor de
+  correo y añade `0035_firebase_email_links.sql` para recovery de un solo uso.
+  La matriz integral `pnpm verify:all` ya pasa sobre el árbol final. Falta
+  versionar, respaldar/aplicar `0035`, desplegar sólo App
+  Worker + App Web y probar un enlace real recibido/consumido con el mismo UID
+  entre Google y Email Link. El smoke adversarial remoto de Payments conserva
+  su evidencia histórica y no necesita repetirse para este cambio de App. El
+  preflight `preflight:phase3-app:remote` ya delimita el estado sin mutar nada y
+  el [runbook App-only](./runbooks/phase-3-app-magic-link-cutover.md) impide tocar
+  Dashboard, Payments, DNS o secrets.
 - [x] **Cerrar la auditoría posterior a Fase 2.1.** El candidato exige
   prueba de wallet y capability por attempt; valida receipt/emisor/router/evento
   antes de persistir un hash; aplica CAS y expiración de `submitted`; no filtra
@@ -41,8 +49,8 @@ pago E2E con evidencia on-chain.
   fuera del dominio. App y Dashboard muestran sus superficies GatoPago.
 - [x] **Versionar la fuente desplegable.** Los guards de Workers y Vercel
   rechazan archivos relevantes dirty/untracked, HEAD sin upstream o HEAD distinto
-  del commit publicado. El runtime promovido corresponde al commit publicado
-  `d54a71f`; los cambios posteriores son sólo gates/documentación.
+  del commit publicado. El runtime promovido de Fase 3 corresponde al commit
+  publicado `762c933`.
 
 - [x] **Cerrar el componente local de Fase 3 antes de cualquier promoción.** El alcance y
   los criterios de aceptación canónicos están en [Fase 3 del plan de checkout
@@ -64,16 +72,19 @@ pago E2E con evidencia on-chain.
   `TERMINAL_PUSH_NOT_CONFIGURED` se reencoló condicionalmente. El Worker la
   entregó de forma válida a cero dispositivos; quedan 0 dead, 0 activos y
   `/health=ok`.
-- [x] **Infraestructura de autenticación de seis dígitos activada.** Las
+- [ ] **Promover la autenticación passwordless de la App.** Las
   migraciones `0030_email_otp.sql`, `0031_webauthn_registration.sql` y
-  `0032_recovery_step_up.sql` están aplicadas en producción; el binding y los
-  nombres de secrets requeridos están presentes. El smoke de recepción de OTP y
-  sesión en navegador real sigue abierto dentro de “Flujos reales autenticados”.
+  `0032_recovery_step_up.sql` están aplicadas en producción. El candidato añade
+  `0035_firebase_email_links.sql`; no estará activo hasta backup, migración y
+  deploy App. Firebase ya tiene Google, Email Link y `app.parmelia.me`
+  autorizados; falta evidencia real de recepción/consumo.
 - [x] **Promover la frontera App/Payments (Cloudflare).** El primer corte del
   25-08-2026 se conservó como evidencia histórica. El 26-08-2026 se repitió sobre
   una D1 vacía con manifest v4/checksum semántico v2
   `5d3093e9b12288d7783832037b3bf06635591da1cf56df377ff4b4b6f3093a27`,
-  migraciones `0001`–`0006`, export target verificado y D1 histórica intacta.
+  migraciones `0001`–`0006`, export target verificado y D1 histórica intacta;
+  el 28-08 se añadió `0007` sobre ese mismo target después de un backup cifrado
+  y restore drill, sin rebaselinar el checksum histórico.
   App terminó en modo `payments`, sync drenado y ambos health/smokes verdes.
   Históricamente, el 25-08-2026 se
   crearon D1/Queue/DLQ Payments, se aplicaron migraciones, se cifró y restauró el
@@ -97,7 +108,7 @@ pago E2E con evidencia on-chain.
 
 ## P1 — Implementado localmente
 
-- [x] **Código de seis dígitos, sin enlaces de acceso.** El Worker genera y verifica OTP de un solo uso, entrega un Firebase Custom Token y el cliente inicia sesión con `signInWithCustomToken`. Los códigos se almacenan con hash, caducidad, límite de intentos y consumo atómico; Turnstile protege solicitud y verificación.
+- [x] **Magic links de Firebase implementados para la App.** Turnstile y cuotas protegen la solicitud; Firebase envía/consume el enlace, el correo no aparece en la URL y otro dispositivo debe confirmarlo. Recovery usa challenge opaco, UID + `auth_time` reciente y proof acotado de un solo uso. Las rutas OTP quedan sólo como compatibilidad temporal Business.
 - [x] **CI reproducible en Node 24/Linux.** Node 24, pnpm congelado, Foundry, verificación integral, E2E y scanners están versionados; las Actions usan commits inmutables y se ejecutan sobre cada HEAD publicado.
 - [x] **Cabeceras y health separado.** CSP y cabeceras defensivas están declaradas; `/health/live` es mínimo, `/health` expone sólo estado agregado y `/health/ops` requiere el token operativo. Los health remotos pasan y Payments sostuvo 30/30 lecturas consecutivas tras el ajuste RPC/Multicall3.
 - [x] **Caché y service worker.** Chunks con hash son inmutables; HTML/manifest/SW se revalidan; las escrituras de Cache Storage se esperan y las rutas de Firebase Auth no se interceptan. El gate automatizado cubre instalación, fetch, invalidación y notificaciones.
@@ -123,11 +134,13 @@ pago E2E con evidencia on-chain.
   `paid`. El smoke remoto A→B retuvo B y demostró 0 acciones disponibles mientras
   cargaba; el fallback sin provider también se verificó en Chromium limpio. La
   tercera revisión detectó que la firma aún tomaba un lock global; `0007` lo
-  elimina localmente, pero la promoción anterior no cubre ese nuevo delta.
+  elimina y el delta ya está desplegado en Payments versión
+  `9f65035e-4ba4-4b4e-bdac-54a21cff8f24`.
 - [ ] **Gates 3C revalidados y promovidos después de la tercera auditoría.**
-  `pnpm verify:all` pasa con 253+22 pruebas App, 52+19 Payments, 36 E2E
-  aprobadas/16 omisiones de matriz, audit sin vulnerabilidades conocidas,
-  split/restore semántico, 10 diagramas, OpenAPI, bundle, storage, coverage y
+  `pnpm verify:all` pasa en el candidato local actual con 260+26 pruebas App,
+  52+23 Payments, 46 E2E
+  aprobadas/26 omisiones deliberadas de matriz, audit sin vulnerabilidades conocidas,
+  split/restore semántico, 11 diagramas, OpenAPI, bundle, storage, coverage y
   191 pruebas Foundry finales aprobadas/4 forks omitidos sin RPC. Esto cierra
   evidencia local reproducible; el gate remoto añade 197/197 Foundry con forks,
   preflights Vercel/Cloudflare y smokes de checkout.
@@ -137,16 +150,24 @@ pago E2E con evidencia on-chain.
   replay y restores independientes. La evidencia remota histórica ejecutó 197
   pruebas sin omisiones, incluidas 6 forks vivas. La D1 de reemplazo, la
   migración `0006`, los Workers y ambos frontends de aquel corte fueron
-  promovidos. Falta repetir la matriz para `0007`, Turnstile y caché RPC, aplicar
-  la migración y promover el nuevo commit. Permanece pendiente Fase 4: pagos
-  testnet reales con evidencia monetaria completa y fault injection.
+  promovidos. El 28-08 se repitió esa matriz sobre `762c933`, se aplicó `0007`,
+  se desplegaron Payments/App y ambos frontends, y los preflights remotos pasaron.
+  El smoke remoto controlado confirmó dos pagadores concurrentes, cancelación
+  merchant sin monopolio y limpieza sin errores FK. Turnstile dejó de esperar
+  indefinidamente en el Dashboard real. El nuevo flujo App de magic links pasa
+  pruebas unitarias, runtime y navegador dirigidas y su guard confirma que no
+  existe dependencia Resend. La matriz integral final ya pasó; el smoke anónimo
+  detectó que la CSP desplegada todavía bloquea `apis.google.com`, aunque la
+  fuente candidata ya lo permite y el preflight remoto lo exige. Falta promover
+  App y recibir/consumir un enlace real para cerrar 3C. Permanece pendiente Fase 4:
+  pagos testnet reales con evidencia monetaria completa y fault injection.
 
 ## P2 — Mantenibilidad y cobertura
 
 - [x] **Reducir hotspots por dominio.** `storage.ts` bajó de 3.159 a menos de 1.000 líneas y delega ledger, merchants/webhooks, passkeys, cross-chain, leases, cursores, operaciones de cuenta y features de usuario. `indexer.ts` bajó de 1.664 a menos de 750 líneas al separar los tres watchers. `ScanQR.tsx` y `PayPage.tsx` quedaron por debajo de 700 líneas mediante extracción de lógica y vistas.
 - [x] **Unificar lógica sensible.** Esquemas EIP-712 y autorizaciones de pago viven en `shared`; los fixtures de TypeScript/Solidity comprueban la misma codificación. Los watchers comparten ventanas, finality, journal, reorg guards y cursores; el outbox permanece en la misma transacción que el cambio de estado correspondiente.
 - [x] **Eliminar código muerto y deuda de efectos React.** Knip y el gate de ciclos pasan; `react-hooks/set-state-in-effect` es error, no warning. Se retiraron dependencias, assets PWA y exports sin consumidores solo después de comprobar su uso.
-- [ ] **Flujos reales autenticados (producción).** Localmente hay E2E para OTP, perfil, selector de red, PWA, accesibilidad y rutas principales. Aún falta evidencia contra cuentas, APIs y chains reales de envío, swap, cross-chain, webhooks y recovery después del despliegue; un build local no cubre este punto.
+- [ ] **Flujos reales autenticados (producción).** Localmente hay E2E para magic link, perfil, selector de red, PWA, accesibilidad y rutas principales. Aún falta recepción/consumo real del link y evidencia contra cuentas, APIs y chains reales de envío, swap, cross-chain, webhooks y recovery después del despliegue; un build local no cubre este punto.
 
 ## P3 — Rendimiento, dependencias y mainnet
 
@@ -158,7 +179,7 @@ pago E2E con evidencia on-chain.
 
 1. Commit y push revisados; CI y security workflows verdes en GitHub.
 2. Backup D1 cifrado y restore drill verificado antes de aplicar migraciones.
-3. Migraciones App `0030`–`0034` y todas las migraciones Payments descubiertas
+3. Migraciones App `0030`–`0035` y todas las migraciones Payments descubiertas
    en `payments-worker/migrations/` (actualmente `0001`–`0007`) aplicadas en su
    orden, con health operativo sin dead letters ni operaciones activas en
    contratos retirados.
@@ -166,7 +187,9 @@ pago E2E con evidencia on-chain.
    export y `--verify-target-sql`; el checksum histórico no se modifica.
 5. Deploy desde un commit publicado y limpio, target Payments antes de clientes,
    seguido de smoke autenticado y smoke anónimo sin redirect externo.
-6. Validación de OTP recibido por email, Firebase Custom Token, perfil, red, passkeys, pagos y webhooks en el entorno desplegado.
+6. Validación de magic link recibido/consumido y mismo Firebase UID con Google;
+   perfil, red, passkeys, pagos y webhooks reales continúan como evidencia de
+   Fase 4 cuando impliquen operaciones monetarias/on-chain.
 7. Evidencia de CSP/caché/PWA y Core Web Vitals desde los dominios reales.
 
 ## Regla de actualización

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { requiredAppSecretNames } from "./assert-app-remote-secrets.mjs";
 import { PAYMENTS_DB_SENTINEL } from "./assert-payments-deploy-config.mjs";
 import {
   assertQueueContract,
@@ -431,7 +432,7 @@ async function main() {
   }
 
   const appSecrets = secretNames(appWorker, "server");
-  const appRequired = ["AUTH_CODE_PEPPER", "FIREBASE_SERVICE_ACCOUNT", "PRIVATE_KEY", "RPC_URL"];
+  const appRequired = requiredAppSecretNames(appConfig);
   record("app-secrets", !!appSecrets && appRequired.every((name) => appSecrets.includes(name)),
     appSecrets ? `App secret names present: ${appRequired.filter((name) => appSecrets.includes(name)).join(", ")}`
       : "Cannot list App secrets", "source");

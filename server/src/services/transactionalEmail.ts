@@ -20,6 +20,7 @@ type CodeEmailInput = {
 	code: string;
 	locale: "es" | "en";
 	expiresInMinutes: number;
+	idempotencyKey?: string;
 };
 
 async function sendCodeEmail(
@@ -141,7 +142,7 @@ function securityAppUrl(env: Bindings, path: string | undefined): string | null 
 
 export async function sendSecurityAlertEmail(
 	env: Bindings,
-	input: { to: string; eventType: SecurityEmailEvent; link?: string },
+	input: { to: string; eventType: SecurityEmailEvent; link?: string; idempotencyKey?: string },
 ): Promise<void> {
 	if (!env.EMAIL) throw new TransactionalEmailUnavailableError();
 	const copy = securityEmailCopy(input.eventType);

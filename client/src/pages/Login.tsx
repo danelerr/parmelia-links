@@ -1,26 +1,34 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import BrandLockup from "../components/brand/BrandLockup";
 import MeliSprite from "../components/brand/MeliSprite";
 import Turnstile from "../components/Turnstile";
 import { isTurnstileReady, type TurnstileState } from "../components/turnstileState";
 import { apiFetch } from "../lib/api";
-import { signInWithEmailCodeToken, signInWithGoogle } from "../lib/firebase";
+import {
+	clearPendingEmailLinkRequest,
+	completeFirebaseEmailLink,
+	emailLinkFlow,
+	isFirebaseEmailLink,
+	pendingEmailLinkRequest,
+	rememberEmailLinkRequest,
+	signInWithGoogle,
+} from "../lib/firebase";
 import { humanizeError, isUserCancelled } from "../lib/notify";
+import { storeRecoveryStepUp } from "../lib/recoveryStepUp";
 import { writeStorage } from "../lib/storageMigration";
 
 const RECOVER_INTENT_KEY = "gatopago:recover-intent";
 
-type Mode = "buttons" | "email" | "code";
-type BusyAction = "google" | "request" | "verify" | "resend" | null;
+type Mode = "buttons" | "email" | "sent" | "completing" | "need-email";
+type BusyAction = "google" | "request" | "resend" | "complete" | null;
 
-type CodeRequestResponse = {
-	sent: true;
+type LinkRequestResponse = { sent: true; resendAfterSeconds: number };
+type RecoveryExchangeResponse = {
+	stepUpToken: string;
+	action: "start" | "execute";
 	expiresInSeconds: number;
-	resendAfterSeconds: number;
 };
-
-type CodeVerifyResponse = { customToken: string };
 
 function GoogleIcon() {
 	return (
@@ -48,22 +56,25 @@ function validEmail(value: string): boolean {
 
 export default function Login() {
 	const { t, i18n } = useTranslation();
-	const [mode, setMode] = useState<Mode>("buttons");
-	const [email, setEmail] = useState("");
-	const [code, setCode] = useState("");
+	const [landingUrl] = useState(() => window.location.href);
+	const [linkLanding] = useState(() => isFirebaseEmailLink(landingUrl));
+	const [linkContext] = useState(() => emailLinkFlow(landingUrl));
+	const [initialRequest] = useState(() => pendingEmailLinkRequest());
+	const storedEmail = initialRequest?.purpose === linkContext.flow ? initialRequest.email : "";
+	const [mode, setMode] = useState<Mode>(() => (
+		linkLanding ? (storedEmail ? "completing" : "need-email") : "buttons"
+	));
+	const [email, setEmail] = useState(storedEmail);
 	const [busy, setBusy] = useState<BusyAction>(null);
 	const [inlineError, setInlineError] = useState<string | null>(null);
 	const [recoverIntent, setRecoverIntent] = useState(false);
 	const [resendAt, setResendAt] = useState(0);
 	const [clock, setClock] = useState(() => Date.now());
 	const [challengeRevision, setChallengeRevision] = useState(0);
-	const [turnstile, setTurnstile] = useState<TurnstileState>({
-		status: "loading",
-		token: null,
-	});
+	const [turnstile, setTurnstile] = useState<TurnstileState>({ status: "loading", token: null });
 
 	useEffect(() => {
-		if (mode !== "code" || resendAt <= Date.now()) return;
+		if (mode !== "sent" || resendAt <= Date.now()) return;
 		const timer = window.setInterval(() => {
 			const next = Date.now();
 			setClock(next);
@@ -72,16 +83,67 @@ export default function Login() {
 		return () => window.clearInterval(timer);
 	}, [mode, resendAt]);
 
-	const resendSeconds = Math.max(0, Math.ceil((resendAt - clock) / 1_000));
-
-	function displayError(error: unknown, fallback: string) {
+	const displayError = useCallback((error: unknown, fallback: string) => {
 		setInlineError(humanizeError(error, fallback).message);
-	}
+	}, []);
 
 	function resetChallenge() {
 		setTurnstile({ status: "loading", token: null });
 		setChallengeRevision((value) => value + 1);
 	}
+
+	const completeLink = useCallback(async (candidateEmail: string) => {
+		const normalizedEmail = candidateEmail.trim().toLowerCase();
+		if (!validEmail(normalizedEmail)) {
+			setInlineError(t("login.invalidEmail"));
+			setMode("need-email");
+			return;
+		}
+		setEmail(normalizedEmail);
+		setInlineError(null);
+		setBusy("complete");
+		setMode("completing");
+		try {
+			const credential = await completeFirebaseEmailLink(
+				landingUrl,
+				normalizedEmail,
+				linkContext.flow,
+			);
+			if (linkContext.flow === "recovery") {
+				if (!linkContext.challenge || !/^[A-Za-z0-9_-]{43}$/.test(linkContext.challenge)) {
+					throw new Error(t("login.invalidLink"));
+				}
+				const proof = await apiFetch<RecoveryExchangeResponse>("/auth/step-up/email-link/exchange", {
+					user: credential.user,
+					body: { challenge: linkContext.challenge },
+				});
+				storeRecoveryStepUp(proof);
+				clearPendingEmailLinkRequest();
+				window.location.replace("/recover");
+				return;
+			}
+			clearPendingEmailLinkRequest();
+			window.location.replace("/");
+		} catch (error) {
+			displayError(error, t("login.completeError"));
+			setMode("need-email");
+		} finally {
+			setBusy(null);
+		}
+	}, [displayError, landingUrl, linkContext, t]);
+
+	useEffect(() => {
+		if (!linkLanding || mode !== "completing" || !storedEmail) return;
+		let cancelled = false;
+		queueMicrotask(() => {
+			if (!cancelled) void completeLink(storedEmail);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [completeLink, linkLanding, mode, storedEmail]);
+
+	const resendSeconds = Math.max(0, Math.ceil((resendAt - clock) / 1_000));
 
 	async function handleGoogle() {
 		setInlineError(null);
@@ -96,7 +158,7 @@ export default function Login() {
 		}
 	}
 
-	async function requestCode(action: "request" | "resend") {
+	async function requestLink(action: "request" | "resend") {
 		const normalizedEmail = email.trim().toLowerCase();
 		if (!validEmail(normalizedEmail)) {
 			setInlineError(t("login.invalidEmail"));
@@ -106,41 +168,22 @@ export default function Login() {
 		setInlineError(null);
 		setBusy(action);
 		try {
-			const result = await apiFetch<CodeRequestResponse>("/auth/email-code/request", {
+			const result = await apiFetch<LinkRequestResponse>("/auth/email-link/request", {
 				body: {
 					email: normalizedEmail,
 					locale: i18n.resolvedLanguage?.startsWith("en") ? "en" : "es",
 					turnstileToken: turnstile.token,
 				},
 			});
+			rememberEmailLinkRequest(normalizedEmail, "signin");
 			setEmail(normalizedEmail);
-			setCode("");
 			setClock(Date.now());
 			setResendAt(Date.now() + result.resendAfterSeconds * 1_000);
-			setMode("code");
+			setMode("sent");
 			resetChallenge();
 		} catch (error) {
 			displayError(error, t("login.sendError"));
 			resetChallenge();
-		} finally {
-			setBusy(null);
-		}
-	}
-
-	async function verifyCode() {
-		if (!/^\d{6}$/.test(code)) {
-			setInlineError(t("login.invalidCode"));
-			return;
-		}
-		setInlineError(null);
-		setBusy("verify");
-		try {
-			const result = await apiFetch<CodeVerifyResponse>("/auth/email-code/verify", {
-				body: { email, code },
-			});
-			await signInWithEmailCodeToken(result.customToken);
-		} catch (error) {
-			displayError(error, t("login.completeError"));
 		} finally {
 			setBusy(null);
 		}
@@ -152,6 +195,8 @@ export default function Login() {
 		resetChallenge();
 	}
 
+	const linkMode = mode === "sent" || mode === "completing" || mode === "need-email";
+
 	return (
 		<div className="app-frame mx-auto flex min-h-dvh w-full max-w-[480px] flex-col px-5">
 			<header className="flex shrink-0 justify-center pt-[calc(env(safe-area-inset-top)+1.25rem)] animate-fade-in">
@@ -161,184 +206,78 @@ export default function Login() {
 			<main className="flex flex-1 flex-col items-center justify-center py-4 text-center animate-fade-up">
 				<div className={`meli-login-stage mb-4 ${mode === "buttons" ? "min-h-[170px]" : "min-h-[112px]"}`}>
 					<span aria-hidden="true" />
-					<MeliSprite
-						name={mode === "code" ? "body-peek-card" : "body-sitting"}
-						motion="idle"
-						className={mode === "buttons" ? "w-36 sm:w-40" : "w-24"}
-						priority
-					/>
+					<MeliSprite name={linkMode ? "body-peek-card" : "body-sitting"} motion="idle" className={mode === "buttons" ? "w-36 sm:w-40" : "w-24"} priority />
 				</div>
 
 				<h1 className="mb-2 max-w-[350px] text-pretty font-display text-[30px] leading-[1.05]">
-					{mode === "code" ? t("login.codeTitle") : t("login.title")}
+					{mode === "sent" ? t("login.linkSentTitle") : mode === "completing" ? t("login.openingLink") : mode === "need-email" ? t("login.confirmEmailTitle") : t("login.title")}
 				</h1>
 				{mode === "buttons" ? (
 					<>
-						<p className="mb-2 max-w-[340px] font-display text-[18px] leading-tight text-text-muted">
-							{t("login.heroLead")} <span className="text-cat-300">{t("login.heroEmphasis")}</span>
-						</p>
-						<p className="max-w-[330px] text-[13px] leading-relaxed text-text-muted">
-							{t("login.subtitle")}
-						</p>
+						<p className="mb-2 max-w-[340px] font-display text-[18px] leading-tight text-text-muted">{t("login.heroLead")} <span className="text-cat-300">{t("login.heroEmphasis")}</span></p>
+						<p className="max-w-[330px] text-[13px] leading-relaxed text-text-muted">{t("login.subtitle")}</p>
 					</>
-				) : mode === "code" ? (
-					<p className="max-w-[330px] text-[14px] leading-relaxed text-text-muted">
-						{t("login.codeSentTo", { email })}
-					</p>
+				) : mode === "sent" ? (
+					<p className="max-w-[340px] text-[14px] leading-relaxed text-text-muted">{t("login.linkSentTo", { email })}</p>
+				) : mode === "completing" ? (
+					<p className="max-w-[330px] text-[14px] leading-relaxed text-text-muted">{t("login.openingLinkBody")}</p>
+				) : mode === "need-email" ? (
+					<p className="max-w-[340px] text-[14px] leading-relaxed text-text-muted">{t("login.confirmEmailBody")}</p>
 				) : (
-					<p className="max-w-[330px] text-[14px] leading-relaxed text-text-muted">
-						{t("login.noPasswords")}
-					</p>
+					<p className="max-w-[330px] text-[14px] leading-relaxed text-text-muted">{t("login.noPasswords")}</p>
 				)}
 			</main>
 
-			<section
-				className="flex flex-col items-center gap-3 animate-fade-up"
-				style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }}
-				aria-label={t("login.title")}
-			>
+			<section className="flex flex-col items-center gap-3 animate-fade-up" style={{ paddingBottom: "max(2.5rem, env(safe-area-inset-bottom))" }} aria-label={t("login.title")}>
 				{mode === "email" ? (
-					<form
-						onSubmit={(event) => {
-							event.preventDefault();
-							void requestCode("request");
-						}}
-						className="flex w-full flex-col items-center gap-3"
-					>
+					<form onSubmit={(event) => { event.preventDefault(); void requestLink("request"); }} className="flex w-full flex-col items-center gap-3">
 						<label className="block w-full text-left text-[13px] text-text-muted">
 							<span className="mb-2 block">{t("login.emailLabel")}</span>
-							<input
-								type="email"
-								name="email"
-								inputMode="email"
-								autoComplete="email"
-								autoCapitalize="none"
-								spellCheck={false}
-								value={email}
-								onChange={(event) => setEmail(event.target.value)}
-								placeholder={t("login.emailPlaceholder")}
-								aria-invalid={inlineError ? true : undefined}
-								aria-describedby={inlineError ? "login-error" : undefined}
-								className="meli-field text-[15px] placeholder:text-text-faint"
-							/>
+							<input type="email" name="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("login.emailPlaceholder")} aria-invalid={inlineError ? true : undefined} aria-describedby={inlineError ? "login-error" : undefined} className="meli-field text-[15px] placeholder:text-text-faint" />
 						</label>
 						<Turnstile key={challengeRevision} action="email_login" onStateChange={setTurnstile} />
-						<button
-							type="submit"
-							disabled={busy !== null || !isTurnstileReady(turnstile)}
-							aria-busy={busy === "request"}
-							className="btn btn-primary btn-block"
-						>
-							{busy === "request" ? t("login.sending") : t("login.sendCode")}
-						</button>
-						<button type="button" onClick={() => setMode("buttons")} className="btn-text">
-							{t("common.back")}
-						</button>
+						<button type="submit" disabled={busy !== null || !isTurnstileReady(turnstile)} aria-busy={busy === "request"} className="btn btn-primary btn-block">{busy === "request" ? t("login.sending") : t("login.sendLink")}</button>
+						<button type="button" onClick={() => setMode("buttons")} className="btn-text">{t("common.back")}</button>
 					</form>
-				) : mode === "code" ? (
-					<form
-						onSubmit={(event) => {
-							event.preventDefault();
-							void verifyCode();
-						}}
-						className="flex w-full flex-col items-center gap-3"
-					>
-						<label className="block w-full text-left text-[13px] text-text-muted">
-							<span className="mb-2 block">{t("login.codeLabel")}</span>
-							<input
-								type="text"
-								name="one-time-code"
-								inputMode="numeric"
-								autoComplete="one-time-code"
-								autoCapitalize="none"
-								spellCheck={false}
-								pattern="[0-9]{6}"
-								value={code}
-								onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-								placeholder={t("login.codePlaceholder")}
-								aria-invalid={inlineError ? true : undefined}
-								aria-describedby={inlineError ? "login-error" : undefined}
-								className="meli-field text-center font-display text-[24px] tracking-[0.3em] placeholder:text-text-faint"
-							/>
-						</label>
-						<button
-							type="submit"
-							disabled={busy !== null || code.length !== 6}
-							aria-busy={busy === "verify"}
-							className="btn btn-primary btn-block"
-						>
-							{busy === "verify" ? t("login.verifying") : t("login.verifyCode")}
-						</button>
-
-						<div className="w-full">
-							<Turnstile key={challengeRevision} action="email_login" onStateChange={setTurnstile} />
-						</div>
+				) : mode === "sent" ? (
+					<div className="flex w-full flex-col items-center gap-3">
+						<p className="max-w-[340px] text-[12px] leading-relaxed text-text-faint">{t("login.linkSafety")}</p>
+						<div className="w-full"><Turnstile key={challengeRevision} action="email_login" onStateChange={setTurnstile} /></div>
 						{resendSeconds > 0 ? (
-							<p className="text-[12px] tabular-nums text-text-faint">
-								{t("login.resendIn", { seconds: resendSeconds })}
-							</p>
+							<p className="text-[12px] tabular-nums text-text-faint">{t("login.resendIn", { seconds: resendSeconds })}</p>
 						) : (
-							<button
-								type="button"
-								onClick={() => void requestCode("resend")}
-								disabled={busy !== null || !isTurnstileReady(turnstile)}
-								aria-busy={busy === "resend"}
-								className="btn-text"
-							>
-								{busy === "resend" ? t("login.sending") : t("login.resend")}
-							</button>
+							<button type="button" onClick={() => void requestLink("resend")} disabled={busy !== null || !isTurnstileReady(turnstile)} aria-busy={busy === "resend"} className="btn-text">{busy === "resend" ? t("login.sending") : t("login.resend")}</button>
 						)}
-						<button type="button" onClick={openEmailMode} className="btn-text">
-							{t("login.changeEmail")}
-						</button>
+						<button type="button" onClick={openEmailMode} className="btn-text">{t("login.changeEmail")}</button>
+					</div>
+				) : mode === "need-email" ? (
+					<form onSubmit={(event) => { event.preventDefault(); void completeLink(email); }} className="flex w-full flex-col items-center gap-3">
+						<label className="block w-full text-left text-[13px] text-text-muted">
+							<span className="mb-2 block">{t("login.emailLabel")}</span>
+							<input type="email" name="email-link-confirmation" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t("login.emailPlaceholder")} autoFocus className="meli-field text-[15px] placeholder:text-text-faint" />
+						</label>
+						<button type="submit" disabled={busy !== null || !validEmail(email.trim())} aria-busy={busy === "complete"} className="btn btn-primary btn-block">{busy === "complete" ? t("login.openingLink") : t("login.confirmEmail")}</button>
+						<button type="button" onClick={() => window.location.replace("/login")} disabled={busy !== null} className="btn-text">{t("common.back")}</button>
 					</form>
+				) : mode === "completing" ? (
+					<div role="status" aria-live="polite" className="flex min-h-12 items-center justify-center">
+						<span className="h-7 w-7 animate-spin rounded-full border-2 border-text-faint border-t-cat-500" aria-hidden="true" />
+						<span className="sr-only">{t("login.openingLink")}</span>
+					</div>
 				) : (
 					<>
-						<button
-							type="button"
-							onClick={() => void handleGoogle()}
-							disabled={busy !== null}
-							aria-busy={busy === "google"}
-							className="btn btn-primary btn-block"
-						>
-							<GoogleIcon />
-							{busy === "google" ? t("login.signingIn") : t("login.continueGoogle")}
-						</button>
-						<button type="button" onClick={openEmailMode} disabled={busy !== null} className="btn btn-ghost btn-block">
-							<MailIcon />
-							{t("login.continueEmail")}
-						</button>
-						<p className="mt-1 max-w-[340px] text-[12px] leading-relaxed text-text-faint">
-							{t("login.identityNote")}
-						</p>
+						<button type="button" onClick={() => void handleGoogle()} disabled={busy !== null} aria-busy={busy === "google"} className="btn btn-primary btn-block"><GoogleIcon />{busy === "google" ? t("login.signingIn") : t("login.continueGoogle")}</button>
+						<button type="button" onClick={openEmailMode} disabled={busy !== null} className="btn btn-ghost btn-block"><MailIcon />{t("login.continueEmail")}</button>
+						<p className="mt-1 max-w-[340px] text-[12px] leading-relaxed text-text-faint">{t("login.identityNote")}</p>
 						{recoverIntent ? (
-							<p className="max-w-[300px] text-center text-[13px] leading-relaxed text-text-muted">
-								{t("recover.loginHint")}
-							</p>
+							<p className="max-w-[300px] text-center text-[13px] leading-relaxed text-text-muted">{t("recover.loginHint")}</p>
 						) : (
-							<button
-								type="button"
-								onClick={() => {
-									try {
-										writeStorage(RECOVER_INTENT_KEY, "1");
-									} catch {
-										/* storage unavailable */
-									}
-									setRecoverIntent(true);
-								}}
-								className="btn-text"
-							>
-								{t("recover.loginLink")}
-							</button>
+							<button type="button" onClick={() => { writeStorage(RECOVER_INTENT_KEY, "1"); setRecoverIntent(true); }} className="btn-text">{t("recover.loginLink")}</button>
 						)}
 					</>
 				)}
 
-				{inlineError ? (
-					<p id="login-error" role="alert" className="max-w-[340px] text-pretty text-[13px] leading-relaxed text-danger">
-						{inlineError}
-					</p>
-				) : null}
+				{inlineError ? <p id="login-error" role="alert" className="max-w-[340px] text-pretty text-[13px] leading-relaxed text-danger">{inlineError}</p> : null}
 			</section>
 		</div>
 	);

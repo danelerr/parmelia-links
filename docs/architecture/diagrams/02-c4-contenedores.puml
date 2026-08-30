@@ -22,8 +22,8 @@ package "Sistema GatoPago" {
   component "Payment Job Scheduler\n[Durable Object]\nCompacta y despierta jobs" as scheduler COLOR_LIVE
 }
 
-cloud "Firebase" as firebase COLOR_EXTERNAL
-cloud "Email" as email COLOR_EXTERNAL
+cloud "Firebase Auth\nGoogle + Email Link" as firebase COLOR_EXTERNAL
+cloud "Email legacy\nBusiness diferido" as email COLOR_FUTURE
 cloud "RPC + Circle" as providers COLOR_EXTERNAL
 node "Smart accounts, PaymentRouters,\nUSDC y CCTP en EVM" as chains COLOR_EXTERNAL
 
@@ -33,6 +33,7 @@ business --> dashboard : administra
 b2b --> payments_api : API /v1
 
 client --> app_api : HTTPS / identidad y wallet
+client --> firebase : Google / consume Email Link
 client --> payments_api : HTTPS / links y checkout
 dashboard --> app_api : HTTPS / autenticación
 dashboard --> payments_api : HTTPS / merchant
@@ -44,9 +45,9 @@ payments_api --> payments_db : lee / escribe
 payments_api --> payment_jobs : produce / consume
 scheduler --> payment_jobs : publica jobs vencidos
 
-app_api --> firebase : JWKS / tokens
+app_api --> firebase : JWKS / tokens / solicita Email Link
 payments_api --> firebase : JWKS / tokens
-app_api --> email : OTP
+app_api --> email : OTP legacy Business
 app_api --> providers : RPC
 payments_api --> providers : RPC / Circle
 app_api --> chains : UserOperations
@@ -70,6 +71,7 @@ legend right
   |<#DCFCE7> Verde | Remoto actual |
   |<#FEF3C7> Amarillo | Preparado; remoto pendiente |
   |<#DBEAFE> Azul | Frontend |
+  |<#E5E7EB> Gris | Compatibilidad diferida fuera del corte App |
 endlegend
 
 @enduml

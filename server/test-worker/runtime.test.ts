@@ -49,6 +49,12 @@ import {
 	validateRecoveryStepUp,
 	verifyEmailStepUpCode,
 } from "../src/services/emailOtp";
+import {
+	exchangeRecoveryEmailLink,
+	InvalidEmailLinkChallengeError,
+	issueRecoveryEmailLink,
+	sendFirebaseEmailLink,
+} from "../src/services/firebaseEmailLink";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -164,6 +170,106 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(env.RECOVERY_GUARDIAN_PRIVATE_KEY).toBeUndefined();
 	});
 
+	it("requests a native Firebase magic link under workerd", async () => {
+		const outbound = vi.fn(async (
+			input: RequestInfo | URL,
+			init?: RequestInit,
+		) => {
+			void input;
+			void init;
+			return Response.json({ email: "recipient@example.com" });
+		});
+		vi.stubGlobal("fetch", outbound);
+
+		await sendFirebaseEmailLink(env, {
+			email: " Recipient@Example.com ",
+			locale: "es",
+			continueUrl: "https://app.parmelia.me/login?flow=signin",
+		});
+
+		expect(outbound).toHaveBeenCalledTimes(1);
+		const [input, init] = outbound.mock.calls[0] ?? [];
+		expect(input).toBe(
+			"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=runtime-test-key",
+		);
+		expect(init).toMatchObject({ method: "POST" });
+		const headers = new Headers(init?.headers);
+		expect(headers.get("x-firebase-locale")).toBe("es");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			requestType: "EMAIL_SIGNIN",
+			email: "recipient@example.com",
+			continueUrl: "https://app.parmelia.me/login?flow=signin",
+			canHandleCodeInApp: true,
+		});
+	});
+
+	it("does not let an invalid Turnstile token consume global or email link quotas", async () => {
+		const beforeGlobal = await env.GATOPAGO_DB.prepare(
+			"SELECT count FROM rate_limits WHERE key = 'auth-email-link-global:all'",
+		).first<{ count: number }>();
+		const outbound = vi.fn(async (input: RequestInfo | URL) => {
+			expect(String(input)).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+			return Response.json({ success: false, action: "email_login", hostname: "app.parmelia.me" });
+		});
+		vi.stubGlobal("fetch", outbound);
+
+		const response = await exports.default.fetch(new Request(
+			"https://worker.test/auth/email-link/request",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"CF-Connecting-IP": "203.0.113.30",
+				},
+				body: JSON.stringify({
+					email: "quota-victim@example.com",
+					turnstileToken: "invalid-runtime-token",
+				}),
+			},
+		));
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({ error_code: "HUMAN_VERIFY_FAILED" });
+		expect(outbound).toHaveBeenCalledOnce();
+		const afterGlobal = await env.GATOPAGO_DB.prepare(
+			"SELECT count FROM rate_limits WHERE key = 'auth-email-link-global:all'",
+		).first<{ count: number }>();
+		const emailRows = await env.GATOPAGO_DB.prepare(
+			"SELECT COUNT(*) AS total FROM rate_limits WHERE key LIKE 'auth-email-link:%'",
+		).first<{ total: number }>();
+		expect(afterGlobal?.count ?? 0).toBe(beforeGlobal?.count ?? 0);
+		expect(emailRows?.total ?? 0).toBe(0);
+	});
+
+	it("exposes the public magic-link route without the legacy OTP contract", async () => {
+		const outbound = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input) === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
+				return Response.json({ success: true, action: "email_login", hostname: "app.parmelia.me" });
+			}
+			const payload = JSON.parse(String(init?.body)) as { email: string };
+			return Response.json({ email: payload.email });
+		});
+		vi.stubGlobal("fetch", outbound);
+		const response = await exports.default.fetch(new Request(
+			"https://worker.test/auth/email-link/request",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"CF-Connecting-IP": "203.0.113.31",
+				},
+				body: JSON.stringify({
+					email: "route-magic-link@example.com",
+					locale: "es",
+					turnstileToken: "valid-runtime-token",
+				}),
+			},
+		));
+		expect(response.status).toBe(202);
+		expect(await response.json()).toEqual({ sent: true, resendAfterSeconds: 60 });
+		expect(outbound).toHaveBeenCalledTimes(2);
+	});
+
 	it("applies the complete D1 migration chain", async () => {
 		const applied = await env.GATOPAGO_DB.prepare(
 			"SELECT name FROM d1_migrations ORDER BY id",
@@ -204,6 +310,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0032_recovery_step_up.sql",
 			"0033_payments_worker_boundary.sql",
 			"0034_sponsorship_observability.sql",
+			"0035_firebase_email_links.sql",
 		]);
 	});
 
@@ -249,6 +356,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"auth_email_codes",
 			"webauthn_registration_challenges",
 			"auth_step_up_sessions",
+			"auth_email_link_challenges",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -311,6 +419,41 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				.bind("orphan", "missing-user", "1", "2")
 				.run(),
 		).rejects.toThrow();
+	});
+
+	it("exchanges a Firebase recovery link for one scoped one-time proof", async () => {
+		let continueUrl = "";
+		vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const payload = JSON.parse(String(init?.body)) as { email: string; continueUrl: string };
+			continueUrl = payload.continueUrl;
+			return Response.json({ email: payload.email });
+		}));
+		const before = Math.floor(Date.now() / 1_000);
+		await issueRecoveryEmailLink(env, {
+			uid: "runtime-magic-link-user",
+			email: "runtime-magic-link@example.com",
+			action: "start",
+			locale: "es",
+		});
+		const challenge = new URL(continueUrl).searchParams.get("challenge") ?? "";
+		expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+		const exchanged = await exchangeRecoveryEmailLink(env, {
+			uid: "runtime-magic-link-user",
+			challenge,
+			authTime: before,
+		});
+		expect(exchanged.action).toBe("start");
+		expect(exchanged.stepUpToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(await validateRecoveryStepUp(env, {
+			uid: "runtime-magic-link-user",
+			token: exchanged.stepUpToken,
+		})).toBe(true);
+		await expect(exchangeRecoveryEmailLink(env, {
+			uid: "runtime-magic-link-user",
+			challenge,
+			authTime: before,
+		})).rejects.toBeInstanceOf(InvalidEmailLinkChallengeError);
 	});
 
 	it("turns a six-digit recovery code into one one-time step-up proof", async () => {
@@ -1553,10 +1696,10 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		expect(health.headers.get("X-Request-Id")).toMatch(/^[0-9a-f-]{36}$/);
 		expect(health.headers.get("Cache-Control")).toBe("no-store");
 		expect(await health.json()).toEqual({
-			status: "degraded",
+			status: "ok",
 			network: "arbitrum-sepolia",
 			issueCount: 0,
-			warningCount: 1,
+			warningCount: 0,
 			paymentsCutoverMode: "legacy",
 			paymentsSyncEnabled: false,
 		});

@@ -17,8 +17,8 @@ rectangle "GatoPago" as gatopago COLOR_WEB {
   rectangle "Payments Backend\nIntents, routing y settlement\n(desplegado; live mode apagado)" as payments_backend COLOR_LIVE
 }
 
-cloud "Firebase\nIdentidad" as firebase COLOR_EXTERNAL
-cloud "Email\nOTP transaccional" as email COLOR_EXTERNAL
+cloud "Firebase Auth\nGoogle + Email Link" as firebase COLOR_EXTERNAL
+cloud "Email legacy\nBusiness diferido" as email COLOR_FUTURE
 cloud "RPC providers\nLectura y broadcast" as rpc COLOR_EXTERNAL
 rectangle "Circle CCTP v2\nAttestations y fees" as circle COLOR_EXTERNAL
 node "Redes EVM soportadas\nArbitrum · Base · Avalanche" as evm COLOR_EXTERNAL
@@ -35,15 +35,16 @@ operator --> app_backend : opera y observa
 operator --> payments_backend : opera y observa
 
 app --> app_backend : HTTPS
+app --> firebase : Google / consume Email Link
 app --> payments_backend : checkout nuevo
-dashboard --> app_backend : login / OTP
+dashboard --> app_backend : login Business legacy
 dashboard --> payments_backend : recursos merchant
 checkout --> payments_backend : intent, quote y attempt
 app_backend --> payments_backend : Service Binding N-1\ny comandos versionados
 
-app_backend --> firebase : verifica identidad
+app_backend --> firebase : verifica token / solicita Email Link
 payments_backend --> firebase : verifica identidad merchant
-app_backend --> email : envía código de acceso
+app_backend --> email : OTP legacy Business
 app_backend --> rpc : smart accounts / UserOps
 payments_backend --> rpc : evidencia y settlement
 app_backend --> circle : CCTP personal
@@ -57,6 +58,7 @@ legend right
   |<#FEF3C7> Amarillo | Preparado; promoción pendiente |
   |<#DBEAFE> Azul | Interfaz GatoPago |
   |<#EDE9FE> Violeta | Sistema externo |
+  |<#E5E7EB> Gris | Compatibilidad diferida fuera del corte App |
 endlegend
 
 @enduml

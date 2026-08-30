@@ -37,6 +37,15 @@ function validHttpUrl(value: string, requireHttps: boolean): boolean {
 	}
 }
 
+function validExactOrigin(value: string, requireHttps: boolean): boolean {
+	try {
+		const url = new URL(value);
+		return url.origin === value && validHttpUrl(value, requireHttps);
+	} catch {
+		return false;
+	}
+}
+
 function configuredPrivateKey(value: string | undefined): `0x${string}` | null {
 	if (!value) return null;
 	try {
@@ -87,7 +96,7 @@ function configuredFeeBps(raw: string | undefined): bigint | null {
 	} catch { return null; }
 }
 
-/** Dependencies required by sign-in OTP, recovery step-up and security email. */
+/** Dependencies required by Firebase magic links and recovery step-up proofs. */
 export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[] {
 	const issues: RuntimeConfigIssue[] = [];
 	if (!env.AUTH_CODE_PEPPER?.trim() || env.AUTH_CODE_PEPPER.trim().length < 32) {
@@ -95,7 +104,7 @@ export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[]
 	}
 	const rawServiceAccount = env.FIREBASE_SERVICE_ACCOUNT?.trim() || env.FCM_SERVICE_ACCOUNT?.trim();
 	if (!rawServiceAccount) {
-		issues.push(issue("FIREBASE_ADMIN_MISSING", "FIREBASE_SERVICE_ACCOUNT is required for email-code authentication"));
+		issues.push(issue("FIREBASE_ADMIN_MISSING", "FIREBASE_SERVICE_ACCOUNT is required for recovery email links"));
 	} else {
 		try {
 			const account = JSON.parse(rawServiceAccount) as Record<string, unknown>;
@@ -114,17 +123,10 @@ export function validateEmailSecurityConfig(env: Bindings): RuntimeConfigIssue[]
 		}
 	}
 	if (!env.FIREBASE_WEB_API_KEY?.trim()) {
-		issues.push(issue("FIREBASE_WEB_API_KEY_MISSING", "FIREBASE_WEB_API_KEY is required for email-code authentication"));
+		issues.push(issue("FIREBASE_WEB_API_KEY_MISSING", "FIREBASE_WEB_API_KEY is required for Firebase email links"));
 	}
-	if (!env.EMAIL) {
-		issues.push(issue("EMAIL_BINDING_MISSING", "The Cloudflare Email Sending binding is required"));
-	}
-	if (
-		!env.AUTH_EMAIL_FROM?.trim() ||
-		!/^\S+@\S+\.\S+$/.test(env.AUTH_EMAIL_FROM.trim()) ||
-		env.AUTH_EMAIL_FROM.trim().length > 254
-	) {
-		issues.push(issue("AUTH_EMAIL_FROM_INVALID", "AUTH_EMAIL_FROM must be a valid allowed sender"));
+	if (!env.APP_URL?.trim() || !validExactOrigin(env.APP_URL, true)) {
+		issues.push(issue("APP_URL_INVALID", "APP_URL must be the HTTPS origin authorized by Firebase"));
 	}
 	return issues;
 }

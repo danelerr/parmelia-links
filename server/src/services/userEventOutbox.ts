@@ -253,6 +253,7 @@ export async function drainUserEventOutbox(
 						to: email,
 						eventType: row.event_type,
 						link: payload.link,
+						idempotencyKey: `security_${row.id.replaceAll("-", "_")}`,
 					});
 					deliveredByEmail = true;
 				} catch (error) {
@@ -260,7 +261,13 @@ export async function drainUserEventOutbox(
 						!(error instanceof FirebaseVerifiedEmailUnavailableError) &&
 						!(error instanceof FirebaseAccountDisabledError)
 					) {
-						throw error;
+						// Email alerts are defense in depth, not the transport gate for
+						// Firebase authentication. Continue to FCM so a temporary or
+						// unconfigured mail channel cannot strand the durable outbox.
+						logWarn("security_email_delivery_failed", {
+							eventType: row.event_type,
+							errorName: error instanceof Error ? error.name : "unknown",
+						});
 					}
 				}
 			}

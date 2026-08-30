@@ -9,6 +9,7 @@ const sharedPaths = [
 	"package.json",
 	"pnpm-lock.yaml",
 	"pnpm-workspace.yaml",
+	"scripts",
 	"shared",
 	"contracts",
 ];

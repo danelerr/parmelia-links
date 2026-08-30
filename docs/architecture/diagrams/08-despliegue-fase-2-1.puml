@@ -6,7 +6,7 @@ left to right direction
 skinparam linetype ortho
 
 node "Navegador" as browser {
-  artifact "App + ruta checkout\n[remoto actual]" as app_web COLOR_WEB
+  artifact "App + ruta checkout\n[remoto actual; auth anterior]" as app_web COLOR_WEB
   artifact "Dashboard\n[login GatoPago público]" as dashboard_web COLOR_WEB
 }
 
@@ -35,9 +35,10 @@ cloud "Cloudflare" as cf {
   artifact "Secrets Payments\nsigner, relayer CCTP, RPC,\nwebhook AES, ops token" as payments_secrets COLOR_DATA
 }
 
-cloud "Firebase + Email" as identity COLOR_EXTERNAL
+cloud "Firebase Auth\nGoogle + Email Link" as identity COLOR_EXTERNAL
 cloud "RPC providers" as rpc COLOR_EXTERNAL
 cloud "Circle Iris API" as circle COLOR_EXTERNAL
+artifact "Candidato Fase 3 App\nclient + server + 0035\n[local; promoción pendiente]" as phase3_candidate COLOR_READY
 
 node "Arbitrum Sepolia — home" as arbitrum COLOR_EXTERNAL {
   component "Smart accounts + EntryPoint" as accounts
@@ -91,6 +92,10 @@ base_router --> base_cctp : burn
 avax_router --> avax_cctp : burn
 payments_worker --> arb_cctp : receiveMessage
 arb_cctp --> arb_cctp : mint USDC al comercio
+
+phase3_candidate ..> client_dist : próximo deploy App Web
+phase3_candidate ..> app_worker : próximo deploy App Worker
+phase3_candidate ..> app_d1 : próxima migración 0035
 
 note bottom of payments_worker
   PAYMENT_LIVE_ENABLED=false.

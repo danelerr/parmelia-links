@@ -6,12 +6,20 @@
 
 ## 0. Corte de Fase 2: dos Workers y dos D1
 
-**Estado al 26-08-2026:** el recut semántico Cloudflare y la promoción Vercel
-están ejecutados y verificados. `server` usa
+**Estado al 30-08-2026:** el recut semántico Cloudflare, la promoción Vercel y
+los tres fixes originales de Fase 3 están ejecutados y verificados. El cierre de
+autenticación sigue abierto: el candidato App ahora usa Google + magic links
+nativos de Firebase, sin Resend, SMTP ni códigos de seis dígitos. La configuración
+Firebase ya admite Email Link y `app.parmelia.me`; falta versionar el candidato,
+aplicar `0035`, desplegar sólo App Worker + App Web y recibir/consumir un enlace
+real. `server` usa
 `PAYMENTS_CUTOVER_MODE=payments`; Payments apunta a
 `gatopago-payments-semantic-20260826`, tiene bootstrap desactivado, migraciones
-`0001`–`0006` y checksum semántico fijado. La promoción correctiva siguiente debe
-aplicar `0007_concurrent_payment_attempts.sql` antes del nuevo Payments Worker. `app.parmelia.me` y
+`0001`–`0007` y checksum semántico fijado. Payments corre
+`9f65035e-4ba4-4b4e-bdac-54a21cff8f24`; App usa el código
+`5ad32fad-b365-4d12-9f89-5163f06659d0` y la versión secret-only
+`196e4123-1b15-4503-a72d-5b67b896f9c8`, que añadió el secret Turnstile ya
+existente sin rotarlo. `app.parmelia.me` y
 `dashboard.parmelia.me` responden anónimamente; el dashboard muestra el login de
 GatoPago y no Vercel SSO. `PAYMENT_LIVE_ENABLED=false` permanece sin cambios.
 La D1 histórica no se borra ni se reimporta. El procedimiento que produjo este
@@ -21,6 +29,11 @@ de recuperación. Los deploys manuales se ejecutan
 con `pnpm --filter payments-worker run deploy` y
 `pnpm --filter server run deploy`; sin `run`, pnpm 11 interpreta `deploy` como
 su comando incorporado.
+
+El corte acotado de autenticación App usa un procedimiento independiente:
+[`phase-3-app-magic-link-cutover.md`](./docs/runbooks/phase-3-app-magic-link-cutover.md).
+Ese runbook despliega sólo App Worker y App Web; no reutilizar el script conjunto
+de Fase 2 para esta iteración.
 
 Antes de tocar una credencial, consulta el
 [`inventario canónico de secretos y configuración`](./docs/operations/worker-variables.md):
@@ -52,14 +65,14 @@ Orden de promoción (no intercambiarlo):
    relayer CCTP, cifrado de webhooks, token de ops y opcionalmente Circle API.
    Dejar `PAYMENT_FEE_POLICY_JSON` ausente/vacío (política `free-default`) y
    habilitar `PAYMENT_ROUTER_PREFLIGHT_ENABLED=true`. No copiar `PRIVATE_KEY`,
-   paymaster, OTP o guardian desde App.
+   paymaster, autenticación o guardian desde App.
    El primer deploy conserva `PAYMENTS_BOOTSTRAP_MODE=true`,
    `PAYMENTS_DATA_CUTOVER_CHECKSUM=pending` y
    `PAYMENT_LIVE_ENABLED=false`.
 5. Desplegar **primero** `gatopago-payments-api` en bootstrap. `/health/live`
    debe mostrar `bootstrapActive=true`; `/health` degradado es deliberado porque
    todavía no puede aceptar escrituras. Esto crea el target antes que el caller.
-6. Aplicar las migraciones expand-first App `0033` y `0034`, y desplegar App con
+6. Aplicar las migraciones expand-first App `0033`, `0034` y `0035`, y desplegar App con
    `PAYMENTS_CUTOVER_MODE=legacy` + `PAYMENTS_SYNC_ENABLED=false`. Comprobar que
    no cambió el comportamiento. Después desplegar
    `PAYMENTS_CUTOVER_MODE=frozen`, manteniendo sync apagado: todos los
@@ -353,7 +366,7 @@ npx wrangler d1 migrations apply GATOPAGO_DB --remote
 
 No confíes en una lista manual para conocer el estado remoto. Ejecuta primero
 `npx wrangler d1 migrations list GATOPAGO_DB --remote` y aplica, en orden, todo
-lo que falte hasta `0034_sponsorship_observability.sql`. El Worker actual requiere
+lo que falte hasta `0035_firebase_email_links.sql`. El Worker actual requiere
 la cadena completa: además del hardening y los ciclos durables originales,
 `0012`-`0026` incorporan journal canónico, read models de Home, evidencia y
 rollback de reorg, shards del indexador, suscripciones de proveedor, control
@@ -362,8 +375,9 @@ paginación del ledger, cache durable de capacidades del bundler, cola de
 reconciliación, auditorías de balance y registro incremental de wallets. `0027`
 a `0032` agregan consistencia del indexador, marca, códigos de correo con consumo
 atómico, registro WebAuthn ligado al servidor y step-up de recuperación. `0033`
-establece la frontera con Payments y `0034` persiste proveedor y dirección exacta
-de sponsorship para rotación/observabilidad.
+establece la frontera con Payments, `0034` persiste proveedor y dirección exacta
+de sponsorship y `0035` incorpora challenges de magic link para recovery e
+invalida códigos legacy activos durante el cutover App.
 REGLA: migraciones SIEMPRE antes del `wrangler deploy` del Worker que las usa.
 El prólogo `DROP` de `0001` fue una decisión de testnet (datos desechables);
 nunca replicar ese patrón hacia producción.
@@ -411,9 +425,9 @@ npx wrangler secret put OPS_HEALTH_TOKEN                   # token aleatorio 32+
 # dedicadas de arriba tambien (los fallbacks entre claves estan prohibidos).
 npx wrangler secret put TURNSTILE_SECRET_KEY           # anti-abuso en crear cuenta + faucet
 Get-Content -Raw ..\<service-account>.json | npx wrangler secret put FCM_SERVICE_ACCOUNT  # push
-npx wrangler secret put FIREBASE_SERVICE_ACCOUNT       # JSON de service account para Custom Tokens/Admin API
-npx wrangler secret put FIREBASE_WEB_API_KEY            # API key publica de Firebase Web Auth
-npx wrangler secret put AUTH_CODE_PEPPER                # aleatorio, minimo 32 caracteres; HMAC de correo/codigo/proofs
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT       # JSON de service account para Admin API/recovery
+npx wrangler secret put FIREBASE_WEB_API_KEY            # API key publica de Firebase Web Auth/EMAIL_SIGNIN
+npx wrangler secret put AUTH_CODE_PEPPER                # aleatorio, minimo 32 caracteres; HMAC de challenges/proofs
 npx wrangler secret put CCTP_RPC_URLS                  # opcional: RPCs dedicados cross-chain
 npx wrangler secret put ALCHEMY_WEBHOOK_ID             # Address Activity
 npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK        # red exacta del webhook
@@ -445,18 +459,25 @@ Si el proveedor ERC-7677 requiere credenciales dentro de su contexto, carga
 var pública. `self-funded` no es un fallback mágico: antes de pedir la firma el
 Worker verifica depósito de EntryPoint y balance nativo suficiente de la cuenta.
 
-El binding `EMAIL` y `AUTH_EMAIL_FROM` están declarados en `server/wrangler.jsonc`.
-Antes de publicar, valida en Cloudflare Email Sending que
-`acceso@parmelia.me` sea un remitente permitido. No guardes el JSON de Firebase
-ni `AUTH_CODE_PEPPER` en archivos sincronizados, variables `VITE_*` o GitHub.
+La autenticación de consumo no selecciona un proveedor de correo externo:
+Firebase entrega los magic links. `APP_URL` debe ser un origen HTTPS exacto
+autorizado en Firebase y se valida antes del deploy. El guard remoto exige los
+nombres `FIREBASE_SERVICE_ACCOUNT`, `FIREBASE_WEB_API_KEY` y
+`AUTH_CODE_PEPPER`, pero nunca imprime sus valores. No existe `RESEND_API_KEY`.
+
+El binding Cloudflare `EMAIL` y `AUTH_EMAIL_FROM` quedan como canal opcional de
+alertas/compatibilidad Business; una falla no puede bloquear login ni FCM. No
+guardes el JSON de Firebase ni `AUTH_CODE_PEPPER` en archivos sincronizados,
+variables `VITE_*` o GitHub. `FIREBASE_WEB_API_KEY` sí aparece públicamente como
+`VITE_FIREBASE_API_KEY` por diseño, aunque Cloudflare mantenga otra copia.
 
 `GET /health/live` comprueba únicamente que el proceso responde. `GET /health`
 devuelve `200` sólo si la configuración es coherente y publica únicamente
 `status`, `network`, `issueCount` y `warningCount`. El diagnóstico completo se
 obtiene desde `GET /health/ops` con `X-Ops-Token`; sin token válido responde 404.
 En mainnet, el Worker responde/falla cerrado con `503 SERVICE_UNAVAILABLE` si
-faltan contratos, CORS HTTPS, Turnstile, APP_URL, Email Sending, la configuración
-Firebase/OTP, cifrado o claves dedicadas. Las cuentas activas de relayer, faucet,
+faltan contratos, CORS HTTPS, Turnstile, APP_URL, configuración Firebase/magic
+link, cifrado o claves dedicadas. Las cuentas activas de relayer, faucet,
 paymaster, invoices y guardian deben ser distintas.
 
 ### Rotación de la clave de webhooks
@@ -593,10 +614,11 @@ conservador. En testnet
 puede quedar apagado; sólo mientras exista un invoice activo habrá un fallback
 acotado cada dos minutos. En mainnet la validación exige el Custom Webhook.
 
-Consola Firebase (para Google, Custom Tokens, push y analytics): habilitar Google,
+Consola Firebase (para Google, Email Link, push y analytics): habilitar Google,
 autorizar `app.parmelia.me`, generar una cuenta de servicio de mínimo privilegio,
-generar la VAPID y habilitar GA4. El acceso por correo lo emite el Worker mediante
-códigos de 6 dígitos; no se habilita el proveedor de enlaces por correo. Detalle en
+generar la VAPID y habilitar GA4. En Email/Password, habilitar Email Link con
+`passwordRequired=false`; Firebase envía el correo y el Worker sólo solicita
+`EMAIL_SIGNIN` después de Turnstile/rate limits. Detalle en
 [`docs/operations/integrations.md`](./docs/operations/integrations.md).
 
 ## 7. Desplegar el Worker manualmente (registra DO y consumers)
@@ -680,12 +702,15 @@ configuración de pnpm y `package.json` fijan pnpm 11 y Node 24. Las variables
 
 ```powershell
 vercel login
-pwsh -File scripts/deploy-phase2-frontends.ps1
+pwsh -NoProfile -File scripts/deploy-phase3-app-web.ps1 -PlanOnly
+pwsh -NoProfile -File scripts/deploy-phase3-app-web.ps1
 ```
 
-Ese flujo actualiza `app.parmelia.me` sin relink del cliente y promueve también
-el dashboard. `-PlanOnly` permite revisar el alcance sin autenticar ni mutar;
-`-ConfigureOnly` configura proyectos/variables sin desplegar.
+Ese flujo actualiza únicamente `app.parmelia.me`, sin relink, cambios de
+variables, Dashboard ni Payments. `-PlanOnly` permite revisar el alcance sin
+autenticar ni mutar. El script conjunto `deploy-phase2-frontends.ps1` se conserva
+sólo para reproducir el corte histórico de ambos frontends y no corresponde a
+la iteración App-only.
 
 ## 9. Smoke test (en orden)
 

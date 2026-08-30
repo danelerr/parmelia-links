@@ -26,13 +26,14 @@ import BackHeader from "../components/BackHeader";
 import StageOverlay from "../components/StageOverlay";
 import TxResult from "../components/TxResult";
 import LinkButton from "../components/LinkButton";
-import StepUpCodeSheet from "../components/StepUpCodeSheet";
+import StepUpLinkSheet from "../components/StepUpLinkSheet";
 import { FormPageSkeleton } from "../components/Skeleton";
 import {
 	readMigratedStorage,
 	removeMigratedStorage,
 	writeStorage,
 } from "../lib/storageMigration";
+import { clearRecoveryStepUp, readRecoveryStepUp } from "../lib/recoveryStepUp";
 
 const POINTER_KEY = "gatopago:recovery-credential:v1";
 const LEGACY_POINTER_KEY = "parmelia:recovery-credential:v1";
@@ -116,6 +117,7 @@ export default function Recover({ user }: { user: User }) {
 	const [cancelArmed, setCancelArmed] = useState(false);
 	const [stepUpAction, setStepUpAction] = useState<"start" | "execute" | null>(null);
 	const cancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const stepUpHandled = useRef(false);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -162,7 +164,7 @@ export default function Recover({ user }: { user: User }) {
 		return () => clearInterval(id);
 	}, [waiting]);
 
-	async function handleStart(stepUpToken: string) {
+	const handleStart = useCallback(async (stepUpToken: string) => {
 		setPhase("proposing");
 		let preflight: { registrationId: string; challenge: string };
 		try {
@@ -231,9 +233,9 @@ export default function Recover({ user }: { user: User }) {
 			}
 			setPhase("error");
 		}
-	}
+	}, [refresh, t, user]);
 
-	async function handleExecute(stepUpToken: string) {
+	const handleExecute = useCallback(async (stepUpToken: string) => {
 		const pointer = readPointer();
 		if (!pointer) {
 			await refresh();
@@ -287,7 +289,32 @@ export default function Recover({ user }: { user: User }) {
 			}
 			setPhase("error");
 		}
-	}
+	}, [refresh, user]);
+
+	useEffect(() => {
+		if (stepUpHandled.current) return;
+		const proof = readRecoveryStepUp();
+		if (!proof) return;
+		if (proof.action === "start" && visiblePhase === "intro") {
+			stepUpHandled.current = true;
+			clearRecoveryStepUp();
+			queueMicrotask(() => void handleStart(proof.stepUpToken));
+			return;
+		}
+		if (proof.action === "execute" && visiblePhase === "ready") {
+			stepUpHandled.current = true;
+			clearRecoveryStepUp();
+			queueMicrotask(() => void handleExecute(proof.stepUpToken));
+			return;
+		}
+		if (
+			visiblePhase !== "loading" &&
+			!(proof.action === "execute" && visiblePhase === "pending")
+		) {
+			stepUpHandled.current = true;
+			clearRecoveryStepUp();
+		}
+	}, [handleExecute, handleStart, visiblePhase]);
 
 	async function handleCancel() {
 		if (!cancelArmed) {
@@ -402,13 +429,10 @@ export default function Recover({ user }: { user: User }) {
 				</button>
 			</Screen>
 			{stepUpAction === "start" ? (
-				<StepUpCodeSheet
+				<StepUpLinkSheet
 					user={user}
+					action="start"
 					onCancel={() => setStepUpAction(null)}
-					onVerified={(token) => {
-						setStepUpAction(null);
-						void handleStart(token);
-					}}
 				/>
 			) : null}
 			</>
@@ -479,13 +503,10 @@ export default function Recover({ user }: { user: User }) {
 				</TxResult>
 			</Screen>
 			{stepUpAction === "execute" ? (
-				<StepUpCodeSheet
+				<StepUpLinkSheet
 					user={user}
+					action="execute"
 					onCancel={() => setStepUpAction(null)}
-					onVerified={(token) => {
-						setStepUpAction(null);
-						void handleExecute(token);
-					}}
 				/>
 			) : null}
 			</>

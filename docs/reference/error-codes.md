@@ -60,7 +60,7 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `INVALID_USERNAME` | Username fuera de `^[a-z0-9_-]{3,30}$`. |
 | `INVALID_CURSOR` | Cursor opaco de paginación ausente, alterado o malformado. |
 | `INVALID_EMAIL` | El correo de acceso no tiene un formato válido. |
-| `AUTH_CODE_INVALID` | El código de 6 dígitos es incorrecto, expiró o agotó sus intentos. |
+| `AUTH_CODE_INVALID` | Compatibilidad Business: el código legacy es incorrecto, expiró o agotó sus intentos. La App de consumo usa magic links. |
 | `WEBAUTHN_REGISTRATION_INVALID` | La ceremonia de alta no coincide con challenge, origen, RP, algoritmo o clave esperados. |
 | `INVALID_PROFILE` | `displayName`/`socialUrl` fuera del formato aceptado (largo, allowlist de redes). |
 | `USERNAME_RESERVED` | Username en la lista de reservados (rutas, traps). |

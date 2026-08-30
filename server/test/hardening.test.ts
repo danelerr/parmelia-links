@@ -15,7 +15,10 @@ import type { Bindings } from "../src/middlewares/auth";
 import { getFaucetPolicy } from "../src/services/accountOperations";
 import { validateWebhookUrl } from "../src/routes/merchant.routes";
 import { routerAuthorizationDeadline, RouterError } from "../src/services/paymentRouter";
-import { validateRuntimeConfig } from "../src/services/runtimeConfig";
+import {
+	validateEmailSecurityConfig,
+	validateRuntimeConfig,
+} from "../src/services/runtimeConfig";
 import { internalTransferSenderAddresses } from "../src/services/indexer";
 import { getRpcEndpointCapabilities } from "../src/services/rpcProviders";
 import { __test as healthTest } from "../src/services/health";
@@ -546,6 +549,39 @@ describe("runtime configuration", () => {
 		);
 	});
 
+	it("validates Firebase magic-link dependencies without an external email provider", () => {
+		const base = {
+			AUTH_CODE_PEPPER: "p".repeat(32),
+			FIREBASE_WEB_API_KEY: "test-key",
+			FIREBASE_SERVICE_ACCOUNT: JSON.stringify({
+				project_id: "test",
+				client_email: "test@example.iam.gserviceaccount.com",
+				private_key: "test-only",
+				token_uri: "https://oauth2.googleapis.com/token",
+			}),
+			APP_URL: "https://app.parmelia.me",
+		};
+		expect(validateEmailSecurityConfig(envFor("arbitrum-sepolia", base))).toEqual([]);
+
+		const missingAppUrl = validateEmailSecurityConfig(envFor("arbitrum-sepolia", {
+			...base,
+			APP_URL: undefined,
+		}));
+		expect(missingAppUrl.map((entry) => entry.code)).toContain("APP_URL_INVALID");
+
+		const invalidAppUrl = validateEmailSecurityConfig(envFor("arbitrum-sepolia", {
+			...base,
+			APP_URL: "https://app.parmelia.me/login",
+		}));
+		expect(invalidAppUrl.map((entry) => entry.code)).toContain("APP_URL_INVALID");
+
+		const missingWebKey = validateEmailSecurityConfig(envFor("arbitrum-sepolia", {
+			...base,
+			FIREBASE_WEB_API_KEY: undefined,
+		}));
+		expect(missingWebKey.map((entry) => entry.code)).toContain("FIREBASE_WEB_API_KEY_MISSING");
+	});
+
 	it("exposes readiness and blocks invalid mainnet traffic", async () => {
 		const context = {} as ExecutionContext;
 		const healthToken = "health-test-token-that-is-longer-than-32-characters";
@@ -559,8 +595,7 @@ describe("runtime configuration", () => {
 				private_key: "test-only",
 				token_uri: "https://oauth2.googleapis.com/token",
 			}),
-			AUTH_EMAIL_FROM: "test@example.com",
-			EMAIL: { send: async () => undefined } as unknown as NonNullable<Bindings["EMAIL"]>,
+			APP_URL: "https://app.parmelia.me",
 		});
 		const liveness = await worker.fetch(
 			new Request("https://worker.example/health/live"),

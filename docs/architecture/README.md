@@ -1,7 +1,8 @@
 # Arquitectura visual de GatoPago
 
-**Fecha de corte:** 26 de agosto de 2026
-**Estado:** Fase 2.1 corregida y promovida en testnet; ejecución monetaria desactivada
+**Fecha de corte:** 30 de agosto de 2026
+**Estado:** Fase 2.1 promovida; candidato App Google + Email Link verificado
+localmente y todavía no promovido; ejecución monetaria desactivada
 **Propósito:** explicar el sistema con un único vocabulario y separar con claridad
 lo que está desplegado, lo que está listo en código y lo que sólo es futuro.
 
@@ -53,6 +54,7 @@ que ve el operador en Cloudflare.
 | Cliente Vercel | `parmelia` sirve `https://app.parmelia.me`; el checkout usa únicamente el provider EIP-1193 que una extensión o el navegador integrado de la propia wallet ya expone. No integra proveedores externos de conexión. |
 | Dashboard Vercel | `https://dashboard.parmelia.me` es accesible anónimamente y muestra el login de GatoPago; Vercel SSO está desactivado. |
 | Routers de pago | Desplegados y verificados en testnets soportadas. No se activó mainnet. |
+| Autenticación App candidata | Google + Firebase Email Link pasan localmente. `0035`, la nueva ruta y la CSP que habilita `apis.google.com` siguen pendientes en remoto; no usa Resend, SMTP ni OTP numérico. |
 
 ## Orden de lectura
 
@@ -87,12 +89,18 @@ que ve el operador en Cloudflare.
     — núcleo actual y puertos/adapters que sólo se extraen al integrar un
     proveedor real.  
     ![Arquitectura escalable de proveedores](./rendered/10-arquitectura-proveedores-escalable.svg)
+11. [Secuencia de magic link de la App](./diagrams/11-secuencia-magic-link-app.puml)
+    — Google, Turnstile, solicitud/consumo de Email Link y recovery de un solo
+    uso sin proveedor de correo adicional.
+    ![Secuencia de magic link de la App](./rendered/11-secuencia-magic-link-app.svg)
 
 Las decisiones y fundamentos de esta corrección están en
 [CORRECCIONES.md](./CORRECCIONES.md). El procedimiento operativo está en el
 [runbook de cutover](../runbooks/payments-cutover.md); la producción histórica
 debe pasar primero por el
 [reemplazo semántico](../runbooks/payments-semantic-recut.md).
+El corte pendiente de autenticación usa el
+[runbook App-only](../runbooks/phase-3-app-magic-link-cutover.md).
 
 ## Fronteras que no deben romperse
 

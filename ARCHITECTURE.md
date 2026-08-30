@@ -13,7 +13,7 @@
 
 El producto combina:
 
-- **Firebase Auth** para identidad: **Google** y **código de 6 dígitos por correo**. El Worker valida el código y entrega un Firebase Custom Token; no hay contraseñas ni enlaces de acceso.
+- **Firebase Auth** para identidad: **Google** y **magic links nativos de Firebase**. El Worker conserva Turnstile/rate limits y solicita el enlace a Firebase; no gestiona contraseñas, códigos ni un proveedor SMTP externo.
 - **Passkeys WebAuthn (P256)** para firmar operaciones de la wallet en el dispositivo.
 - **Smart accounts `AccountWebAuthnV2`** (MultiSigner ERC-7913 + UUPS + recovery con guardian) desplegadas por factory.
 - **Dos Cloudflare Workers, dos D1 y dos Queues**: App para identidad/cuentas/UserOperations y Payments para checkout/intents/settlement/webhooks.
@@ -30,7 +30,7 @@ es la siguiente:
 
 | Deployable | Base y datos propietarios | Responsabilidad |
 |---|---|---|
-| App API (`server/`, deploy remoto `server`) | `GATOPAGO_DB`, `parmelia-scheduled-jobs` | Firebase/OTP/passkeys, smart accounts, UserOperations, Home/ledger, swaps, Earn, contactos y card. |
+| App API (`server/`, deploy remoto `server`) | `GATOPAGO_DB`, `parmelia-scheduled-jobs` | Firebase/magic links/passkeys, smart accounts, UserOperations, Home/ledger, swaps, Earn, contactos y card. |
 | `gatopago-payments-api` (`payments-worker/`) | `PAYMENTS_DB`, `gatopago-payment-jobs` | merchants/API keys, links, intents, quotes, attempts, routing local/CCTP, settlement, eventos y webhooks. |
 
 App tiene un único Service Binding hacia Payments para compatibilidad y para
@@ -163,7 +163,7 @@ gatopago/
 ├── dashboard/               # panel de comerciantes (API keys, pagos, webhooks, sandbox)
 │   └── src/pages/                # Login, Overview, Payments, PaymentDetail, ApiKeys, Webhooks, Events, Sandbox
 ├── server/                  # gatopago-app-api (Hono; App Worker)
-│   ├── migrations/               # 0001..0034; sólo dominio App
+│   ├── migrations/               # 0001..0035; sólo dominio App
 │   └── src/
 │       ├── index.ts              # middlewares + rutas + consumers de Queue
 │       ├── chain.ts              # chainKey -> viem Chain
@@ -232,7 +232,7 @@ Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos
 ## Arquitectura Lógica
 
 ### 1. Cliente (React/Vite)
-- Sesión vía Firebase: Google o código de 6 dígitos. El código es de un solo uso, expira en 10 minutos y se canjea en el Worker por un Firebase Custom Token.
+- Sesión vía Firebase: Google o magic link. Firebase emite y consume el enlace; el correo nunca se incluye en la URL. En otro dispositivo el usuario debe confirmarlo. Recovery añade un challenge opaco, ligado al UID y consumible una sola vez, antes de emitir una prueba de step-up acotada.
 - Onboarding obligatorio cuando hay login pero aún no hay wallet; verificación **Turnstile** antes de crear cuenta.
 - Crea passkeys (`createPasskey`) y firma UserOps (`signWithPasskey`).
 - Consume la API con la capa tipada **`lib/api.ts`** (`apiFetch` → `ApiError` con `error_code`) y centraliza avisos en **`lib/notify.ts`** (mapea `error_code → t("err."+code)`).
@@ -378,8 +378,8 @@ proxy temporal para clientes N-1. Referencia pública en `docs/api.md` y
 | GET    | `/`                         | NO   | Healthcheck                                                        |
 | GET/PUT | `/user/*`                  | SÍ   | Perfil, username, balance, push-token, historial (ledger)         |
 | GET    | `/user/:username`           | NO   | Resuelve username público                                          |
-| POST   | `/auth/email-code/*`        | NO   | Solicita/verifica código de acceso de 6 dígitos (Turnstile + rate limits) |
-| POST   | `/auth/step-up/*`           | SÍ   | Código de un solo uso para confirmar recuperación sensible         |
+| POST   | `/auth/email-link/request`  | NO   | Solicita magic link Firebase (Turnstile + rate limits)              |
+| POST   | `/auth/step-up/email-link/*`| SÍ   | Solicita/canjea challenge de enlace para recovery sensible          |
 | POST   | `/account/create`           | SÍ   | Crea wallet V2 (Turnstile + rate limit por IP + referido + auto-fund con claim atómico) |
 | GET/PUT/POST | `/account/passkey*`   | SÍ   | Estado de passkeys/recovery · calldata/UserOp `addSigners`        |
 | GET/POST | `/account/fund`           | SÍ   | Faucet (Turnstile + rate limit por uid + claim atómico + receipt verificado) |

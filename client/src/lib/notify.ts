@@ -41,7 +41,7 @@ export function isUserCancelled(err: unknown): boolean {
 
 // Anything matching this is developer-speak, not user-speak.
 const TECHNICAL_PATTERN =
-	/0x[0-9a-fA-F]{6,}|userop|calldata|revert|execution|rpc|json|fetch|undefined|\[object|network ?error/i;
+	/0x[0-9a-fA-F]{6,}|userop|calldata|revert|execution|rpc|json|fetch|undefined|\[object|network ?error|firebase|auth\//i;
 
 /** Reduce any thrown value to a short, human, Spanish message. */
 export function humanizeError(

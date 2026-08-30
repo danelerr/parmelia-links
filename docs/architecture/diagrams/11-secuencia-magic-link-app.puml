@@ -1,0 +1,68 @@
+@startuml
+!include _theme.puml
+title App — Secuencia Google + Firebase Email Link
+
+actor "Persona" as person
+participant "App Web\nVercel" as app COLOR_WEB
+participant "Turnstile" as turnstile COLOR_EXTERNAL
+participant "App Worker\nserver" as worker COLOR_READY
+database "App D1\nchallenges recovery" as d1 COLOR_READY
+participant "Firebase Auth" as firebase COLOR_EXTERNAL
+
+alt Acceso por Google
+  person -> app : Continuar con Google
+  app -> firebase : signInWithPopup / redirect
+  firebase --> app : ID token Firebase
+else Acceso por correo
+  person -> app : Escribe email
+  app -> turnstile : challenge action=auth_email_link
+  turnstile --> app : token de un solo uso
+  app -> worker : POST /auth/email-link/request
+  worker -> worker : consume cuota IP previa
+  worker -> turnstile : valida token, action y hostname
+  worker -> worker : tras éxito, consume cuotas email/global
+  worker -> firebase : accounts:sendOobCode EMAIL_SIGNIN
+  firebase --> person : email con link a app.parmelia.me
+
+  person -> app : abre el link
+  alt mismo navegador
+    app -> app : recupera email guardado localmente
+  else otro navegador o dispositivo
+    app -> person : solicita confirmar el email
+  end
+  app -> firebase : signInWithEmailLink(email, URL)
+  firebase --> app : ID token Firebase
+  app -> app : elimina parámetros sensibles de la URL
+end
+
+app -> worker : API con Bearer ID token
+worker -> firebase : verifica firma, UID y claims
+firebase --> worker : identidad válida
+worker --> app : sesión App autorizada
+
+opt Recovery con magic link
+  person -> app : solicita reautenticación
+  app -> worker : POST /auth/step-up/email-link/request
+  worker -> d1 : guarda hash de challenge, UID y expiración
+  worker -> firebase : solicita EMAIL_SIGNIN con challenge opaco
+  firebase --> person : email de recovery
+  person -> app : abre link y reautentica en Firebase
+  app -> worker : canje + ID token reciente
+  worker -> d1 : compara UID/auth_time y consume una vez (CAS)
+  worker --> app : proof step-up acotada
+  app -> worker : segundo canje del mismo challenge
+  worker --> app : rechazo de replay
+end
+
+note over app,firebase
+  Firebase envía y consume el magic link.
+  No hay Resend, SMTP ni código de seis dígitos.
+  La prueba remota debe confirmar el mismo UID con Google y Email Link.
+end note
+
+note over worker,d1
+  Estado amarillo: candidato local verificado.
+  La migración 0035 y el deploy App siguen pendientes.
+end note
+
+@enduml
