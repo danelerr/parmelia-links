@@ -664,14 +664,14 @@ pnpm --filter server exec wrangler queues list
 
 # 5. Ejecutar los mismos guards de fuente/config y validar sin publicar.
 pnpm --filter server cf-typegen:check
-pnpm --filter server run deploy -- --dry-run
+pnpm --filter server run deploy --dry-run
 
 # 6. Desplegar la fuente local verificada. Wrangler registra también la
 # migración v2 de RpcAdmissionController declarada en wrangler.jsonc.
 # Wrangler ejecuta `forge build` automáticamente para regenerar los ABIs que
 # consume `shared/index.ts`, incluso si `contracts/out` fue limpiado.
 $releaseSha = git rev-parse HEAD
-pnpm --filter server run deploy -- --keep-vars --strict --message "manual $releaseSha"
+pnpm --filter server run deploy --keep-vars --strict --message "manual $releaseSha"
 
 # 7. Exigir readiness saludable.
 $health = Invoke-RestMethod -Uri "https://server.parmelia.workers.dev/health"
@@ -683,6 +683,11 @@ if ($health.status -ne "ok" -or $health.issueCount -ne 0) {
 Mueve el backup cifrado a almacenamiento protegido fuera del workspace. El
 despliegue usa las credenciales locales de Wrangler y los secrets ya guardados
 en Cloudflare; nunca copies sus valores a comandos, documentación o Git.
+
+`pnpm run` es obligatorio para evitar el comando incorporado `pnpm deploy`, pero
+no agregues otro separador `--`: ese valor llegaría literalmente al script y
+podría impedir que Wrangler interprete `--dry-run`. El entrypoint rechaza esa
+forma, argumentos desconocidos y publicaciones sin las tres salvaguardas.
 
 ### Rollback del Worker
 

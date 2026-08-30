@@ -42,7 +42,7 @@
     "check:phase2-preflight": "node scripts/check-phase2-preflight.mjs",
     "check:phase3-app-preflight": "node scripts/check-phase3-app-preflight.mjs",
     "check:release-artifact": "node scripts/release-artifact.mjs --drill",
-    "check:deploy-source-guard": "node scripts/assert-reproducible-deploy-source.mjs --drill && node scripts/check-deploy-entrypoints.mjs",
+    "check:deploy-source-guard": "node scripts/assert-reproducible-deploy-source.mjs --drill && node scripts/deploy-app-worker.mjs --drill && node scripts/check-deploy-entrypoints.mjs",
     "d1:backup": "node scripts/d1-backup.mjs --remote",
     "preflight:phase2:remote": "node scripts/preflight-phase2-remote.mjs",
     "preflight:phase3-app:remote": "node scripts/preflight-phase3-app-remote.mjs",

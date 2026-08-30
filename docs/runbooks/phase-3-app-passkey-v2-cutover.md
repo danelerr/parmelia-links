@@ -147,14 +147,16 @@ Primero el Worker mediante su único entrypoint guardado:
 
 ```powershell
 $releaseSha = git rev-parse HEAD
-pnpm --filter server run deploy -- --dry-run
-pnpm --filter server run deploy -- --keep-vars --strict --message "phase3 passkey-v2 $releaseSha"
+pnpm --filter server run deploy --dry-run
+pnpm --filter server run deploy --keep-vars --strict --message "phase3 passkey-v2 $releaseSha"
 ```
 
 La cadena de deploy exige fuente publicada, configuración WebAuthn estable,
 cero migraciones App pendientes y el inventario remoto de secrets. No crea ni
 rota secrets. `--keep-vars` conserva configuración remota ajena y Wrangler
 publica las variables no sensibles declaradas en `server/wrangler.jsonc`.
+Los flags se pasan directamente después de `run deploy`; un separador `--`
+adicional está prohibido porque puede neutralizar `--dry-run`.
 
 Después, únicamente si cambió `client/`:
 

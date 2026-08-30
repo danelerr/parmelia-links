@@ -135,12 +135,14 @@ Primero App Worker, usando su único entrypoint guardado:
 
 ```powershell
 $releaseSha = git rev-parse HEAD
-pnpm --filter server run deploy -- --dry-run
-pnpm --filter server run deploy -- --keep-vars --strict --message "phase3 app magic links $releaseSha"
+pnpm --filter server run deploy --dry-run
+pnpm --filter server run deploy --keep-vars --strict --message "phase3 app magic links $releaseSha"
 ```
 
 El deploy usa los secrets App ya existentes. No ejecuta `secret put` ni cambia
 sus valores.
+Los flags se pasan directamente después de `run deploy`; un separador `--`
+adicional está prohibido porque puede neutralizar `--dry-run`.
 
 Después desplegar únicamente `client/`:
 
