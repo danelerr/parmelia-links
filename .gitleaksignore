@@ -11,3 +11,8 @@ f5b7b148b80e6192b411e2e0728f789bffccabb1:server/.dev.vars.example:generic-api-ke
 
 # Foundry's publicly known Anvil account #0 development key.
 4aa16953977432373fb87fda7977e00067345db3:contracts/script/Deploy.s.sol:generic-api-key:15
+
+# Public FIDO Alliance AAGUIDs used only for best-effort passkey labels.
+e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:14
+e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:17
+e3b195c12c7b3855ad5c5fba5e193ef721738e44:server/src/services/passkeyMetadata.ts:generic-api-key:18
