@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@simplewebauthn/server": "13.3.2",
-    "hono": "^4.13.3",
+    "hono": "^4.13.4",
     "jose": "^6.2.10",
     "viem": "^2.55.19"
   },

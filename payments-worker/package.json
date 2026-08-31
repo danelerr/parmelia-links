@@ -15,7 +15,7 @@
     "typecheck:worker-runtime": "tsc --noEmit --project test-worker/tsconfig.json"
   },
   "dependencies": {
-    "hono": "^4.13.3",
+    "hono": "^4.13.4",
     "jose": "^6.2.10",
     "viem": "^2.55.19"
   },
