@@ -8,7 +8,6 @@ import {
 	isHomeBalanceFresh,
 	readHomeModel,
 } from "../services/homeReadModel";
-import { scheduleWalletIndexerPartitions } from "../services/indexerPartitions";
 
 const homeRoutes = new Hono<AppContext>();
 
@@ -62,21 +61,10 @@ homeRoutes.get("/", requireAuth, async (c) => {
 		);
 		model.balance.refreshing = true;
 	}
-	if (
-		!refreshAlreadyActive &&
-		model.balance.status !== "fresh"
-	) {
-		// The webhook is an accelerator, not a correctness dependency. The
-		// scheduler collapses simultaneous Home requests into exact checkpointed
-		// wallet partitions; no visible client means no fallback scan.
-		if (model.account.walletAddress) {
-			await scheduleWalletIndexerPartitions(
-				c.env,
-				[model.account.walletAddress],
-				"home_on_access_index_fallback",
-			);
-		}
-	}
+	// Home is a read-model endpoint. It may enqueue one D1-coalesced balance
+	// repair, but it must never fan a page read out into transfer, recovery and
+	// UserOperation indexer partitions. Provider webhooks and the bounded safety
+	// sweep own those indexer jobs.
 	return c.json(model);
 });
 

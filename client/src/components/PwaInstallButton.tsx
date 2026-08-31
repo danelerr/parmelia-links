@@ -7,43 +7,57 @@ import { promptPwaInstall } from "../lib/pwaInstall";
 
 export default function PwaInstallButton() {
 	const { t } = useTranslation();
-	const { showInstall, isIos } = usePwaInstall();
+	const { showInstall, isInstalled, isIos } = usePwaInstall();
 	const [busy, setBusy] = useState(false);
-	const [hidden, setHidden] = useState(false);
 	const [helpOpen, setHelpOpen] = useState(false);
 
-	if (!showInstall || hidden) return null;
+	if (!showInstall && !isInstalled) return null;
 
 	async function install() {
 		if (busy) return;
 		setBusy(true);
 		const outcome = await promptPwaInstall();
 		setBusy(false);
-		if (outcome === "accepted") {
-			setHidden(true);
-			return;
-		}
 		if (outcome === "unavailable") setHelpOpen(true);
 	}
+
+	function activate() {
+		if (isInstalled) {
+			window.location.reload();
+			return;
+		}
+		void install();
+	}
+
+	const label = isInstalled ? t("pwa.reloadAria") : t("pwa.installAria");
 
 	return (
 		<>
 			<button
 				type="button"
-				onClick={() => void install()}
+				onClick={activate}
 				disabled={busy}
-				aria-label={t("pwa.installAria")}
-				aria-haspopup="dialog"
+				aria-label={label}
+				aria-haspopup={isInstalled ? undefined : "dialog"}
 				aria-busy={busy}
-				title={t("pwa.installAria")}
+				title={label}
 				className="pwa-install-button"
 			>
-				<InstallIcon />
+				{isInstalled ? <ReloadIcon /> : <InstallIcon />}
 			</button>
 			{helpOpen ? (
 				<InstallHelpSheet isIos={isIos} onClose={() => setHelpOpen(false)} />
 			) : null}
 		</>
+	);
+}
+
+function ReloadIcon() {
+	return (
+		<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" strokeLinejoin="miter">
+			<path d="M20 11a8 8 0 1 0-2.34 5.66" />
+			<path d="M20 4v7h-7" />
+		</svg>
 	);
 }
 

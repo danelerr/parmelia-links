@@ -133,6 +133,11 @@ export default function MenuSheet({
 					{CHEVRON}
 				</LinkButton>
 
+				<LinkButton to="/settings/security" onClick={onClose} className={ROW}>
+					<RowIcon tone="pending">{ICONS.shield}</RowIcon>
+					<span className="text-[15px]">{t("menu.security")}</span>
+					{CHEVRON}
+				</LinkButton>
 				<LinkButton to="/contacts" onClick={onClose} className={ROW}>
 					<RowIcon tone="brand">{ICONS.users}</RowIcon>
 					<span className="text-[15px]">{t("menu.contacts")}</span>

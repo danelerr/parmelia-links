@@ -19,6 +19,8 @@ export type ManagedPasskey = {
 	createdAt: string;
 	lastUsedAt: string;
 	currentHint: boolean;
+	/** True only when qx/qy currently matches an on-chain account signer. */
+	activeSigner?: boolean | null;
 };
 
 export default function PasskeyList({
@@ -27,6 +29,7 @@ export default function PasskeyList({
 	threshold,
 	chainAvailable,
 	verificationUnavailable,
+	credentialInventoryComplete,
 	busyId,
 	onRename,
 	onRemove,
@@ -36,6 +39,7 @@ export default function PasskeyList({
 	threshold: number | null;
 	chainAvailable: boolean;
 	verificationUnavailable: boolean;
+	credentialInventoryComplete: boolean;
 	busyId: string | null;
 	onRename: (credentialId: string, name: string) => Promise<boolean>;
 	onRemove: (credentialId: string) => Promise<boolean>;
@@ -47,8 +51,20 @@ export default function PasskeyList({
 	const [removeKey, setRemoveKey] = useState<ManagedPasskey | null>(null);
 	const [removeFailed, setRemoveFailed] = useState(false);
 	const [detailsKey, setDetailsKey] = useState<ManagedPasskey | null>(null);
+	const resolvedSignerActivity = (passkey: ManagedPasskey): boolean | null =>
+		typeof passkey.activeSigner === "boolean"
+			? passkey.activeSigner
+			// Compatibility with the immediately previous Worker response: an exact
+			// D1/onchain inventory proves every listed row is active even though that
+			// version did not return the per-row convenience field yet.
+			: credentialInventoryComplete
+				? true
+				: null;
+	const activeStoredKeyCount = passkeys.filter(
+		(passkey) => resolvedSignerActivity(passkey) === true,
+	).length;
 	const unknownSignerCount = chainAvailable && signerCount !== null
-		? Math.max(0, signerCount - passkeys.length)
+		? Math.max(0, signerCount - activeStoredKeyCount)
 		: 0;
 	const canRemove =
 		chainAvailable &&
@@ -109,10 +125,13 @@ export default function PasskeyList({
 
 			<div className="divide-y divide-border">
 				{passkeys.map((passkey, index) => {
+					const activeSigner = resolvedSignerActivity(passkey);
 					const editing = editingId === passkey.credentialId;
 					const fallbackName = t("security.keyFallbackName", { number: index + 1 });
 					const renameError = renameErrorId === passkey.credentialId;
 					const renameErrorDomId = `passkey-name-error-${index}`;
+					const removeAllowed = canRemove && activeSigner === true;
+					const inactiveReasonId = `passkey-inactive-${index}`;
 					const syncLabel = passkey.credentialDeviceType === "singleDevice"
 						? t("security.keyStorage.singleDevice")
 						: passkey.credentialDeviceType === "multiDevice" && passkey.credentialBackedUp
@@ -184,12 +203,16 @@ export default function PasskeyList({
 											</button>
 											<button
 												type="button"
-												disabled={!canRemove || busyId !== null}
+												disabled={!removeAllowed || busyId !== null}
 												onClick={() => {
 													setRemoveFailed(false);
 													setRemoveKey(passkey);
 												}}
-												aria-describedby={!canRemove ? removeDescriptionId : undefined}
+												aria-describedby={!removeAllowed
+											? activeSigner === false
+														? inactiveReasonId
+														: removeDescriptionId
+													: undefined}
 												className="min-h-11 px-1 text-[12px] text-danger underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
 											>
 												{t("security.removeKey")}
@@ -204,6 +227,11 @@ export default function PasskeyList({
 											? t("security.keyProviderDetected", { provider: passkey.providerName })
 											: t("security.keyProviderUnknown")} · {syncLabel}
 									</p>
+									{activeSigner === false ? (
+										<p id={inactiveReasonId} className="mt-2 border-l-4 border-pending bg-pending/10 px-3 py-2 text-[11px] leading-relaxed text-pending">
+											{t("security.keyNotActive")}
+										</p>
+									) : null}
 									<button
 										type="button"
 										onClick={() => setDetailsKey(passkey)}

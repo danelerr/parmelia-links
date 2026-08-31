@@ -18,11 +18,15 @@ import type { User } from "../lib/firebase";
 import { ApiError, apiFetch } from "../lib/api";
 import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
 import {
+	createPasskeyAvailabilityAssertion,
 	createPasskey,
+	PasskeyAlreadyOnAuthenticatorError,
 	rememberPasskey,
+	type PasskeyAuthenticationChallenge,
+	type PasskeyCreationMode,
 	type PasskeyRegistrationChallenge,
 } from "../lib/webauthn";
-import { isUserCancelled, notifyError, notifyWarning } from "../lib/notify";
+import { isUserCancelled, notifyError, notifySuccess, notifyWarning } from "../lib/notify";
 import { formatDateTime } from "../lib/format";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import Screen from "../components/Screen";
@@ -78,6 +82,7 @@ function clearPointer() {
 
 type PasskeyStatus = {
 	hasWallet: boolean;
+	signerCount: number | null;
 	recoveryPending: boolean | null;
 	recoveryExecutableAfter: string | null;
 };
@@ -128,6 +133,9 @@ export default function Recover({ user }: { user: User }) {
 	const [cancelArmed, setCancelArmed] = useState(false);
 	const [stepUpAction, setStepUpAction] = useState<"start" | "execute" | null>(null);
 	const [stepUpProof, setStepUpProof] = useState<StoredRecoveryStepUp | null>(() => readRecoveryStepUp());
+	const [existingKeyState, setExistingKeyState] = useState<
+		"unchecked" | "checking" | "available" | "not-confirmed" | "duplicate"
+	>("unchecked");
 	const cancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	const refresh = useCallback(async () => {
@@ -175,7 +183,10 @@ export default function Recover({ user }: { user: User }) {
 		return () => clearInterval(id);
 	}, [waiting]);
 
-	const handleStart = useCallback(async (stepUpToken: string) => {
+	const handleStart = useCallback(async (
+		stepUpToken: string,
+		creationMode: PasskeyCreationMode = "device",
+	) => {
 		setPhase("proposing");
 		let preflight: PasskeyRegistrationChallenge;
 		try {
@@ -211,11 +222,21 @@ export default function Recover({ user }: { user: User }) {
 			const passkeyLabel = user.email || user.displayName || undefined;
 			created = await createPasskey(user.uid, passkeyLabel, {
 				...preflight,
-				name: t("webauthn.recoveryKeyName"),
-			});
+				name: creationMode === "security-key"
+					? t("webauthn.securityKeyName")
+					: t("webauthn.recoveryKeyName"),
+			}, creationMode);
 		} catch (error) {
 			// A dismissed OS prompt is not a failure: back to intro with a calm toast.
 			setPhase("intro");
+			if (error instanceof PasskeyAlreadyOnAuthenticatorError) {
+				setExistingKeyState("duplicate");
+				notifyWarning(
+					t("recover.existingManagerKeyTitle"),
+					t("recover.existingManagerKeyBody"),
+				);
+				return;
+			}
 			if (isUserCancelled(error)) notifyWarning(t("recover.keyDismissed"));
 			else notifyError(error);
 			return;
@@ -245,6 +266,31 @@ export default function Recover({ user }: { user: User }) {
 			setPhase("error");
 		}
 	}, [refresh, t, user]);
+
+	const handleCheckExistingKey = useCallback(async () => {
+		if (existingKeyState === "checking") return;
+		setExistingKeyState("checking");
+		try {
+			const preflight = await apiFetch<PasskeyAuthenticationChallenge>(
+				"/account/passkey/availability/preflight",
+				{ user, body: {} },
+			);
+			const assertion = await createPasskeyAvailabilityAssertion(preflight);
+			await apiFetch("/account/passkey/availability/verify", {
+				user,
+				body: assertion,
+			});
+			setExistingKeyState("available");
+			notifySuccess(t("recover.existingKeyWorksTitle"), t("recover.existingKeyWorksBody"));
+		} catch (error) {
+			setExistingKeyState("not-confirmed");
+			if (isUserCancelled(error)) {
+				notifyWarning(t("security.keyCheckCancelledTitle"), t("security.keyCheckCancelledBody"));
+				return;
+			}
+			notifyError(error, t("recover.existingKeyCheckFailed"));
+		}
+	}, [existingKeyState, t, user]);
 
 	const handleExecute = useCallback(async (stepUpToken: string) => {
 		const pointer = readPointer();
@@ -438,11 +484,70 @@ export default function Recover({ user }: { user: User }) {
 					</div>
 				) : null}
 
+				{existingKeyState === "available" || existingKeyState === "duplicate" ? (
+					<div className="mb-5 border-2 border-info bg-info/8 p-3.5" role="status">
+						<p className="font-display text-[14px] text-info">
+							{existingKeyState === "available"
+								? t("recover.existingKeyWorksTitle")
+								: t("recover.existingManagerKeyTitle")}
+						</p>
+						<p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+							{existingKeyState === "available"
+								? t("recover.existingKeyWorksBody")
+								: t("recover.existingManagerKeyBody")}
+						</p>
+						{existingKeyState === "duplicate" ? (
+							<button
+								type="button"
+								onClick={() => runVerifiedStep(
+									"start",
+									(token) => handleStart(token, "security-key"),
+								)}
+								className="btn btn-ghost mt-3 min-h-10 px-4 text-[12px]"
+							>
+								{t("recover.usePhysicalKey")}
+							</button>
+						) : null}
+					</div>
+				) : null}
+
 				<div className="flex-1" />
 
-				<button onClick={() => runVerifiedStep("start", handleStart)} className="btn btn-primary btn-block">
-					{stepUpProof?.action === "start" ? t("recover.ctaConfirmed") : t("recover.cta")}
-				</button>
+				{(status?.signerCount ?? 0) > 0 ? (
+					<button
+						type="button"
+						onClick={() => void handleCheckExistingKey()}
+						disabled={existingKeyState === "checking"}
+						className="btn btn-primary btn-block"
+					>
+						{existingKeyState === "checking"
+							? t("security.checkingKey")
+							: t("recover.tryExistingKey")}
+					</button>
+				) : null}
+				{existingKeyState === "available" ? (
+					<button
+						type="button"
+						onClick={() => navigate("/settings/security", { replace: true })}
+						className="btn btn-ghost btn-block mt-3"
+					>
+						{t("recover.backToSecurity")}
+					</button>
+				) : (
+					<button
+						onClick={() => runVerifiedStep(
+							"start",
+							(token) => handleStart(token, "device"),
+						)}
+						className={`${(status?.signerCount ?? 0) > 0 ? "btn-text" : "btn btn-primary btn-block"} mt-3`}
+					>
+						{stepUpProof?.action === "start"
+							? t("recover.ctaConfirmed")
+							: (status?.signerCount ?? 0) > 0
+								? t("recover.noKeysAvailable")
+								: t("recover.cta")}
+					</button>
+				)}
 			</Screen>
 			{stepUpAction === "start" ? (
 				<StepUpLinkSheet

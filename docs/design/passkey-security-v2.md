@@ -1,6 +1,6 @@
-# Passkey Security v2 — alcance, metadata y opciones
+# Passkey Security v2.1 — disponibilidad real, metadata y opciones
 
-**Estado:** desplegado en App Worker y App Web; aceptación WebAuthn manual pendiente
+**Estado:** v2 desplegado; corrección v2.1 autorizada y en promoción App-only; aceptación WebAuthn manual pendiente
 
 **Fecha:** 30 de agosto de 2026
 **Alcance:** App Worker y App Web; no modifica Payments, Dashboard ni contratos
@@ -20,6 +20,15 @@
 5. La autorización continúa dependiendo exclusivamente de la clave P-256
    verificada y del signer onchain. AAGUID, proveedor, tipo de dispositivo y
    respaldo son metadata de administración y nunca una política de seguridad.
+6. `localStorage` nunca demuestra que una llave está ausente. Una passkey de
+   Apple Passwords o Google Password Manager puede estar sincronizada aunque el
+   navegador no conserve metadata local de GatoPago.
+7. La disponibilidad se comprueba sólo con una aserción WebAuthn explícita:
+   challenge aleatorio del Worker, `allowCredentials` limitado a signers activos,
+   verificación de firma/origen/RP ID/UV y consumo atómico contra replay.
+8. `InvalidStateError` durante `create()` significa que el gestor reconoció una
+   credencial excluida. Es prevención de duplicados, no “error interno” ni prueba
+   de que el usuario deba recuperar la cuenta.
 
 ## Registro
 
@@ -58,6 +67,31 @@ La UI debe usar lenguaje de incertidumbre cuando un dato sea nulo. Con
 `attestation: none`, el AAGUID puede estar ausente o anonimizado. Aunque exista,
 no demuestra por sí solo qué gestor custodia la llave.
 
+La migración `0037_webauthn_authentication.sql` añade challenges efímeros de
+autenticación y `passkeys.sign_count`. No guarda firmas ni partes privadas. El
+contador se actualiza sólo después de verificar la aserción y comprobar otra
+vez que la clave pública continúa siendo signer onchain.
+
+## Estados que la UI ya no mezcla
+
+| Estado | Fuente de verdad | Mensaje permitido |
+| --- | --- | --- |
+| Llaves activas de la cuenta | contrato | “2 llaves activas” |
+| Llave disponible en este gestor | aserción WebAuthn verificada | “Llave disponible” |
+| Recuperación configurada | guardian distinto de cero | “Plan de respaldo activo” |
+| Recuperación en curso | `isRecoveryPending` | fecha/acción de cancelar |
+
+Cancelar el diálogo o no confirmar una passkey deja el estado como
+“no confirmado”; nunca se convierte en “no tienes llave”. Antes de iniciar la
+recuperación, la pantalla ofrece probar una llave activa. Si el gestor impide
+crear un duplicado, se ofrece usar la existente, otro dispositivo o una llave
+física.
+
+Al completar `executeRecovery`, D1 revoca todas las filas antiguas porque el
+contrato reemplaza el conjunto completo de signers. Al retirar una llave, el
+hint de firma del perfil se mueve a otra llave registrada. Así el registro de
+administración no sigue presentando credenciales reemplazadas o retiradas.
+
 ## Sincronización con gestores
 
 La App usa la WebAuthn Signal API sólo como mejora compatible:
@@ -87,19 +121,21 @@ Este candidato no autoriza una publicación. En una ventana App-only aprobada:
 
 1. crear y verificar backup cifrado de App D1;
 2. comprobar el listado remoto de migraciones;
-3. aplicar únicamente `0036_passkey_security_metadata.sql`;
+3. comprobar que `0036` ya está aplicada y aplicar únicamente
+   `0037_webauthn_authentication.sql`;
 4. desplegar App Worker con `PASSKEY_RP_ID=app.parmelia.me` y
    `PASSKEY_ALLOWED_ORIGINS=https://app.parmelia.me`;
 5. comprobar preflight/registro/status en el origen real;
 6. desplegar App Web;
-7. probar una llave integrada y, con hardware disponible, una llave física;
+7. probar comprobación, alta, retiro y recuperación con una llave integrada y,
+   con hardware disponible, una llave física;
 8. conservar rollback del Worker/Web, sin intentar revertir columnas D1.
 
 El entrypoint del Worker bloquea automáticamente cualquier migración App local
 que no aparezca aplicada en la D1 remota, comprueba columnas/restricciones/índice
 de Passkey v2 y rechaza un RP/origen distinto del contrato estable. El preflight
 de solo lectura inspecciona cada versión que recibe tráfico; no considera
-promovido el candidato mientras `0036`, su esquema semántico o cualquiera de
+promovido el candidato mientras `0037`, su esquema semántico o cualquiera de
 ambos bindings públicos siga pendiente.
 
 ## Cambio futuro a GatoPago
@@ -121,14 +157,12 @@ prueba de firma, medición de cobertura y rollback. Hasta completar ese plan,
 - `pnpm verify:all` antes de declarar el candidato publicable.
 
 La matriz se ejecutó el 30 de agosto de 2026 sobre este candidato y terminó con
-exit `0`: App Worker 265 unitarias + 26 runtime, Payments 52 + 23, Playwright 60
-aprobadas/40 omisiones deliberadas, backup/restore de 60 tablas D1, audit sin
+exit `0`: App Worker 266 unitarias + 27 runtime, Payments 52 + 23, Playwright 78
+aprobadas/58 omisiones deliberadas, backup/restore de 61 tablas D1, audit sin
 vulnerabilidades conocidas y 191 pruebas Foundry finales aprobadas/4 forks
-omitidos por no inyectar RPC. Después se aplicó `0036`, se promovieron App Worker
-`a2ea1d70-0553-48fd-8501-201bfe7e5143` y App Web
-`parmelia-4ezj8lobg-danelerrs-projects.vercel.app`, y el preflight remoto terminó
-con 12 checks listos. Una ceremonia real no se simula: requiere la sesión, el
-autenticador y el gesto del usuario.
+omitidos por no inyectar RPC. Los identificadores y la evidencia remota de la
+promoción `0037` se registran en el runbook v2.1. Una ceremonia real no se
+simula: requiere la sesión, el autenticador y el gesto del usuario.
 
 Referencias primarias:
 

@@ -1,15 +1,21 @@
-# Runbook de promoción — Fase 3 App Passkey Security v2
+# Runbook de promoción — Fase 3 App Passkey Security v2.1
 
 **Alcance:** App de consumo, App Worker y App D1.
 
 **Contrato WebAuthn vigente:** RP ID `app.parmelia.me`, origen
 `https://app.parmelia.me`.
 
-**Corte ejecutado el 30-08-2026:** `0035` y `0036` están aplicadas; App Worker
+**Corte v2 ejecutado el 30-08-2026:** `0035` y `0036` están aplicadas; App Worker
 `a2ea1d70-0553-48fd-8501-201bfe7e5143` y App Web
-`parmelia-4ezj8lobg-danelerrs-projects.vercel.app` publican Passkey Security v2.
+`parmelia-hgcd1c3es-danelerrs-projects.vercel.app` publican Passkey Security v2.
 El preflight quedó con 12 checks listos. `PAYMENT_LIVE_ENABLED=false` permanece
 fuera de alcance.
+
+**Corte v2.1 autorizado el 30-08-2026:** aplica únicamente
+`0037_webauthn_authentication.sql` y publica App Worker/App Web. Corrige la
+disponibilidad real de passkeys, el retiro compatible, los duplicados del
+gestor y el ingreso seguro a recuperación. Este documento conserva al final la
+evidencia y los identificadores del corte.
 
 El bundle candidato selecciona `browserLocalPersistence` y el resolver de
 redirect dentro de `initializeAuth`; no cambia persistencia después de iniciar
@@ -25,7 +31,7 @@ Cada mutación necesita autorización explícita y vigente para su acto concreto
 
 1. versionar y publicar el árbol exacto;
 2. crear un backup cifrado de App D1 fuera del workspace;
-3. aplicar únicamente `0036_passkey_security_metadata.sql` en `GATOPAGO_DB`;
+3. aplicar únicamente `0037_webauthn_authentication.sql` en `GATOPAGO_DB`;
 4. desplegar únicamente App Worker (`server`) y App Web (`client`);
 5. crear, renombrar, revocar o probar una llave mediante una operación real.
 
@@ -34,10 +40,8 @@ puede producir una operación on-chain aunque no sea un pago. No se autoriza
 Payments Worker/D1, Dashboard, contratos, DNS, secrets, buzones, fees, mainnet ni
 movimientos monetarios. No reutilizar la autorización histórica de `0035`.
 
-En este corte el usuario descartó explícitamente el backup cifrado manual del
-punto 2. Wrangler registró el backup automático de D1 y `0036` es aditiva. La
-excepción queda en el readiness; no se elimina la recomendación para cortes
-futuros ni se afirma que existió un backup manual.
+La excepción histórica de backup manual registrada para el corte `0036` no se
+reutiliza. El corte `0037` exige backup cifrado y verificado antes de migrar.
 
 ## 1. Preflight local y remoto de solo lectura
 
@@ -57,13 +61,13 @@ pwsh -NoProfile -File scripts/deploy-phase3-app-web.ps1 -PlanOnly
 Antes del corte, los únicos pendientes remotos admisibles son:
 
 - `published-source` mientras el candidato no esté publicado;
-- `app-migration-0036`;
-- `app-passkey-schema-0036` mientras `0036` no haya creado columnas,
-  restricciones e índice parcial;
+- `app-migration-0037`;
+- `app-passkey-schema-0037` mientras `0037` no haya creado la tabla de
+  challenges, el contador y sus índices;
 - `app-webauthn-bindings` mientras siga activa la versión anterior;
 - checks de App Web que dependan del nuevo bundle, si los hubiera.
 
-`app-migration-0035`, secrets por nombre, health, App pública, Firebase, CSP y
+`app-migration-0035`, `app-migration-0036`, secrets por nombre, health, App pública, Firebase, CSP y
 ruta Email Link deben estar listos. El preflight inspecciona **todas** las
 versiones con tráfico y compara los bindings públicos sin leer valores de
 secrets.
@@ -77,7 +81,7 @@ node scripts/assert-app-remote-migrations.mjs
 ```
 
 Antes de aplicar la migración, el último comando debe fallar indicando solamente
-`0036_passkey_security_metadata.sql`. Detenerse si falta otra migración, existe
+`0037_webauthn_authentication.sql`. Detenerse si falta otra migración, existe
 una pendiente adicional o no puede leerse D1.
 
 ## 2. Congelar una fuente reproducible
@@ -112,7 +116,7 @@ actual. La ruta debe estar protegida y fuera del workspace:
 ```powershell
 $env:D1_BACKUP_ENCRYPTION_KEY = '<CARGAR_DESDE_GESTOR_SEGURO>'
 $env:D1_BACKUP_ENCRYPTION_KEY_ID = '<ID_DE_CLAVE_EXISTENTE>'
-$backupPath = '<RUTA_PROTEGIDA_FUERA_DEL_WORKSPACE>\app-pre-0036.sql.enc'
+$backupPath = '<RUTA_PROTEGIDA_FUERA_DEL_WORKSPACE>\app-pre-0037.sql.enc'
 
 node scripts/d1-backup.mjs --remote --output $backupPath
 node scripts/d1-backup.mjs --verify $backupPath
@@ -126,12 +130,12 @@ Remove-Item Env:D1_BACKUP_ENCRYPTION_KEY -ErrorAction SilentlyContinue
 Remove-Item Env:D1_BACKUP_ENCRYPTION_KEY_ID -ErrorAction SilentlyContinue
 ```
 
-## 4. Aplicar exclusivamente `0036`
+## 4. Aplicar exclusivamente `0037`
 
 Volver a listar. La tabla debe mostrar una única fila:
 
 ```text
-0036_passkey_security_metadata.sql
+0037_webauthn_authentication.sql
 ```
 
 Sólo entonces:
@@ -139,13 +143,14 @@ Sólo entonces:
 ```powershell
 pnpm --filter server exec wrangler d1 migrations apply GATOPAGO_DB --remote
 pnpm --filter server exec wrangler d1 migrations list GATOPAGO_DB --remote
-pnpm --filter server exec wrangler d1 execute GATOPAGO_DB --remote --command "SELECT name FROM d1_migrations WHERE name = '0036_passkey_security_metadata.sql';"
+pnpm --filter server exec wrangler d1 execute GATOPAGO_DB --remote --command "SELECT name FROM d1_migrations WHERE name = '0037_webauthn_authentication.sql';"
 node scripts/assert-app-remote-migrations.mjs
 ```
 
-La lista de pendientes debe quedar vacía, el `SELECT` debe devolver `0036` y el
-guard debe comprobar además las 13 columnas, 6 restricciones `CHECK` y el índice
-parcial de Passkey v2. No ejecutar SQL manual ni migraciones Payments.
+La lista de pendientes debe quedar vacía, el `SELECT` debe devolver `0037` y el
+guard debe comprobar la tabla/challenges, `passkeys.sign_count`, su restricción
+no negativa y los dos índices de autenticación. No ejecutar SQL manual ni
+migraciones Payments.
 
 ## 5. Desplegar sólo App Worker y App Web
 
@@ -154,7 +159,7 @@ Primero el Worker mediante su único entrypoint guardado:
 ```powershell
 $releaseSha = git rev-parse HEAD
 pnpm --filter server run deploy --dry-run
-pnpm --filter server run deploy --keep-vars --strict --message "phase3 passkey-v2 $releaseSha"
+pnpm --filter server run deploy --keep-vars --strict --message "phase3 passkey-v2.1 $releaseSha"
 ```
 
 La cadena de deploy exige fuente publicada, configuración WebAuthn estable,
@@ -181,8 +186,8 @@ pnpm preflight:phase3-app:remote --json
 
 Todos los checks deben quedar `ready`. En particular:
 
-- `app-migration-0035` y `app-migration-0036`;
-- `app-passkey-schema-0036`;
+- `app-migration-0035`, `app-migration-0036` y `app-migration-0037`;
+- `app-passkey-schema-0037`;
 - `app-webauthn-bindings` en cada versión con tráfico;
 - health, App pública, CSP, Email Link, Vercel y Firebase.
 
@@ -233,7 +238,7 @@ $vercelCli = Join-Path $env:APPDATA 'npm\node_modules\vercel\dist\vc.js'
 node $vercelCli rollback <DEPLOYMENT_ANTERIOR> --yes --scope danelerrs-projects --no-color
 ```
 
-`0036` es aditiva y no se revierte a ciegas; el código anterior puede convivir
+`0037` es aditiva y no se revierte a ciegas; el código anterior puede convivir
 con sus columnas. Ante daño de datos se detienen escrituras y se activa el
 procedimiento de incidente con Time Travel o backup cifrado.
 
@@ -246,7 +251,7 @@ Passkey Security v2 sólo queda promovido cuando existe evidencia de:
 
 - commit publicado y CI/security verdes;
 - backup cifrado y restore drill;
-- `0036` aplicada y cero migraciones App pendientes;
+- `0037` aplicada y cero migraciones App pendientes;
 - versiones Worker/Web y rollback identificados;
 - preflight remoto completamente verde, incluidos ambos bindings WebAuthn;
 - UX de Seguridad y retorno same-origin verificados en producción;

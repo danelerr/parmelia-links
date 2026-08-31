@@ -6,6 +6,7 @@ import {
 	buildUserOperationSigningPayload,
 	isCompletePasskeyInventory,
 	matchOnchainSigner,
+	passkeySignerActivity,
 	maximumSelfFundedUserOpCost,
 	normalizeLowS,
 	serializeBigInts,
@@ -165,6 +166,21 @@ describe("matchOnchainSigner", () => {
 	it("returns null for malformed key coordinates", () => {
 		const onchain = [signer(OLD_VERIFIER, QX, QY)];
 		expect(matchOnchainSigner(onchain, "0x1234" as Hex, QY)).toBeNull();
+	});
+});
+
+describe("passkeySignerActivity", () => {
+	const verifier = "0xb7fa10dee75042d6973676a7d7882e4621b806d6";
+	const activeQx = ("0x" + "11".repeat(32)) as Hex;
+	const inactiveQx = ("0x" + "33".repeat(32)) as Hex;
+	const qy = ("0x" + "22".repeat(32)) as Hex;
+	const signer = (verifier + activeQx.slice(2) + qy.slice(2)) as Hex;
+
+	it("marks each stored credential from its actual on-chain signer match", () => {
+		expect(passkeySignerActivity([signer], [
+			{ qx: activeQx, qy },
+			{ qx: inactiveQx, qy },
+		])).toEqual([true, false]);
 	});
 });
 

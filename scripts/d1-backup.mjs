@@ -348,8 +348,8 @@ async function runDrill() {
     const securityEvidence = queryLocal(sourceDir, APP_D1_SECURITY_EVIDENCE_QUERY);
     assertPasskeySecuritySchemaEvidence(securityEvidence);
     if (!appliedMigrationNamesFromEvidence(securityEvidence)
-      .includes("0036_passkey_security_metadata.sql")) {
-      throw new Error("D1 restore drill did not apply Passkey Security migration 0036");
+		.includes("0037_webauthn_authentication.sql")) {
+		throw new Error("D1 restore drill did not apply Passkey Security migration 0037");
     }
     wrangler([
       "d1",

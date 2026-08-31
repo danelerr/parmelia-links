@@ -63,6 +63,7 @@ function App() {
 	const [loading, setLoading] = useState(true);
 	const [hasWallet, setHasWallet] = useState<boolean | null>(null);
 	const walletCheckRunRef = useRef(0);
+	const authUidRef = useRef<string | null | undefined>(undefined);
 	const [walletCheckFailed, setWalletCheckFailed] = useState(false);
 
 	const checkWallet = async (currentUser: User) => {
@@ -143,6 +144,12 @@ function App() {
 
 	useEffect(() => {
 		const unsub = onAuthChange((nextUser) => {
+			const nextUid = nextUser?.uid ?? null;
+			// React StrictMode subscribes twice in development and Firebase immediately
+			// replays the current user to each subscription. Treat same-UID replays as
+			// one auth transition so they cannot duplicate the /home bootstrap.
+			if (authUidRef.current !== undefined && authUidRef.current === nextUid) return;
+			authUidRef.current = nextUid;
 			walletCheckRunRef.current++;
 			setUser(nextUser);
 
@@ -175,11 +182,11 @@ function App() {
 		}
 
 		if (!user) {
-			return <Navigate to="/login" />;
+			return <Navigate to="/login" replace />;
 		}
 
 		if (hasWallet === false) {
-			return <Navigate to="/onboarding" />;
+			return <Navigate to="/onboarding" replace />;
 		}
 
 		if (hasWallet === true) {
@@ -195,11 +202,11 @@ function App() {
 		}
 
 		if (!user) {
-			return <Navigate to="/login" />;
+			return <Navigate to="/login" replace />;
 		}
 
 		if (hasWallet === true) {
-			return <Navigate to="/" />;
+			return <Navigate to="/" replace />;
 		}
 
 		if (hasWallet === false) {
@@ -219,7 +226,7 @@ function App() {
 			return splash;
 		}
 		if (user) {
-			return <Navigate to="/" />;
+			return <Navigate to="/" replace />;
 		}
 		return <Login />;
 	}

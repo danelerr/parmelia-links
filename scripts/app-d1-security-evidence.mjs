@@ -1,4 +1,5 @@
 const passkeyColumns = [
+	["passkeys", "sign_count", "INTEGER"],
 	["webauthn_registration_challenges", "expected_rp_id", "TEXT"],
 	["webauthn_registration_challenges", "aaguid", "TEXT"],
 	["webauthn_registration_challenges", "provider_name", "TEXT"],
@@ -14,7 +15,13 @@ const passkeyColumns = [
 	["passkeys", "metadata_updated_at", "TEXT"],
 ];
 
+const passkeyTables = [
+	["webauthn_authentication_challenges",
+		"createtablewebauthn_authentication_challenges(idtextprimarykey,uidtextnotnull,challengetextnotnull,expected_origintextnotnull,expected_rp_idtextnotnull,consumed_attext,expires_attextnotnull,created_attextnotnull)strict"],
+];
+
 const passkeyConstraints = [
+	["passkeys", "sign_count.non_negative", "check(sign_count>=0)"],
 	["webauthn_registration_challenges", "credential_device_type.allowed",
 		"check(credential_device_typeisnullorcredential_device_typein('singledevice','multidevice'))"],
 	["webauthn_registration_challenges", "credential_backed_up.allowed",
@@ -30,6 +37,10 @@ const passkeyConstraints = [
 ];
 
 const passkeyIndexes = [
+	["idx_webauthn_authentication_active", "webauthn_authentication_challenges",
+		"createindexidx_webauthn_authentication_activeonwebauthn_authentication_challenges(uid,created_atdesc)whereconsumed_atisnull"],
+	["idx_webauthn_authentication_expiry", "webauthn_authentication_challenges",
+		"createindexidx_webauthn_authentication_expiryonwebauthn_authentication_challenges(expires_at)"],
 	["idx_passkeys_uid_rp_active", "passkeys",
 		"createindexidx_passkeys_uid_rp_activeonpasskeys(uid,rp_id,last_used_atdesc)whererevoked_atisnull"],
 ];
@@ -58,6 +69,8 @@ function evidenceValue(kind, item, table, column, type, expectedSql) {
 }
 
 const expectedEvidenceValues = [
+	...passkeyTables.map(([table, expectedSql]) =>
+		evidenceValue("table", table, table, null, null, expectedSql)),
 	...passkeyColumns.map(([table, column, type]) =>
 		evidenceValue("column", `${table}.${column}`, table, column, type, null)),
 	...passkeyConstraints.map(([table, label, expectedSql]) =>
@@ -73,6 +86,9 @@ export const APP_D1_SECURITY_EVIDENCE_QUERY = [
 	"SELECT 'migration', name, 1 FROM d1_migrations",
 	"UNION ALL",
 	"SELECT expected.kind, expected.item, CASE",
+	"WHEN expected.kind = 'table' THEN EXISTS(",
+	"SELECT 1 FROM sqlite_schema AS schema_entry",
+	`WHERE schema_entry.type = 'table' AND schema_entry.name = expected.table_name AND instr(${normalizedSchemaSql("schema_entry.sql")}, expected.expected_sql) > 0)`,
 	"WHEN expected.kind = 'column' AND expected.table_name = 'passkeys' THEN EXISTS(",
 	"SELECT 1 FROM pragma_table_info('passkeys') AS column_info",
 	"WHERE column_info.name = expected.column_name AND upper(column_info.type) = expected.expected_type)",
@@ -90,6 +106,7 @@ export const APP_D1_SECURITY_EVIDENCE_QUERY = [
 ].join(" ");
 
 export const PASSKEY_SECURITY_SCHEMA_EVIDENCE = Object.freeze([
+	...passkeyTables.map(([table]) => Object.freeze({ kind: "table", item: table })),
 	...passkeyColumns.map(([table, column]) => Object.freeze({
 		kind: "column",
 		item: `${table}.${column}`,

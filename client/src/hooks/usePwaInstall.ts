@@ -7,6 +7,7 @@ import {
 
 const serverSnapshot = {
 	showInstall: false,
+	isInstalled: false,
 	isIos: false,
 };
 

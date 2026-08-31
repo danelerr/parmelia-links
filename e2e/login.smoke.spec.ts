@@ -222,6 +222,81 @@ test("a remembered magic link is consumed by Firebase and leaves the action URL"
 	expect(new URL(page.url()).search).toBe("");
 });
 
+test("an idle Home does not poll stale balances every ten seconds or preload other screens", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Consumer App Home flow");
+	const uid = "e2e-idle-home-user";
+	let homeCalls = 0;
+	let balanceCalls = 0;
+	let contactCalls = 0;
+	await mockFirebaseEmailLinkCompletion(page, {
+		email: "idle-home@example.com",
+		oobCode: "e2e-idle-home",
+		uid,
+	});
+	await page.route("**/home", (route) => {
+		homeCalls += 1;
+		return route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			headers: { ETag: '"idle-home"' },
+			body: JSON.stringify({
+				schemaVersion: 1,
+				identity: { uid, username: "idle", displayName: null, socialUrl: null },
+				account: {
+					walletAddress: "0x00000000000000000000000000000000000000aa",
+					chainId: 421614,
+					chainKey: "arbitrum-sepolia",
+					networkName: "Arbitrum Sepolia",
+				},
+				balance: {
+					tokens: { USDC: "0" },
+					savings: "0",
+					status: "stale",
+					observedAt: new Date().toISOString(),
+					consistentThroughBlock: "1",
+					refreshing: true,
+					assets: {},
+				},
+				security: { status: "fresh", hasRegisteredPasskey: true },
+				activity: { status: "fresh", sent: [], received: [], source: "ledger" },
+				operations: { status: "fresh", payments: [], account: [] },
+				alerts: [],
+				stateVersion: "idle-home",
+				observedAt: new Date().toISOString(),
+				consistentThroughBlock: "1",
+			}),
+		});
+	});
+	await page.route("**/user/balance", (route) => {
+		balanceCalls += 1;
+		return route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+	});
+	await page.route("**/contacts", (route) => {
+		contactCalls += 1;
+		return route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+	});
+
+	await openLogin(page, testInfo);
+	await page.evaluate(() => localStorage.setItem("gatopago:firebase-email-link:v1", JSON.stringify({
+		email: "idle-home@example.com",
+		purpose: "signin",
+		requestedAt: Date.now(),
+	})));
+	const continueUrl = encodeURIComponent("https://app.parmelia.me/login?flow=signin");
+	await page.goto(`/login?mode=signIn&oobCode=e2e-idle-home&apiKey=e2e-key&continueUrl=${continueUrl}`);
+	await expect(page).toHaveURL(/\/$/u, { timeout: 10_000 });
+	await expect.poll(() => homeCalls).toBeGreaterThanOrEqual(1);
+	// Magic-link completion sanitizes the URL with a full-page hand-off. A fetch
+	// from the departing document may be aborted while the destination starts its
+	// own bootstrap, so establish the idle baseline only after that hand-off.
+	await page.waitForTimeout(1_000);
+	const idleBaseline = homeCalls;
+	await page.waitForTimeout(11_000);
+	expect(homeCalls).toBe(idleBaseline);
+	expect(balanceCalls).toBe(0);
+	expect(contactCalls).toBe(0);
+});
+
 test("a transient Firebase failure can retry the same unconsumed magic link", async ({ page }, testInfo) => {
 	test.skip(testInfo.project.name.startsWith("dashboard"), "Consumer App magic-link flow");
 	const attempts = await mockFirebaseEmailLinkCompletion(page, {

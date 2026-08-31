@@ -11,10 +11,12 @@ import { useLocation } from "react-router";
 import type { User } from "../lib/firebase";
 import { apiFetch } from "../lib/api";
 import {
+	createPasskeyAvailabilityAssertion,
 	createPasskey,
-	hasUsableKeyForSigners,
+	PasskeyAlreadyOnAuthenticatorError,
 	rememberPasskey,
 	signWithPasskey,
+	type PasskeyAuthenticationChallenge,
 	type PasskeyCreationMode,
 	type PasskeyRegistrationChallenge,
 } from "../lib/webauthn";
@@ -22,7 +24,7 @@ import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork } from "../lib/activeNetwork";
 import { formatDate } from "../lib/format";
-import { notifyError, notifySuccess } from "../lib/notify";
+import { isUserCancelled, notifyError, notifySuccess, notifyWarning } from "../lib/notify";
 import Screen from "../components/Screen";
 import BackHeader from "../components/BackHeader";
 import LinkButton from "../components/LinkButton";
@@ -88,6 +90,9 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
 	const [showPasskeyInfo, setShowPasskeyInfo] = useState(false);
 	const [showPasskeyOptions, setShowPasskeyOptions] = useState(false);
+	const [keyAvailability, setKeyAvailability] = useState<
+		"unchecked" | "checking" | "available" | "not-confirmed" | "duplicate"
+	>("unchecked");
 	const fetchStatus = useCallback(
 		() => apiFetch<PasskeyStatusResponse>("/account/passkey", { user }),
 		[user],
@@ -212,9 +217,44 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 				notifySuccess(t("settings.keyPending"), t("settings.keyPendingDesc"));
 			}
 		} catch (err) {
+			if (err instanceof PasskeyAlreadyOnAuthenticatorError) {
+				setKeyAvailability("duplicate");
+				notifyWarning(
+					t("security.keyAlreadyHereTitle"),
+					t("security.keyAlreadyHereBody"),
+				);
+				return;
+			}
 			notifyError(err, t("settings.keyAddError"));
 		} finally {
 			setUpdatingPasskey(false);
+		}
+	}
+
+	async function handleCheckPasskey() {
+		if (keyAvailability === "checking") return;
+		setKeyAvailability("checking");
+		try {
+			const preflight = await apiFetch<PasskeyAuthenticationChallenge>(
+				"/account/passkey/availability/preflight",
+				{ user, body: {} },
+			);
+			const assertion = await createPasskeyAvailabilityAssertion(preflight);
+			const verified = await apiFetch<{ available: true; credentialId: string; name: string | null }>(
+				"/account/passkey/availability/verify",
+				{ user, body: assertion },
+			);
+			if (!verified.available) throw new Error(t("security.keyCheckFailedBody"));
+			setKeyAvailability("available");
+			await refresh();
+			notifySuccess(t("security.keyAvailableTitle"), t("security.keyAvailableBody"));
+		} catch (error) {
+			setKeyAvailability("not-confirmed");
+			if (isUserCancelled(error)) {
+				notifyWarning(t("security.keyCheckCancelledTitle"), t("security.keyCheckCancelledBody"));
+				return;
+			}
+			notifyError(error, t("security.keyCheckFailedTitle"));
 		}
 	}
 
@@ -285,12 +325,6 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		status?.signerCount !== null &&
 		status?.threshold !== null &&
 		(status?.signerCount ?? 0) >= (status?.threshold ?? 1);
-	const deviceMissingKey =
-		chainAvailable &&
-		!!status?.signers &&
-		status.signers.length > 0 &&
-		!hasUsableKeyForSigners(status.signers) &&
-		!status.recoveryPending;
 	const canAddPasskey = statusLoaded && status.hasWallet && chainAvailable;
 	const addPasskeyHelp = !statusLoaded
 		? t("security.addKeyStatusUnavailable")
@@ -391,17 +425,45 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 						</div>
 
 						<div className="p-5">
-							{deviceMissingKey ? (
-							<div className="mb-4 border-2 border-danger bg-danger/10 p-3.5">
-								<p className="text-[13px] leading-relaxed text-danger">
-									{t("settings.deviceNoKey")}
+							{chainAvailable && (keyCount ?? 0) > 0 ? (
+							<div
+								className={`mb-4 border-2 p-3.5 ${keyAvailability === "available"
+									? "border-growth bg-growth/10"
+									: keyAvailability === "not-confirmed"
+										? "border-pending bg-pending/10"
+										: "border-info bg-info/8"}`}
+								role="status"
+							>
+								<p className="font-display text-[13px] leading-relaxed">
+									{keyAvailability === "available"
+										? t("security.keyAvailableTitle")
+										: keyAvailability === "duplicate"
+											? t("security.keyAlreadyHereTitle")
+											: keyAvailability === "not-confirmed"
+												? t("security.keyNotConfirmedTitle")
+												: t("security.keyAvailabilityTitle")}
 								</p>
-								<a
-									href="#security-recovery"
-									className="mt-1.5 inline-block text-[13px] text-danger underline underline-offset-2"
+								<p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+									{keyAvailability === "available"
+										? t("security.keyAvailableBody")
+										: keyAvailability === "duplicate"
+											? t("security.keyAlreadyHereBody")
+											: keyAvailability === "not-confirmed"
+												? t("security.keyNotConfirmedBody")
+												: t("security.keyAvailabilityBody")}
+								</p>
+								<button
+									type="button"
+									onClick={() => void handleCheckPasskey()}
+									disabled={keyAvailability === "checking"}
+									className="btn btn-ghost mt-3 min-h-10 px-4 text-[12px]"
 								>
-									{t("recover.reviewOptions")}
-								</a>
+									{keyAvailability === "checking"
+										? t("security.checkingKey")
+										: keyAvailability === "available"
+											? t("security.checkKeyAgain")
+											: t("security.checkThisDevice")}
+								</button>
 							</div>
 							) : null}
 
@@ -458,6 +520,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							threshold={status?.threshold ?? null}
 							chainAvailable={chainAvailable}
 							verificationUnavailable={keyVerificationUnavailable}
+							credentialInventoryComplete={status?.credentialInventoryComplete === true}
 							busyId={busyKeyId}
 							onRename={handleRenamePasskey}
 							onRemove={handleRemovePasskey}

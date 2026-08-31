@@ -45,6 +45,69 @@ test("Home and Move keep the Meli UI geometry", async ({ page }, testInfo) => {
 	await expectNoWcagViolations(page);
 });
 
+test("Home keeps Security directly accessible from the account menu", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo);
+
+	await page.getByRole("button", { name: /Abrir menú|Open menu/i }).click();
+	const securityLink = page.getByRole("link", { name: /^(Seguridad|Security)$/i });
+	await expect(securityLink).toBeVisible();
+	await expect(securityLink).toHaveAttribute("href", "/settings/security");
+	await expectNoWcagViolations(page);
+});
+
+test("Home launches the native PWA prompt and then exposes reload", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo);
+	await page.evaluate(() => {
+		const target = window as Window & typeof globalThis & { __pwaPromptCalls?: number };
+		target.__pwaPromptCalls = 0;
+		const installEvent = new Event("beforeinstallprompt", { cancelable: true });
+		Object.defineProperties(installEvent, {
+			prompt: {
+				value: async () => {
+					target.__pwaPromptCalls = (target.__pwaPromptCalls ?? 0) + 1;
+				},
+			},
+			userChoice: {
+				value: Promise.resolve({ outcome: "accepted", platform: "web" }),
+			},
+		});
+		window.dispatchEvent(installEvent);
+	});
+
+	await page.getByRole("button", { name: /Instalar GatoPago|Install GatoPago/i }).click();
+	await expect.poll(() => page.evaluate(() => (
+		window as Window & typeof globalThis & { __pwaPromptCalls?: number }
+	).__pwaPromptCalls)).toBe(1);
+	await expect(page.getByRole("button", { name: /Recargar GatoPago|Reload GatoPago/i })).toBeVisible();
+});
+
+test("an installed PWA keeps a working reload control", async ({ page }, testInfo) => {
+	await page.addInitScript(() => {
+		const nativeMatchMedia = window.matchMedia.bind(window);
+		window.matchMedia = ((query: string) => {
+			if (query !== "(display-mode: standalone)") return nativeMatchMedia(query);
+			return {
+				matches: true,
+				media: query,
+				onchange: null,
+				addListener: () => undefined,
+				removeListener: () => undefined,
+				addEventListener: () => undefined,
+				removeEventListener: () => undefined,
+				dispatchEvent: () => true,
+			} as MediaQueryList;
+		}) as typeof window.matchMedia;
+	});
+	await openPreview(page, testInfo);
+
+	const reload = page.getByRole("button", { name: /Recargar GatoPago|Reload GatoPago/i });
+	await expect(reload).toBeVisible();
+	const loaded = page.waitForEvent("domcontentloaded");
+	await reload.click();
+	await loaded;
+	await expect(page.getByRole("button", { name: /Recargar GatoPago|Reload GatoPago/i })).toBeVisible();
+});
+
 test("Meli dialogs and buttons use the landing treatment", async ({ page }, testInfo) => {
 	await openPreview(page, testInfo, "dialog");
 
@@ -161,6 +224,23 @@ test("settings is the single entry point for keys and recovery", async ({ page }
 	await expectNoWcagViolations(page);
 });
 
+test("back navigation replaces its parent and cannot bounce through route guards", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "settings");
+	let historyLength = await page.evaluate(() => window.history.length);
+
+	await page.getByRole("button", { name: /Atrás|Back/i }).click();
+	await expect(page).toHaveURL(/\/login$/u);
+	await expect.poll(() => page.evaluate(() => window.history.length)).toBe(historyLength);
+	await page.waitForTimeout(250);
+	await expect(page).toHaveURL(/\/login$/u);
+
+	await openPreview(page, testInfo, "security");
+	historyLength = await page.evaluate(() => window.history.length);
+	await page.getByRole("link", { name: /^(Atrás|Back)$/i }).click();
+	await expect(page).toHaveURL(/\/login$/u);
+	await expect.poll(() => page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
 test("a missing signing key guides money flows to Settings instead of Recovery", async ({ page }, testInfo) => {
 	await openPreview(page, testInfo, "passkey-guidance");
 	await page.getByRole("button", { name: "Trigger passkey guidance" }).click();
@@ -187,6 +267,32 @@ test("security explains why the last active key cannot be removed", async ({ pag
 	const removeButton = page.getByRole("button", { name: /Quitar|Remove/i });
 	await expect(removeButton).toBeDisabled();
 	await expect(page.getByText(/última llave activa|last active key/i)).toBeVisible();
+	await expectNoWcagViolations(page);
+});
+
+test("security never claims a synced passkey is missing from local browser metadata", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security");
+
+	await expect(page.getByText(/No encontramos una llave guardada|did not find a key saved/i)).toHaveCount(0);
+	await expect(page.getByRole("button", { name: /Comprobar una llave|Check a key/i })).toBeVisible();
+	await expect(page.getByText(/navegador no permite saber|browser cannot reveal/i)).toBeVisible();
+	await expectNoWcagViolations(page);
+});
+
+test("security can remove keys across the previous Worker response during an atomic rollout", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security-compat");
+
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i })).toHaveCount(2);
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).first()).toBeEnabled();
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).nth(1)).toBeEnabled();
+});
+
+test("security never offers an onchain removal for an inactive registry credential", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo, "security-inactive-key");
+
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).first()).toBeDisabled();
+	await expect(page.getByText(/ya no es una llave activa|no longer an active account key/i)).toBeVisible();
+	await expect(page.getByRole("button", { name: /Quitar|Remove/i }).nth(1)).toBeEnabled();
 	await expectNoWcagViolations(page);
 });
 
@@ -331,6 +437,39 @@ test("security requests the intended WebAuthn authenticator for each creation op
 		};
 	});
 	expect(selection).toEqual({ attachment: "cross-platform", hints: ["security-key"], exclusions: 1 });
+});
+
+test("security explains a duplicate authenticator instead of exposing InvalidStateError", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
+	let finalizeCalls = 0;
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator.credentials, "create", {
+			configurable: true,
+			value: async () => {
+				throw new DOMException("The object is in an invalid state", "InvalidStateError");
+			},
+		});
+	});
+	await page.route("**/account/passkey/registration/preflight", (route) => route.fulfill({
+		status: 201,
+		contentType: "application/json",
+		body: JSON.stringify({
+			registrationId: "duplicate-registration",
+			challenge: "AQIDBAUGBwgJCgsMDQ4PEA",
+			rpId: "127.0.0.1",
+			excludeCredentials: [{ id: "cHJldmlldy1wcmltYXJ5LWtleQ", transports: ["internal"] }],
+		}),
+	}));
+	await page.route("**/account/passkey", (route) => {
+		if (route.request().method() === "PUT") finalizeCalls += 1;
+		return route.continue();
+	});
+	await openPreview(page, testInfo, "security");
+
+	await page.getByRole("button", { name: /Agregar passkey de respaldo|Add a backup passkey/i }).click();
+	await expect(page.getByText(/gestor ya (?:tiene|protege) una llave (?:de esta|de la) cuenta|manager already (?:has|protects) (?:a|an) account key/i).first()).toBeVisible();
+	await expect(page.getByText(/invalid state/i)).toHaveCount(0);
+	expect(finalizeCalls).toBe(0);
 });
 
 test("security keeps failed rename and removal actions open for retry", async ({ page }, testInfo) => {

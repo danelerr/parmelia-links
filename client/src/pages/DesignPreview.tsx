@@ -57,6 +57,7 @@ const previewSecurityStatus: PasskeyStatusResponse = {
 			createdAt: now,
 			lastUsedAt: now,
 			currentHint: true,
+			activeSigner: true,
 		},
 		{
 			credentialId: "preview-backup-key",
@@ -73,6 +74,7 @@ const previewSecurityStatus: PasskeyStatusResponse = {
 			createdAt: now,
 			lastUsedAt: now,
 			currentHint: false,
+			activeSigner: true,
 		},
 	],
 };
@@ -190,6 +192,34 @@ export default function DesignPreview() {
 					...previewSecurityStatus,
 					signerCount: 1,
 					passkeys: previewSecurityStatus.passkeys.slice(0, 1),
+				}}
+			/>
+		);
+	}
+	if (view === "security-inactive-key") {
+		return (
+			<Security
+				user={previewUser}
+				previewStatus={{
+					...previewSecurityStatus,
+					passkeys: previewSecurityStatus.passkeys.map((passkey, index) => ({
+						...passkey,
+						activeSigner: index === 0 ? false : passkey.activeSigner,
+					})),
+				}}
+			/>
+		);
+	}
+	if (view === "security-compat") {
+		return (
+			<Security
+				user={previewUser}
+				previewStatus={{
+					...previewSecurityStatus,
+					passkeys: previewSecurityStatus.passkeys.map((passkey) => ({
+						...passkey,
+						activeSigner: undefined,
+					})),
 				}}
 			/>
 		);

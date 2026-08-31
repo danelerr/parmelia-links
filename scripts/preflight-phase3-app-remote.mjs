@@ -15,6 +15,7 @@ const wranglerCli = resolve(serverDirectory, "node_modules", "wrangler", "bin", 
 const expectedMigrations = [
 	"0035_firebase_email_links.sql",
 	"0036_passkey_security_metadata.sql",
+	"0037_webauthn_authentication.sql",
 ];
 const expectedFirebaseProject = "proyecto-prueba-push-firebase";
 const checks = [];
@@ -217,11 +218,11 @@ async function main() {
 	}
 	const missingPasskeySchema = missingPasskeySecuritySchemaEvidence(d1Evidence);
 	record(
-		"app-passkey-schema-0036",
+		"app-passkey-schema-0037",
 		missingPasskeySchema.length === 0,
 		missingPasskeySchema.length === 0
-			? "Passkey Security v2 columns, constraints and partial index are present"
-			: `Passkey Security v2 schema evidence is missing: ${missingPasskeySchema.join(", ")}`,
+			? "Passkey Security schema through 0037 is present"
+			: `Passkey Security schema through 0037 is missing: ${missingPasskeySchema.join(", ")}`,
 	);
 
 	const deploymentResult = runWrangler([

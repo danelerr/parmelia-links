@@ -14,6 +14,7 @@ const forbidden = [
 	/\.readContract\s*\(/u,
 	/\.getBalance\s*\(/u,
 	/\beth_(?:call|getLogs|getBalance)\b/u,
+	/\bscheduleWalletIndexerPartitions\b/u,
 ];
 
 for (const relative of files) {
@@ -25,6 +26,16 @@ for (const relative of files) {
 			);
 		}
 	}
+}
+
+const hookSource = await readFile(
+	resolve(root, "client/src/hooks/useHomeModel.ts"),
+	"utf8",
+);
+if (/latest\.balance\.(?:refreshing|status)/u.test(hookSource)) {
+	throw new Error(
+		"Home polling must not accelerate merely because the balance projection is stale",
+	);
 }
 
 process.stdout.write("Home read path has no RPC imports or calls.\n");

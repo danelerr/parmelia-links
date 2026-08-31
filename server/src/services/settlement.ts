@@ -27,6 +27,7 @@ import {
 	getUserByWallet,
 	listDuePaymentReconcileRequests,
 	markPasskeyRevoked,
+	repairPasskeyHintAfterRemoval,
 	releasePaymentLinkClaim,
 	reschedulePaymentReconcileRequest,
 	savePasskey,
@@ -279,6 +280,10 @@ export async function settlePayment(
 			throw new Error("Confirmed passkey removal is missing credential metadata");
 		}
 		await markPasskeyRevoked(env, { uid, credentialId, revokedAt: createdAt });
+		await repairPasskeyHintAfterRemoval(env, {
+			uid,
+			removedCredentialId: credentialId,
+		});
 	} else if (pending.currency === "CROSSCHAIN") {
 		const meta = pending.meta ?? {};
 		const opId = typeof meta.opId === "string" ? meta.opId : null;

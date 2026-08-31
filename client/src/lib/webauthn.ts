@@ -25,6 +25,20 @@ export type PasskeyRegistrationChallenge = {
 	name?: string;
 };
 
+export type PasskeyAuthenticationChallenge = {
+	authenticationId: string;
+	challenge: string;
+	rpId: string;
+	allowCredentials: Array<{ id: string; transports?: string[] }>;
+};
+
+export class PasskeyAlreadyOnAuthenticatorError extends Error {
+	constructor() {
+		super(i18n.t("webauthn.alreadyOnAuthenticator"));
+		this.name = "PasskeyAlreadyOnAuthenticatorError";
+	}
+}
+
 function bufferToBase64url(buffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(buffer);
 	let str = "";
@@ -94,29 +108,6 @@ export function hasRememberedPasskeyHint(credentialId?: string | null): boolean 
 	const remembered = readRememberedPasskeys();
 	if (credentialId) return Boolean(remembered[credentialId]);
 	return Object.keys(remembered).length > 0;
-}
-
-/**
- * Whether any passkey remembered on this device is a REGISTERED signer of the
- * account. Signers are ERC-7913 bytes (verifier(20) || qx(32) || qy(32)), so
- * matching by qx||qy suffix works across verifier redeploys. Precise where
- * "has any remembered passkey" is not: orphan credentials (created but never
- * registered on-chain) don't count. Still a heuristic for ABSENCE - synced
- * passkeys can sign without a local hint - so use it only to SUGGEST recovery,
- * never to block.
- */
-export function hasUsableKeyForSigners(signers: readonly string[]): boolean {
-	const remembered = Object.values(readRememberedPasskeys());
-	if (remembered.length === 0 || signers.length === 0) return false;
-	return remembered.some((passkey) => {
-		const suffix = (
-			passkey.qx.replace(/^0x/, "") + passkey.qy.replace(/^0x/, "")
-		).toLowerCase();
-		if (suffix.length !== 128) return false;
-		return signers.some(
-			(signer) => typeof signer === "string" && signer.toLowerCase().endsWith(suffix),
-		);
-	});
 }
 
 export function rememberPasskey(passkey: { credentialId: string; qx: string; qy: string; rpId?: string }) {
@@ -239,9 +230,20 @@ export async function createPasskey(
 		hints: [mode === "security-key" ? "security-key" : "client-device"],
 	};
 
-	const credential = (await navigator.credentials.create({
-		publicKey,
-	})) as PublicKeyCredential | null;
+	let credential: PublicKeyCredential | null;
+	try {
+		credential = (await navigator.credentials.create({
+			publicKey,
+		})) as PublicKeyCredential | null;
+	} catch (error) {
+		if (error instanceof DOMException && error.name === "InvalidStateError") {
+			// WebAuthn returns InvalidStateError when this authenticator already
+			// contains one of the account credentials in excludeCredentials. That is
+			// a safe duplicate-prevention result, not an internal application error.
+			throw new PasskeyAlreadyOnAuthenticatorError();
+		}
+		throw error;
+	}
 
 	if (!credential) throw new Error(i18n.t("webauthn.createError"));
 
@@ -269,6 +271,83 @@ export async function createPasskey(
 		rpId,
 		creationMode: mode,
 		...(registration.name ? { name: registration.name } : {}),
+	};
+}
+
+/**
+ * Ask the current browser/passkey manager to prove it can use one of the
+ * account's active credentials. The Worker verifies the returned assertion;
+ * this is deliberately separate from local remembered metadata.
+ */
+export async function createPasskeyAvailabilityAssertion(
+	authentication: PasskeyAuthenticationChallenge,
+): Promise<{
+	authenticationId: string;
+	id: string;
+	rawId: string;
+	type: "public-key";
+	response: {
+		clientDataJSON: string;
+		authenticatorData: string;
+		signature: string;
+		userHandle?: string;
+	};
+	clientExtensionResults: AuthenticationExtensionsClientOutputs;
+	authenticatorAttachment?: AuthenticatorAttachment;
+}> {
+	if (
+		!authentication.authenticationId ||
+		!authentication.challenge ||
+		!authentication.rpId ||
+		authentication.allowCredentials.length === 0
+	) {
+		throw new Error(i18n.t("webauthn.authenticationExpired"));
+	}
+	const transportValues = new Set<AuthenticatorTransport>([
+		"ble",
+		"hybrid",
+		"internal",
+		"nfc",
+		"usb",
+	]);
+	const credential = await navigator.credentials.get({
+		publicKey: {
+			challenge: base64urlToBuffer(authentication.challenge),
+			rpId: assertRpIdForCurrentOrigin(authentication.rpId),
+			allowCredentials: authentication.allowCredentials.map((entry) => ({
+				id: base64urlToBuffer(entry.id),
+				type: "public-key" as const,
+				transports: entry.transports
+					?.filter((transport): transport is AuthenticatorTransport =>
+						transportValues.has(transport as AuthenticatorTransport),
+					),
+			})),
+			userVerification: "required",
+			timeout: 60_000,
+		},
+	}) as PublicKeyCredential | null;
+	if (!credential) throw new Error(i18n.t("webauthn.cancelled"));
+
+	const response = credential.response as AuthenticatorAssertionResponse;
+	const attachment = credential.authenticatorAttachment === "platform" ||
+		credential.authenticatorAttachment === "cross-platform"
+		? credential.authenticatorAttachment
+		: undefined;
+	return {
+		authenticationId: authentication.authenticationId,
+		id: bufferToBase64url(credential.rawId),
+		rawId: bufferToBase64url(credential.rawId),
+		type: "public-key",
+		response: {
+			clientDataJSON: bufferToBase64url(response.clientDataJSON),
+			authenticatorData: bufferToBase64url(response.authenticatorData),
+			signature: bufferToBase64url(response.signature),
+			...(response.userHandle
+				? { userHandle: bufferToBase64url(response.userHandle) }
+				: {}),
+		},
+		clientExtensionResults: credential.getClientExtensionResults(),
+		...(attachment ? { authenticatorAttachment: attachment } : {}),
 	};
 }
 

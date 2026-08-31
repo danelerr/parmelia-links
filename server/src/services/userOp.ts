@@ -100,6 +100,22 @@ export function matchOnchainSigner(signers: readonly Hex[], qx: Hex, qy: Hex): H
 	return null;
 }
 
+/** Per-row proof used by Security; D1 presence alone never means active signer. */
+export function passkeySignerActivity(
+	signers: readonly Hex[],
+	passkeys: readonly { qx: string; qy: string }[],
+): boolean[] {
+	return passkeys.map((passkey) =>
+		Boolean(
+			matchOnchainSigner(
+				signers,
+				passkey.qx as Hex,
+				passkey.qy as Hex,
+			),
+		),
+	);
+}
+
 /**
  * Prove that the management inventory is an exact one-to-one view of every
  * active signer before exposing it to destructive browser reconciliation APIs.

@@ -11,6 +11,8 @@ import {
 	getCrosschainOpById,
 	getSyncCursor,
 	listLedgerPageByUid,
+	listPasskeysByUid,
+	markPasskeyVerified,
 	releaseLease,
 	renewLease,
 	setSyncCursor,
@@ -42,6 +44,11 @@ import {
 	validWebAuthnRegistrationOrigin,
 } from "../src/services/webauthnRegistration";
 import {
+	InvalidWebAuthnAuthenticationError,
+	issueWebAuthnAuthentication,
+	verifyWebAuthnAuthentication,
+} from "../src/services/webauthnAuthentication";
+import {
 	__test as emailOtpTest,
 	consumeRecoveryStepUp,
 	emailOtpRateLimitKeys,
@@ -71,7 +78,7 @@ function stubUnavailableRpc(): void {
 	})));
 }
 
-function bytes(...parts: Uint8Array[]): Uint8Array {
+function bytes(...parts: Uint8Array<ArrayBufferLike>[]): Uint8Array<ArrayBuffer> {
 	const total = parts.reduce((sum, part) => sum + part.length, 0);
 	const output = new Uint8Array(total);
 	let offset = 0;
@@ -86,6 +93,23 @@ function base64url(value: Uint8Array): string {
 	let binary = "";
 	for (const byte of value) binary += String.fromCharCode(byte);
 	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+}
+
+function rawP256SignatureToDer(raw: Uint8Array): Uint8Array {
+	const integer = (value: Uint8Array) => {
+		let first = 0;
+		while (first < value.length - 1 && value[first] === 0) first++;
+		const trimmed = value.slice(first);
+		const needsZero = (trimmed[0] & 0x80) !== 0;
+		return bytes(
+			new Uint8Array([0x02, trimmed.length + (needsZero ? 1 : 0)]),
+			needsZero ? new Uint8Array([0]) : new Uint8Array(),
+			trimmed,
+		);
+	};
+	const r = integer(raw.slice(0, 32));
+	const s = integer(raw.slice(32, 64));
+	return bytes(new Uint8Array([0x30, r.length + s.length]), r, s);
 }
 
 function cborBytes(value: Uint8Array): Uint8Array {
@@ -319,6 +343,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0034_sponsorship_observability.sql",
 			"0035_firebase_email_links.sql",
 			"0036_passkey_security_metadata.sql",
+			"0037_webauthn_authentication.sql",
 		]);
 	});
 
@@ -365,6 +390,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"webauthn_registration_challenges",
 			"auth_step_up_sessions",
 			"auth_email_link_challenges",
+			"webauthn_authentication_challenges",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -418,6 +444,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 				"credential_backed_up",
 				"authenticator_attachment",
 				"metadata_updated_at",
+				"sign_count",
 				"revoked_at",
 			]),
 		);
@@ -663,6 +690,96 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		});
 	});
 
+	it("verifies a passkey availability assertion once and rejects replay", async () => {
+		const uid = "runtime-webauthn-authentication-user";
+		const origin = "https://app.parmelia.me";
+		const rpId = "app.parmelia.me";
+		const credentialId = base64url(new TextEncoder().encode("runtime_authentication_credential"));
+		const keyPair = await crypto.subtle.generateKey(
+			{ name: "ECDSA", namedCurve: "P-256" },
+			true,
+			["sign", "verify"],
+		);
+		const rawPublicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+		const qx = `0x${[...rawPublicKey.slice(1, 33)].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+		const qy = `0x${[...rawPublicKey.slice(33, 65)].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+		const now = new Date().toISOString();
+		await env.GATOPAGO_DB.prepare(
+			"INSERT INTO users (uid, credential_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+		).bind(uid, credentialId, now, now).run();
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO passkeys (
+				credential_id, uid, qx, qy, registration_source,
+				transports_json, rp_id, created_at, last_used_at
+			 ) VALUES (?, ?, ?, ?, 'backup', '["internal"]', ?, ?, ?)`,
+		).bind(credentialId, uid, qx, qy, rpId, now, now).run();
+		const [passkey] = await listPasskeysByUid(env, uid);
+		const issued = await issueWebAuthnAuthentication(env, {
+			uid,
+			expectedOrigin: origin,
+			expectedRpId: rpId,
+			activePasskeys: [passkey],
+		});
+		expect(issued.allowCredentials).toEqual([
+			{ id: credentialId, transports: ["internal"] },
+		]);
+
+		const encoder = new TextEncoder();
+		const rpIdHash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(rpId)));
+		const authenticatorData = bytes(
+			rpIdHash,
+			new Uint8Array([0x05, 0, 0, 0, 1]), // UP + UV, counter 1
+		);
+		const clientDataJSON = encoder.encode(JSON.stringify({
+			type: "webauthn.get",
+			challenge: issued.challenge,
+			origin,
+			crossOrigin: false,
+		}));
+		const clientDataHash = new Uint8Array(await crypto.subtle.digest("SHA-256", clientDataJSON));
+		const rawSignature = new Uint8Array(await crypto.subtle.sign(
+			{ name: "ECDSA", hash: "SHA-256" },
+			keyPair.privateKey,
+			bytes(authenticatorData, clientDataHash),
+		));
+		const credential = {
+			authenticationId: issued.authenticationId,
+			id: credentialId,
+			rawId: credentialId,
+			type: "public-key" as const,
+			response: {
+				clientDataJSON: base64url(clientDataJSON),
+				authenticatorData: base64url(authenticatorData),
+				signature: base64url(rawP256SignatureToDer(rawSignature)),
+			},
+			clientExtensionResults: {},
+			authenticatorAttachment: "platform" as const,
+		};
+		const verified = await verifyWebAuthnAuthentication(env, { uid, credential });
+		expect(verified).toMatchObject({
+			newCounter: 1,
+			passkey: { credentialId },
+		});
+		await env.GATOPAGO_DB.prepare(
+			"UPDATE users SET credential_id = 'stale-hint' WHERE uid = ?",
+		).bind(uid).run();
+		expect(await markPasskeyVerified(env, {
+			uid,
+			credentialId,
+			signCount: verified.newCounter,
+		})).toBe(true);
+		const verifiedState = await env.GATOPAGO_DB.prepare(
+			`SELECT p.sign_count, u.credential_id
+			 FROM passkeys p JOIN users u ON u.uid = p.uid
+			 WHERE p.uid = ? AND p.credential_id = ?`,
+		).bind(uid, credentialId).first<{ sign_count: number; credential_id: string }>();
+		expect(verifiedState).toEqual({ sign_count: 1, credential_id: credentialId });
+		await expect(
+			verifyWebAuthnAuthentication(env, { uid, credential }),
+		).rejects.toBeInstanceOf(InvalidWebAuthnAuthenticationError);
+		await env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid).run();
+	});
+
 	it("persists passkey addition and revocation only from confirmed settlement", async () => {
 		const uid = "runtime-passkey-lifecycle";
 		const wallet = "0x1212121212121212121212121212121212121212";
@@ -706,6 +823,22 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			credentialBackedUp: true,
 			authenticatorAttachment: "platform",
 		}), `0x${"81".repeat(32)}`);
+		const fallbackCredentialId = "runtime-passkey-fallback";
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO passkeys (
+				credential_id, uid, qx, qy, registration_source, created_at, last_used_at
+			 ) VALUES (?, ?, ?, ?, 'backup', ?, ?)`,
+		).bind(
+			fallbackCredentialId,
+			uid,
+			`0x${"41".repeat(32)}`,
+			`0x${"42".repeat(32)}`,
+			now,
+			now,
+		).run();
+		await env.GATOPAGO_DB.prepare(
+			"UPDATE users SET credential_id = ? WHERE uid = ?",
+		).bind(credentialId, uid).run();
 		const active = await env.GATOPAGO_DB.prepare(
 			`SELECT name, registration_source, rp_id, aaguid, provider_name,
 			        credential_device_type, credential_backed_up,
@@ -738,6 +871,10 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"SELECT revoked_at FROM passkeys WHERE credential_id = ?",
 		).bind(credentialId).first<{ revoked_at: string | null }>();
 		expect(revoked?.revoked_at).toBeTypeOf("string");
+		const repairedUser = await env.GATOPAGO_DB.prepare(
+			"SELECT credential_id FROM users WHERE uid = ?",
+		).bind(uid).first<{ credential_id: string | null }>();
+		expect(repairedUser?.credential_id).toBe(fallbackCredentialId);
 		await env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid).run();
 	});
 

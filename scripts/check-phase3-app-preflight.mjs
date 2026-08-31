@@ -36,6 +36,11 @@ assert(d1EvidenceSource.includes("pragma_table_info"),
 for (const evidence of [
 	"webauthn_registration_challenges.expected_rp_id",
 	"passkeys.metadata_updated_at",
+	"passkeys.sign_count",
+	"webauthn_authentication_challenges",
+	"passkeys.sign_count.non_negative",
+	"idx_webauthn_authentication_active",
+	"idx_webauthn_authentication_expiry",
 	"webauthn_registration_challenges.credential_device_type.allowed",
 	"webauthn_registration_challenges.credential_backed_up.allowed",
 	"webauthn_registration_challenges.authenticator_attachment.allowed",
@@ -47,8 +52,8 @@ for (const evidence of [
 	assert(PASSKEY_SECURITY_SCHEMA_ITEMS.includes(evidence),
 		`D1 security evidence is incomplete: ${evidence}`);
 }
-assert(source.includes('"app-passkey-schema-0036"'),
-	"Phase 3 App preflight must expose a dedicated Passkey v2 schema gate");
+assert(source.includes('"app-passkey-schema-0037"'),
+	"Phase 3 App preflight must expose a dedicated Passkey schema gate through 0037");
 assert(source.includes('"deployments", "status", "--name", workerName, "--json"'),
 	"Phase 3 App preflight must discover every active Worker version");
 assert(source.includes('"versions", "view", activeVersion.version_id'),

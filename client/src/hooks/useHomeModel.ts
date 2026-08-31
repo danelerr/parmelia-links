@@ -12,7 +12,7 @@ import {
 } from "../lib/homeData";
 
 const INVALIDATION_EVENT = "gatopago:home-invalidate";
-const ACTIVE_REFRESH_MS = 10_000;
+const PENDING_OPERATION_REFRESH_MS = 10_000;
 const SAFETY_REFRESH_BASE_MS = 60_000;
 
 function stableJitter(uid: string): number {
@@ -30,15 +30,18 @@ function homeRefreshInterval(
 	safetyJitter: number,
 ): number {
 	if (!visible || !online) return 0;
-	const active =
-		!latest ||
-		latest.balance.refreshing ||
-		latest.balance.status !== "fresh" ||
-		latest.operations.status !== "fresh" ||
-		latest.operations.payments.length > 0 ||
-		latest.operations.account.length > 0;
-	return active
-		? ACTIVE_REFRESH_MS
+	// Balance repair runs server-side after the first stale read. Polling every
+	// ten seconds while that projection is stale only repeats the same read and
+	// wakes more coordination work. Keep the fast loop solely for operations the
+	// user is actively waiting on; everything else uses the safety refresh plus
+	// focus/reconnect/push invalidations.
+	const hasPendingOperation = Boolean(
+		latest &&
+			(latest.operations.payments.length > 0 ||
+				latest.operations.account.length > 0),
+	);
+	return hasPendingOperation
+		? PENDING_OPERATION_REFRESH_MS
 		: SAFETY_REFRESH_BASE_MS + safetyJitter;
 }
 
@@ -81,7 +84,11 @@ export function useHomeModel(user: User, previewModel?: HomeReadModel) {
 			// Revalidating again on Home mount would duplicate the same /home request.
 			revalidateOnMount: false,
 			revalidateIfStale: true,
-			revalidateOnFocus: true,
+			// Login/PWA hand-offs emit focus events immediately after App.tsx has
+			// already fetched and seeded /home. Revalidating on that focus duplicates
+			// the bootstrap; reconnect, push invalidation and the safety interval are
+			// sufficient freshness signals.
+			revalidateOnFocus: false,
 			revalidateOnReconnect: true,
 			dedupingInterval: 5_000,
 			refreshWhenHidden: false,

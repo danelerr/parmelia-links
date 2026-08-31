@@ -1,6 +1,6 @@
-// The one back-navigation header. Declarative destinations use `to`
-// (LinkButton + view transition); conditional/back-step behavior uses
-// `onClick`. Title is optional (result screens show only the arrow).
+// The one back-navigation header. Back destinations are deterministic: relying
+// on browser history can bounce through auth redirects or aliases forever.
+// Conditional in-page steps still use `onClick`.
 
 import { useTranslation } from "react-i18next";
 import { useViewTransitionNavigate } from "../hooks/useNav";
@@ -17,7 +17,7 @@ export default function BackHeader({
 	className = "mb-7",
 	ariaLabel,
 	fallbackTo = "/",
-	replace = false,
+	replace = true,
 }: {
 	to?: string;
 	onClick?: () => void;
@@ -26,22 +26,16 @@ export default function BackHeader({
 	title?: string;
 	className?: string;
 	ariaLabel?: string;
-	/** Replace history when this is a terminal screen that should not reopen on Back. */
+	/** Back links replace by default so the child cannot be reopened in a loop. */
 	replace?: boolean;
 }) {
 	const { t } = useTranslation();
 	const navigate = useViewTransitionNavigate();
 	const label = ariaLabel ?? t("common.back");
 	const handleBack = onClick ?? (() => {
-		const historyIndex = Number(window.history.state?.idx);
-		if (Number.isFinite(historyIndex) && historyIndex > 0) {
-			navigate(-1);
-		} else {
-			// A direct entry has no in-app page to return to. Replacing instead of
-			// pushing prevents fallback parent/child loops (for example, opening
-			// Binance directly, falling back to Depositar, then returning to Binance).
-			navigate(fallbackTo, { replace: true });
-		}
+		// Replace so repeated taps and redirect aliases cannot build a parent/child
+		// cycle in the history stack.
+		navigate(fallbackTo, { replace: true });
 	});
 	return (
 		<header className={`flex items-center gap-3 ${className}`}>

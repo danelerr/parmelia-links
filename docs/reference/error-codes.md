@@ -122,7 +122,7 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `INTENT_NOT_FOUND` | Payment intent / operación cross-chain inexistente. |
 | `EVENT_NOT_FOUND` | Evento inexistente. *(API `/v1`)* |
 | `OPERATION_NOT_FOUND` | Operación durable de cuenta inexistente. |
-| `PASSKEY_NOT_FOUND` | La passkey no existe o no está activa para la cuenta. |
+| `PASSKEY_NOT_FOUND` | La passkey no existe o no pertenece a la cuenta. |
 | `PENDING_NOT_FOUND` | El UserOp preparado a enviar no existe (expiró o nunca se preparó). |
 | `NO_ROUTE` | No hay ruta de swap para el par. *(En `/swap/prepare` se devuelve como **409** cuando una ruta ya cotizada desapareció.)* |
 
@@ -146,6 +146,8 @@ activo (ver `client/src/locales/{es,en}.json`, sección `err`). Una respuesta si
 | `TX_ALREADY_REGISTERED` | El tx de burn ya está registrado en otra operación cross-chain. |
 | `PAYMENT_IN_PROGRESS` | El mismo pago preparado ya fue enviado (request duplicado; el claim atómico bloquea el doble submit). |
 | `LAST_PASSKEY` | No se puede quitar el último signer WebAuthn activo. |
+| `PASSKEY_NOT_ACTIVE` | La credencial existe en el registro pero no coincide con un signer onchain activo. |
+| `PASSKEY_VERIFICATION_FAILED` | No se pudo confirmar una passkey activa con el challenge WebAuthn vigente. |
 | `PASSKEY_ALREADY_REGISTERED` | El credential ID ya está registrado. |
 
 ### 429 — Too Many Requests

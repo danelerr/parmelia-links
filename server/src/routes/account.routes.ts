@@ -15,6 +15,7 @@ import {
 	getPasskey,
 	getUserByUid,
 	listPasskeysByUid,
+	markPasskeyVerified,
 	rateLimitConsume,
 	renamePasskey,
 } from "../services/storage";
@@ -36,6 +37,7 @@ import {
 	buildSponsoredUserOp,
 	isCompletePasskeyInventory,
 	matchOnchainSigner,
+	passkeySignerActivity,
 	serializeBigInts,
 } from "../services/userOp";
 import { verifyTurnstile } from "../services/turnstile";
@@ -55,6 +57,13 @@ import {
 	type WebAuthnRegistrationCredential,
 	validWebAuthnRegistrationOrigin,
 } from "../services/webauthnRegistration";
+import {
+	deleteExpiredWebAuthnAuthentications,
+	InvalidWebAuthnAuthenticationError,
+	issueWebAuthnAuthentication,
+	type WebAuthnAuthenticationCredential,
+	verifyWebAuthnAuthentication,
+} from "../services/webauthnAuthentication";
 
 const accountRoutes = new Hono<AppContext>();
 
@@ -88,6 +97,37 @@ function registrationCredentialFromBody(
 			? body.transports.filter((item): item is string => typeof item === "string")
 			: [],
 		name: typeof body.name === "string" ? body.name : undefined,
+	};
+}
+
+function authenticationCredentialFromBody(
+	body: Record<string, unknown>,
+): WebAuthnAuthenticationCredential {
+	const response = body.response && typeof body.response === "object" && !Array.isArray(body.response)
+		? body.response as Record<string, unknown>
+		: {};
+	const attachment = body.authenticatorAttachment;
+	const extensionResults = body.clientExtensionResults;
+	return {
+		authenticationId: String(body.authenticationId ?? ""),
+		id: String(body.id ?? ""),
+		rawId: String(body.rawId ?? ""),
+		type: "public-key",
+		response: {
+			clientDataJSON: String(response.clientDataJSON ?? ""),
+			authenticatorData: String(response.authenticatorData ?? ""),
+			signature: String(response.signature ?? ""),
+			...(typeof response.userHandle === "string"
+				? { userHandle: response.userHandle }
+				: {}),
+		},
+		clientExtensionResults:
+			extensionResults && typeof extensionResults === "object" && !Array.isArray(extensionResults)
+				? extensionResults as Record<string, unknown>
+				: {},
+		...(attachment === "platform" || attachment === "cross-platform"
+			? { authenticatorAttachment: attachment }
+			: {}),
 	};
 }
 
@@ -315,6 +355,9 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			createdAt: passkey.createdAt,
 			lastUsedAt: passkey.lastUsedAt,
 			currentHint: passkey.credentialId === profile?.credentialId,
+			// Null means the chain could not be checked. The UI must fail closed
+			// instead of treating every D1 row as an active account signer.
+			activeSigner: null as boolean | null,
 		})),
 	};
 
@@ -340,6 +383,7 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			signers,
 			passkeys: storedPasskeys,
 		});
+		const activePasskeys = passkeySignerActivity(signers, storedPasskeys);
 		return c.json({
 			...base,
 			chainStatus: "available" as const,
@@ -350,11 +394,104 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			recoveryExecutableAfter: executeAfter > 0 ? new Date(executeAfter * 1000).toISOString() : null,
 			signers,
 			credentialInventoryComplete,
+			passkeys: base.passkeys.map((passkey, index) => ({
+				...passkey,
+				activeSigner: activePasskeys[index],
+			})),
 		});
 	} catch (error) {
 		// Wallet recorded but on-chain reads failed (RPC issue or not yet mined).
 		logError("account_passkey_status_chain_read_failed", error, { uid: user.sub });
 		return c.json(base);
+	}
+});
+
+// Explicit passkey availability check. We never infer this from localStorage:
+// the browser/OS must produce a fresh, server-verified WebAuthn assertion for
+// one of the account's current onchain signers.
+accountRoutes.post("/passkey/availability/preflight", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const profile = await getUserByUid(c.env, user.sub);
+	if (!profile?.walletAddress) {
+		return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
+	}
+	if (!(await rateLimitConsume(c.env, "passkey-availability", user.sub, 20, 60 * 60, { failClosed: true }))) {
+		return c.json({ error: "Too many checks", error_code: ERR.RATE_LIMITED }, 429);
+	}
+	const expectedOrigin = validWebAuthnRegistrationOrigin(c.env, c.req.header("Origin"));
+	if (!expectedOrigin) {
+		return c.json({ error: "Invalid WebAuthn origin", error_code: ERR.PASSKEY_VERIFICATION_FAILED }, 400);
+	}
+
+	try {
+		const [storedPasskeys, signers] = await Promise.all([
+			listPasskeysByUid(c.env, user.sub),
+			getPublicClient(c.env).readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSigners",
+				args: [0n, 32n],
+			}) as Promise<Hex[]>,
+		]);
+		const activePasskeys = storedPasskeys.filter((passkey) =>
+			Boolean(matchOnchainSigner(signers, passkey.qx as Hex, passkey.qy as Hex)),
+		);
+		const authentication = await issueWebAuthnAuthentication(c.env, {
+			uid: user.sub,
+			expectedOrigin,
+			expectedRpId: configuredPasskeyRpId(c.env),
+			activePasskeys,
+		});
+		c.executionCtx.waitUntil(
+			deleteExpiredWebAuthnAuthentications(c.env).catch(() => undefined),
+		);
+		return c.json(authentication, 201);
+	} catch (error) {
+		if (error instanceof InvalidWebAuthnAuthenticationError) {
+			return c.json({ error: error.message, error_code: ERR.PASSKEY_VERIFICATION_FAILED }, 409);
+		}
+		logError("account_passkey_availability_preflight_failed", error, { uid: user.sub });
+		return c.json({ error: "Passkey verification is unavailable", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+	}
+});
+
+accountRoutes.post("/passkey/availability/verify", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const profile = await getUserByUid(c.env, user.sub);
+	if (!profile?.walletAddress) {
+		return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
+	}
+	try {
+		const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+		const verified = await verifyWebAuthnAuthentication(c.env, {
+			uid: user.sub,
+			credential: authenticationCredentialFromBody(body),
+		});
+		const signers = await getPublicClient(c.env).readContract({
+			address: profile.walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "getSigners",
+			args: [0n, 32n],
+		}) as Hex[];
+		if (!matchOnchainSigner(signers, verified.passkey.qx as Hex, verified.passkey.qy as Hex)) {
+			return c.json({ error: "Passkey is not an active signer", error_code: ERR.PASSKEY_NOT_ACTIVE }, 409);
+		}
+		await markPasskeyVerified(c.env, {
+			uid: user.sub,
+			credentialId: verified.passkey.credentialId,
+			signCount: verified.newCounter,
+		});
+		return c.json({
+			available: true,
+			credentialId: verified.passkey.credentialId,
+			name: verified.passkey.name,
+		});
+	} catch (error) {
+		if (error instanceof InvalidWebAuthnAuthenticationError) {
+			return c.json({ error: error.message, error_code: ERR.PASSKEY_VERIFICATION_FAILED }, 409);
+		}
+		logError("account_passkey_availability_verify_failed", error, { uid: user.sub });
+		return c.json({ error: "Passkey verification is unavailable", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
 	}
 });
 
@@ -541,12 +678,12 @@ accountRoutes.post("/passkeys/:credentialId/remove/prepare", requireAuth, async 
 			publicClient.readContract({ address: walletAddress as `0x${string}`, abi: accountWebAuthnV2Abi, functionName: "threshold" }) as Promise<bigint>,
 			publicClient.readContract({ address: walletAddress as `0x${string}`, abi: accountWebAuthnV2Abi, functionName: "getSigners", args: [0n, 32n] }) as Promise<Hex[]>,
 		]);
-		if (signerCount <= 1n || signerCount - 1n < threshold) {
-			return c.json({ error: "Cannot remove the last required passkey", error_code: ERR.LAST_PASSKEY }, 409);
-		}
 		const onchainSigner = matchOnchainSigner(signers, passkey.qx as Hex, passkey.qy as Hex);
 		if (!onchainSigner) {
-			return c.json({ error: "Passkey is not an active signer", error_code: ERR.PASSKEY_NOT_FOUND }, 404);
+			return c.json({ error: "Passkey is not an active signer", error_code: ERR.PASSKEY_NOT_ACTIVE }, 409);
+		}
+		if (signerCount <= 1n || signerCount - 1n < threshold) {
+			return c.json({ error: "Cannot remove the last required passkey", error_code: ERR.LAST_PASSKEY }, 409);
 		}
 		const callData = encodeFunctionData({
 			abi: accountWebAuthnV2Abi,

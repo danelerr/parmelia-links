@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 	refundRateLimitConsume: vi.fn(),
 	releaseFaucetClaim: vi.fn(),
 	releaseLease: vi.fn(),
+	revokePasskeysExcept: vi.fn(),
 	savePasskey: vi.fn(),
 	saveUser: vi.fn(),
 	setInvitedBy: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock("../src/services/storage", () => ({
 	refundRateLimitConsume: mocks.refundRateLimitConsume,
 	releaseFaucetClaim: mocks.releaseFaucetClaim,
 	releaseLease: mocks.releaseLease,
+	revokePasskeysExcept: mocks.revokePasskeysExcept,
 	savePasskey: mocks.savePasskey,
 	saveUser: mocks.saveUser,
 	setInvitedBy: mocks.setInvitedBy,
@@ -200,9 +202,14 @@ describe("durable account operations", () => {
 		mocks.getTransactionReceipt.mockResolvedValue({ status: "success" });
 		mocks.saveUser.mockResolvedValue(undefined);
 		mocks.savePasskey.mockResolvedValue(undefined);
+		mocks.revokePasskeysExcept.mockResolvedValue(2);
 
 		const result = await reconcileAccountOperation(ENV, persisted);
 
+		expect(mocks.revokePasskeysExcept).toHaveBeenCalledWith(ENV, {
+			uid: "user-1",
+			keepCredentialId: "credential-1",
+		});
 		expect(mocks.saveUser).toHaveBeenCalledWith(ENV, { uid: "user-1", credentialId: "credential-1" });
 		expect(mocks.savePasskey).toHaveBeenCalledWith(ENV, {
 			uid: "user-1",

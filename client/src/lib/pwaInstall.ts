@@ -2,6 +2,7 @@ export type PwaInstallOutcome = "accepted" | "dismissed" | "unavailable";
 
 type PwaInstallState = {
 	showInstall: boolean;
+	isInstalled: boolean;
 	isIos: boolean;
 };
 
@@ -13,12 +14,14 @@ type BeforeInstallPromptEvent = Event & {
 type SafariNavigator = Navigator & { standalone?: boolean };
 
 const STANDALONE_QUERY = "(display-mode: standalone)";
+const INSTALLED_SESSION_KEY = "gatopago:pwa-installed-session";
 const listeners = new Set<() => void>();
 let deferredPrompt: BeforeInstallPromptEvent | null = null;
 let initialized = false;
 let installedInSession = false;
 let snapshot: PwaInstallState = {
 	showInstall: false,
+	isInstalled: false,
 	isIos: false,
 };
 
@@ -39,6 +42,7 @@ function isIosDevice() {
 function publish(next: PwaInstallState) {
 	if (
 		next.showInstall === snapshot.showInstall &&
+		next.isInstalled === snapshot.isInstalled &&
 		next.isIos === snapshot.isIos
 	) return;
 	snapshot = next;
@@ -46,15 +50,32 @@ function publish(next: PwaInstallState) {
 }
 
 function refresh() {
+	const installed = installedInSession || isStandalone();
 	publish({
-		showInstall: !installedInSession && !isStandalone(),
+		showInstall: !installed,
+		isInstalled: installed,
 		isIos: isIosDevice(),
 	});
+}
+
+function rememberInstalled() {
+	installedInSession = true;
+	try {
+		sessionStorage.setItem(INSTALLED_SESSION_KEY, "1");
+	} catch {
+		// Standalone display mode remains the source of truth when storage is unavailable.
+	}
+	refresh();
 }
 
 export function initPwaInstall() {
 	if (initialized || typeof window === "undefined") return;
 	initialized = true;
+	try {
+		installedInSession = sessionStorage.getItem(INSTALLED_SESSION_KEY) === "1";
+	} catch {
+		installedInSession = false;
+	}
 	refresh();
 
 	const displayMode = window.matchMedia(STANDALONE_QUERY);
@@ -69,8 +90,7 @@ export function initPwaInstall() {
 
 	window.addEventListener("appinstalled", () => {
 		deferredPrompt = null;
-		installedInSession = true;
-		refresh();
+		rememberInstalled();
 	});
 }
 
@@ -93,6 +113,7 @@ export async function promptPwaInstall(): Promise<PwaInstallOutcome> {
 	try {
 		await prompt.prompt();
 		const choice = await prompt.userChoice;
+		if (choice.outcome === "accepted") rememberInstalled();
 		return choice.outcome;
 	} catch {
 		return "unavailable";

@@ -18,6 +18,7 @@ import {
 	refundRateLimitConsume,
 	releaseFaucetClaim,
 	savePasskey,
+	revokePasskeysExcept,
 	saveUser,
 	setInvitedBy,
 	sweepAccountOperations,
@@ -387,6 +388,13 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 		const credentialId = requiredString(metadata, "credentialId");
 		const qx = requiredString(metadata, "qx");
 		const qy = requiredString(metadata, "qy");
+		// executeRecovery replaces the entire onchain signer set. Revoke the old
+		// management rows first so future registration excludes and Security never
+		// present superseded credentials as usable keys.
+		await revokePasskeysExcept(env, {
+			uid: operation.uid,
+			keepCredentialId: credentialId,
+		});
 		await saveUser(env, { uid: operation.uid, credentialId });
 		await savePasskey(env, {
 			uid: operation.uid,
