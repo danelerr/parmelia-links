@@ -5,6 +5,7 @@ import {
 	ensureHomeBalanceRefresh,
 	getHomeVersion,
 	homeEtag,
+	homeStateVersion,
 	isHomeBalanceFresh,
 	readHomeModel,
 } from "../services/homeReadModel";
@@ -27,7 +28,7 @@ homeRoutes.get("/", requireAuth, async (c) => {
 	const network = getNetworkConfig(c.env.CHAIN_KEY);
 	const currentVersion = await getHomeVersion(c.env, uid);
 	const etag = await homeEtag(uid, network.chainId, currentVersion.version);
-	const stateVersion = `home:${currentVersion.version}`;
+	const stateVersion = homeStateVersion(currentVersion.version);
 	setPrivateHeaders(c, etag, stateVersion);
 	if (
 		c.req.header("If-None-Match") === etag &&

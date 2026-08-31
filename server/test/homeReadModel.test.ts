@@ -1,10 +1,21 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Bindings } from "../src/middlewares/auth";
-import { __test } from "../src/services/homeReadModel";
+import {
+	__test,
+	homeEtag,
+	homeStateVersion,
+} from "../src/services/homeReadModel";
 import type { TransferCheckpointEvidence } from "../src/services/transferCoverage";
 
 describe("Home read model refresh policy", () => {
+	it("changes cache identity when the read-model projection changes", async () => {
+		expect(homeStateVersion(7)).toBe("home:v2:7");
+		await expect(homeEtag("user-1", 421614, 7)).resolves.toMatch(
+			/^"home-[0-9a-f]{32}"$/u,
+		);
+	});
+
 	it("does not expose expired prepared operations as active Home work", () => {
 		const source = readFileSync(
 			new URL("../src/services/homeReadModel.ts", import.meta.url),

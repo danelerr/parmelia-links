@@ -14,6 +14,7 @@ import {
 } from "./transferCoverage";
 
 type ReadModelStatus = "fresh" | "stale" | "unavailable";
+const HOME_READ_MODEL_REVISION = 2;
 
 type ProfileRow = {
 	uid: string;
@@ -384,12 +385,18 @@ export async function homeEtag(
 	chainId: number,
 	version: number,
 ): Promise<string> {
-	const bytes = new TextEncoder().encode(`${uid}:${chainId}:${version}`);
+	const bytes = new TextEncoder().encode(
+		`${HOME_READ_MODEL_REVISION}:${uid}:${chainId}:${version}`,
+	);
 	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 	const opaque = Array.from(digest.slice(0, 16), (byte) =>
 		byte.toString(16).padStart(2, "0"),
 	).join("");
 	return `"home-${opaque}"`;
+}
+
+export function homeStateVersion(version: number): string {
+	return `home:v${HOME_READ_MODEL_REVISION}:${version}`;
 }
 
 /**
@@ -535,7 +542,7 @@ export async function readHomeModel(
 				})),
 			},
 			alerts,
-			stateVersion: `home:${version.version}`,
+			stateVersion: homeStateVersion(version.version),
 			observedAt: now.toISOString(),
 			consistentThroughBlock: balance.consistentThroughBlock,
 		},
