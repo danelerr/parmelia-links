@@ -11,11 +11,20 @@
 El preflight quedó con 12 checks listos. `PAYMENT_LIVE_ENABLED=false` permanece
 fuera de alcance.
 
-**Corte v2.1 autorizado el 30-08-2026:** aplica únicamente
-`0037_webauthn_authentication.sql` y publica App Worker/App Web. Corrige la
-disponibilidad real de passkeys, el retiro compatible, los duplicados del
-gestor y el ingreso seguro a recuperación. Este documento conserva al final la
-evidencia y los identificadores del corte.
+**Corte v2.1 ejecutado el 30-08-2026:** se aplicó únicamente
+`0037_webauthn_authentication.sql` y se publicaron App Worker/App Web. Corrige
+la disponibilidad real de passkeys, el retiro compatible, los duplicados del
+gestor y el ingreso seguro a recuperación. No se tocaron Payments, Dashboard,
+contratos, DNS ni secrets.
+
+**Evidencia del corte v2.1:** fuente runtime
+`76b50a20bf0a6abe07f9f1e59a427fe05855d903`; backup cifrado y verificado
+`%LOCALAPPDATA%\GatoPago\phase-2-1\backups\gatopagodb-pre-0037-20260830-232538.sql.enc`;
+App Worker `ee69b705-0e82-413a-8444-c54ceddd5e65` (deployment
+`607ef158-e687-44da-9d58-f93efdbe49e1`); App Web
+`dpl_5PNXgaf3zYqnNyxUdkuxvF7gKpzs` (`parmelia-elm05fv8m-danelerrs-projects.vercel.app`,
+alias `app.parmelia.me`). El preflight remoto terminó `ready=true`, sin
+pendientes, el 31-08-2026 a las 03:36:07 UTC.
 
 El bundle candidato selecciona `browserLocalPersistence` y el resolver de
 redirect dentro de `initializeAuth`; no cambia persistencia después de iniciar
@@ -260,5 +269,6 @@ Passkey Security v2 sólo queda promovido cuando existe evidencia de:
 - health estable sin dead letters nuevas.
 
 Esto no activa pagos ni reemplaza los E2E monetarios y fault injection de Fase 4.
-La promoción técnica fue versionada y validada; la ceremonia WebAuthn real sigue
-requiriendo la sesión, el autenticador y el gesto del usuario.
+La promoción técnica fue versionada, desplegada y validada. El criterio de
+ceremonia real todavía requiere la sesión, el autenticador y el gesto del
+usuario; por eso la aceptación funcional física no se infiere del deploy.

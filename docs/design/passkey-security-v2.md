@@ -1,6 +1,6 @@
 # Passkey Security v2.1 — disponibilidad real, metadata y opciones
 
-**Estado:** v2 desplegado; corrección v2.1 autorizada y en promoción App-only; aceptación WebAuthn manual pendiente
+**Estado:** v2.1 desplegado App-only; aceptación WebAuthn manual pendiente
 
 **Fecha:** 30 de agosto de 2026
 **Alcance:** App Worker y App Web; no modifica Payments, Dashboard ni contratos
@@ -117,7 +117,8 @@ crear una llave.
 
 ## Orden de publicación
 
-Este candidato no autoriza una publicación. En una ventana App-only aprobada:
+La ventana App-only fue autorizada y ejecutada el 30 de agosto de 2026 en este
+orden:
 
 1. crear y verificar backup cifrado de App D1;
 2. comprobar el listado remoto de migraciones;
@@ -156,12 +157,14 @@ prueba de firma, medición de cobertura y rollback. Hasta completar ese plan,
   `returnTo` adversarial;
 - `pnpm verify:all` antes de declarar el candidato publicable.
 
-La matriz se ejecutó el 30 de agosto de 2026 sobre este candidato y terminó con
+La matriz se ejecutó el 30 de agosto de 2026 sobre el candidato publicado y terminó con
 exit `0`: App Worker 266 unitarias + 27 runtime, Payments 52 + 23, Playwright 78
 aprobadas/58 omisiones deliberadas, backup/restore de 61 tablas D1, audit sin
 vulnerabilidades conocidas y 191 pruebas Foundry finales aprobadas/4 forks
-omitidos por no inyectar RPC. Los identificadores y la evidencia remota de la
-promoción `0037` se registran en el runbook v2.1. Una ceremonia real no se
+omitidos por no inyectar RPC. `0037`, el App Worker y App Web se promovieron
+desde `76b50a20bf0a6abe07f9f1e59a427fe05855d903`; el preflight remoto posterior
+quedó sin pendientes. Los identificadores completos y la evidencia remota se
+registran en el runbook v2.1. Una ceremonia real no se
 simula: requiere la sesión, el autenticador y el gesto del usuario.
 
 Referencias primarias:

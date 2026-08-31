@@ -199,7 +199,7 @@ pago E2E con evidencia on-chain.
 - [x] **Unificar lógica sensible.** Esquemas EIP-712 y autorizaciones de pago viven en `shared`; los fixtures de TypeScript/Solidity comprueban la misma codificación. Los watchers comparten ventanas, finality, journal, reorg guards y cursores; el outbox permanece en la misma transacción que el cambio de estado correspondiente.
 - [x] **Eliminar código muerto y deuda de efectos React.** Knip y el gate de ciclos pasan; `react-hooks/set-state-in-effect` es error, no warning. Se retiraron dependencias, assets PWA y exports sin consumidores solo después de comprobar su uso.
 - [ ] **Aceptación autenticada y Fase 4 (producción).** El magic link real ya fue recibido/consumido y comparte UID con Google; `0036` y la UX centralizada están promovidas. Falta que el usuario complete una ceremonia WebAuthn real bajo autorización específica. Recovery/replay deliberado, perfil, red, envío, swap, cross-chain y webhooks reales pertenecen a Fase 4 cuando requieran cuentas, APIs, chains u operaciones monetarias.
-	- [ ] **Remediación Passkey v2.1:** el candidato elimina la falsa ausencia basada en `localStorage`, agrega comprobación WebAuthn firmada y anti-replay (`0037`), compatibilidad segura para retiro durante el rollout, limpieza de llaves reemplazadas por recovery y reparación del hint tras retiro. La ventana App-only está autorizada y en ejecución; sólo se cerrará después de migrar, publicar Worker/Web y verificar producción. La ceremonia comprobar/agregar/quitar/recuperar en iPhone requiere el gesto del usuario.
+	- [x] **Remediación técnica Passkey v2.1 promovida:** se eliminó la falsa ausencia basada en `localStorage`, se agregó comprobación WebAuthn firmada y anti-replay (`0037`), compatibilidad segura para retiro durante el rollout, limpieza de llaves reemplazadas por recovery y reparación del hint tras retiro. El 30-08-2026 se respaldó App D1, se aplicó únicamente `0037` y se publicaron App Worker `ee69b705-0e82-413a-8444-c54ceddd5e65` y App Web `dpl_5PNXgaf3zYqnNyxUdkuxvF7gKpzs` desde `76b50a2`; el preflight remoto quedó listo y sin pendientes. La aceptación comprobar/agregar/quitar/recuperar en iPhone continúa abierta porque requiere el gesto del usuario.
 - [ ] **Migración de RP ID antes de cambiar el dominio App.** Google Auth no sincroniza passkeys: Google Password Manager/iCloud lo hacen según el dispositivo. El candidato ya evita derivar RP ID del host y conserva explícitamente `app.parmelia.me`, pero eso no migra credenciales. Antes de usar `app.gatopago.com` se necesita coexistencia, registro y firma con llaves nuevas, cobertura medible y rollback. DNS por sí solo no migra WebAuthn.
 
 ## P3 — Rendimiento, dependencias y mainnet
@@ -212,7 +212,7 @@ pago E2E con evidencia on-chain.
 
 1. Commit y push revisados; CI y security workflows verdes en GitHub.
 2. Backup D1 cifrado y restore drill verificado antes de aplicar migraciones.
-3. Migraciones App `0030`–`0036` y todas las migraciones Payments descubiertas
+3. Migraciones App `0030`–`0037` y todas las migraciones Payments descubiertas
    en `payments-worker/migrations/` (actualmente `0001`–`0007`) aplicadas en su
    orden, con health operativo sin dead letters ni operaciones activas en
    contratos retirados.
