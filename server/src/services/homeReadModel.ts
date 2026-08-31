@@ -429,8 +429,9 @@ export async function readHomeModel(
 			`SELECT user_op_hash, status, currency, amount, created_at
 			 FROM pending_payments
 			 WHERE uid = ? AND status IN ('prepared', 'submitting', 'submitted')
+			   AND (status <> 'prepared' OR expires_at > ?)
 			 ORDER BY created_at DESC LIMIT 10`,
-		).bind(uid),
+		).bind(uid, new Date().toISOString()),
 		env.GATOPAGO_DB.prepare(
 			`SELECT id, kind, status, tx_hash, created_at, updated_at
 			 FROM account_operations

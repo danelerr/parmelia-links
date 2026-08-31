@@ -883,11 +883,14 @@ export async function completePaymentReconcileRequest(
 
 /** Sweep terminal rows once GET /pay/status no longer needs them (~1h). */
 export async function sweepTerminalPendingPayments(env: Bindings): Promise<void> {
+	const now = new Date().toISOString();
 	const cutoff = new Date(Date.now() - 50 * 60_000).toISOString(); // expires_at = created+10m → ~1h old
 	await d1Run(
 		env,
-		`DELETE FROM pending_payments WHERE status IN ('confirmed', 'failed') AND expires_at <= ?`,
-		[cutoff],
+		`DELETE FROM pending_payments
+		 WHERE (status = 'prepared' AND expires_at <= ?)
+		    OR (status IN ('confirmed', 'failed') AND expires_at <= ?)`,
+		[now, cutoff],
 	);
 }
 

@@ -1,9 +1,20 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Bindings } from "../src/middlewares/auth";
 import { __test } from "../src/services/homeReadModel";
 import type { TransferCheckpointEvidence } from "../src/services/transferCoverage";
 
 describe("Home read model refresh policy", () => {
+	it("does not expose expired prepared operations as active Home work", () => {
+		const source = readFileSync(
+			new URL("../src/services/homeReadModel.ts", import.meta.url),
+			"utf8",
+		);
+		expect(source).toContain(
+			"AND (status <> 'prepared' OR expires_at > ?)",
+		);
+	});
+
 	it("does not mistake an existing stale snapshot for missing bootstrap data", () => {
 		expect(__test.needsBalanceBootstrap(true, 3, 3)).toBe(false);
 		expect(__test.needsBalanceBootstrap(true, 4, 3)).toBe(false);
