@@ -243,6 +243,41 @@ describe("event-driven job orchestration", () => {
 		expect(execute).toHaveBeenCalledTimes(2);
 	});
 
+	it("durably reschedules an overlapping generation before acknowledging it", async () => {
+		const run = vi.fn().mockResolvedValue({ meta: { changes: 0 } });
+		const schedule = vi.fn().mockResolvedValue({
+			accepted: true,
+			changed: true,
+		});
+		const env = {
+			CHAIN_KEY: "arbitrum-sepolia",
+			GATOPAGO_DB: {
+				prepare: vi.fn(() => ({
+					bind: vi.fn(() => ({ run })),
+				})),
+			},
+			EVENT_JOB_SCHEDULER: {
+				getByName: vi.fn(() => ({ schedule })),
+			},
+		} as unknown as Bindings;
+		const message = {
+			...eventMessage("user_operation_watcher"),
+			partition: "shard:0",
+			targetBlock: "12345",
+		};
+
+		await expect(__test.executeEventJob(env, message)).resolves.toBe(
+			"already_running",
+		);
+		expect(schedule).toHaveBeenCalledOnce();
+		expect(schedule.mock.calls[0][0]).toMatchObject({
+			job: "user_operation_watcher",
+			partition: "shard:0",
+			reason: "event_job_overlap_retry",
+			targetBlock: "12345",
+		});
+	});
+
 	it("validates the event message schema and caps retry backoff", () => {
 		const body = eventMessage();
 		expect(parseEventJobMessage(body)).toEqual(body);

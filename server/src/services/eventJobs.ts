@@ -56,6 +56,7 @@ export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 // makes duplicate at-least-once deliveries inert without a permanent poller.
 const JOB_LEASE_TTL_MS = 16 * 60_000;
 const FAST_RETRY_MS = 15_000;
+const OVERLAP_RETRY_MS = 60_000;
 const CUSTOM_WEBHOOK_FOLLOWUP_MS = 2 * 60_000;
 const ROUTER_FALLBACK_POLL_MS = 2 * 60_000;
 
@@ -741,10 +742,28 @@ async function executeEventJob(
 		`event-job:${env.CHAIN_KEY}:${message.job}:${message.partition}`;
 	const owner = await acquireLease(env, leaseKey, JOB_LEASE_TTL_MS);
 	if (!owner) {
+		// The invocation that owns the lease may be close to completing, or it may
+		// have been terminated by the platform and left the expiring D1 lease
+		// behind. Preserve this newer generation in the Durable Object before the
+		// Queue message is acknowledged. Previously an overlapping delivery was
+		// acknowledged without a continuation, so a timed-out watcher could strand
+		// every later wakeup until an unrelated safety sweep happened.
+		const preserved = await scheduleEventJob(env, message.job, {
+			partition: message.partition,
+			delayMs: OVERLAP_RETRY_MS,
+			reason: "event_job_overlap_retry",
+			...(message.targetBlock === undefined
+				? {}
+				: { targetBlock: message.targetBlock }),
+		});
+		if (!preserved) {
+			throw new Error("Overlapping event job could not be preserved");
+		}
 		logInfo("event_job_skipped_overlap", {
 			job: message.job,
 			partition: message.partition,
 			generation: message.generation,
+			retryInMs: OVERLAP_RETRY_MS,
 		});
 		return "already_running";
 	}
@@ -830,4 +849,5 @@ export async function consumeWorkerQueue(
 export const __test = {
 	legacyPaymentRuntimeEnabled,
 	retryDelaySeconds,
+	executeEventJob,
 };

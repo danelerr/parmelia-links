@@ -1,4 +1,4 @@
-import { encodeFunctionData, keccak256, parseUnits, type Hex } from "viem";
+import { encodeFunctionData, keccak256, parseUnits, type Address, type Hex } from "viem";
 import { erc20Abi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
@@ -38,6 +38,8 @@ import {
 import { extractErrorMessage, logError, logInfo, logWarn } from "./logger";
 import { SignerLeaseBusyError, withSignerLease } from "./signerLease";
 import { scheduleEventJob } from "./eventScheduler";
+import { refreshWalletBalancesLatest } from "./balanceReconciler";
+import { requestBalanceRefresh } from "./balanceReadModel";
 
 const OPERATION_TTL_MS = 24 * 60 * 60_000;
 const FAUCET_AMOUNT_USDC = 5;
@@ -313,7 +315,11 @@ async function enqueueAccountSecurityEvent(
 	});
 }
 
-async function finalizeAccountOperation(env: Bindings, operation: AccountOperationRecord): Promise<void> {
+async function finalizeAccountOperation(
+	env: Bindings,
+	operation: AccountOperationRecord,
+	receiptBlockNumber?: bigint,
+): Promise<void> {
 	const metadata = operation.metadata;
 	if (operation.kind === "account_create") {
 		const walletAddress = requiredString(metadata, "walletAddress");
@@ -368,6 +374,10 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 	}
 
 	if (operation.kind === "faucet") {
+		const walletAddress = requiredString(
+			metadata,
+			"walletAddress",
+		).toLowerCase() as Address;
 		await writeLedgerEntries(env, [
 			{
 				uid: operation.uid,
@@ -381,6 +391,45 @@ async function finalizeAccountOperation(env: Bindings, operation: AccountOperati
 				createdAt: new Date().toISOString(),
 			},
 		]);
+		const network = getNetworkConfig(env.CHAIN_KEY);
+		try {
+			await refreshWalletBalancesLatest(env, {
+				uid: operation.uid,
+				accountAddress: walletAddress,
+				chainId: network.chainId,
+				...(receiptBlockNumber === undefined
+					? {}
+					: { notBeforeBlock: receiptBlockNumber.toString() }),
+			});
+		} catch (fastRefreshError) {
+			logError(
+				"account_operation_balance_fast_refresh_failed",
+				fastRefreshError,
+				{
+					operationId: operation.id,
+					uid: operation.uid,
+				},
+			);
+			await requestBalanceRefresh(env, {
+				uid: operation.uid,
+				accountAddress: walletAddress,
+				chainId: network.chainId,
+				reason: "confirmed_faucet_operation",
+				priority: 0,
+				...(receiptBlockNumber === undefined
+					? {}
+					: { notBeforeBlock: receiptBlockNumber.toString() }),
+			}).catch((repairError) => {
+				logError(
+					"account_operation_balance_refresh_failed",
+					repairError,
+					{
+						operationId: operation.id,
+						uid: operation.uid,
+					},
+				);
+			});
+		}
 		return;
 	}
 
@@ -506,7 +555,11 @@ export async function reconcileAccountOperation(
 		if (won) await compensateFailedOperation(env, operation);
 	} else {
 		try {
-			await finalizeAccountOperation(env, operation);
+			await finalizeAccountOperation(
+				env,
+				operation,
+				receipt.blockNumber,
+			);
 			await finishAccountOperation(env, operation.id, "confirmed");
 			logInfo("account_operation_confirmed", {
 				operationId: operation.id,

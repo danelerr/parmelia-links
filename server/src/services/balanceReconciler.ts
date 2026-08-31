@@ -63,7 +63,8 @@ function asBoundedBatchSize(raw: string | undefined): number {
  * accounting, but it made a just-mined operation look frozen for up to minutes.
  * This path reads one coherent latest-block Multicall and publishes it as
  * `sequenced`; the safe reconciler later supersedes it as the safe head catches
- * up. Home never calls this function, so idle users still generate zero RPC work.
+ * up. Home's automatic read never calls this function; only an explicit user
+ * refresh does, so idle users still generate zero RPC work.
  */
 export async function refreshWalletBalancesLatestBatch(
 	env: Bindings,

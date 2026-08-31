@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
 	sendRawTransaction: vi.fn(),
 	getTransactionReceipt: vi.fn(),
 	getTransactionCount: vi.fn(),
+	refreshWalletBalancesLatest: vi.fn(),
+	requestBalanceRefresh: vi.fn(),
 }));
 
 vi.mock("../src/services/storage", () => ({
@@ -83,6 +85,14 @@ vi.mock("../src/services/clients", () => ({
 		prepareTransactionRequest: mocks.prepareTransactionRequest,
 		signTransaction: mocks.signTransaction,
 	}),
+}));
+
+vi.mock("../src/services/balanceReconciler", () => ({
+	refreshWalletBalancesLatest: mocks.refreshWalletBalancesLatest,
+}));
+
+vi.mock("../src/services/balanceReadModel", () => ({
+	requestBalanceRefresh: mocks.requestBalanceRefresh,
 }));
 
 import {
@@ -158,6 +168,8 @@ beforeEach(() => {
 		if (persisted) persisted = { ...persisted, status: "submitted" };
 	});
 	mocks.sendRawTransaction.mockResolvedValue(TX_HASH);
+	mocks.refreshWalletBalancesLatest.mockResolvedValue([]);
+	mocks.requestBalanceRefresh.mockResolvedValue({});
 	mocks.finishAccountOperation.mockImplementation(async (_env, _id, status, fields = {}) => {
 		if (!persisted || !["prepared", "submitted"].includes(persisted.status)) return false;
 		persisted = {
@@ -296,6 +308,56 @@ describe("durable account operations", () => {
 
 		expect(mocks.releaseFaucetClaim).toHaveBeenCalledOnce();
 		expect(mocks.refundRateLimitConsume).toHaveBeenCalledOnce();
+	});
+
+	it("publishes a freshly confirmed faucet balance at the receipt block", async () => {
+		persisted = operation("faucet", {
+			walletAddress: "0x00000000000000000000000000000000000000cc",
+			amount: "5",
+			reference: "Test funds",
+		});
+		mocks.getTransactionReceipt.mockResolvedValue({
+			status: "success",
+			blockNumber: 12345n,
+		});
+
+		const result = await reconcileAccountOperation(ENV, persisted);
+
+		expect(result?.status).toBe("confirmed");
+		expect(mocks.refreshWalletBalancesLatest).toHaveBeenCalledWith(ENV, {
+			uid: "user-1",
+			accountAddress: "0x00000000000000000000000000000000000000cc",
+			chainId: 421614,
+			notBeforeBlock: "12345",
+		});
+		expect(mocks.requestBalanceRefresh).not.toHaveBeenCalled();
+	});
+
+	it("queues a coalesced faucet balance repair when the fast read fails", async () => {
+		persisted = operation("faucet", {
+			walletAddress: "0x00000000000000000000000000000000000000cc",
+			amount: "5",
+			reference: "Test funds",
+		});
+		mocks.getTransactionReceipt.mockResolvedValue({
+			status: "success",
+			blockNumber: 12345n,
+		});
+		mocks.refreshWalletBalancesLatest.mockRejectedValueOnce(
+			new Error("RPC unavailable"),
+		);
+
+		const result = await reconcileAccountOperation(ENV, persisted);
+
+		expect(result?.status).toBe("confirmed");
+		expect(mocks.requestBalanceRefresh).toHaveBeenCalledWith(ENV, {
+			uid: "user-1",
+			accountAddress: "0x00000000000000000000000000000000000000cc",
+			chainId: 421614,
+			reason: "confirmed_faucet_operation",
+			priority: 0,
+			notBeforeBlock: "12345",
+		});
 	});
 
 	it("does not refund a faucet claim after an ambiguous post-persistence failure", async () => {

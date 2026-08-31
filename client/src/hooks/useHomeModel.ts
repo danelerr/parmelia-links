@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import type { User } from "../lib/firebase";
-import { SERVER_URL } from "../lib/api";
+import { apiFetch, SERVER_URL } from "../lib/api";
 import { activeNetwork } from "../lib/activeNetwork";
 import {
 	fetchHomeModel,
@@ -103,6 +103,25 @@ export function useHomeModel(user: User, previewModel?: HomeReadModel) {
 		},
 	);
 	const mutateHome = swr.mutate;
+	const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
+	const balanceRefreshRef = useRef<Promise<void> | null>(null);
+	const refreshBalance = useCallback((): Promise<void> => {
+		if (previewModel) return Promise.resolve();
+		if (balanceRefreshRef.current) return balanceRefreshRef.current;
+		setIsRefreshingBalance(true);
+		const refresh = (async () => {
+			// This is an explicit user action, not Home polling. The endpoint performs
+			// one rate-limited latest-block Multicall, updates the shared D1 snapshot,
+			// and then Home reloads its normal aggregate read model.
+			await apiFetch("/user/balance?fresh=1", { user });
+			await mutateHome();
+		})().finally(() => {
+			balanceRefreshRef.current = null;
+			setIsRefreshingBalance(false);
+		});
+		balanceRefreshRef.current = refresh;
+		return refresh;
+	}, [mutateHome, previewModel, user]);
 
 	useEffect(() => {
 		if (previewModel) return;
@@ -159,5 +178,7 @@ export function useHomeModel(user: User, previewModel?: HomeReadModel) {
 		isLoading: previewModel ? false : swr.isLoading,
 		isValidating: previewModel ? false : swr.isValidating,
 		fromLocalCache: !previewModel && !swr.data && Boolean(cachedModel),
+		isRefreshingBalance,
+		refreshBalance,
 	};
 }

@@ -5,7 +5,7 @@ import type { User } from "../lib/firebase";
 import { activeNetwork } from "../lib/activeNetwork";
 import { formatAmount, formatNumber } from "../lib/format";
 import { parseTransactions, type Transaction } from "../lib/transactions";
-import { notifySuccess } from "../lib/notify";
+import { notifyError, notifySuccess } from "../lib/notify";
 import type { HomeReadModel } from "../lib/homeData";
 import { useHomeModel } from "../hooks/useHomeModel";
 import { useDialog } from "../hooks/useDialog";
@@ -41,7 +41,14 @@ export default function Home({ user, previewModel }: { user: User; previewModel?
 	const [detailsOpen, setDetailsOpen] = useState(false);
 	const [cardInterestOpen, setCardInterestOpen] = useState(false);
 	const [cardInterestSaved, setCardInterestSaved] = useState(false);
-	const { data: home, isLoading, isValidating, fromLocalCache } = useHomeModel(user, previewModel);
+	const {
+		data: home,
+		isLoading,
+		isValidating,
+		fromLocalCache,
+		isRefreshingBalance,
+		refreshBalance,
+	} = useHomeModel(user, previewModel);
 
 	const transactions = useMemo(() => parseTransactions(home?.activity), [home?.activity]);
 	const balances = useMemo(() => home?.balance.tokens ?? {}, [home?.balance.tokens]);
@@ -56,6 +63,14 @@ export default function Home({ user, previewModel }: { user: User; previewModel?
 			writeStorage(HIDE_BALANCE_KEY, next ? "1" : "0");
 			return next;
 		});
+	}
+
+	async function handleBalanceRefresh() {
+		try {
+			await refreshBalance();
+		} catch (error) {
+			notifyError(error, t("home.refreshBalanceError"));
+		}
 	}
 
 	return (
@@ -132,7 +147,27 @@ export default function Home({ user, previewModel }: { user: User; previewModel?
 				<span className="min-w-0"><strong className="block font-display text-[17px]">{t("home.moveMoney")}</strong><small className="mt-1 block text-[11px] leading-relaxed text-text-muted">{t("home.moveMoneyHint")}</small></span>
 				<span aria-hidden="true" className="font-mono text-[18px] font-bold">→</span>
 			</LinkButton>
-			{home?.balance.observedAt ? <p className="mt-4 text-center font-mono text-[9px] uppercase tracking-[0.08em] text-text-faint">{home.balance.status === "fresh" && !fromLocalCache ? t("home.dataFresh") : t("home.dataCached")}{isValidating ? " · …" : ""}</p> : null}
+			{home?.balance.observedAt ? (
+				<div className="mt-4 flex items-center justify-center gap-2 font-mono text-[9px] uppercase tracking-[0.08em] text-text-faint">
+					<span>
+						{home.balance.status === "fresh" && !fromLocalCache
+							? t("home.dataFresh")
+							: t("home.dataCached")}
+						{isValidating && !isRefreshingBalance ? " · …" : ""}
+					</span>
+					<span aria-hidden="true">·</span>
+					<button
+						type="button"
+						onClick={() => void handleBalanceRefresh()}
+						disabled={isRefreshingBalance}
+						className="underline decoration-current underline-offset-2 disabled:cursor-wait disabled:opacity-60"
+					>
+						{isRefreshingBalance
+							? t("home.refreshingBalance")
+							: t("home.refreshBalance")}
+					</button>
+				</div>
+			) : null}
 
 			<LinkButton to="/earn" className="meli-paper-card meli-paper-card--strong interactive-surface relative mt-7 grid min-h-[150px] grid-cols-[1fr_88px] items-center gap-3 overflow-hidden p-5 text-left">
 				<div>

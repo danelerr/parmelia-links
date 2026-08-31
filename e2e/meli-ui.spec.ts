@@ -55,6 +55,17 @@ test("Home keeps Security directly accessible from the account menu", async ({ p
 	await expectNoWcagViolations(page);
 });
 
+test("Home exposes an explicit balance refresh without background RPC polling", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo);
+
+	const refresh = page.getByRole("button", {
+		name: /^(Actualizar|Refresh)$/i,
+	});
+	await expect(refresh).toBeVisible();
+	await expect(refresh).toBeEnabled();
+	await expectNoWcagViolations(page);
+});
+
 test("Home launches the native PWA prompt and then exposes reload", async ({ page }, testInfo) => {
 	await openPreview(page, testInfo);
 	await page.evaluate(() => {

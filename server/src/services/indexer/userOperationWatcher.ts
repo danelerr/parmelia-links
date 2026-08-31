@@ -30,6 +30,12 @@ import { logError, logInfo } from "../logger";
 import { verifyAndRecoverStream } from "../reorg";
 import { getSyncCursor, setSyncCursor } from "../storage";
 
+// Queue retries are the durable retry policy. Keeping the per-invocation scan
+// small and fail-fast prevents a degraded provider from consuming the full
+// 15-minute Queue wall-time and leaving its overlap lease behind.
+const USER_OPERATION_MAX_LOG_CALLS = 8;
+const USER_OPERATION_TRANSIENT_RETRIES = 0;
+
 /**
  * Canonical ERC-4337 receipt stream for GatoPago accounts. This replaces the
  * old per-payment 300k-block `eth_getLogs` lookup with one bounded, adaptive
@@ -91,7 +97,10 @@ export async function runUserOperationWatcher(
 			};
 		}
 		const range = logRangeConfig(env, providerPool.maxLogRange);
-		const maxCalls = maxLogCallsPerJob(env);
+		const maxCalls = Math.min(
+			USER_OPERATION_MAX_LOG_CALLS,
+			maxLogCallsPerJob(env),
+		);
 		const scanEnd = boundedScanWindowEnd(
 			fromBlock,
 			scanHead,
@@ -113,6 +122,7 @@ export async function runUserOperationWatcher(
 			minBlockSpan: range.min,
 			maxBlockSpan: range.max,
 			maxCalls,
+			maxTransientRetries: USER_OPERATION_TRANSIENT_RETRIES,
 			fetchRange: (rangeFrom, rangeTo) =>
 				providerPool.requestLogs<UserOperationLog>(
 					rangeFrom,
