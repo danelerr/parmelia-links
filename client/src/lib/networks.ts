@@ -4,7 +4,7 @@
 // builds the client from this folder and cannot reach ../shared. The client only
 // ever needs presentation fields (name, symbol, explorer, faucet) - all on-chain
 // work and addresses live on the server - so keep just those in sync here.
-export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
+export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "avalanche-fuji" | "arbitrum-one";
 
 export type NetworkConfig = {
 	key: SupportedChainKey;
@@ -44,6 +44,17 @@ const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		faucetLabel: "Circle Faucet",
 		currencies: ["USDC", "ETH"],
 	},
+	"avalanche-fuji": {
+		key: "avalanche-fuji",
+		chainId: 43113,
+		name: "Avalanche Fuji",
+		isTestnet: true,
+		nativeTokenSymbol: "AVAX",
+		explorerBaseUrl: "https://testnet.snowtrace.io",
+		faucetUrl: "https://core.app/tools/testnet-faucet/?subnet=c&token=c",
+		faucetLabel: "Avalanche Faucet",
+		currencies: ["USDC", "AVAX"],
+	},
 	"arbitrum-one": {
 		key: "arbitrum-one",
 		chainId: 42161,
@@ -68,4 +79,12 @@ export function getNetworkConfig(chainKey?: string): NetworkConfig {
 		return NETWORKS[chainKey];
 	}
 	return NETWORKS[DEFAULT_CHAIN_KEY];
+}
+
+export function findNetworkConfigByChainId(
+	chainId?: number | null,
+): NetworkConfig | undefined {
+	return SUPPORTED_CHAIN_KEYS.map((key) => NETWORKS[key]).find(
+		(network) => network.chainId === chainId,
+	);
 }

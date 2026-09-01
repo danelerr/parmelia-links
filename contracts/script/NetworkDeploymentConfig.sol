@@ -114,10 +114,13 @@ library NetworkDeploymentConfig {
                 usdcCodehash: 0x7140a935aa3bb55d334d6d325fea277e47674770b10823feefa6f8b2c58af5fc,
                 tokenMessengerCodehash: TOKEN_MESSENGER_CODEHASH,
                 create2DeployerCodehash: CREATE2_DEPLOYER_CODEHASH,
-                paymasterStake: 0,
-                paymasterUnstakeDelay: 0,
-                paymasterDeposit: 0,
-                maxSponsoredGasCost: 0
+                // Phase 4A wallet rail. These are deliberately modest testnet
+                // limits; deploying the paymaster still requires the explicit
+                // GATOPAGO_DEPLOY_PAYMASTER=true opt-in in DeployV2.
+                paymasterStake: 0.001 ether,
+                paymasterUnstakeDelay: 1 days,
+                paymasterDeposit: 0.05 ether,
+                maxSponsoredGasCost: 0.01 ether
             });
         }
         if (chainId == ARBITRUM_ONE) {
@@ -191,14 +194,36 @@ library NetworkDeploymentConfig {
     }
 
     function outboundDomains(Config memory config) internal pure returns (uint32[] memory domains) {
-        if (!config.isHomeChain) revert NetworkDeploymentConfig__NotHomeChain(config.chainId);
-        domains = new uint32[](2);
-        domains[0] = AVALANCHE_DOMAIN;
-        domains[1] = BASE_DOMAIN;
+        if (config.isHomeChain) {
+            domains = new uint32[](2);
+            domains[0] = AVALANCHE_DOMAIN;
+            domains[1] = BASE_DOMAIN;
+            return domains;
+        }
+        if (!config.isTestnet) revert NetworkDeploymentConfig__NotHomeChain(config.chainId);
+        domains = new uint32[](1);
+        domains[0] = ARBITRUM_DOMAIN;
     }
 
     function requireHomeChain(Config memory config) internal pure {
         if (!config.isHomeChain) revert NetworkDeploymentConfig__NotHomeChain(config.chainId);
+    }
+
+    /// @notice Satellite wallet rails may sponsor testnet UserOperations, but a
+    ///         mainnet satellite paymaster requires a separate production
+    ///         decision and deployment review.
+    function requirePaymasterChain(Config memory config) internal pure {
+        if (!config.isHomeChain && !config.isTestnet) {
+            revert NetworkDeploymentConfig__NotHomeChain(config.chainId);
+        }
+    }
+
+    /// @notice Phase 4A permits a reviewed satellite CCTP egress router only on
+    ///         testnet. Mainnet satellite routing remains a separate release.
+    function requireCrosschainRouterChain(Config memory config) internal pure {
+        if (!config.isHomeChain && !config.isTestnet) {
+            revert NetworkDeploymentConfig__NotHomeChain(config.chainId);
+        }
     }
 
     function requireInboundSourceChain(Config memory config) internal pure {

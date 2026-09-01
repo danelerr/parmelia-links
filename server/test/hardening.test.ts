@@ -17,6 +17,7 @@ import { validateWebhookUrl } from "../src/routes/merchant.routes";
 import { routerAuthorizationDeadline, RouterError } from "../src/services/paymentRouter";
 import {
 	validateEmailSecurityConfig,
+	validateAppMultichainConfig,
 	validatePasskeySecurityConfig,
 	validateRuntimeConfig,
 } from "../src/services/runtimeConfig";
@@ -508,6 +509,43 @@ describe("runtime configuration", () => {
 		})).map((entry) => entry.code)).toContain(
 			"INDEXER_SAFETY_SWEEP_INVALID",
 		);
+	});
+
+	it("keeps App wallet rails behind an explicit multichain RPC gate", () => {
+		const enabled = {
+			APP_ENABLED_CHAIN_KEYS: "arbitrum-sepolia,avalanche-fuji",
+			APP_WALLET_RAIL_CHAIN_KEYS: "arbitrum-sepolia,avalanche-fuji",
+		} satisfies Partial<Bindings>;
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", enabled)))
+			.toContainEqual(expect.objectContaining({ code: "APP_CHAIN_RPC_MISSING" }));
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", {
+			...enabled,
+			APP_CHAIN_RPC_URLS: JSON.stringify({
+				"43113": {
+					read: "https://fuji-read.example,https://fuji-fallback.example",
+					write: "https://fuji-write.example",
+					indexer: "https://fuji-indexer.example",
+				},
+			}),
+		}))).toEqual([]);
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", {
+			...enabled,
+			APP_CHAIN_RPC_URLS: '{"43113":{"read":"ftp://invalid"}}',
+		})).map((entry) => entry.code)).toContain("APP_CHAIN_RPC_URLS_INVALID");
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", {
+			...enabled,
+			RELAYER_MODE: "bundler",
+			APP_CHAIN_RPC_URLS: '{"43113":"https://fuji.example"}',
+		})).map((entry) => entry.code)).toContain("APP_CHAIN_BUNDLER_RPC_MISSING");
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", {
+			...enabled,
+			RELAYER_MODE: "bundler",
+			APP_CHAIN_RPC_URLS: '{"43113":{"read":"https://fuji.example","bundler":"https://fuji-bundler.example"}}',
+		})).map((entry) => entry.code)).not.toContain("APP_CHAIN_BUNDLER_RPC_MISSING");
+		expect(validateAppMultichainConfig(envFor("arbitrum-sepolia", {
+			APP_ENABLED_CHAIN_KEYS: "avalanche-fuji",
+			APP_WALLET_RAIL_CHAIN_KEYS: "arbitrum-sepolia",
+		})).map((entry) => entry.code)).toContain("APP_HOME_CHAIN_MISSING");
 	});
 
 	it("keeps app fees behind one explicit, bounded commercial switch", () => {

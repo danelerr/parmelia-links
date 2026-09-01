@@ -1,23 +1,32 @@
 import { Hono } from "hono";
-import { type Hex, encodeFunctionData, encodePacked } from "viem";
+import { type Hex, encodeFunctionData, encodePacked, formatUnits } from "viem";
 import {
 	accountWebAuthnV2Abi,
 	accountFactoryV2Abi,
 	assertContractsDeployed,
 	getNetworkConfig,
+	isSupportedChainKey,
 	ERR,
 } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
 import {
 	createPendingPayment,
+	completeUserChainSecuritySync,
+	getActivePendingAction,
 	getAccountOperationById,
 	getActiveAccountOperation,
+	getUserChainAccount,
 	getPasskey,
 	getUserByUid,
 	listPasskeysByUid,
+	listUserChainBalanceSnapshots,
+	listUserChainAccounts,
 	markPasskeyVerified,
 	rateLimitConsume,
 	renamePasskey,
+	upsertUserChainAccount,
+	type AccountOperationRecord,
+	type UserChainAccountRecord,
 } from "../services/storage";
 import {
 	getPublicClient,
@@ -35,10 +44,12 @@ import {
 } from "../services/accountOperations";
 import {
 	buildSponsoredUserOp,
+	encodeExecuteBatch,
 	isCompletePasskeyInventory,
 	matchOnchainSigner,
 	passkeySignerActivity,
 	serializeBigInts,
+	type AccountCall,
 } from "../services/userOp";
 import { verifyTurnstile } from "../services/turnstile";
 import { logError } from "../services/logger";
@@ -64,6 +75,13 @@ import {
 	type WebAuthnAuthenticationCredential,
 	verifyWebAuthnAuthentication,
 } from "../services/webauthnAuthentication";
+import {
+	appChainCapabilities,
+	bindingsForChain,
+	enabledWalletRailChainKeys,
+	resolveAppChainKey,
+} from "../services/chainScope";
+import { requestBalanceRefreshBatch } from "../services/balanceReadModel";
 
 const accountRoutes = new Hono<AppContext>();
 
@@ -162,13 +180,88 @@ function buildWebAuthnSigner(verifier: Hex, qx: Hex, qy: Hex): Hex {
 }
 
 /** Build the initialization calldata for AccountWebAuthnV2.initialize(). */
-function buildInitCallData(verifier: Hex, qx: Hex, qy: Hex, guardian: `0x${string}`): Hex {
-	const signer = buildWebAuthnSigner(verifier, qx, qy);
+function buildInitCallDataForSigners(
+	verifier: Hex,
+	passkeys: Array<{ qx: Hex; qy: Hex }>,
+	threshold: bigint,
+	guardian: `0x${string}`,
+): Hex {
+	const signers = passkeys.map((passkey) => buildWebAuthnSigner(verifier, passkey.qx, passkey.qy));
 	return encodeFunctionData({
 		abi: accountWebAuthnV2Abi,
 		functionName: "initialize",
-		args: [[signer], 1n, guardian],
+		args: [signers, threshold, guardian],
 	});
+}
+
+function buildInitCallData(verifier: Hex, qx: Hex, qy: Hex, guardian: `0x${string}`): Hex {
+	return buildInitCallDataForSigners(verifier, [{ qx, qy }], 1n, guardian);
+}
+
+type RecoveryTarget = {
+	account: UserChainAccountRecord;
+	env: AppContext["Bindings"];
+};
+
+async function activeRecoveryTargets(
+	env: AppContext["Bindings"],
+	uid: string,
+	homeWalletAddress: `0x${string}`,
+): Promise<RecoveryTarget[]> {
+	const accounts = await listUserChainAccounts(env, uid);
+	const homeNetwork = getNetworkConfig(env.CHAIN_KEY);
+	const active = accounts.filter((account) => account.status === "active");
+	if (!active.some((account) => account.isHome)) {
+		active.unshift({
+			uid,
+			chainId: homeNetwork.chainId,
+			chainKey: homeNetwork.key,
+			networkName: homeNetwork.name,
+			walletAddress: homeWalletAddress,
+			isHome: true,
+			status: "active",
+			securityStatus: "current",
+			securityVersionApplied: 1,
+			securityVersionDesired: 1,
+			deploymentTxHash: null,
+			createdAt: new Date(0).toISOString(),
+			updatedAt: new Date(0).toISOString(),
+			activatedAt: null,
+		});
+	}
+	return active.map((account) => {
+		if (!isSupportedChainKey(account.chainKey)) {
+			throw new Error(`Unsupported active recovery chain ${account.chainKey}`);
+		}
+		const scopedEnv = bindingsForChain(env, account.chainKey);
+		if (!scopedEnv.RPC_READ_URLS?.trim() || !scopedEnv.RPC_WRITE_URLS?.trim()) {
+			throw new Error(`Recovery RPC is not configured for ${account.chainKey}`);
+		}
+		return { account, env: scopedEnv };
+	}).sort((left, right) => Number(left.account.isHome) - Number(right.account.isHome));
+}
+
+function recoveryOperationPayload(operations: AccountOperationRecord[]) {
+	const primary = operations.find((operation) => operation.metadata.isHomeAccount !== false)
+		?? operations[0];
+	if (!primary) return { alreadyComplete: true, operations: [] };
+	return {
+		...operationPayload(primary),
+		operations: operations.map((operation) => ({
+			...operationPayload(operation),
+			chainId: operation.chainId,
+			chainKey: operation.chainKey,
+		})),
+	};
+}
+
+function recoveryMatches(
+	pending: readonly [bigint, readonly Hex[], bigint],
+	qx: Hex,
+	qy: Hex,
+): boolean {
+	return pending[2] === 1n && pending[1].length === 1 &&
+		Boolean(matchOnchainSigner([...pending[1]], qx, qy));
 }
 
 async function prepareV2WalletDeployment(env: AppContext["Bindings"], params: { qx: Hex; qy: Hex }) {
@@ -316,6 +409,404 @@ accountRoutes.post("/create", requireAuth, async (c) => {
 	}
 });
 
+// Phase 4A chain portfolio. The identity is global, but every balance and
+// execution account remains explicit per chain.
+accountRoutes.get("/chains", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const [accounts, capabilities, snapshots] = await Promise.all([
+		listUserChainAccounts(c.env, user.sub),
+		Promise.resolve(appChainCapabilities(c.env)),
+		listUserChainBalanceSnapshots(c.env, user.sub),
+	]);
+	const maxAgeSeconds = Number(c.env.BALANCE_MAX_STALENESS_SECONDS || "300");
+	const maxAgeMs = (Number.isSafeInteger(maxAgeSeconds) && maxAgeSeconds >= 15 ? maxAgeSeconds : 300) * 1_000;
+	const refreshes = accounts.flatMap((account) => {
+		if (account.status !== "active") return [];
+		const chain = capabilities.find((candidate) => candidate.chainId === account.chainId);
+		// The execution kill switch must stop new movements, not blind the
+		// portfolio. Existing accounts can still receive funds onchain while a
+		// rail is paused, so keep their read-only balance snapshots observable.
+		if (!chain?.rpcConfigured) return [];
+		const rows = snapshots.filter((snapshot) => snapshot.chainId === account.chainId);
+		const hasStaleOrMissingAsset = chain.assets.some((asset) => {
+			const snapshot = rows.find((row) => row.asset === asset.symbol);
+			if (!snapshot) return true;
+			const observedAt = Date.parse(snapshot.observedAt);
+			return !Number.isFinite(observedAt) || Date.now() - observedAt > maxAgeMs;
+		});
+		return hasStaleOrMissingAsset
+			? [{
+				chainId: account.chainId,
+				accountAddress: account.walletAddress,
+				uid: user.sub,
+				reason: "portfolio_snapshot_stale",
+				priority: 3 as const,
+			}]
+			: [];
+	});
+	if (refreshes.length > 0) {
+		c.executionCtx.waitUntil(
+			requestBalanceRefreshBatch(c.env, refreshes).catch((error) => {
+				logError("chain_portfolio_refresh_request_failed", error, {
+					uid: user.sub,
+					chains: refreshes.map((refresh) => refresh.chainId).join(","),
+				});
+			}),
+		);
+	}
+	return c.json({
+		chains: capabilities.map((chain) => {
+			const account = accounts.find((candidate) => candidate.chainId === chain.chainId) ?? null;
+			const rows = snapshots.filter((snapshot) => snapshot.chainId === chain.chainId);
+			const assets = chain.assets.map((asset) => {
+				const snapshot = rows.find((row) => row.asset === asset.symbol) ?? null;
+				const age = snapshot ? Date.now() - Date.parse(snapshot.observedAt) : Number.POSITIVE_INFINITY;
+				return {
+					...asset,
+					value: snapshot ? formatUnits(BigInt(snapshot.balanceRaw), snapshot.decimals) : null,
+					raw: snapshot?.balanceRaw ?? null,
+					status: !snapshot ? "unavailable" : age <= maxAgeMs ? "fresh" : "stale",
+					observedAt: snapshot?.observedAt ?? null,
+					blockNumber: snapshot?.blockNumber ?? null,
+					blockHash: snapshot?.blockHash ?? null,
+				};
+			});
+			return { ...chain, account, balance: { assets } };
+		}),
+	});
+});
+
+accountRoutes.post("/chains/:chainKey/activate", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const requested = c.req.param("chainKey");
+	const chainKey = resolveAppChainKey(c.env, requested);
+	if (!chainKey) {
+		return c.json({ error: "Red no soportada.", error_code: ERR.UNSUPPORTED_CHAIN }, 404);
+	}
+	if (!enabledWalletRailChainKeys(c.env).includes(chainKey)) {
+		return c.json({
+			error: "La red todavía no está habilitada para crear cuentas.",
+			error_code: ERR.SERVICE_UNAVAILABLE,
+		}, 503);
+	}
+	const network = getNetworkConfig(chainKey);
+	const scopedEnv = bindingsForChain(c.env, chainKey);
+	if (!scopedEnv.RPC_READ_URLS?.trim() || !scopedEnv.RPC_WRITE_URLS?.trim()) {
+		return c.json({ error: "La red no tiene RPC configurado.", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+	}
+
+	const profile = await getUserByUid(c.env, user.sub);
+	if (!profile?.walletAddress) {
+		return c.json({ error: "Necesitas crear tu cuenta primero.", error_code: ERR.NO_WALLET }, 400);
+	}
+	const homeNetwork = getNetworkConfig(c.env.CHAIN_KEY);
+	const homeAccount = await getUserChainAccount(c.env, user.sub, homeNetwork.chainId);
+	if (!homeAccount || homeAccount.status !== "active") {
+		return c.json({ error: "La cuenta principal no está disponible.", error_code: ERR.NO_WALLET }, 409);
+	}
+	const securityVersion = homeAccount.securityVersionDesired;
+	const existing = await getUserChainAccount(c.env, user.sub, network.chainId);
+	if (existing?.status === "active") return c.json({ account: existing }, 200);
+	const active = await getActiveAccountOperation(scopedEnv, user.sub, "account_create");
+	if (active) return c.json({ existingOperation: operationPayload(active) }, 202);
+	if (!(await rateLimitConsume(c.env, "chain-account-activate", `${user.sub}:${network.chainId}`, 5, 24 * 60 * 60, { failClosed: true }))) {
+		return c.json({ error: "Demasiados intentos.", error_code: ERR.RATE_LIMITED }, 429);
+	}
+
+	try {
+		assertContractsDeployed(network, ["factory", "verifier", "paymaster"]);
+		const homeRecoveryPending = await getPublicClient(c.env).readContract({
+			address: profile.walletAddress as `0x${string}`,
+			abi: accountWebAuthnV2Abi,
+			functionName: "isRecoveryPending",
+		}) as boolean;
+		if (homeRecoveryPending) {
+			return c.json({
+				error: "Completa o cancela la recuperación antes de activar otra red.",
+				error_code: ERR.RECOVERY_IN_PROGRESS,
+			}, 409);
+		}
+		const [storedPasskeys, homeSigners, homeThreshold] = await Promise.all([
+			listPasskeysByUid(c.env, user.sub),
+			getPublicClient(c.env).readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSigners",
+				args: [0n, 32n],
+			}) as Promise<Hex[]>,
+			getPublicClient(c.env).readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "threshold",
+			}) as Promise<bigint>,
+		]);
+		const activePasskeys = storedPasskeys.filter((passkey) =>
+			Boolean(matchOnchainSigner(homeSigners, passkey.qx as Hex, passkey.qy as Hex)),
+		);
+		if (activePasskeys.length === 0 || homeThreshold < 1n || homeThreshold > BigInt(activePasskeys.length)) {
+			return c.json({
+				error: "No pudimos comprobar el conjunto completo de llaves activas.",
+				error_code: ERR.PASSKEY_NOT_ACTIVE,
+			}, 409);
+		}
+
+		const publicClient = getPublicClient(scopedEnv);
+		const deployedCode = await Promise.all([
+			publicClient.getCode({ address: network.contracts.factory }),
+			publicClient.getCode({ address: network.contracts.verifier }),
+			publicClient.getCode({ address: network.contracts.paymaster }),
+		]);
+		if (deployedCode.some((code) => !code || code === "0x")) {
+			return c.json({
+				error: "La infraestructura de cuenta todavía no está desplegada en esta red.",
+				error_code: ERR.SERVICE_UNAVAILABLE,
+			}, 503);
+		}
+
+		const guardian = getRecoveryGuardianAccount(scopedEnv).address;
+		const initCallData = buildInitCallDataForSigners(
+			network.contracts.verifier,
+			activePasskeys.map((passkey) => ({ qx: passkey.qx as Hex, qy: passkey.qy as Hex })),
+			homeThreshold,
+			guardian,
+		);
+		const predictedAddress = (await publicClient.readContract({
+			address: network.contracts.factory,
+			abi: accountFactoryV2Abi,
+			functionName: "predictAddress",
+			args: [initCallData],
+		})) as `0x${string}`;
+		const { operation } = await submitAccountOperation(scopedEnv, {
+			uid: user.sub,
+			kind: "account_create",
+			to: network.contracts.factory,
+			data: encodeFunctionData({
+				abi: accountFactoryV2Abi,
+				functionName: "createAccount",
+				args: [initCallData],
+			}),
+			metadata: {
+				walletAddress: predictedAddress,
+				isHomeAccount: false,
+				chainKey,
+				chainId: network.chainId,
+				securityVersion,
+				signerCount: activePasskeys.length,
+				threshold: homeThreshold.toString(),
+			},
+		});
+		await upsertUserChainAccount(c.env, {
+			uid: user.sub,
+			chainId: network.chainId,
+			chainKey,
+			networkName: network.name,
+			walletAddress: predictedAddress,
+			isHome: false,
+			status: "deploying",
+			securityStatus: "syncing",
+			securityVersionApplied: securityVersion,
+			deploymentTxHash: operation.txHash,
+		});
+		return c.json({
+			...operationPayload(operation),
+			accountAddress: predictedAddress,
+			chainId: network.chainId,
+			chainKey,
+		}, 202);
+	} catch (error) {
+		logError("chain_account_activation_failed", error, { uid: user.sub, chainKey });
+		if (error instanceof AccountOperationBusyError) {
+			return c.json({ error: "El relayer está ocupado.", error_code: ERR.SERVICE_UNAVAILABLE }, 503);
+		}
+		return c.json({ error: "No pudimos activar esta red.", error_code: ERR.SERVER_ERROR }, 500);
+	}
+});
+
+accountRoutes.post("/chains/:chainKey/security/prepare", requireAuth, async (c) => {
+	const user = c.get("user")!;
+	const chainKey = resolveAppChainKey(c.env, c.req.param("chainKey"), { requireWalletRail: true });
+	if (!chainKey) {
+		return c.json({ error: "Red no soportada.", error_code: ERR.UNSUPPORTED_CHAIN }, 404);
+	}
+	if (chainKey === c.env.CHAIN_KEY) {
+		return c.json({ alreadyCurrent: true, chainKey }, 200);
+	}
+	const network = getNetworkConfig(chainKey);
+	const scopedEnv = bindingsForChain(c.env, chainKey);
+	const [profile, chainAccount] = await Promise.all([
+		getUserByUid(c.env, user.sub),
+		getUserChainAccount(c.env, user.sub, network.chainId),
+	]);
+	if (!profile?.walletAddress || !chainAccount || chainAccount.status !== "active") {
+		return c.json({ error: "No hay una cuenta activa en esta red.", error_code: ERR.NO_WALLET }, 400);
+	}
+	if (chainAccount.securityStatus === "current" &&
+		chainAccount.securityVersionApplied === chainAccount.securityVersionDesired) {
+		return c.json({ alreadyCurrent: true, chainKey }, 200);
+	}
+	if (await getActivePendingAction(c.env, {
+		uid: user.sub,
+		chainId: network.chainId,
+		currency: "PASSKEY_SYNC",
+	})) {
+		return c.json({ error: "La sincronización ya está en curso.", error_code: ERR.PAYMENT_IN_PROGRESS }, 409);
+	}
+	if (!(await rateLimitConsume(c.env, "chain-security-sync", `${user.sub}:${network.chainId}`, 10, 60 * 60, { failClosed: true }))) {
+		return c.json({ error: "Demasiados intentos.", error_code: ERR.RATE_LIMITED }, 429);
+	}
+
+	try {
+		const storedPasskeys = await listPasskeysByUid(c.env, user.sub);
+		const homeClient = getPublicClient(c.env);
+		const satelliteClient = getPublicClient(scopedEnv);
+		const [homeSigners, homeSignerCount, homeThreshold, satelliteSigners, satelliteThreshold] = await Promise.all([
+			homeClient.readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSigners",
+				args: [0n, 32n],
+			}) as Promise<Hex[]>,
+			homeClient.readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSignerCount",
+			}) as Promise<bigint>,
+			homeClient.readContract({
+				address: profile.walletAddress as `0x${string}`,
+				abi: accountWebAuthnV2Abi,
+				functionName: "threshold",
+			}) as Promise<bigint>,
+			satelliteClient.readContract({
+				address: chainAccount.walletAddress,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSigners",
+				args: [0n, 32n],
+			}) as Promise<Hex[]>,
+			satelliteClient.readContract({
+				address: chainAccount.walletAddress,
+				abi: accountWebAuthnV2Abi,
+				functionName: "threshold",
+			}) as Promise<bigint>,
+		]);
+		if (!isCompletePasskeyInventory({
+			signerCount: homeSignerCount,
+			signers: homeSigners,
+			passkeys: storedPasskeys,
+		})) {
+			return c.json({
+				error: "No pudimos comprobar el conjunto completo de llaves de la cuenta principal.",
+				error_code: ERR.PASSKEY_NOT_ACTIVE,
+			}, 409);
+		}
+		if (homeThreshold < 1n || homeThreshold > BigInt(storedPasskeys.length)) {
+			return c.json({ error: "Umbral de seguridad inválido.", error_code: ERR.PASSKEY_NOT_ACTIVE }, 409);
+		}
+
+		const desiredSigners = storedPasskeys.map((passkey) => buildWebAuthnSigner(
+			network.contracts.verifier,
+			passkey.qx as Hex,
+			passkey.qy as Hex,
+		));
+		const desiredSet = new Set(desiredSigners.map((signer) => signer.toLowerCase()));
+		const currentSet = new Set(satelliteSigners.map((signer) => signer.toLowerCase()));
+		const additions = desiredSigners.filter((signer) => !currentSet.has(signer.toLowerCase()));
+		const removals = satelliteSigners.filter((signer) => !desiredSet.has(signer.toLowerCase()));
+		const signingPasskey = storedPasskeys.find((passkey) =>
+			Boolean(matchOnchainSigner(satelliteSigners, passkey.qx as Hex, passkey.qy as Hex)),
+		);
+		if (!signingPasskey) {
+			return c.json({
+				error: "Ninguna llave actual puede autorizar esta sincronización. Usa la recuperación de cuenta.",
+				error_code: ERR.PASSKEY_NOT_ACTIVE,
+			}, 409);
+		}
+
+		const calls: AccountCall[] = [];
+		if (additions.length > 0) {
+			calls.push({
+				target: chainAccount.walletAddress,
+				value: 0n,
+				data: encodeFunctionData({ abi: accountWebAuthnV2Abi, functionName: "addSigners", args: [additions] }),
+			});
+		}
+		if (homeThreshold < satelliteThreshold) {
+			calls.push({
+				target: chainAccount.walletAddress,
+				value: 0n,
+				data: encodeFunctionData({ abi: accountWebAuthnV2Abi, functionName: "setThreshold", args: [homeThreshold] }),
+			});
+		}
+		if (removals.length > 0) {
+			calls.push({
+				target: chainAccount.walletAddress,
+				value: 0n,
+				data: encodeFunctionData({ abi: accountWebAuthnV2Abi, functionName: "removeSigners", args: [removals] }),
+			});
+		}
+		if (homeThreshold > satelliteThreshold) {
+			calls.push({
+				target: chainAccount.walletAddress,
+				value: 0n,
+				data: encodeFunctionData({ abi: accountWebAuthnV2Abi, functionName: "setThreshold", args: [homeThreshold] }),
+			});
+		}
+
+		if (calls.length === 0) {
+			const completed = await completeUserChainSecuritySync(c.env, {
+				uid: user.sub,
+				chainId: network.chainId,
+				expectedVersion: chainAccount.securityVersionDesired,
+			});
+			return c.json({ alreadyCurrent: completed, chainKey }, completed ? 200 : 409);
+		}
+
+		const callData = calls.length === 1 ? calls[0].data : encodeExecuteBatch(calls);
+		const submissionTransport = selectUserOperationTransport(scopedEnv, user.sub);
+		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(scopedEnv, {
+			sender: chainAccount.walletAddress,
+			callData,
+			verificationGasLimit: 450000n,
+			callGasLimit: 500000n,
+			transportMode: submissionTransport,
+		});
+		await createPendingPayment(scopedEnv, {
+			userOpHash,
+			chainId: network.chainId,
+			chainKey,
+			linkId: null,
+			uid: user.sub,
+			amount: "0",
+			currency: "PASSKEY_SYNC",
+			wallet: chainAccount.walletAddress,
+			senderAddress: chainAccount.walletAddress,
+			userOp: serializeBigInts(userOp) as Record<string, unknown>,
+			submissionTransport,
+			sponsorshipProvider,
+			sponsorshipPaymasterAddress,
+			meta: {
+				chainId: network.chainId,
+				chainKey,
+				securityVersion: chainAccount.securityVersionDesired,
+				signerCount: desiredSigners.length,
+				threshold: homeThreshold.toString(),
+			},
+		});
+		return c.json({
+			userOpHash,
+			credentialId: signingPasskey.credentialId,
+			rpId,
+			submissionTransport,
+			signingPayload,
+			chainId: network.chainId,
+			chainKey,
+		}, 201);
+	} catch (error) {
+		logError("chain_security_sync_prepare_failed", error, { uid: user.sub, chainKey });
+		return c.json({ error: "No pudimos preparar la sincronización.", error_code: ERR.SERVER_ERROR }, 500);
+	}
+});
+
 // Passkey + recovery status for the wallet (V2).
 accountRoutes.get("/passkey", requireAuth, async (c) => {
 	const user = c.get("user")!;
@@ -333,6 +824,14 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 		guardian: null as string | null,
 		recoveryPending: null as boolean | null,
 		recoveryExecutableAfter: null as string | null,
+		recoveryCoverageComplete: false,
+		recoveryChains: [] as Array<{
+			chainId: number;
+			chainKey: string;
+			networkName: string;
+			status: "pending" | "clear" | "unavailable";
+			executableAfter: string | null;
+		}>,
 		// Registered ERC-7913 signer bytes. The client matches its remembered
 		// passkeys (qx||qy suffix) against these to answer the question the
 		// signerCount tile can't: "can THIS device sign?" (jul-2026 field bug:
@@ -377,7 +876,61 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 				publicClient.readContract({ address: walletAddress as `0x${string}`, abi: accountWebAuthnV2Abi, functionName: "getSigners", args: [0n, 32n] }) as Promise<Hex[]>,
 			]);
 
-		const executeAfter = Number(pendingRecovery[0]);
+		const chainAccounts = await listUserChainAccounts(c.env, user.sub);
+		const satellites = chainAccounts.filter((account) => account.status === "active" && !account.isHome);
+		const satelliteRecovery = await Promise.all(satellites.map(async (account) => {
+			if (!isSupportedChainKey(account.chainKey)) {
+				return { account, pending: null, executeAfter: 0 };
+			}
+			const scopedEnv = bindingsForChain(c.env, account.chainKey);
+			const activeOperations = await Promise.all([
+				getActiveAccountOperation(scopedEnv, user.sub, "recovery_propose"),
+				getActiveAccountOperation(scopedEnv, user.sub, "recovery_execute"),
+				getActiveAccountOperation(scopedEnv, user.sub, "recovery_cancel"),
+			]);
+			if (!scopedEnv.RPC_READ_URLS?.trim()) {
+				return { account, pending: activeOperations.some(Boolean) ? true : null, executeAfter: 0 };
+			}
+			try {
+				const satellitePending = await getPublicClient(scopedEnv).readContract({
+					address: account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getPendingRecovery",
+				}) as [bigint, Hex[], bigint];
+				return {
+					account,
+					pending: satellitePending[0] > 0n || activeOperations.some(Boolean),
+					executeAfter: Number(satellitePending[0]),
+				};
+			} catch {
+				return { account, pending: activeOperations.some(Boolean) ? true : null, executeAfter: 0 };
+			}
+		}));
+		const homeActiveOperations = await Promise.all([
+			getActiveAccountOperation(c.env, user.sub, "recovery_propose"),
+			getActiveAccountOperation(c.env, user.sub, "recovery_execute"),
+			getActiveAccountOperation(c.env, user.sub, "recovery_cancel"),
+		]);
+		const homeExecuteAfter = Number(pendingRecovery[0]);
+		const recoveryChains = [{
+			chainId: getNetworkConfig(c.env.CHAIN_KEY).chainId,
+			chainKey: c.env.CHAIN_KEY,
+			networkName: getNetworkConfig(c.env.CHAIN_KEY).name,
+			pending: recoveryPending || homeActiveOperations.some(Boolean),
+			executeAfter: homeExecuteAfter,
+		}, ...satelliteRecovery.map((state) => ({
+			chainId: state.account.chainId,
+			chainKey: state.account.chainKey,
+			networkName: state.account.networkName,
+			pending: state.pending,
+			executeAfter: state.executeAfter,
+		}))];
+		const recoveryCoverageComplete = recoveryChains.every((chain) => chain.pending !== null);
+		const anyRecoveryPending = recoveryChains.some((chain) => chain.pending === true);
+		const latestExecuteAfter = recoveryChains.reduce(
+			(latest, chain) => chain.executeAfter > latest ? chain.executeAfter : latest,
+			0,
+		);
 		const credentialInventoryComplete = isCompletePasskeyInventory({
 			signerCount,
 			signers,
@@ -390,8 +943,16 @@ accountRoutes.get("/passkey", requireAuth, async (c) => {
 			signerCount: Number(signerCount),
 			threshold: Number(threshold),
 			guardian,
-			recoveryPending,
-			recoveryExecutableAfter: executeAfter > 0 ? new Date(executeAfter * 1000).toISOString() : null,
+			recoveryPending: anyRecoveryPending ? true : recoveryCoverageComplete ? false : null,
+			recoveryExecutableAfter: latestExecuteAfter > 0 ? new Date(latestExecuteAfter * 1000).toISOString() : null,
+			recoveryCoverageComplete,
+			recoveryChains: recoveryChains.map((chain) => ({
+				chainId: chain.chainId,
+				chainKey: chain.chainKey,
+				networkName: chain.networkName,
+				status: chain.pending === null ? "unavailable" as const : chain.pending ? "pending" as const : "clear" as const,
+				executableAfter: chain.executeAfter > 0 ? new Date(chain.executeAfter * 1000).toISOString() : null,
+			})),
 			signers,
 			credentialInventoryComplete,
 			passkeys: base.passkeys.map((passkey, index) => ({
@@ -811,25 +1372,29 @@ accountRoutes.post("/recovery/preflight", requireAuth, async (c) => {
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress;
 	if (!walletAddress) return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
-	if (await getActiveAccountOperation(c.env, user.sub, "recovery_propose")) {
-		return c.json({ error: "Ya hay una recuperación en proceso.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
-	}
 	const expectedOrigin = validWebAuthnRegistrationOrigin(c.env, c.req.header("Origin"));
 	if (!expectedOrigin) {
 		return c.json({ error: "Invalid WebAuthn origin", error_code: ERR.WEBAUTHN_REGISTRATION_INVALID }, 400);
 	}
 
 	try {
-		const publicClient = getPublicClient(c.env);
-		const isRecoveryPending = (await publicClient.readContract({
-			address: walletAddress as `0x${string}`,
-			abi: accountWebAuthnV2Abi,
-			functionName: "isRecoveryPending",
-		})) as boolean;
-		if (isRecoveryPending) {
+		const targets = await activeRecoveryTargets(c.env, user.sub, walletAddress as `0x${string}`);
+		const targetStates = await Promise.all(targets.map(async (target) => {
+			const publicClient = getPublicClient(target.env);
+			const [isRecoveryPending, activeOperation] = await Promise.all([
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "isRecoveryPending",
+				}) as Promise<boolean>,
+				getActiveAccountOperation(target.env, user.sub, "recovery_propose"),
+			]);
+			await guardianSignerForAccount(target.env, publicClient, target.account.walletAddress);
+			return { isRecoveryPending, activeOperation };
+		}));
+		if (targetStates.some((state) => state.isRecoveryPending || state.activeOperation)) {
 			return c.json({ error: "Ya hay una recuperación en proceso.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
 		}
-		await guardianSignerForAccount(c.env, publicClient, walletAddress as `0x${string}`);
 		const stepUpToken = c.req.header("X-Step-Up-Token");
 		if (!stepUpToken) {
 			return c.json({ error: "Security verification is required", error_code: ERR.STEP_UP_REQUIRED }, 403);
@@ -861,72 +1426,104 @@ accountRoutes.post("/recovery/propose", requireAuth, async (c) => {
 	const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
 	const qx = typeof body.qx === "string" ? body.qx : "";
 	const qy = typeof body.qy === "string" ? body.qy : "";
-	const active = await getActiveAccountOperation(c.env, user.sub, "recovery_propose");
-	if (active) {
-		if (active.metadata.qx === qx && active.metadata.qy === qy) {
-			return c.json({ ...operationPayload(active), message: "Recuperación en proceso." }, 202);
-		}
-		return c.json({ error: "Ya hay una recuperación en proceso.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
-	}
 
 	try {
-		const { verifier } = getNetworkConfig(c.env.CHAIN_KEY).contracts;
-		const publicClient = getPublicClient(c.env);
-
-		const isRecoveryPending = (await publicClient.readContract({
-			address: walletAddress as `0x${string}`,
-			abi: accountWebAuthnV2Abi,
-			functionName: "isRecoveryPending",
-		})) as boolean;
-		if (isRecoveryPending) {
-			return c.json({ error: "Ya hay una recuperacion en proceso.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
-		}
-		const signer = await guardianSignerForAccount(c.env, publicClient, walletAddress as `0x${string}`);
 		const stepUpToken = c.req.header("X-Step-Up-Token");
 		if (!stepUpToken) {
 			return c.json({ error: "Security verification is required", error_code: ERR.STEP_UP_REQUIRED }, 403);
+		}
+		if (!(await validateRecoveryStepUp(c.env, { uid: user.sub, token: stepUpToken }))) {
+			return c.json({ error: "Security verification is invalid or expired", error_code: ERR.STEP_UP_INVALID }, 403);
 		}
 		const registration = await finalizeWebAuthnRegistration(c.env, {
 			uid: user.sub,
 			purpose: "recovery_propose",
 			credential: registrationCredentialFromBody(body),
 		});
+		const targets = await activeRecoveryTargets(c.env, user.sub, walletAddress as `0x${string}`);
+		const states = await Promise.all(targets.map(async (target) => {
+			const publicClient = getPublicClient(target.env);
+			const [pending, activeOperation] = await Promise.all([
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getPendingRecovery",
+				}) as Promise<[bigint, Hex[], bigint]>,
+				getActiveAccountOperation(target.env, user.sub, "recovery_propose"),
+			]);
+			const signer = await guardianSignerForAccount(
+				target.env,
+				publicClient,
+				target.account.walletAddress,
+			);
+			return { target, pending, activeOperation, signer };
+		}));
+		for (const state of states) {
+			if (state.pending[0] > 0n &&
+				!recoveryMatches(state.pending, registration.qx as Hex, registration.qy as Hex)) {
+				return c.json({
+					error: "Ya hay una recuperación distinta en proceso.",
+					error_code: ERR.RECOVERY_IN_PROGRESS,
+				}, 409);
+			}
+			if (state.activeOperation &&
+				(state.activeOperation.metadata.qx !== qx || state.activeOperation.metadata.qy !== qy)) {
+				return c.json({
+					error: "Ya hay una recuperación distinta en proceso.",
+					error_code: ERR.RECOVERY_IN_PROGRESS,
+				}, 409);
+			}
+		}
 		if (!(await consumeRecoveryStepUp(c.env, { uid: user.sub, token: stepUpToken }))) {
 			return c.json({ error: "Security verification is invalid or expired", error_code: ERR.STEP_UP_INVALID }, 403);
 		}
 
-		const newSigner = buildWebAuthnSigner(
-			verifier,
-			registration.qx as Hex,
-			registration.qy as Hex,
-		);
-		const { operation } = await submitAccountOperation(c.env, {
-			uid: user.sub,
-			kind: "recovery_propose",
-			to: walletAddress as `0x${string}`,
-			data: encodeFunctionData({
-				abi: accountWebAuthnV2Abi,
-				functionName: "proposeRecovery",
-				args: [[newSigner], 1n],
-			}),
-			metadata: {
-				walletAddress,
-				credentialId: registration.credentialId,
-				qx: registration.qx,
-				qy: registration.qy,
-				passkeyName: registration.name,
-				passkeySource: "recovery",
-				passkeyTransports: registration.transports,
-				passkeyRpId: registration.rpId,
-				passkeyAaguid: registration.aaguid,
-				passkeyProviderName: registration.providerName,
-				passkeyCredentialDeviceType: registration.credentialDeviceType,
-				passkeyCredentialBackedUp: registration.credentialBackedUp,
-				passkeyAuthenticatorAttachment: registration.authenticatorAttachment,
-			},
-			signer,
-		});
-		return c.json({ ...operationPayload(operation), message: "Recuperación iniciada. Estará lista en 48 horas." }, 202);
+		const operations: AccountOperationRecord[] = [];
+		for (const state of states) {
+			if (state.pending[0] > 0n) continue;
+			if (state.activeOperation) {
+				operations.push(state.activeOperation);
+				continue;
+			}
+			const network = getNetworkConfig(state.target.account.chainKey);
+			const newSigner = buildWebAuthnSigner(
+				network.contracts.verifier,
+				registration.qx as Hex,
+				registration.qy as Hex,
+			);
+			const { operation } = await submitAccountOperation(state.target.env, {
+				uid: user.sub,
+				kind: "recovery_propose",
+				to: state.target.account.walletAddress,
+				data: encodeFunctionData({
+					abi: accountWebAuthnV2Abi,
+					functionName: "proposeRecovery",
+					args: [[newSigner], 1n],
+				}),
+				metadata: {
+					walletAddress: state.target.account.walletAddress,
+					isHomeAccount: state.target.account.isHome,
+					credentialId: registration.credentialId,
+					qx: registration.qx,
+					qy: registration.qy,
+					passkeyName: registration.name,
+					passkeySource: "recovery",
+					passkeyTransports: registration.transports,
+					passkeyRpId: registration.rpId,
+					passkeyAaguid: registration.aaguid,
+					passkeyProviderName: registration.providerName,
+					passkeyCredentialDeviceType: registration.credentialDeviceType,
+					passkeyCredentialBackedUp: registration.credentialBackedUp,
+					passkeyAuthenticatorAttachment: registration.authenticatorAttachment,
+				},
+				signer: state.signer,
+			});
+			operations.push(operation);
+		}
+		return c.json({
+			...recoveryOperationPayload(operations),
+			message: "Recuperación iniciada en todas tus redes. Estará lista en 48 horas.",
+		}, operations.length > 0 ? 202 : 200);
 	} catch (error) {
 		logError("account_recovery_propose_failed", error, { uid: user.sub });
 		if (error instanceof InvalidWebAuthnRegistrationError) {
@@ -959,38 +1556,7 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 	if (!credentialId || !qx || !qy) {
 		return c.json({ error: "Missing credentialId, qx, or qy", error_code: ERR.MISSING_PASSKEY_DATA }, 400);
 	}
-	const active = await getActiveAccountOperation(c.env, user.sub, "recovery_execute");
-	if (active) {
-		if (active.metadata.qx === qx && active.metadata.qy === qy) {
-			return c.json({ ...operationPayload(active), message: "Recuperación en ejecución." }, 202);
-		}
-		return c.json({ error: "Ya hay una recuperación en ejecución.", error_code: ERR.RECOVERY_IN_PROGRESS }, 409);
-	}
-
 	try {
-		const publicClient = getPublicClient(c.env);
-
-		const pendingRecovery = (await publicClient.readContract({
-			address: walletAddress as `0x${string}`,
-			abi: accountWebAuthnV2Abi,
-			functionName: "getPendingRecovery",
-		})) as [bigint, Hex[], bigint];
-
-		const executeAfter = Number(pendingRecovery[0]);
-		if (executeAfter === 0) return c.json({ error: "No hay recuperacion en proceso.", error_code: ERR.RECOVERY_NONE }, 409);
-		if (Date.now() / 1000 < executeAfter) {
-			return c.json({ error: `La recuperacion estara disponible el ${new Date(executeAfter * 1000).toLocaleString()}`, error_code: ERR.RECOVERY_NOT_READY }, 409);
-		}
-
-		// executeRecovery REPLACES all signers with the proposed set. If the
-		// credential the client sends isn't the proposed one (stale localStorage,
-		// a different device), storing it would leave the account with a passkey
-		// that can't sign. Match by qx||qy suffix — NOT by rebuilding the full
-		// signer bytes with the current verifier, which would false-negative if
-		// the verifier was redeployed inside the 48h window (jul-2026 class).
-		if (!matchOnchainSigner(pendingRecovery[1], qx as Hex, qy as Hex)) {
-			return c.json({ error: "La llave no coincide con la recuperación propuesta. Cancela y vuelve a empezar.", error_code: ERR.RECOVERY_SIGNER_MISMATCH }, 409);
-		}
 		const registration = registrationId
 			? await getFinalizedWebAuthnRegistration(c.env, {
 				registrationId,
@@ -1007,6 +1573,57 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 		) {
 			return c.json({ error: "La metadata de la llave no coincide con la recuperación.", error_code: ERR.WEBAUTHN_REGISTRATION_INVALID }, 409);
 		}
+		const targets = await activeRecoveryTargets(c.env, user.sub, walletAddress as `0x${string}`);
+		const states = await Promise.all(targets.map(async (target) => {
+			const publicClient = getPublicClient(target.env);
+			const [pending, signers, threshold, activeOperation] = await Promise.all([
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getPendingRecovery",
+				}) as Promise<[bigint, Hex[], bigint]>,
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "getSigners",
+					args: [0n, 32n],
+				}) as Promise<Hex[]>,
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "threshold",
+				}) as Promise<bigint>,
+				getActiveAccountOperation(target.env, user.sub, "recovery_execute"),
+			]);
+			const recovered = pending[0] === 0n && threshold === 1n && signers.length === 1 &&
+				Boolean(matchOnchainSigner(signers, qx as Hex, qy as Hex));
+			return { target, pending, activeOperation, recovered };
+		}));
+		for (const state of states) {
+			if (state.pending[0] > 0n && !recoveryMatches(state.pending, qx as Hex, qy as Hex)) {
+				return c.json({
+					error: "La llave no coincide con la recuperación propuesta. Cancela y vuelve a empezar.",
+					error_code: ERR.RECOVERY_SIGNER_MISMATCH,
+				}, 409);
+			}
+			if (state.pending[0] === 0n && !state.recovered && !state.activeOperation) {
+				return c.json({ error: "La recuperación no está activa en todas las redes.", error_code: ERR.RECOVERY_NONE }, 409);
+			}
+			if (state.activeOperation &&
+				(state.activeOperation.metadata.qx !== qx || state.activeOperation.metadata.qy !== qy)) {
+				return c.json({ error: "Hay una recuperación diferente en ejecución.", error_code: ERR.RECOVERY_SIGNER_MISMATCH }, 409);
+			}
+		}
+		const latestExecuteAfter = states.reduce(
+			(latest, state) => state.pending[0] > latest ? state.pending[0] : latest,
+			0n,
+		);
+		if (Date.now() / 1000 < Number(latestExecuteAfter)) {
+			return c.json({
+				error: `La recuperación estará disponible el ${new Date(Number(latestExecuteAfter) * 1000).toLocaleString()}`,
+				error_code: ERR.RECOVERY_NOT_READY,
+			}, 409);
+		}
 		const stepUpToken = c.req.header("X-Step-Up-Token");
 		if (!stepUpToken) {
 			return c.json({ error: "Security verification is required", error_code: ERR.STEP_UP_REQUIRED }, 403);
@@ -1015,30 +1632,43 @@ accountRoutes.post("/recovery/execute", requireAuth, async (c) => {
 			return c.json({ error: "Security verification is invalid or expired", error_code: ERR.STEP_UP_INVALID }, 403);
 		}
 
-		const { operation } = await submitAccountOperation(c.env, {
-			uid: user.sub,
-			kind: "recovery_execute",
-			to: walletAddress as `0x${string}`,
-			data: encodeFunctionData({
-				abi: accountWebAuthnV2Abi,
-				functionName: "executeRecovery",
-			}),
-			metadata: {
-				walletAddress,
-				credentialId,
-				qx,
-				qy,
-				passkeyName: registration?.name ?? null,
-				passkeyTransports: registration?.transports ?? [],
-				passkeyRpId: registration?.rpId ?? null,
-				passkeyAaguid: registration?.aaguid ?? null,
-				passkeyProviderName: registration?.providerName ?? null,
-				passkeyCredentialDeviceType: registration?.credentialDeviceType ?? null,
-				passkeyCredentialBackedUp: registration?.credentialBackedUp ?? null,
-				passkeyAuthenticatorAttachment: registration?.authenticatorAttachment ?? null,
-			},
-		});
-		return c.json({ ...operationPayload(operation), message: "Recuperación enviada." }, 202);
+		const operations: AccountOperationRecord[] = [];
+		for (const state of states) {
+			if (state.recovered) continue;
+			if (state.activeOperation) {
+				operations.push(state.activeOperation);
+				continue;
+			}
+			const { operation } = await submitAccountOperation(state.target.env, {
+				uid: user.sub,
+				kind: "recovery_execute",
+				to: state.target.account.walletAddress,
+				data: encodeFunctionData({
+					abi: accountWebAuthnV2Abi,
+					functionName: "executeRecovery",
+				}),
+				metadata: {
+					walletAddress: state.target.account.walletAddress,
+					isHomeAccount: state.target.account.isHome,
+					credentialId,
+					qx,
+					qy,
+					passkeyName: registration?.name ?? null,
+					passkeyTransports: registration?.transports ?? [],
+					passkeyRpId: registration?.rpId ?? null,
+					passkeyAaguid: registration?.aaguid ?? null,
+					passkeyProviderName: registration?.providerName ?? null,
+					passkeyCredentialDeviceType: registration?.credentialDeviceType ?? null,
+					passkeyCredentialBackedUp: registration?.credentialBackedUp ?? null,
+					passkeyAuthenticatorAttachment: registration?.authenticatorAttachment ?? null,
+				},
+			});
+			operations.push(operation);
+		}
+		return c.json({
+			...recoveryOperationPayload(operations),
+			message: "Recuperación enviada en todas tus redes.",
+		}, operations.length > 0 ? 202 : 200);
 	} catch (error) {
 		logError("account_recovery_execute_failed", error, { uid: user.sub });
 		if (error instanceof AccountOperationBusyError) {
@@ -1060,34 +1690,53 @@ accountRoutes.post("/recovery/cancel", requireAuth, async (c) => {
 	const profile = await getUserByUid(c.env, user.sub);
 	const walletAddress = profile?.walletAddress ?? undefined;
 	if (!walletAddress) return c.json({ error: "No wallet found.", error_code: ERR.NO_WALLET }, 400);
-	const active = await getActiveAccountOperation(c.env, user.sub, "recovery_cancel");
-	if (active) return c.json(operationPayload(active), 202);
 
 	try {
-		const publicClient = getPublicClient(c.env);
-
-		const isRecoveryPending = (await publicClient.readContract({
-			address: walletAddress as `0x${string}`,
-			abi: accountWebAuthnV2Abi,
-			functionName: "isRecoveryPending",
-		})) as boolean;
-		if (!isRecoveryPending) {
+		const targets = await activeRecoveryTargets(c.env, user.sub, walletAddress as `0x${string}`);
+		const states = await Promise.all(targets.map(async (target) => {
+			const publicClient = getPublicClient(target.env);
+			const [isRecoveryPending, activeOperation] = await Promise.all([
+				publicClient.readContract({
+					address: target.account.walletAddress,
+					abi: accountWebAuthnV2Abi,
+					functionName: "isRecoveryPending",
+				}) as Promise<boolean>,
+				getActiveAccountOperation(target.env, user.sub, "recovery_cancel"),
+			]);
+			return { target, isRecoveryPending, activeOperation, publicClient };
+		}));
+		if (!states.some((state) => state.isRecoveryPending || state.activeOperation)) {
 			return c.json({ error: "No hay recuperacion en proceso.", error_code: ERR.RECOVERY_NONE }, 409);
 		}
-		const signer = await guardianSignerForAccount(c.env, publicClient, walletAddress as `0x${string}`);
-
-		const { operation } = await submitAccountOperation(c.env, {
-			uid: user.sub,
-			kind: "recovery_cancel",
-			to: walletAddress as `0x${string}`,
-			data: encodeFunctionData({
-				abi: accountWebAuthnV2Abi,
-				functionName: "guardianCancelRecovery",
-			}),
-			metadata: { walletAddress },
-			signer,
-		});
-		return c.json(operationPayload(operation), 202);
+		const operations: AccountOperationRecord[] = [];
+		for (const state of states) {
+			if (state.activeOperation) {
+				operations.push(state.activeOperation);
+				continue;
+			}
+			if (!state.isRecoveryPending) continue;
+			const signer = await guardianSignerForAccount(
+				state.target.env,
+				state.publicClient,
+				state.target.account.walletAddress,
+			);
+			const { operation } = await submitAccountOperation(state.target.env, {
+				uid: user.sub,
+				kind: "recovery_cancel",
+				to: state.target.account.walletAddress,
+				data: encodeFunctionData({
+					abi: accountWebAuthnV2Abi,
+					functionName: "guardianCancelRecovery",
+				}),
+				metadata: {
+					walletAddress: state.target.account.walletAddress,
+					isHomeAccount: state.target.account.isHome,
+				},
+				signer,
+			});
+			operations.push(operation);
+		}
+		return c.json(recoveryOperationPayload(operations), 202);
 	} catch (error) {
 		logError("account_recovery_cancel_failed", error, { uid: user.sub });
 		if (error instanceof AccountOperationBusyError) {

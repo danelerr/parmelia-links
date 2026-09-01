@@ -191,9 +191,13 @@ gatopago/
 
 ---
 
-## Portabilidad entre cadenas
+## Portabilidad y cuentas multichain
 
-Toda la configuración dependiente de la red vive en **`shared/networks.ts`**. No hay direcciones ni cadenas hardcodeadas en los handlers: el servidor resuelve todo con `getNetworkConfig(env.CHAIN_KEY)`.
+Toda la configuración dependiente de la red vive en **`shared/networks.ts`**.
+`CHAIN_KEY` conserva la red hogar, mientras `APP_ENABLED_CHAIN_KEYS` describe
+las redes visibles y `APP_WALLET_RAIL_CHAIN_KEYS` habilita ejecución monetaria
+por separado. Cada request satélite obtiene bindings inmutables mediante
+`bindingsForChain`; no cambia configuración global del isolate.
 
 Cada red declara `contracts: { entryPoint, factory, paymaster, verifier, paymentRouter, crosschainRouter, usdc, usdcDecimals }`, su lista de `tokens` whitelisted (USDC/ETH/WBTC), su `uniswap`, flags (`isTestnet`, `paymentRouterHasPermit`) y metadata (explorer, faucet). El registro CCTP (`CCTP_CHAINS`) vive en el mismo archivo, keyed por chainId.
 
@@ -205,7 +209,9 @@ Para agregar una cadena:
 2. Agregar una entrada en `NETWORKS` de `shared/networks.ts` (direcciones + tokens + uniswap + metadata).
 3. Mapear la cadena a su `viem.Chain` en `server/src/chain.ts` (`CHAIN_MAP`).
 4. Reflejar la metadata de presentación en `client/src/lib/networks.ts`.
-5. Apuntar `CHAIN_KEY` (var del Worker) y `VITE_CHAIN_KEY` (cliente) a la nueva clave.
+5. Agregarla primero a `APP_ENABLED_CHAIN_KEYS` y configurar RPC por rol.
+6. Aplicar el schema por cuenta/red, validar indexación y sincronización de
+   passkeys, y sólo entonces agregarla a `APP_WALLET_RAIL_CHAIN_KEYS`.
 
 ### Direcciones por red
 
@@ -225,7 +231,16 @@ Para agregar una cadena:
 | CrosschainRouter (Arb Sepolia) | `0xD089c3764a8F2E62eFDf280Eb2432c1dC647400c` (CCTP outbound endurecido) |
 | Contratos (Arb One)     | _TODO: desplegar V2 y rellenar `shared/networks.ts`_            |
 
-Por el deploy determinista (CREATE2 con salt fijo + solc pineado), los contratos obtienen la **misma dirección en toda cadena** si el bytecode es idéntico → cada usuario conserva **la misma dirección de wallet** entre cadenas. Universal Checkout mantiene la cuenta en Arbitrum y usa Base/Fuji solo como rails de aceptación durante la fase 1; las tres mainnets siguen desactivadas.
+CREATE2 sólo produce la misma dirección si factory, bytecode, salt e init code
+son idénticos. La factory Arbitrum activa precede al build fijado para Fuji; por
+eso GatoPago guarda la dirección por `uid + chain_id` y nunca promete igualdad
+entre redes. Universal Checkout B2B mantiene settlement en Arbitrum. La App
+Fase 4A incorpora una cuenta Fuji satélite, pero su rail remoto sigue cerrado
+hasta existir manifests, bytecode y E2E verificables. Las mainnets continúan
+desactivadas.
+
+La especificación vigente está en
+[`docs/design/app-multichain-phase-4a.md`](./docs/design/app-multichain-phase-4a.md).
 
 ---
 

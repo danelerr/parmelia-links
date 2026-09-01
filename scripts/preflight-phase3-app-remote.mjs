@@ -5,6 +5,7 @@ import {
 	APP_D1_SECURITY_EVIDENCE_QUERY,
 	appliedMigrationNamesFromEvidence,
 	d1EvidenceRows,
+	missingAppMultichainSchemaEvidence,
 	missingPasskeySecuritySchemaEvidence,
 } from "./app-d1-security-evidence.mjs";
 
@@ -16,6 +17,7 @@ const expectedMigrations = [
 	"0035_firebase_email_links.sql",
 	"0036_passkey_security_metadata.sql",
 	"0037_webauthn_authentication.sql",
+	"0038_app_multichain_accounts.sql",
 ];
 const expectedFirebaseProject = "proyecto-prueba-push-firebase";
 const checks = [];
@@ -223,6 +225,14 @@ async function main() {
 		missingPasskeySchema.length === 0
 			? "Passkey Security schema through 0037 is present"
 			: `Passkey Security schema through 0037 is missing: ${missingPasskeySchema.join(", ")}`,
+	);
+	const missingMultichainSchema = missingAppMultichainSchemaEvidence(d1Evidence);
+	record(
+		"app-multichain-schema-0038",
+		missingMultichainSchema.length === 0,
+		missingMultichainSchema.length === 0
+			? "Phase 4A multichain schema through 0038 is present"
+			: `Phase 4A multichain schema through 0038 is missing: ${missingMultichainSchema.join(", ")}`,
 	);
 
 	const deploymentResult = runWrangler([

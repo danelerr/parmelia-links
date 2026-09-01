@@ -11,6 +11,7 @@ export default function TokenSelect({
 	className = "",
 	balances,
 	hideBalances = false,
+	optionDetails,
 }: {
 	value: string;
 	options: string[];
@@ -19,18 +20,21 @@ export default function TokenSelect({
 	className?: string;
 	balances?: Record<string, string | undefined>;
 	hideBalances?: boolean;
+	optionDetails?: Record<string, { symbol: string; label?: string; description?: string }>;
 }) {
 	const { t } = useTranslation();
 	return (
 		<SelectMenu
 			label={t("assetSelector.title")}
 			value={value}
-			options={options.map((symbol) => {
-				const assetName = t(`assetSelector.assets.${symbol}`, { defaultValue: t("assetSelector.supportedAsset") });
-				const balance = balances?.[symbol];
+			options={options.map((option) => {
+				const detail = optionDetails?.[option];
+				const symbol = detail?.symbol ?? option;
+				const assetName = detail?.description ?? t(`assetSelector.assets.${symbol}`, { defaultValue: t("assetSelector.supportedAsset") });
+				const balance = balances?.[option];
 				return {
-					value: symbol,
-					label: symbol,
+					value: option,
+					label: detail?.label ?? symbol,
 					icon: <TokenIcon symbol={symbol} size={28} />,
 					description: balance === undefined
 						? assetName

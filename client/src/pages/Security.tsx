@@ -38,6 +38,7 @@ import {
 	signalCurrentPasskeyUser,
 	signalRemovedPasskey,
 } from "../lib/passkeySignals";
+import { useChainPortfolio, type ChainPortfolio } from "../hooks/useChainPortfolio";
 
 export interface PasskeyStatusResponse {
 	rpId: string;
@@ -76,11 +77,12 @@ function Faq({ question, children }: { question: string; children: React.ReactNo
 	);
 }
 
-export default function Security({ user, previewStatus }: { user: User; previewStatus?: PasskeyStatusResponse | null }) {
+export default function Security({ user, previewStatus, previewPortfolio }: { user: User; previewStatus?: PasskeyStatusResponse | null; previewPortfolio?: ChainPortfolio }) {
 	const { t } = useTranslation();
 	const location = useLocation();
 	const returnTo = safeReturnTo(new URLSearchParams(location.search).get("returnTo"));
 	const previewing = previewStatus !== undefined;
+	const { data: chainPortfolio, mutate: refreshChainPortfolio } = useChainPortfolio(previewing && !previewPortfolio ? null : user, previewPortfolio);
 	const [status, setStatus] = useState<PasskeyStatusResponse | null>(previewStatus ?? null);
 	const [loading, setLoading] = useState(!previewing);
 	const [loadFailed, setLoadFailed] = useState(previewStatus === null);
@@ -88,6 +90,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 	const [updatingPasskey, setUpdatingPasskey] = useState(false);
 	const [pendingPasskey, setPendingPasskey] = useState<Awaited<ReturnType<typeof createPasskey>> | null>(null);
 	const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
+	const [syncingChainKey, setSyncingChainKey] = useState<string | null>(null);
 	const [showPasskeyInfo, setShowPasskeyInfo] = useState(false);
 	const [showPasskeyOptions, setShowPasskeyOptions] = useState(false);
 	const [keyAvailability, setKeyAvailability] = useState<
@@ -162,6 +165,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		setRetrying(true);
 		try {
 			await refresh();
+			await refreshChainPortfolio();
 		} finally {
 			setRetrying(false);
 		}
@@ -210,6 +214,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			setPendingPasskey(null);
 
 			await refresh();
+			await refreshChainPortfolio();
 			if (submit.confirmed) {
 				notifySuccess(t("settings.keyAdded"), t("settings.keyAddedDesc"));
 			} else {
@@ -229,6 +234,52 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		} finally {
 			setUpdatingPasskey(false);
 		}
+	}
+
+	async function handleSyncChainSecurity(chainKey: string, chainId: number) {
+		if (syncingChainKey) return;
+		setSyncingChainKey(chainKey);
+		try {
+			const prepared = await apiFetch<PreparedUserOperation & {
+				alreadyCurrent?: boolean;
+				chainId?: number;
+				chainKey?: string;
+			}>(`/account/chains/${encodeURIComponent(chainKey)}/security/prepare`, {
+				user,
+				method: "POST",
+			});
+			if (prepared.alreadyCurrent) {
+				await refreshChainPortfolio();
+				notifySuccess(t("security.chainSyncCurrent"));
+				return;
+			}
+			const signingChainId = prepared.chainId ?? chainId;
+			const assertion = await signWithPasskey(
+				userOperationChallenge(prepared, signingChainId),
+				prepared.credentialId,
+				prepared.rpId,
+			);
+			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
+			await refreshChainPortfolio();
+			notifySuccess(
+				submit.confirmed ? t("security.chainSyncDone") : t("security.chainSyncPending"),
+				submit.confirmed ? undefined : t("security.chainSyncPendingBody"),
+			);
+		} catch (error) {
+			if (!guideToPasskeysForSecurity(error)) {
+				notifyError(error, t("security.chainSyncError"));
+			}
+		} finally {
+			setSyncingChainKey(null);
+		}
+	}
+
+	function guideToPasskeysForSecurity(error: unknown): boolean {
+		if (isUserCancelled(error)) {
+			notifyWarning(t("notify.cancelled"));
+			return true;
+		}
+		return false;
 	}
 
 	async function handleCheckPasskey() {
@@ -294,6 +345,7 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 			);
 			const submit = await submitUserOp(user, prepared.userOpHash, assertion);
 			await refresh();
+			await refreshChainPortfolio();
 			if (submit.confirmed && removedPasskeyRpId && removedPasskeyRpId === status?.rpId) {
 				await signalRemovedPasskey(removedPasskeyRpId, credentialId);
 			}
@@ -344,7 +396,10 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 		? t("security.recoveryUnverified")
 		: recoveryOn
 			? t("security.recoveryReady")
-			: t("security.recoverySetup");
+				: t("security.recoverySetup");
+	const satelliteAccounts = chainPortfolio?.chains.filter((chain) =>
+		chain.key !== activeNetwork.key && chain.account?.status === "active",
+	) ?? [];
 
 	return (
 		<Screen>
@@ -526,6 +581,44 @@ export default function Security({ user, previewStatus }: { user: User; previewS
 							onRemove={handleRemovePasskey}
 						/>
 					</section>
+
+					{satelliteAccounts.length > 0 ? (
+						<section className="meli-paper-card meli-paper-card--strong mb-6 overflow-hidden" aria-labelledby="chain-security-title">
+							<div className="border-b-2 border-text p-5">
+								<p className="meli-kicker mb-2">{t("security.chainSecurityEyebrow")}</p>
+								<h3 id="chain-security-title" className="font-display text-[18px]">{t("security.chainSecurityTitle")}</h3>
+								<p className="mt-1 text-[12px] leading-relaxed text-text-muted">{t("security.chainSecurityBody")}</p>
+							</div>
+							<div className="divide-y divide-border">
+								{satelliteAccounts.map((chain) => {
+									const current = chain.account?.securityStatus === "current";
+									return (
+										<div key={chain.key} className="p-5">
+											<div className="flex items-start justify-between gap-3">
+												<div>
+													<p className="font-display text-[15px]">{chain.name}</p>
+													<p className={`mt-1 font-mono text-[9px] uppercase tracking-[0.07em] ${current ? "text-growth" : "text-pending"}`}>
+														{current ? t("security.chainCurrent") : t("security.chainNeedsSync")}
+													</p>
+												</div>
+												{!current ? (
+													<button
+														type="button"
+														disabled={Boolean(syncingChainKey)}
+														onClick={() => void handleSyncChainSecurity(chain.key, chain.chainId)}
+														className="btn btn-primary min-h-10 px-4 text-[12px]"
+													>
+														{syncingChainKey === chain.key ? t("security.chainSyncing") : t("security.chainSync")}
+													</button>
+												) : null}
+											</div>
+											{!current ? <p className="mt-3 text-[11px] leading-relaxed text-text-muted">{t("security.chainNeedsSyncBody")}</p> : null}
+										</div>
+									);
+								})}
+							</div>
+						</section>
+					) : null}
 
 					<LinkButton id="security-recovery" to="/settings/security/recovery" className="meli-path-card-app interactive-surface mb-6 min-h-[104px] scroll-mt-4 p-4 text-left">
 						<span aria-hidden="true">

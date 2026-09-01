@@ -2,7 +2,7 @@ import {
 	type Address,
 	type ContractFunctionParameters,
 } from "viem";
-import { erc20Abi, getNetworkConfig } from "../../../shared";
+import { NETWORKS, erc20Abi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
 	claimBalanceRefreshBatch,
@@ -20,6 +20,7 @@ import { getPublicClient } from "./clients";
 import { logError, logInfo } from "./logger";
 import { getArbitrumBlockEvidence } from "./arbitrumFinality";
 import { auditBalanceProjectionDrift } from "./balanceDrift";
+import { bindingsForChain } from "./chainScope";
 
 const MULTICALL3_BALANCE_ABI = [
 	{
@@ -304,10 +305,18 @@ async function reconcileClaimed(
 		includeTransactions: false,
 	});
 	if (!targetBlock.hash) throw new Error("RPC returned a target block without hash");
-	const finalityEvidence = await getArbitrumBlockEvidence(env, publicClient, {
-		blockNumber: scanHead,
-		blockHash: targetBlock.hash,
-	});
+	const finalityEvidence = network.key.startsWith("arbitrum-")
+		? await getArbitrumBlockEvidence(env, publicClient, {
+			blockNumber: scanHead,
+			blockHash: targetBlock.hash,
+		})
+		: {
+			consistencyLevel: finalitySource === "safe" ? "safe" as const : "sequenced" as const,
+			l1Confirmations: null,
+			l1BatchNumber: null,
+			source: "unavailable" as const,
+			rpcCalls: 0,
+		};
 
 	const multicallAddress = publicClient.chain.contracts?.multicall3?.address;
 	const calls: ContractFunctionParameters[] = [];
@@ -559,21 +568,36 @@ export async function drainBalanceRefreshRequests(env: Bindings): Promise<void> 
 		asBoundedBatchSize(undefined),
 	);
 	if (due.length === 0) return;
-	const messages = due.map<BalanceRefreshMessage>((request: BalanceRefreshRequest) => ({
-		schemaVersion: 1,
-		idempotencyKey: request.idempotencyKey,
-		uid: request.uid,
-		accountAddress: request.accountAddress,
-		chainId: request.chainId,
-		reason: request.reason,
-		priority: request.priority,
-		notBeforeBlock: request.notBeforeBlock,
-	}));
-	const claimed = await claimMessages(env, messages);
-	if (claimed.length === 0) return;
-	await processClaimedBatch(env, claimed).catch((error) => {
-		logError("balance_refresh_batch_failed", error, {
-			requests: claimed.length,
+	const byChain = new Map<number, BalanceRefreshRequest[]>();
+	for (const request of due) {
+		const group = byChain.get(request.chainId) ?? [];
+		group.push(request);
+		byChain.set(request.chainId, group);
+	}
+	for (const [chainId, requests] of byChain) {
+		const network = Object.values(NETWORKS).find((candidate) => candidate.chainId === chainId);
+		if (!network) {
+			logError("balance_refresh_unsupported_chain", new Error("Unsupported balance chain"), { chainId });
+			continue;
+		}
+		const scopedEnv = bindingsForChain(env, network.key);
+		const messages = requests.map<BalanceRefreshMessage>((request) => ({
+			schemaVersion: 1,
+			idempotencyKey: request.idempotencyKey,
+			uid: request.uid,
+			accountAddress: request.accountAddress,
+			chainId: request.chainId,
+			reason: request.reason,
+			priority: request.priority,
+			notBeforeBlock: request.notBeforeBlock,
+		}));
+		const claimed = await claimMessages(scopedEnv, messages);
+		if (claimed.length === 0) continue;
+		await processClaimedBatch(scopedEnv, claimed).catch((error) => {
+			logError("balance_refresh_batch_failed", error, {
+				chainId,
+				requests: claimed.length,
+			});
 		});
-	});
+	}
 }

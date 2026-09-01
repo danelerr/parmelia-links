@@ -10,7 +10,7 @@ import type { TransferCheckpointEvidence } from "../src/services/transferCoverag
 
 describe("Home read model refresh policy", () => {
 	it("changes cache identity when the read-model projection changes", async () => {
-		expect(homeStateVersion(7)).toBe("home:v2:7");
+		expect(homeStateVersion(7)).toBe("home:v3:7");
 		await expect(homeEtag("user-1", 421614, 7)).resolves.toMatch(
 			/^"home-[0-9a-f]{32}"$/u,
 		);

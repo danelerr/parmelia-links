@@ -13,7 +13,7 @@ import {
 } from "./indexerPartitions";
 import { logInfo } from "./logger";
 import { getAlchemyAddressWebhookConfigs } from "./alchemyWebhookConfig";
-import { listUsersByWalletAddresses } from "./storage";
+import { listActiveChainAccountOwnersByWalletAddresses } from "./storage";
 
 const MAX_WEBHOOK_ACTIVITIES = 500;
 
@@ -266,8 +266,9 @@ export async function processAlchemyWebhook(
 	const balanceByWallet = new Map(
 		balanceSignals.map((signal) => [signal.walletAddress, signal]),
 	);
-	const users = await listUsersByWalletAddresses(
+	const users = await listActiveChainAccountOwnersByWalletAddresses(
 		env,
+		network.chainId,
 		balanceSignals.map((signal) => signal.walletAddress),
 	);
 	await requestBalanceRefreshBatch(

@@ -11,15 +11,19 @@ import AccountLaunchScreen from "../components/AccountLaunchScreen";
 import ReceiptModal from "../components/ReceiptModal";
 import Home from "./Home";
 import CreateLink from "./CreateLink";
+import CrosschainSend from "./CrosschainSend";
+import Earn from "./Earn";
 import Login from "./Login";
 import Move from "./Move";
 import Onboarding from "./Onboarding";
 import PaymentStatus from "./PaymentStatus";
 import Profile from "./Profile";
+import Receive from "./Receive";
 import Security, { type PasskeyStatusResponse } from "./Security";
 import Settings from "./Settings";
 import StageOverlay from "../components/StageOverlay";
 import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
+import type { ChainPortfolio } from "../hooks/useChainPortfolio";
 
 const previewUser = {
 	uid: "meli-preview",
@@ -118,6 +122,57 @@ const previewModel: HomeReadModel = {
 	consistentThroughBlock: "191000000",
 };
 
+const previewPortfolio: ChainPortfolio = {
+	chains: [
+		{
+			key: "arbitrum-sepolia",
+			chainId: 421614,
+			name: "Arbitrum Sepolia",
+			nativeTokenSymbol: "ETH",
+			isTestnet: true,
+			walletRailEnabled: true,
+			swapEnabled: true,
+			explorerBaseUrl: "https://sepolia.arbiscan.io",
+			faucetUrl: "https://faucet.circle.com",
+			rpcConfigured: true,
+			account: {
+				walletAddress: "0x1911911911911911911911911911911911911911",
+				status: "active",
+				securityStatus: "current",
+				securityVersionApplied: 2,
+				securityVersionDesired: 2,
+			},
+			balance: { assets: [
+				{ symbol: "ETH", name: "Ethereum", decimals: 18, isNative: true, value: "0.0834", raw: "83400000000000000", status: "fresh", observedAt: now, blockNumber: "191000000", blockHash: `0x${"11".repeat(32)}` },
+				{ symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, value: "1248.32", raw: "1248320000", status: "fresh", observedAt: now, blockNumber: "191000000", blockHash: `0x${"11".repeat(32)}` },
+			] },
+		},
+		{
+			key: "avalanche-fuji",
+			chainId: 43113,
+			name: "Avalanche Fuji",
+			nativeTokenSymbol: "AVAX",
+			isTestnet: true,
+			walletRailEnabled: true,
+			swapEnabled: false,
+			explorerBaseUrl: "https://testnet.snowtrace.io",
+			faucetUrl: "https://core.app/tools/testnet-faucet/?subnet=c&token=c",
+			rpcConfigured: true,
+			account: {
+				walletAddress: "0x2929292929292929292929292929292929292929",
+				status: "active",
+				securityStatus: "current",
+				securityVersionApplied: 2,
+				securityVersionDesired: 2,
+			},
+			balance: { assets: [
+				{ symbol: "AVAX", name: "Avalanche", decimals: 18, isNative: true, value: "3.75", raw: "3750000000000000000", status: "fresh", observedAt: now, blockNumber: "45000000", blockHash: `0x${"22".repeat(32)}` },
+				{ symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, value: "90.50", raw: "90500000", status: "fresh", observedAt: now, blockNumber: "45000000", blockHash: `0x${"22".repeat(32)}` },
+			] },
+		},
+	],
+};
+
 function ProfilePreview() {
 	const [ready, setReady] = useState(false);
 
@@ -132,6 +187,24 @@ function ProfilePreview() {
 	}, []);
 
 	return ready ? <Profile user={previewUser} /> : <AccountLaunchScreen />;
+}
+
+function ReceivePreview() {
+	const [ready, setReady] = useState(false);
+
+	useEffect(() => {
+		let active = true;
+		void mutateSWR(`${SERVER_URL}/home`, previewModel, { revalidate: false }).then(() => {
+			if (active) setReady(true);
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
+
+	return ready
+		? <Receive user={previewUser} previewPortfolio={previewPortfolio} />
+		: <AccountLaunchScreen />;
 }
 
 function PasskeyGuidancePreview() {
@@ -155,7 +228,7 @@ export default function DesignPreview() {
 	if (view === "onboarding") return <Onboarding user={previewUser} onComplete={() => undefined} />;
 	if (view === "skeleton") return <AccountLaunchScreen />;
 	if (view === "stage") return <StageOverlay label="Preparando tu pago…" />;
-	if (view === "security") return <Security user={previewUser} previewStatus={previewSecurityStatus} />;
+	if (view === "security") return <Security user={previewUser} previewStatus={previewSecurityStatus} previewPortfolio={previewPortfolio} />;
 	if (view === "settings") return <Settings user={previewUser} />;
 	if (view === "passkey-guidance") return <PasskeyGuidancePreview />;
 	if (view === "home-no-keys") {
@@ -166,6 +239,7 @@ export default function DesignPreview() {
 					...previewModel,
 					security: { status: "fresh", hasRegisteredPasskey: false },
 				}}
+				previewPortfolio={previewPortfolio}
 			/>
 		);
 	}
@@ -225,6 +299,9 @@ export default function DesignPreview() {
 		);
 	}
 	if (view === "charge") return <CreateLink user={previewUser} />;
+	if (view === "receive") return <ReceivePreview />;
+	if (view === "crosschain-send") return <CrosschainSend user={previewUser} previewPortfolio={previewPortfolio} />;
+	if (view === "earn-network-blocked") return <Earn user={previewUser} />;
 	if (view === "payment") return <PaymentStatus user={previewUser} />;
 	if (view === "profile") return <ProfilePreview />;
 	if (view === "receipt") {
@@ -277,5 +354,5 @@ export default function DesignPreview() {
 		);
 	}
 	if (view === "move") return <Move />;
-	return <Home user={previewUser} previewModel={previewModel} />;
+	return <Home user={previewUser} previewModel={previewModel} previewPortfolio={previewPortfolio} />;
 }

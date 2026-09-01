@@ -4,11 +4,13 @@ import { scheduleEventJob } from "./eventScheduler";
 import { scheduleWalletIndexerPartitions } from "./indexerPartitions";
 import { wakePaymentsSync } from "./paymentsRpc";
 import { d1All, d1First, d1Run, didWrite, nowIso } from "./storage/core";
+import { getNetworkConfig } from "../../../shared";
 
 export * from "./storage/crosschain";
 export * from "./storage/ledger";
 export * from "./storage/leases";
 export * from "./storage/accountOperations";
+export * from "./storage/chainAccounts";
 export * from "./storage/merchantApi";
 export * from "./storage/passkeys";
 export * from "./storage/syncState";
@@ -60,6 +62,8 @@ export type PendingPaymentSponsorshipProvider = "parmelia" | "erc7677" | "self-f
 export type PendingPaymentRecord = {
 	userOpHash: string;
 	uid: string;
+	chainId: number;
+	chainKey: string;
 	linkId: string | null;
 	paymentAttemptId: string | null;
 	wallet: string;
@@ -128,6 +132,8 @@ const PAYMENT_LINK_COLUMNS =
 type PendingPaymentRow = {
 	user_op_hash: string;
 	uid: string;
+	chain_id: number;
+	chain_key: string;
 	link_id: string | null;
 	payment_attempt_id: string | null;
 	wallet_address: string;
@@ -149,7 +155,7 @@ type PendingPaymentRow = {
 };
 
 const PENDING_COLS =
-	"user_op_hash, uid, link_id, payment_attempt_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, submission_transport, sponsorship_provider, sponsorship_paymaster_address, submitted_at, submission_attempt_count, last_submission_error_code, created_at, expires_at";
+	"user_op_hash, uid, chain_id, chain_key, link_id, payment_attempt_id, wallet_address, sender_address, amount, currency, user_op_json, meta, status, submitted_tx_hash, submission_transport, sponsorship_provider, sponsorship_paymaster_address, submitted_at, submission_attempt_count, last_submission_error_code, created_at, expires_at";
 
 
 function mapUserRow(row: UserRow): UserRecord {
@@ -192,6 +198,8 @@ function mapPendingRow(row: PendingPaymentRow): PendingPaymentRecord {
 	return {
 		userOpHash: row.user_op_hash,
 		uid: row.uid,
+		chainId: row.chain_id,
+		chainKey: row.chain_key,
 		linkId: row.link_id,
 		paymentAttemptId: row.payment_attempt_id,
 		wallet: row.wallet_address,
@@ -537,6 +545,8 @@ export async function createPendingPayment(
 		PendingPaymentRecord,
 		| "createdAt"
 		| "expiresAt"
+		| "chainId"
+		| "chainKey"
 		| "paymentAttemptId"
 		| "meta"
 		| "status"
@@ -555,6 +565,8 @@ export async function createPendingPayment(
 		sponsorshipPaymasterAddress?: string | null;
 		createdAt?: string;
 		expiresAt?: string;
+		chainId?: number;
+		chainKey?: string;
 	},
 ) {
 	const createdAt = pending.createdAt ?? nowIso();
@@ -569,6 +581,8 @@ export async function createPendingPayment(
 		`INSERT INTO pending_payments (
 			user_op_hash,
 			uid,
+			chain_id,
+			chain_key,
 			link_id,
 			payment_attempt_id,
 			wallet_address,
@@ -587,9 +601,11 @@ export async function createPendingPayment(
 			last_submission_error_code,
 			created_at,
 			expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, ?, NULL, 0, NULL, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, ?, NULL, 0, NULL, ?, ?)
 		ON CONFLICT(user_op_hash) DO UPDATE SET
 			uid = excluded.uid,
+			chain_id = excluded.chain_id,
+			chain_key = excluded.chain_key,
 			link_id = excluded.link_id,
 			payment_attempt_id = excluded.payment_attempt_id,
 			wallet_address = excluded.wallet_address,
@@ -611,6 +627,8 @@ export async function createPendingPayment(
 		[
 			pending.userOpHash,
 			pending.uid,
+			pending.chainId ?? getNetworkConfig(env.CHAIN_KEY).chainId,
+			pending.chainKey ?? getNetworkConfig(env.CHAIN_KEY).key,
 			pending.linkId,
 			pending.paymentAttemptId ?? null,
 			pending.wallet,
@@ -653,6 +671,23 @@ export async function getPendingPaymentAnyState(
 		env,
 		`SELECT ${PENDING_COLS} FROM pending_payments WHERE user_op_hash = ? LIMIT 1`,
 		[userOpHash],
+	);
+	return row ? mapPendingRow(row) : null;
+}
+
+export async function getActivePendingAction(
+	env: Bindings,
+	input: { uid: string; chainId: number; currency: string },
+): Promise<PendingPaymentRecord | null> {
+	const row = await d1First<PendingPaymentRow>(
+		env,
+		`SELECT ${PENDING_COLS}
+		 FROM pending_payments
+		 WHERE uid = ? AND chain_id = ? AND currency = ?
+		   AND status IN ('prepared', 'submitting', 'submitted')
+		   AND (status <> 'prepared' OR expires_at > ?)
+		 ORDER BY created_at DESC LIMIT 1`,
+		[input.uid, input.chainId, input.currency, nowIso()],
 	);
 	return row ? mapPendingRow(row) : null;
 }

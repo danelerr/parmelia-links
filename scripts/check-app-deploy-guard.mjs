@@ -7,8 +7,11 @@ import {
 	pendingAppMigrations,
 } from "./assert-app-remote-migrations.mjs";
 import {
+	APP_MULTICHAIN_SCHEMA_EVIDENCE,
+	APP_MULTICHAIN_SCHEMA_ITEMS,
 	PASSKEY_SECURITY_SCHEMA_EVIDENCE,
 	PASSKEY_SECURITY_SCHEMA_ITEMS,
+	assertAppMultichainSchemaEvidence,
 	assertPasskeySecuritySchemaEvidence,
 } from "./app-d1-security-evidence.mjs";
 import { missingAppSecretNames, requiredAppSecretNames } from "./assert-app-remote-secrets.mjs";
@@ -36,7 +39,7 @@ if (currentPayments.includes(PAYMENTS_DB_SENTINEL)) {
 
 const databaseId = "11111111-2222-4333-8444-555555555555";
 const checksum = "11".repeat(32);
-const app = (mode, sync) => `{"vars":{"APP_URL":"https://app.parmelia.me","PASSKEY_RP_ID":"${STABLE_PASSKEY_RP_ID}","PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me","PAYMENTS_CUTOVER_MODE":"${mode}","PAYMENTS_SYNC_ENABLED":"${sync}"},"services":[{"binding":"PAYMENTS","service":"gatopago-payments-api"}]}`;
+const app = (mode, sync) => `{"vars":{"APP_URL":"https://app.parmelia.me","PASSKEY_RP_ID":"${STABLE_PASSKEY_RP_ID}","PASSKEY_ALLOWED_ORIGINS":"https://app.parmelia.me","CHAIN_KEY":"arbitrum-sepolia","APP_ENABLED_CHAIN_KEYS":"arbitrum-sepolia,avalanche-fuji","APP_WALLET_RAIL_CHAIN_KEYS":"arbitrum-sepolia","PAYMENTS_CUTOVER_MODE":"${mode}","PAYMENTS_SYNC_ENABLED":"${sync}"},"services":[{"binding":"PAYMENTS","service":"gatopago-payments-api"}]}`;
 const payments = (bootstrap, proof) => `{"vars":{"PAYMENTS_BOOTSTRAP_MODE":"${bootstrap}","PAYMENTS_DATA_CUTOVER_CHECKSUM":"${proof}"},"d1_databases":[{"binding":"PAYMENTS_DB","database_id":"${databaseId}"}]}`;
 
 for (const [mode, sync, bootstrap, proof, stage] of [
@@ -91,6 +94,20 @@ expectRefused(
 		'"PASSKEY_ALLOWED_ORIGINS":"https://login.app.parmelia.me"',
 	), payments("false", checksum)),
 	"must include APP_URL",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		'"APP_ENABLED_CHAIN_KEYS":"arbitrum-sepolia,avalanche-fuji"',
+		'"APP_ENABLED_CHAIN_KEYS":"avalanche-fuji"',
+	), payments("false", checksum)),
+	"must include CHAIN_KEY",
+);
+expectRefused(
+	() => validateAppDeployConfig(app("payments", "true").replace(
+		'"APP_WALLET_RAIL_CHAIN_KEYS":"arbitrum-sepolia"',
+		'"APP_WALLET_RAIL_CHAIN_KEYS":"base-sepolia"',
+	), payments("false", checksum)),
+	"must be enabled and implemented",
 );
 const cloudflareWrongSender = app("payments", "true").replace(
 	'"services"',
@@ -153,5 +170,21 @@ expectRefused(
 	() => assertPasskeySecuritySchemaEvidence(completeSchemaEvidence.map((row) =>
 		row.kind === "index" ? { ...row, kind: "migration" } : row)),
 	"idx_passkeys_uid_rp_active",
+);
+expectRefused(
+	() => assertAppMultichainSchemaEvidence([]),
+	"Phase 4A multichain schema evidence",
+);
+const completeMultichainEvidence = APP_MULTICHAIN_SCHEMA_EVIDENCE.map(({ kind, item }) => ({
+	kind,
+	item,
+	present: 1,
+}));
+assert(assertAppMultichainSchemaEvidence(completeMultichainEvidence).multichainSchemaEvidence ===
+	APP_MULTICHAIN_SCHEMA_ITEMS.length, "A complete Phase 4A schema inventory should pass");
+expectRefused(
+	() => assertAppMultichainSchemaEvidence(completeMultichainEvidence.filter((row) =>
+		row.item !== "idx_pending_security_sync_active")),
+	"idx_pending_security_sync_active",
 );
 console.log("App deploy guard check passed for every supported cutover stage.");

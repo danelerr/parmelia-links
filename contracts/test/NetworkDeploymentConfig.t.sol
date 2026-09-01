@@ -16,6 +16,10 @@ contract NetworkDeploymentConfigHarness {
     function requireInboundSourceChain(uint256 chainId) external pure {
         NetworkDeploymentConfig.requireInboundSourceChain(NetworkDeploymentConfig.get(chainId));
     }
+
+    function requireCrosschainRouterChain(uint256 chainId) external pure {
+        NetworkDeploymentConfig.requireCrosschainRouterChain(NetworkDeploymentConfig.get(chainId));
+    }
 }
 
 contract NetworkDeploymentConfigTest is Test {
@@ -91,6 +95,20 @@ contract NetworkDeploymentConfigTest is Test {
         assertEq(testnetDomains[1], 6);
         assertEq(mainnetDomains[0], 1);
         assertEq(mainnetDomains[1], 6);
+    }
+
+    function test_fujiWalletRailRoutesBackToArbitrumTestnet() public view {
+        uint32[] memory domains = harness.outboundDomains(AVALANCHE_FUJI);
+        assertEq(domains.length, 1);
+        assertEq(domains[0], 3);
+        harness.requireCrosschainRouterChain(AVALANCHE_FUJI);
+    }
+
+    function test_mainnetSatelliteCrosschainRouterNeedsSeparateRelease() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(NetworkDeploymentConfig.NetworkDeploymentConfig__NotHomeChain.selector, AVALANCHE)
+        );
+        harness.requireCrosschainRouterChain(AVALANCHE);
     }
 
     function test_rejectsWrongDeploymentRoleForChain() public {

@@ -32,6 +32,15 @@ export const activeNetwork = {
 	currencies: networkDefaults.currencies,
 };
 
-export function getExplorerTxUrl(txHash: string) {
-	return `${activeNetwork.explorerBaseUrl}/tx/${txHash}`;
+export function getExplorerTxUrl(txHash: string, chainKey?: string) {
+	const explorer = chainKey
+		? getNetworkConfig(chainKey).explorerBaseUrl
+		: activeNetwork.explorerBaseUrl;
+	return `${trimTrailingSlash(explorer)}/tx/${txHash}`;
+}
+
+/** Returns no link for an explicit unknown chain instead of inventing home. */
+export function getKnownExplorerTxUrl(txHash: string, chainKey?: string) {
+	if (!chainKey || !isSupportedChainKey(chainKey)) return null;
+	return getExplorerTxUrl(txHash, chainKey);
 }

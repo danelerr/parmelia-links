@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import { getNetworkConfig } from "../../../shared";
+import { DEFAULT_CHAIN_KEY, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import { scheduleEventJob } from "./eventScheduler";
 import {
@@ -469,21 +469,30 @@ export async function drainIndexerWalletRegistry(
 	env: Bindings,
 ): Promise<{ processed: number; nextRunAt: number | null }> {
 	const now = new Date().toISOString();
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	const homeRegistry = network.key === DEFAULT_CHAIN_KEY;
+	const registryTable = homeRegistry
+		? "indexer_wallet_registry_outbox"
+		: "chain_indexer_wallet_registry_outbox";
 	const rows = await env.GATOPAGO_DB.prepare(
 		`SELECT uid, wallet_address, attempt_count
-		 FROM indexer_wallet_registry_outbox
+		 FROM ${registryTable}
 		 WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
+		 ${homeRegistry ? "" : "AND chain_id = ?"}
 		 ORDER BY next_attempt_at, updated_at
 		 LIMIT ?`,
 	)
-		.bind(now, registryBatchSize(env))
+		.bind(...(homeRegistry
+			? [now, registryBatchSize(env)]
+			: [now, network.chainId, registryBatchSize(env)]))
 		.all<RegistryRow>();
 	if (rows.results.length === 0) {
 		const next = await env.GATOPAGO_DB.prepare(
 			`SELECT MIN(next_attempt_at) AS next_run_at
-			 FROM indexer_wallet_registry_outbox
-			 WHERE status IN ('pending', 'failed')`,
-		).first<{ next_run_at: string | null }>();
+			 FROM ${registryTable}
+			 WHERE status IN ('pending', 'failed')
+			 ${homeRegistry ? "" : "AND chain_id = ?"}`,
+		).bind(...(homeRegistry ? [] : [network.chainId])).first<{ next_run_at: string | null }>();
 		const parsed = next?.next_run_at
 			? Date.parse(next.next_run_at)
 			: Number.NaN;
@@ -493,7 +502,6 @@ export async function drainIndexerWalletRegistry(
 		};
 	}
 
-	const network = getNetworkConfig(env.CHAIN_KEY);
 	const streams = [
 		transferAssignmentStream(network.chainId),
 		recoveryAssignmentStream(network.chainId),
@@ -568,10 +576,13 @@ export async function drainIndexerWalletRegistry(
 				);
 			}
 			await env.GATOPAGO_DB.prepare(
-				`DELETE FROM indexer_wallet_registry_outbox
-				 WHERE uid = ? AND wallet_address IS ?`,
+				`DELETE FROM ${registryTable}
+				 WHERE uid = ? AND wallet_address IS ?
+				 ${homeRegistry ? "" : "AND chain_id = ?"}`,
 			)
-				.bind(row.uid, row.wallet_address)
+				.bind(...(homeRegistry
+					? [row.uid, row.wallet_address]
+					: [row.uid, row.wallet_address, network.chainId]))
 				.run();
 			processed++;
 		} catch (error) {
@@ -581,11 +592,12 @@ export async function drainIndexerWalletRegistry(
 				15_000 * 2 ** Math.min(6, attempt - 1),
 			);
 			await env.GATOPAGO_DB.prepare(
-				`UPDATE indexer_wallet_registry_outbox
+				`UPDATE ${registryTable}
 				 SET status = 'failed', attempt_count = ?, next_attempt_at = ?,
 				     last_error_code = 'INDEXER_WALLET_ASSIGNMENT_FAILED',
 				     updated_at = ?
-				 WHERE uid = ? AND wallet_address IS ?`,
+				 WHERE uid = ? AND wallet_address IS ?
+				 ${homeRegistry ? "" : "AND chain_id = ?"}`,
 			)
 				.bind(
 					attempt,
@@ -593,6 +605,7 @@ export async function drainIndexerWalletRegistry(
 					new Date().toISOString(),
 					row.uid,
 					row.wallet_address,
+					...(homeRegistry ? [] : [network.chainId]),
 				)
 				.run();
 			logError("indexer_wallet_registry_row_failed", error, {
@@ -611,9 +624,10 @@ export async function drainIndexerWalletRegistry(
 	}
 	const next = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
-		 FROM indexer_wallet_registry_outbox
-		 WHERE status IN ('pending', 'failed')`,
-	).first<{ next_run_at: string | null }>();
+		 FROM ${registryTable}
+		 WHERE status IN ('pending', 'failed')
+		 ${homeRegistry ? "" : "AND chain_id = ?"}`,
+	).bind(...(homeRegistry ? [] : [network.chainId])).first<{ next_run_at: string | null }>();
 	const parsedNextRun = next?.next_run_at
 		? Date.parse(next.next_run_at)
 		: Number.NaN;

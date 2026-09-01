@@ -74,6 +74,106 @@ function validateRpcMap(raw: string | undefined): boolean {
 	}
 }
 
+type AppChainRpcRoles = {
+	read?: string;
+	write?: string;
+	indexer?: string;
+	archive?: string;
+	bundler?: string;
+};
+
+type AppChainRpcMap = Record<string, string | AppChainRpcRoles>;
+
+function validRpcUrlList(value: unknown): value is string {
+	return typeof value === "string" &&
+		parseRpcUrls(value).length > 0 &&
+		parseRpcUrls(value).every((url) => validHttpUrl(url, false));
+}
+
+function parseAppChainRpcMap(raw: string | undefined): AppChainRpcMap | null {
+	if (!raw?.trim()) return {};
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		const entries = Object.entries(parsed as Record<string, unknown>);
+		for (const [chainId, value] of entries) {
+			if (!/^\d+$/u.test(chainId)) return null;
+			if (typeof value === "string") {
+				if (!validRpcUrlList(value)) return null;
+				continue;
+			}
+			if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+			const roles = Object.entries(value as Record<string, unknown>);
+			if (roles.length === 0 || roles.some(([role, urls]) =>
+				!["read", "write", "indexer", "archive", "bundler"].includes(role) ||
+				!validRpcUrlList(urls)
+			)) return null;
+		}
+		return parsed as AppChainRpcMap;
+	} catch {
+		return null;
+	}
+}
+
+function chainList(raw: string | undefined, fallback: string): string[] {
+	return (raw?.trim() || fallback)
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+}
+
+export function validateAppMultichainConfig(env: Bindings): RuntimeConfigIssue[] {
+	const issues: RuntimeConfigIssue[] = [];
+	const home = env.CHAIN_KEY;
+	const enabled = chainList(env.APP_ENABLED_CHAIN_KEYS, home);
+	const walletRails = chainList(env.APP_WALLET_RAIL_CHAIN_KEYS, home);
+	const validEnabled = enabled.every(isSupportedChainKey) && new Set(enabled).size === enabled.length;
+	const validWalletRails = walletRails.every(isSupportedChainKey) && new Set(walletRails).size === walletRails.length;
+	if (!validEnabled) {
+		issues.push(issue("APP_ENABLED_CHAINS_INVALID", "APP_ENABLED_CHAIN_KEYS must be a unique list of supported chain keys"));
+	}
+	if (!validWalletRails) {
+		issues.push(issue("APP_WALLET_RAIL_CHAINS_INVALID", "APP_WALLET_RAIL_CHAIN_KEYS must be a unique list of supported chain keys"));
+	}
+	if (!enabled.includes(home)) {
+		issues.push(issue("APP_HOME_CHAIN_MISSING", "APP_ENABLED_CHAIN_KEYS must include CHAIN_KEY"));
+	}
+	if (validEnabled && validWalletRails && walletRails.some((key) =>
+		!enabled.includes(key) || !getNetworkConfig(key as SupportedChainKey).walletRailEnabled
+	)) {
+		issues.push(issue("APP_WALLET_RAIL_NOT_ENABLED", "Every wallet rail must be enabled and supported by its network manifest"));
+	}
+
+	const appRpcMap = parseAppChainRpcMap(env.APP_CHAIN_RPC_URLS);
+	if (appRpcMap === null) {
+		issues.push(issue("APP_CHAIN_RPC_URLS_INVALID", "APP_CHAIN_RPC_URLS must map chain ids to HTTP(S) URL lists or read/write/indexer/archive/bundler role objects"));
+		return issues;
+	}
+	const cctpRpcMap = parseAppChainRpcMap(env.CCTP_RPC_URLS);
+	const supportedChainIds = new Set(
+		enabled.filter(isSupportedChainKey).map((key) => String(getNetworkConfig(key).chainId)),
+	);
+	if (Object.keys(appRpcMap).some((chainId) => !supportedChainIds.has(chainId))) {
+		issues.push(issue("APP_CHAIN_RPC_UNKNOWN_CHAIN", "APP_CHAIN_RPC_URLS contains a chain that is not enabled for the App"));
+	}
+	if (validWalletRails) {
+		for (const key of walletRails.filter(isSupportedChainKey)) {
+			if (key === home) continue;
+			const chainId = String(getNetworkConfig(key).chainId);
+			const entry = appRpcMap[chainId] ?? cctpRpcMap?.[chainId];
+			if (!entry) {
+				issues.push(issue("APP_CHAIN_RPC_MISSING", `An RPC configuration is required for the enabled wallet rail ${key}`));
+				continue;
+			}
+			if (env.RELAYER_MODE === "bundler" &&
+				(typeof entry === "string" || !entry.bundler?.trim())) {
+				issues.push(issue("APP_CHAIN_BUNDLER_RPC_MISSING", `A bundler RPC is required for the enabled wallet rail ${key}`));
+			}
+		}
+	}
+	return issues;
+}
+
 function parseRpcUrls(raw: string | undefined): string[] {
 	return raw?.split(",").map((url) => url.trim()).filter(Boolean) ?? [];
 }
@@ -184,6 +284,7 @@ export function validateRuntimeConfig(env: Bindings): RuntimeConfigIssue[] {
 		requireExplicit: true,
 		requireHttps: mainnet,
 	}));
+	issues.push(...validateAppMultichainConfig(env));
 	for (const code of validateSponsorshipConfig(env)) {
 		issues.push(issue(code, "Sponsorship provider configuration is invalid"));
 	}

@@ -1,5 +1,5 @@
 import { formatUnits, type Address, type Hex } from "viem";
-import { getNetworkConfig } from "../../../shared";
+import { NETWORKS, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
 	requestBalanceRefresh,
@@ -14,7 +14,7 @@ import {
 } from "./transferCoverage";
 
 type ReadModelStatus = "fresh" | "stale" | "unavailable";
-const HOME_READ_MODEL_REVISION = 2;
+const HOME_READ_MODEL_REVISION = 3;
 
 type ProfileRow = {
 	uid: string;
@@ -47,6 +47,7 @@ type LedgerHomeRow = {
 	token: string;
 	amount: string;
 	amount_source: "executed" | "estimated";
+	chain_id: number | null;
 	counterparty: string | null;
 	counterparty_username: string | null;
 	counterparty_display_name: string | null;
@@ -308,12 +309,16 @@ function mapActivity(rows: LedgerHomeRow[]) {
 	const sent: Array<Record<string, unknown>> = [];
 	const received: Array<Record<string, unknown>> = [];
 	for (const row of rows) {
+		const network = Object.values(NETWORKS).find((candidate) => candidate.chainId === row.chain_id);
 		const common = {
 			id: row.id,
 			txHash: row.tx_hash,
 			amount: row.amount,
 			amountSource: row.amount_source,
 			currency: row.token,
+			chainId: row.chain_id,
+			chainKey: network?.key,
+			networkName: network?.name,
 			reference: row.reference ?? "",
 			createdAt: row.created_at,
 			kind: row.kind,
@@ -422,7 +427,7 @@ export async function readHomeModel(
 			 ORDER BY asset`,
 		).bind(uid, network.chainId),
 		env.GATOPAGO_DB.prepare(
-			`SELECT l.id, l.direction, l.kind, l.tx_hash, l.token, l.amount,
+			`SELECT l.id, l.direction, l.kind, l.tx_hash, l.token, l.amount, l.chain_id,
 			        l.amount_source, l.counterparty, l.reference, l.created_at,
 			        counterparty_user.username AS counterparty_username,
 			        counterparty_user.display_name AS counterparty_display_name
@@ -558,6 +563,7 @@ export async function readHomeModel(
 export async function readBalanceModel(
 	env: Bindings,
 	uid: string,
+	walletAddressOverride?: Address | null,
 ): Promise<{
 	walletAddress: Address | null;
 	balance: HomeBalanceView;
@@ -586,8 +592,9 @@ export async function readBalanceModel(
 			uid,
 		),
 	]);
-	const walletAddress =
-		(resultRows<{ wallet_address: string | null }>(results[0])[0]
+	const walletAddress = walletAddressOverride !== undefined
+		? walletAddressOverride
+		: (resultRows<{ wallet_address: string | null }>(results[0])[0]
 			?.wallet_address as Address | null | undefined) ?? null;
 	const rows = resultRows<SnapshotRow>(results[1]);
 	const refresh = resultRows<RefreshStateRow>(results[2])[0] ?? null;

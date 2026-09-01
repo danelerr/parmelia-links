@@ -10,6 +10,8 @@ import type { User } from "../lib/firebase";
 import { SERVER_URL } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
 import { activeNetwork } from "../lib/activeNetwork";
+import { findNetworkConfigByChainId } from "../lib/networks";
+import { useChainPortfolio } from "../hooks/useChainPortfolio";
 import { parseQrPayload, type ParsedQrPayload } from "../lib/qrPayload";
 import { useAccountProfile } from "../hooks/useAccountProfile";
 import NoticeCard from "../components/NoticeCard";
@@ -67,15 +69,23 @@ export default function ScanQR({ user }: { user: User }) {
   // (UX_DESIGN §6bis) — one place for both sides of a QR moment.
   const [view, setView] = useState<"scan" | "myqr">("scan");
   const { profile } = useAccountProfile(user);
+  const { data: portfolio } = useChainPortfolio(user);
 
   useEffect(() => {
     if (!scannedWallet) return;
     let cancelled = false;
 
-    void Promise.all([
-      fetchWithAuth(user, `${SERVER_URL}/user/resolve-wallet/${scannedWallet.address}`)
-        .then(async (response) => response.ok ? response.json() : null)
-        .catch(() => null),
+	const classificationChain = scannedWallet.chainId === null
+	  ? activeNetwork
+	  : findNetworkConfigByChainId(scannedWallet.chainId);
+	const identityRequest = classificationChain
+	  ? fetchWithAuth(user, `${SERVER_URL}/user/resolve-wallet/${scannedWallet.address}?chainKey=${encodeURIComponent(classificationChain.key)}`)
+	      .then(async (response) => response.ok ? response.json() : null)
+	      .catch(() => null)
+	  : Promise.resolve(null);
+
+	void Promise.all([
+	  identityRequest,
       fetchWithAuth(user, `${SERVER_URL}/crosschain/config`)
         .then(async (response) => response.ok ? response.json() : null)
         .catch(() => null),
@@ -95,6 +105,18 @@ export default function ScanQR({ user }: { user: User }) {
       const options: NetworkOption[] = [
         { id: activeNetwork.chainId, label: activeNetwork.name },
       ];
+      for (const chain of portfolio?.chains ?? []) {
+        if (
+          chain.walletRailEnabled &&
+		  chain.rpcConfigured &&
+          chain.account?.status === "active" &&
+		  chain.account.securityStatus === "current" &&
+		  chain.account.securityVersionApplied === chain.account.securityVersionDesired &&
+          !options.some((option) => option.id === chain.chainId)
+        ) {
+          options.push({ id: chain.chainId, label: chain.name });
+        }
+      }
       if (config?.enabled && Array.isArray(config.destinations)) {
         for (const destination of config.destinations) {
           if (
@@ -119,7 +141,7 @@ export default function ScanQR({ user }: { user: User }) {
     return () => {
       cancelled = true;
     };
-  }, [scannedWallet, user]);
+  }, [portfolio, scannedWallet, user]);
 
   const getOrCreateBarcodeDetector = useCallback(async () => {
     if (barcodeDetectorRef.current) {
@@ -497,13 +519,23 @@ export default function ScanQR({ user }: { user: User }) {
       : scannedWallet.source === "caip10"
         ? "CAIP-10"
         : t("scan.rawAddress");
+    const selectedDirectChain = portfolio?.chains.find((chain) =>
+      chain.chainId === selectedChainId &&
+      chain.walletRailEnabled &&
+	  chain.rpcConfigured &&
+      chain.account?.status === "active" &&
+	  chain.account.securityStatus === "current" &&
+	  chain.account.securityVersionApplied === chain.account.securityVersionDesired,
+    );
 
     function continueWithWallet() {
       const query = new URLSearchParams({
         recipient: scannedWallet!.address,
         source: "qr",
       });
-      if (selectedChainId === activeNetwork.chainId) {
+	  if (selectedDirectChain) {
+		query.set("chainKey", selectedDirectChain.key);
+		query.set("asset", "USDC");
         navigate(`/send?${query.toString()}`);
       } else {
         query.set("chainId", String(selectedChainId));
@@ -560,15 +592,15 @@ export default function ScanQR({ user }: { user: User }) {
         ) : null}
 
 		<NoticeCard title={t("scan.chooseNetwork")} className="mb-6">
-		  {selectedChainId === activeNetwork.chainId
-		    ? t("scan.sameNetworkHint", { network: activeNetwork.name })
+		  {selectedDirectChain
+		    ? t("scan.sameNetworkHint", { network: selectedDirectChain.name })
 		    : t("scan.crosschainHint")}
 		</NoticeCard>
 
 		<TransactionActions>
 		  <button
 		    onClick={continueWithWallet}
-		    disabled={networksLoading}
+		    disabled={networksLoading || !requestedNetworkSupported}
 		    className="btn btn-primary btn-block"
 		  >
 		    {networksLoading ? t("common.loading") : t("scan.continue")}
@@ -624,7 +656,7 @@ export default function ScanQR({ user }: { user: User }) {
                 <p className="text-[12px] text-text-muted text-center leading-relaxed">{t("scan.myQrHint")}</p>
               </>
             ) : profile.walletAddress ? (
-              <AddressQRCard address={profile.walletAddress} qrSize={200} label={t("scan.myQrAddressHint")} />
+              <AddressQRCard address={profile.walletAddress} chainId={activeNetwork.chainId} qrSize={200} label={t("scan.myQrAddressHint")} />
             ) : (
               <p className="text-[13px] text-text-muted text-center py-10">{t("scan.myQrError")}</p>
             )}

@@ -24,9 +24,10 @@ import { Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
-  APP_D1_SECURITY_EVIDENCE_QUERY,
-  appliedMigrationNamesFromEvidence,
-  assertPasskeySecuritySchemaEvidence,
+	  APP_D1_SECURITY_EVIDENCE_QUERY,
+	  appliedMigrationNamesFromEvidence,
+	  assertAppMultichainSchemaEvidence,
+	  assertPasskeySecuritySchemaEvidence,
 } from "./app-d1-security-evidence.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,13 +44,16 @@ const legacyMagic = Buffer.from(`${legacyBackupFormat}\n`, "ascii");
 const nonceLength = 12;
 const tagLength = 16;
 const appRequiredTables = [
-  "account_operations",
-  "crosschain_operations",
-  "events",
-  "payment_links",
-  "pending_payments",
-  "users",
-  "webhook_deliveries",
+	"account_security_versions",
+	"account_operations",
+	"chain_indexer_wallet_registry_outbox",
+	"crosschain_operations",
+	"events",
+	"payment_links",
+	"pending_payments",
+	"user_chain_accounts",
+	"users",
+	"webhook_deliveries",
 ];
 const paymentsRequiredTables = [
   "api_keys",
@@ -345,12 +349,13 @@ async function runDrill() {
   try {
     writeDrillConfig(sourceDir);
     wrangler(["d1", "migrations", "apply", database, ...localArgs(sourceDir)]);
-    const securityEvidence = queryLocal(sourceDir, APP_D1_SECURITY_EVIDENCE_QUERY);
-    assertPasskeySecuritySchemaEvidence(securityEvidence);
+	    const securityEvidence = queryLocal(sourceDir, APP_D1_SECURITY_EVIDENCE_QUERY);
+	    assertPasskeySecuritySchemaEvidence(securityEvidence);
+	    assertAppMultichainSchemaEvidence(securityEvidence);
     if (!appliedMigrationNamesFromEvidence(securityEvidence)
-		.includes("0037_webauthn_authentication.sql")) {
-		throw new Error("D1 restore drill did not apply Passkey Security migration 0037");
-    }
+		.includes("0038_app_multichain_accounts.sql")) {
+		throw new Error("D1 restore drill did not apply App multichain migration 0038");
+	}
     wrangler([
       "d1",
       "execute",

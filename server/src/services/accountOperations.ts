@@ -1,5 +1,5 @@
 import { encodeFunctionData, keccak256, parseUnits, type Address, type Hex } from "viem";
-import { erc20Abi, getNetworkConfig } from "../../../shared";
+import { accountWebAuthnV2Abi, erc20Abi, getNetworkConfig } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
 import {
 	claimFaucet,
@@ -21,11 +21,16 @@ import {
 	revokePasskeysExcept,
 	saveUser,
 	setInvitedBy,
+	upsertUserChainAccount,
+	completeRecoveredUserChainSecurity,
+	listUserChainAccounts,
 	sweepAccountOperations,
 	writeLedgerEntries,
 	type AccountOperationKind,
 	type AccountOperationRecord,
 } from "./storage";
+import { bindingsForChain } from "./chainScope";
+import { isSupportedChainKey } from "../../../shared";
 import {
 	getFaucetAccount,
 	getFaucetWalletClient,
@@ -40,6 +45,7 @@ import { SignerLeaseBusyError, withSignerLease } from "./signerLease";
 import { scheduleEventJob } from "./eventScheduler";
 import { refreshWalletBalancesLatest } from "./balanceReconciler";
 import { requestBalanceRefresh } from "./balanceReadModel";
+import { matchOnchainSigner } from "./userOp";
 
 const OPERATION_TTL_MS = 24 * 60 * 60_000;
 const FAUCET_AMOUNT_USDC = 5;
@@ -203,6 +209,8 @@ export async function submitAccountOperation(
 				const inserted = await createAccountOperation(env, {
 					id,
 					uid: input.uid,
+					chainId: getNetworkConfig(env.CHAIN_KEY).chainId,
+					chainKey: getNetworkConfig(env.CHAIN_KEY).key,
 					kind: input.kind,
 					txHash,
 					rawTransaction,
@@ -315,6 +323,59 @@ async function enqueueAccountSecurityEvent(
 	});
 }
 
+/**
+ * Cross-chain recovery cannot be atomic at the EVM layer. This barrier makes
+ * the local security state atomic instead: no passkey is replaced in D1 until
+ * every active smart account exposes exactly the same recovered signer.
+ *
+ * Throwing is intentional. The durable operation remains submitted and its
+ * reconciler retries. If one chain reverted, /recovery/execute can resubmit
+ * only that chain while already-recovered accounts remain untouched.
+ */
+async function assertRecoveryAppliedOnEveryActiveChain(
+	env: Bindings,
+	input: { uid: string; qx: Hex; qy: Hex },
+): Promise<void> {
+	const accounts = (await listUserChainAccounts(env, input.uid))
+		.filter((account) => account.status === "active");
+	if (accounts.length === 0) {
+		throw new Error("Recovery coordination has no active chain accounts");
+	}
+	await Promise.all(accounts.map(async (account) => {
+		if (!isSupportedChainKey(account.chainKey)) {
+			throw new Error(`Recovery coordination does not support ${account.chainKey}`);
+		}
+		const scopedEnv = bindingsForChain(env, account.chainKey);
+		if (!scopedEnv.RPC_READ_URLS?.trim()) {
+			throw new Error(`Recovery coordination RPC is not configured for ${account.chainKey}`);
+		}
+		const publicClient = getPublicClient(scopedEnv);
+		const [pending, signers, threshold] = await Promise.all([
+			publicClient.readContract({
+				address: account.walletAddress,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getPendingRecovery",
+			}) as Promise<readonly [bigint, readonly Hex[], bigint]>,
+			publicClient.readContract({
+				address: account.walletAddress,
+				abi: accountWebAuthnV2Abi,
+				functionName: "getSigners",
+				args: [0n, 32n],
+			}) as Promise<readonly Hex[]>,
+			publicClient.readContract({
+				address: account.walletAddress,
+				abi: accountWebAuthnV2Abi,
+				functionName: "threshold",
+			}) as Promise<bigint>,
+		]);
+		const recovered = pending[0] === 0n && threshold === 1n && signers.length === 1 &&
+			Boolean(matchOnchainSigner(signers, input.qx, input.qy));
+		if (!recovered) {
+			throw new Error(`Recovery is still converging on ${account.chainKey}`);
+		}
+	}));
+}
+
 async function finalizeAccountOperation(
 	env: Bindings,
 	operation: AccountOperationRecord,
@@ -323,6 +384,39 @@ async function finalizeAccountOperation(
 	const metadata = operation.metadata;
 	if (operation.kind === "account_create") {
 		const walletAddress = requiredString(metadata, "walletAddress");
+		const network = getNetworkConfig(env.CHAIN_KEY);
+		const isHomeAccount = metadata.isHomeAccount !== false;
+		const capturedSecurityVersion = typeof metadata.securityVersion === "number" &&
+			Number.isSafeInteger(metadata.securityVersion) && metadata.securityVersion > 0
+			? metadata.securityVersion
+			: undefined;
+		await upsertUserChainAccount(env, {
+			uid: operation.uid,
+			chainId: network.chainId,
+			chainKey: network.key,
+			networkName: network.name,
+			walletAddress,
+			isHome: isHomeAccount,
+			status: "active",
+			securityStatus: "current",
+			...(capturedSecurityVersion === undefined
+				? {}
+				: { securityVersionApplied: capturedSecurityVersion }),
+			deploymentTxHash: operation.txHash,
+		});
+		if (!isHomeAccount) {
+			await requestBalanceRefresh(env, {
+				uid: operation.uid,
+				accountAddress: walletAddress as Address,
+				chainId: network.chainId,
+				reason: "chain_account_activated",
+				priority: 0,
+				...(receiptBlockNumber === undefined
+					? {}
+					: { notBeforeBlock: receiptBlockNumber.toString() }),
+			});
+			return;
+		}
 		const credentialId = requiredString(metadata, "credentialId");
 		const qx = requiredString(metadata, "qx");
 		const qy = requiredString(metadata, "qy");
@@ -437,6 +531,11 @@ async function finalizeAccountOperation(
 		const credentialId = requiredString(metadata, "credentialId");
 		const qx = requiredString(metadata, "qx");
 		const qy = requiredString(metadata, "qy");
+		await assertRecoveryAppliedOnEveryActiveChain(env, {
+			uid: operation.uid,
+			qx: qx as Hex,
+			qy: qy as Hex,
+		});
 		// executeRecovery replaces the entire onchain signer set. Revoke the old
 		// management rows first so future registration excludes and Security never
 		// present superseded credentials as usable keys.
@@ -466,8 +565,14 @@ async function finalizeAccountOperation(
 				| "cross-platform"
 				| null,
 		});
+		const completedChains = await completeRecoveredUserChainSecurity(env, {
+			uid: operation.uid,
+		});
+		if (completedChains < 1) {
+			throw new Error("Recovery security state could not be finalized");
+		}
 		await enqueueAccountSecurityEvent(env, {
-			dedupeKey: `account-operation:${operation.id}:security.recovery_executed`,
+			dedupeKey: `security-recovery:${operation.uid}:${credentialId}`,
 			uid: operation.uid,
 			eventType: "security.recovery_executed",
 			priority: 0,
@@ -481,6 +586,7 @@ async function finalizeAccountOperation(
 	}
 
 	if (operation.kind === "recovery_cancel") {
+		if (metadata.isHomeAccount === false) return;
 		await enqueueAccountSecurityEvent(env, {
 			dedupeKey: `account-operation:${operation.id}:security.recovery_cancelled`,
 			uid: operation.uid,
@@ -496,6 +602,24 @@ async function finalizeAccountOperation(
 }
 
 async function compensateFailedOperation(env: Bindings, operation: AccountOperationRecord): Promise<void> {
+	if (operation.kind === "account_create" && operation.metadata.isHomeAccount === false) {
+		const network = getNetworkConfig(env.CHAIN_KEY);
+		const walletAddress = optionalString(operation.metadata, "walletAddress");
+		if (walletAddress) {
+			await upsertUserChainAccount(env, {
+				uid: operation.uid,
+				chainId: network.chainId,
+				chainKey: network.key,
+				networkName: network.name,
+				walletAddress,
+				isHome: false,
+				status: "failed",
+				securityStatus: "failed",
+				deploymentTxHash: operation.txHash,
+			});
+		}
+		return;
+	}
 	if (operation.kind !== "faucet") return;
 	await releaseFaucetClaim(env, operation.uid).catch(() => null);
 	await refundDailyFaucetBudget(env).catch(() => null);
@@ -509,6 +633,9 @@ export async function reconcileAccountOperation(
 		? await getAccountOperationById(env, operationOrId)
 		: operationOrId;
 	if (!operation || !["prepared", "submitted"].includes(operation.status)) return operation;
+	if (isSupportedChainKey(operation.chainKey)) {
+		env = bindingsForChain(env, operation.chainKey);
+	}
 
 	if (operation.status === "prepared") {
 		try {

@@ -11,7 +11,33 @@ import {
 	LEDGER_PAGE_MAX,
 	listLedgerPageByUid,
 } from "../services/storage";
-import { ERR } from "../../../shared";
+import { ERR, NETWORKS, getNetworkConfig } from "../../../shared";
+
+export type LedgerNetworkMetadata = {
+	chainId: number;
+	chainKey?: string;
+	networkName: string;
+};
+
+/**
+ * Preserve the chain recorded by the ledger. Legacy rows without a chain id
+ * belong to the configured home chain, but an explicit unknown id must never
+ * be relabelled as home: that would create a plausible yet false receipt.
+ */
+export function ledgerNetworkMetadata(
+	chainId: number | null | undefined,
+	homeChainKey: string,
+): LedgerNetworkMetadata {
+	if (chainId == null) {
+		const home = getNetworkConfig(homeChainKey);
+		return { chainId: home.chainId, chainKey: home.key, networkName: home.name };
+	}
+	const known = Object.values(NETWORKS).find((network) => network.chainId === chainId);
+	if (known) {
+		return { chainId: known.chainId, chainKey: known.key, networkName: known.name };
+	}
+	return { chainId, networkName: `Chain ID ${chainId}` };
+}
 
 const txRoutes = new Hono<AppContext>();
 
@@ -61,10 +87,10 @@ txRoutes.get("/", requireAuth, async (c) => {
 		throw error;
 	}
 	const entries = page.entries;
-
 	const sent = entries
 		.filter((e) => e.direction === "out")
 		.map((e) => ({
+			...ledgerNetworkMetadata(e.chainId, c.env.CHAIN_KEY),
 			id: e.id,
 			txHash: e.txHash,
 			amount: e.amount,
@@ -81,6 +107,7 @@ txRoutes.get("/", requireAuth, async (c) => {
 	const received = entries
 		.filter((e) => e.direction === "in")
 		.map((e) => ({
+			...ledgerNetworkMetadata(e.chainId, c.env.CHAIN_KEY),
 			id: e.id,
 			txHash: e.txHash,
 			amount: e.amount,

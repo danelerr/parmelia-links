@@ -30,7 +30,6 @@ abstract contract GatoPagoDeploymentScript is Script {
     }
 
     error Deploy__PredictedAddressMismatch(address predicted, address actual);
-    error Deploy__PaymasterOnlyOnHomeChain(uint256 chainId);
     error Deploy__ValueDoesNotFitUint16(uint256 value);
     error Deploy__ValueDoesNotFitUint32(uint256 value);
 
@@ -50,7 +49,8 @@ abstract contract GatoPagoDeploymentScript is Script {
 
 /**
  * @notice Deterministic deployment of account infrastructure. The paymaster is
- *         deployed and funded only on the configured Arbitrum home chain.
+ *         enabled by default only on the configured home chain; a reviewed
+ *         testnet satellite requires the explicit environment opt-in below.
  */
 contract DeployV2 is GatoPagoDeploymentScript {
     bytes32 internal constant SALT = keccak256("parmelia.v2.solc-0.8.34");
@@ -66,7 +66,7 @@ contract DeployV2 is GatoPagoDeploymentScript {
 
         DeploymentRoles.validateBroadcaster(deployer);
         if (deployPaymaster) {
-            if (!config.isHomeChain) revert Deploy__PaymasterOnlyOnHomeChain(block.chainid);
+            NetworkDeploymentConfig.requirePaymasterChain(config);
             DeploymentRoles.validatePaymaster(block.chainid, deployer, finalOwner, sponsorSigner);
         }
 
@@ -123,13 +123,14 @@ contract DeployV2 is GatoPagoDeploymentScript {
     }
 }
 
-/// @notice Standalone deterministic paymaster deployment for Arbitrum only.
+/// @notice Standalone deterministic paymaster deployment for a reviewed home
+///         chain or an explicitly enabled testnet satellite wallet rail.
 contract DeployPaymasterV2 is GatoPagoDeploymentScript {
     bytes32 internal constant SALT = keccak256("parmelia.v2.paymaster.solc-0.8.34");
 
     function run() external {
         NetworkDeploymentConfig.Config memory config = NetworkDeploymentConfig.get(block.chainid);
-        NetworkDeploymentConfig.requireHomeChain(config);
+        NetworkDeploymentConfig.requirePaymasterChain(config);
         NetworkDeploymentConfig.preflightAccounts(config);
 
         address deployer = msg.sender;
@@ -271,7 +272,7 @@ contract DeployCrosschainRouter is GatoPagoDeploymentScript {
 
     function run() external {
         NetworkDeploymentConfig.Config memory config = NetworkDeploymentConfig.get(block.chainid);
-        NetworkDeploymentConfig.requireHomeChain(config);
+        NetworkDeploymentConfig.requireCrosschainRouterChain(config);
         NetworkDeploymentConfig.preflightCctp(config);
 
         address deployer = msg.sender;

@@ -49,6 +49,7 @@ assert(typeof paymentsPackage.scripts?.deploy === "string" &&
 	"Payments deploy script must preserve source, configuration and Wrangler guards in one entrypoint");
 assert(appMigrationGuard.includes('"--remote", "--json", "--command", APP_D1_SECURITY_EVIDENCE_QUERY') &&
 	appMigrationGuard.includes("assertPasskeySecuritySchemaEvidence(evidence)") &&
+	appMigrationGuard.includes("assertAppMultichainSchemaEvidence(evidence)") &&
 	!/(?:INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|CREATE\s+TABLE|REPLACE\s+INTO|migrations\s+apply)/iu.test(`${appMigrationGuard}\n${appD1Evidence}`),
 "The App migration deploy guard must remain strictly read-only");
 

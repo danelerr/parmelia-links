@@ -18,6 +18,7 @@ import {
 	paymentRouterV2Abi,
 	getNetworkConfig,
 	getTokenBySymbol,
+	isSupportedChainKey,
 	ERR,
 } from "../../../shared";
 import {
@@ -27,6 +28,7 @@ import {
 	getPasskey,
 	getPaymentLinkById,
 	getPendingPayment,
+	getUserChainAccount,
 	getPendingPaymentAnyState,
 	getUserByUid,
 	isIntentPayable,
@@ -68,6 +70,7 @@ import {
 	sendUserOperation,
 	UserOperationTransportError,
 } from "../services/userOperationTransport";
+import { bindingsForChain, resolveAppChainKey } from "../services/chainScope";
 
 const payRoutes = new Hono<AppContext>();
 
@@ -126,19 +129,30 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		if (prepareAction === "block") return cutoverUnavailable(c, requestId);
 
 		const profile = await getUserByUid(c.env, user.sub);
-		const senderAddress = profile?.walletAddress ?? undefined;
+		const requestedChainKey = storedPaymentLink ? c.env.CHAIN_KEY : body.chainKey;
+		const chainKey = resolveAppChainKey(c.env, requestedChainKey, { requireWalletRail: true });
+		if (!chainKey) {
+			return c.json({ error: "Red no soportada", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
+		}
+		const paymentEnv = bindingsForChain(c.env, chainKey);
+		const network = getNetworkConfig(chainKey);
+		const chainAccount = await getUserChainAccount(c.env, user.sub, network.chainId);
+		const senderAddress = chainKey === c.env.CHAIN_KEY
+			? profile?.walletAddress ?? undefined
+			: chainAccount?.status === "active" && chainAccount.securityStatus === "current"
+				? chainAccount.walletAddress
+				: undefined;
 		if (!senderAddress) {
 			logWarn("payment_prepare_missing_wallet", { requestId, uid: user.sub });
 			return c.json({ error: "You need a wallet to pay. Create one first.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
 		const credentialId = profile?.credentialId ?? null;
-		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
-		const network = getNetworkConfig(c.env.CHAIN_KEY);
+		const submissionTransport = selectUserOperationTransport(paymentEnv, user.sub);
 		const allowedCurrencies = network.tokens.length
 			? network.tokens.map((t) => t.symbol)
 			: ["USDC", "ETH"];
-		const { publicClient } = getClients(c.env);
+		const { publicClient } = getClients(paymentEnv);
 
 		let recipientAddress: `0x${string}` | null = null;
 		let paymentAmount: string | null = null;
@@ -148,7 +162,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 
 		if (storedPaymentLink) {
 			if (prepareAction === "payments") {
-				const reservation = await reserveAppPaymentAttempt(c.env, {
+				const reservation = await reserveAppPaymentAttempt(paymentEnv, {
 					commandId: `prepare:${user.sub}:${linkId}:${c.req.header("Idempotency-Key")?.trim() || (typeof body.idempotencyKey === "string" ? body.idempotencyKey : "active")}`,
 					requestId,
 					uid: user.sub,
@@ -286,7 +300,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 				ethAmount = parseEther(paymentAmount);
 			} catch {
 				logWarn("payment_prepare_invalid_native_amount", { requestId, uid: user.sub, amount: paymentAmount });
-				return c.json({ error: "Monto inválido para ETH", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
+				return c.json({ error: `Monto inválido para ${network.nativeTokenSymbol}`, error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 			}
 
 			const ethBalance = await publicClient.getBalance({ address: senderAddress as `0x${string}` });
@@ -299,7 +313,7 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 					amount: paymentAmount,
 				});
 				return c.json({
-					error: `Saldo ETH insuficiente (tienes ${formatEther(ethBalance)} ETH)`,
+					error: `Saldo ${network.nativeTokenSymbol} insuficiente (tienes ${formatEther(ethBalance)} ${network.nativeTokenSymbol})`,
 					error_code: ERR.INSUFFICIENT_BALANCE,
 					requestId,
 				}, 400);
@@ -308,14 +322,16 @@ payRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 
 		const { userOp, userOpHash, chainId, rpId, signingPayload, sponsorshipProvider,
-			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(paymentEnv, {
 			sender: senderAddress as `0x${string}`,
 			callData: executeCalldata,
 			transportMode: submissionTransport,
 		});
 
-		await createPendingPayment(c.env, {
+		await createPendingPayment(paymentEnv, {
 			userOpHash,
+			chainId: network.chainId,
+			chainKey: network.key,
 			linkId: pendingLinkId,
 			paymentAttemptId: paymentAttempt?.attemptId ?? null,
 			uid: user.sub,
@@ -365,6 +381,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 	let claimedLinkId: string | null = null;
 	let broadcastTxHash: string | null = null;
 	let submissionAccepted = false;
+	let operationEnv: AppContext["Bindings"] = c.env;
 	try {
 		const user = c.get("user")!;
 		const { userOpHash, authenticatorData, clientDataJSON, r, s, credentialId, qx, qy } = await c.req.json();
@@ -390,7 +407,10 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			logWarn("payment_submit_unauthorized_pending", { requestId, uid: user.sub, userOpHash: userOpHashForLog });
 			return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT, requestId }, 403);
 		}
-		const cutover = paymentsCutoverState(c.env);
+		if (isSupportedChainKey(pending.chainKey)) {
+			operationEnv = bindingsForChain(c.env, pending.chainKey);
+		}
+		const cutover = paymentsCutoverState(operationEnv);
 		if (paymentSubmissionBlocked({
 			mode: cutover.mode,
 			hasLegacyLink: isStoredPaymentLink(pending.linkId),
@@ -412,12 +432,12 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// settlement guard is the last line of defense; this check stops the
 		// second payer BEFORE their funds move on-chain.
 		if (!NON_PAYMENT_CURRENCIES.has(pending.currency) && isStoredPaymentLink(pending.linkId)) {
-			const linkNow = await getPaymentLinkById(c.env, pending.linkId);
+			const linkNow = await getPaymentLinkById(operationEnv, pending.linkId);
 			if (linkNow?.status === "paid") {
 				logWarn("payment_submit_link_already_paid", { requestId, uid: user.sub, linkId: pending.linkId });
 				return c.json({ error: "Este link ya fue pagado", error_code: ERR.LINK_ALREADY_PAID, requestId }, 409);
 			}
-			const intentNow = await getPaymentIntentByLinkId(c.env, pending.linkId);
+			const intentNow = await getPaymentIntentByLinkId(operationEnv, pending.linkId);
 			if (intentNow && !isIntentPayable(intentNow)) {
 				logWarn("payment_submit_intent_not_payable", { requestId, uid: user.sub, linkId: pending.linkId, intentStatus: intentNow.status });
 				return c.json({ error: "Este cobro ya no está disponible", error_code: ERR.INTENT_NOT_PAYABLE, requestId }, 409);
@@ -434,9 +454,9 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			linkId: pending.linkId,
 		});
 
-		const network = getNetworkConfig(c.env.CHAIN_KEY);
+		const network = getNetworkConfig(operationEnv.CHAIN_KEY);
 		const { contracts } = network;
-		const { publicClient } = getClients(c.env);
+		const { publicClient } = getClients(operationEnv);
 
 		const typeIndex = (clientDataJSON as string).indexOf('"type"');
 		const challengeIndex = (clientDataJSON as string).indexOf('"challenge"');
@@ -460,7 +480,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		let signerSource = signerQx && signerQy ? "client_q_coordinates" : "none";
 
 		if ((!signerQx || !signerQy) && typeof credentialId === "string" && credentialId) {
-			const stored = await getPasskey(c.env, credentialId);
+			const stored = await getPasskey(operationEnv, credentialId);
 			if (stored) {
 				signerQx = stored.qx as `0x${string}`;
 				signerQy = stored.qy as `0x${string}`;
@@ -569,8 +589,8 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// Atomic claim: exactly one submit of this userOpHash proceeds past here.
 		// A duplicate (double-tap, retried request) gets a clean 409 instead of
 		// re-broadcasting and burning relayer gas on a guaranteed nonce revert.
-		if (!(await claimPendingForSubmit(c.env, userOpHash))) {
-			const current = await getPendingPaymentAnyState(c.env, userOpHash);
+		if (!(await claimPendingForSubmit(operationEnv, userOpHash))) {
+			const current = await getPendingPaymentAnyState(operationEnv, userOpHash);
 			logWarn("payment_submit_duplicate", { requestId, uid: user.sub, userOpHash: userOpHashForLog, status: current?.status });
 			return c.json(
 				{
@@ -589,8 +609,8 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			const claimExpiresAt = new Date(
 				Math.max(new Date(pending.expiresAt).getTime(), Date.now() + 15 * 60_000),
 			).toISOString();
-			if (!(await claimPaymentLinkForSubmit(c.env, pending.linkId, userOpHash, claimExpiresAt))) {
-				await releasePendingClaim(c.env, userOpHash);
+			if (!(await claimPaymentLinkForSubmit(operationEnv, pending.linkId, userOpHash, claimExpiresAt))) {
+				await releasePendingClaim(operationEnv, userOpHash);
 				claimed = false;
 				return c.json({
 					error: "Este link ya tiene un pago en proceso.",
@@ -607,7 +627,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			userOpHash: userOpHashForLog,
 			transport: pending.submissionTransport,
 		});
-		const submission = await sendUserOperation(c.env, pending.submissionTransport, {
+		const submission = await sendUserOperation(operationEnv, pending.submissionTransport, {
 			userOp,
 			userOpHash: userOpHash as Hex,
 			entryPoint: contracts.entryPoint,
@@ -624,13 +644,13 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// Persist the authoritative payment hand-off first. If a later auxiliary
 		// write fails, the reconciler has the exact transaction fast path.
 		await setPendingPaymentSubmitted(
-			c.env,
+			operationEnv,
 			userOpHash,
 			submission.transport,
 			submission.transactionHash,
 		);
 		if (pending.paymentAttemptId) {
-			await wakePaymentsSync(c.env, "payment_execution_submitted").catch((error) =>
+			await wakePaymentsSync(operationEnv, "payment_execution_submitted").catch((error) =>
 				logError("payments_execution_wakeup_failed", error, { requestId, userOpHash }),
 			);
 		}
@@ -638,7 +658,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			// Bundlers return the stable UserOperation hash, not a bundle tx hash.
 			// Either value proves the claim was handed off and must not expire.
 			await markPaymentLinkClaimBroadcast(
-				c.env,
+				operationEnv,
 				claimedLinkId,
 				userOpHash,
 				submission.transactionHash ?? submission.userOpHash,
@@ -652,7 +672,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 			pending.currency === "CROSSCHAIN" && typeof pending.meta?.opId === "string" ? pending.meta.opId : null;
 		if (crosschainOpId && submission.transactionHash) {
 			await updateCrosschainOp(
-				c.env,
+				operationEnv,
 				crosschainOpId,
 				{
 					status: "submitted",
@@ -667,9 +687,9 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		// and on-chain signer match were validated before broadcast.
 		if (credentialId) {
 			try {
-				await saveUser(c.env, { uid: user.sub, credentialId });
+				await saveUser(operationEnv, { uid: user.sub, credentialId });
 				if (signerQx && signerQy) {
-					await savePasskey(c.env, { credentialId, uid: user.sub, qx: signerQx, qy: signerQy });
+					await savePasskey(operationEnv, { credentialId, uid: user.sub, qx: signerQx, qy: signerQy });
 				}
 			} catch (error) {
 				logError("payment_submit_passkey_persist_failed", error, {
@@ -721,7 +741,7 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 		) {
 			const ambiguousTransport = error.transport ?? "bundler";
 			await setPendingPaymentSubmitted(
-				c.env,
+				operationEnv,
 				userOpHashForLog,
 				ambiguousTransport,
 				null,
@@ -732,12 +752,12 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 					{ requestId, userOpHash: userOpHashForLog },
 				),
 			);
-			await wakePaymentsSync(c.env, "payment_execution_ambiguous").catch((wakeupError) =>
+			await wakePaymentsSync(operationEnv, "payment_execution_ambiguous").catch((wakeupError) =>
 				logError("payments_execution_wakeup_failed", wakeupError, { requestId, userOpHash: userOpHashForLog }),
 			);
 			if (claimedLinkId) {
 				await markPaymentLinkClaimBroadcast(
-					c.env,
+					operationEnv,
 					claimedLinkId,
 					userOpHashForLog,
 					userOpHashForLog,
@@ -779,12 +799,12 @@ payRoutes.post("/submit", requireAuth, async (c) => {
 						? "SIGNER_BUSY"
 						: "SUBMISSION_FAILED";
 			await releasePendingClaim(
-				c.env,
+				operationEnv,
 				userOpHashForLog,
 				submissionErrorCode,
 			).catch(() => null);
 			if (claimedLinkId) {
-				await releasePaymentLinkClaim(c.env, claimedLinkId, userOpHashForLog).catch(() => null);
+				await releasePaymentLinkClaim(operationEnv, claimedLinkId, userOpHashForLog).catch(() => null);
 			}
 		}
 
@@ -838,10 +858,13 @@ payRoutes.get("/status/:userOpHash", requireAuth, async (c) => {
 	if (row.uid !== user.sub) {
 		return c.json({ error: "Unauthorized", error_code: ERR.WRONG_ACCOUNT }, 403);
 	}
+	const statusEnv = isSupportedChainKey(row.chainKey)
+		? bindingsForChain(c.env, row.chainKey)
+		: c.env;
 	if (row.status === "submitted") {
 		try {
 			const receipt = await getUserOperationTransport(
-				c.env,
+				statusEnv,
 				row.submissionTransport,
 			).receipt({
 				userOpHash: row.userOpHash as Hex,

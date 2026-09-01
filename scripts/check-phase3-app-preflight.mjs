@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { PASSKEY_SECURITY_SCHEMA_ITEMS } from "./app-d1-security-evidence.mjs";
+import {
+	APP_MULTICHAIN_SCHEMA_ITEMS,
+	PASSKEY_SECURITY_SCHEMA_ITEMS,
+} from "./app-d1-security-evidence.mjs";
 
 const source = readFileSync(resolve(import.meta.dirname, "preflight-phase3-app-remote.mjs"), "utf8");
 const d1EvidenceSource = readFileSync(resolve(import.meta.dirname, "app-d1-security-evidence.mjs"), "utf8");
@@ -54,6 +57,25 @@ for (const evidence of [
 }
 assert(source.includes('"app-passkey-schema-0037"'),
 	"Phase 3 App preflight must expose a dedicated Passkey schema gate through 0037");
+for (const evidence of [
+	"account_security_versions.desired_version",
+	"user_chain_accounts.chain_id",
+	"user_chain_accounts.security_version_applied",
+	"account_operations.chain_id",
+	"pending_payments.chain_id",
+	"chain_indexer_wallet_registry_outbox",
+	"idx_account_operations_active_uid_kind_chain",
+	"idx_pending_security_sync_active",
+	"trg_security_version_passkey_insert",
+	"trg_chain_indexer_registry_account_update",
+]) {
+	assert(APP_MULTICHAIN_SCHEMA_ITEMS.includes(evidence),
+		`D1 Phase 4A evidence is incomplete: ${evidence}`);
+}
+assert(source.includes('"0038_app_multichain_accounts.sql"'),
+	"App remote preflight must require migration 0038");
+assert(source.includes('"app-multichain-schema-0038"'),
+	"App remote preflight must expose a dedicated Phase 4A schema gate");
 assert(source.includes('"deployments", "status", "--name", workerName, "--json"'),
 	"Phase 3 App preflight must discover every active Worker version");
 assert(source.includes('"versions", "view", activeVersion.version_id'),

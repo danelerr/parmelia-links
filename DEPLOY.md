@@ -14,14 +14,12 @@ se aplicó únicamente `0035`, App Worker quedó en
 `6e8ce042-c76a-4fe1-b5d5-e0efe6988547` y `app.parmelia.me` apunta a
 `parmelia-7t1eguai2-danelerrs-projects.vercel.app`. El preflight remoto está
 completamente verde y un magic link real abrió una sesión válida; Firebase
-conserva Google y Email Link en el mismo UID. Existe un delta App posterior,
-verificado sólo en local, que elimina la entrada de recovery del login, concentra
-llaves/recuperación en `Configuración → Seguridad`, evita iniciar WebAuthn al
-consumir un link de recovery y fija el contrato WebAuthn. Requiere `0036` antes
-del Worker y sigue el
-[runbook Passkey v2](./docs/runbooks/phase-3-app-passkey-v2-cutover.md); debe
-versionarse y promoverse antes de atribuir ese comportamiento a producción. El
-drill real de recovery/replay será una acción
+conserva Google y Email Link en el mismo UID. La promoción Passkey Security v2
+aplicó `0036` y `0037`, concentra llaves/recuperación en
+`Configuración → Seguridad`, evita iniciar WebAuthn al consumir un link de
+recovery y fija el contrato WebAuthn. Sigue el
+[runbook Passkey v2](./docs/runbooks/phase-3-app-passkey-v2-cutover.md). El drill
+real de recovery/replay será una acción
 deliberada de Fase 4 y nunca parte automática del login. `server` usa
 `PAYMENTS_CUTOVER_MODE=payments`; Payments apunta a
 `gatopago-payments-semantic-20260826`, tiene bootstrap desactivado, migraciones
@@ -43,6 +41,14 @@ El corte acotado de autenticación App usa un procedimiento independiente:
 [`phase-3-app-magic-link-cutover.md`](./docs/runbooks/phase-3-app-magic-link-cutover.md).
 Ese runbook despliega sólo App Worker y App Web; no reutilizar el script conjunto
 de Fase 2 para esta iteración.
+
+La Fase 4A agrega una App multichain explícita, pero no está desplegada. Su
+especificación y gates están en
+[`app-multichain-phase-4a.md`](./docs/design/app-multichain-phase-4a.md).
+`APP_ENABLED_CHAIN_KEYS=arbitrum-sepolia,avalanche-fuji` permite presentar la
+capacidad; `APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia` debe permanecer así
+hasta que los contratos Fuji estén desplegados, verificados y fondeados y el
+E2E real haya pasado. Una dirección CREATE2 predicha no satisface ese gate.
 
 Antes de tocar una credencial, consulta el
 [`inventario canónico de secretos y configuración`](./docs/operations/worker-variables.md):
@@ -446,6 +452,7 @@ npx wrangler secret put FIREBASE_SERVICE_ACCOUNT       # JSON de service account
 npx wrangler secret put FIREBASE_WEB_API_KEY            # API key publica de Firebase Web Auth/EMAIL_SIGNIN
 npx wrangler secret put AUTH_CODE_PEPPER                # aleatorio, minimo 32 caracteres; HMAC de challenges/proofs
 npx wrangler secret put CCTP_RPC_URLS                  # opcional: RPCs dedicados cross-chain
+npx wrangler secret put APP_CHAIN_RPC_URLS             # RPCs App por chain/rol; usar Secret si contienen API keys
 npx wrangler secret put ALCHEMY_WEBHOOK_ID             # Address Activity
 npx wrangler secret put ALCHEMY_WEBHOOK_NETWORK        # red exacta del webhook
 npx wrangler secret put ALCHEMY_WEBHOOK_SIGNING_KEY    # HMAC Address Activity
@@ -652,9 +659,16 @@ $env:D1_BACKUP_ENCRYPTION_KEY = "<32 bytes en hex o base64>"
 $env:D1_BACKUP_ENCRYPTION_KEY_ID = "archivo-2026-07"
 pnpm d1:backup
 
-# 3. Revisar y aplicar migraciones antes del Worker.
+# 3. Revisar y aplicar migraciones antes del Worker. Fase 4A requiere 0038;
+# el guard posterior verifica tablas, columnas, índices y triggers reales, no
+# sólo que el nombre aparezca en d1_migrations.
 pnpm --filter server exec wrangler d1 migrations list GATOPAGO_DB --remote
 pnpm --filter server exec wrangler d1 migrations apply GATOPAGO_DB --remote
+
+# 3b. Mantener Fuji fail-closed en la primera promoción.
+# server/wrangler.jsonc debe conservar:
+# APP_ENABLED_CHAIN_KEYS=arbitrum-sepolia,avalanche-fuji
+# APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia
 
 # 4. Sólo en la primera instalación: comprobar y crear las Queues declaradas.
 pnpm --filter server exec wrangler queues list

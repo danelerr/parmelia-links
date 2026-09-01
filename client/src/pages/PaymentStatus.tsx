@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard, shareCard } from "../lib/exportCard";
 import { notifyError } from "../lib/notify";
+import { getNetworkConfig, isSupportedChainKey } from "../lib/networks";
 
 export default function PaymentStatus({ user }: { user: User | null }) {
 	const [searchParams] = useSearchParams();
@@ -22,6 +23,8 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 	const amount = searchParams.get("amount");
 	const currency = searchParams.get("currency");
 	const to = searchParams.get("to");
+	const chainKey = searchParams.get("chainKey") ?? activeNetwork.key;
+	const network = isSupportedChainKey(chainKey) ? getNetworkConfig(chainKey) : null;
 
 	// A payment arrives here unconfirmed (202 accepted broadcast or a
 	// duplicate submit). We poll its lifecycle and flip this same screen from
@@ -55,7 +58,7 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 		await shareCard(cardRef.current, {
 			filename: `gatopago-pago-${amount}-${currency}.png`,
 			text: t("paymentStatus.shareText", { amount, currency }),
-			url: txHash ? getExplorerTxUrl(txHash) : undefined,
+			url: txHash && network ? getExplorerTxUrl(txHash, network.key) : undefined,
 		});
 	}
 
@@ -101,9 +104,14 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 							{t("paymentStatus.to")} <span className="text-text-muted">{toLabel}</span>
 						</p>
 					)}
-					{confirmed && (
+					{confirmed && network && (
 						<p className="text-[12px] text-text-faint relative z-1">
-							{t("paymentStatus.securedOn", { network: activeNetwork.name })}
+							{t("paymentStatus.securedOn", { network: network.name })}
+						</p>
+					)}
+					{confirmed && !network && (
+						<p role="status" className="text-[12px] text-warning relative z-1">
+							{t("paymentStatus.networkUnknown")}
 						</p>
 					)}
 					{pending && (
@@ -138,9 +146,9 @@ export default function PaymentStatus({ user }: { user: User | null }) {
 						<p className="text-[11px] text-text-faint text-center mt-2">GatoPago · Comprobante</p>
 					</div>
 
-					{txHash && (
+					{txHash && network && (
 						<a
-							href={getExplorerTxUrl(txHash)}
+							href={getExplorerTxUrl(txHash, network.key)}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-text-faint text-[12px] mt-3 relative z-1"

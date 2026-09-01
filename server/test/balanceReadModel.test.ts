@@ -44,7 +44,7 @@ describe("balance refresh event coalescing", () => {
 		expect(schedule).toHaveBeenCalledOnce();
 		expect(schedule.mock.calls[0][0]).toMatchObject({
 			job: "balance_refresh",
-			partition: "global",
+			partition: "chain:arbitrum-sepolia:global",
 			reason: "balance_refresh_requested",
 		});
 	});

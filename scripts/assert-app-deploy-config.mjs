@@ -7,6 +7,8 @@ import { classifyLocalCutoverConfig } from "./cutover-preflight-contract.mjs";
 const defaultAppConfigPath = resolve(import.meta.dirname, "..", "server", "wrangler.jsonc");
 const defaultPaymentsConfigPath = resolve(import.meta.dirname, "..", "payments-worker", "wrangler.jsonc");
 export const STABLE_PASSKEY_RP_ID = "app.parmelia.me";
+const APP_CHAIN_KEYS = new Set(["base-sepolia", "arbitrum-sepolia", "avalanche-fuji", "arbitrum-one"]);
+const APP_WALLET_RAIL_KEYS = new Set(["arbitrum-sepolia", "avalanche-fuji"]);
 
 function requiredValue(config, pattern, label) {
 	const match = config.match(pattern);
@@ -62,11 +64,35 @@ function validatePasskeyDeployConfig(appConfig, appUrl) {
 	}
 }
 
+function commaSeparatedChainKeys(appConfig, name) {
+	const values = requiredValue(appConfig, new RegExp(`"${name}"\\s*:\\s*"([^"]+)"`, "u"), name)
+		.split(",")
+		.map((value) => value.trim());
+	if (values.some((value) => !value) || new Set(values).size !== values.length ||
+		values.some((value) => !APP_CHAIN_KEYS.has(value))) {
+		throw new Error(`Refusing App deployment: ${name} must be a unique list of supported chain keys.`);
+	}
+	return values;
+}
+
+function validateAppMultichainDeployConfig(appConfig) {
+	const home = requiredValue(appConfig, /"CHAIN_KEY"\s*:\s*"([^"]+)"/u, "CHAIN_KEY");
+	const enabled = commaSeparatedChainKeys(appConfig, "APP_ENABLED_CHAIN_KEYS");
+	const rails = commaSeparatedChainKeys(appConfig, "APP_WALLET_RAIL_CHAIN_KEYS");
+	if (!enabled.includes(home)) {
+		throw new Error("Refusing App deployment: APP_ENABLED_CHAIN_KEYS must include CHAIN_KEY.");
+	}
+	if (rails.some((key) => !enabled.includes(key) || !APP_WALLET_RAIL_KEYS.has(key))) {
+		throw new Error("Refusing App deployment: every App wallet rail must be enabled and implemented by the wallet runtime.");
+	}
+}
+
 export function validateAppDeployConfig(appConfig, paymentsConfig) {
 	validatePaymentsDeployConfig(paymentsConfig);
 	const appUrl = requiredValue(appConfig, /"APP_URL"\s*:\s*"([^"]+)"/u, "APP_URL");
 	exactHttpsOrigin(appUrl, "APP_URL");
 	validatePasskeyDeployConfig(appConfig, appUrl);
+	validateAppMultichainDeployConfig(appConfig);
 	const hasEmailBinding = /"send_email"\s*:\s*\[[\s\S]*?"name"\s*:\s*"EMAIL"/u.test(appConfig);
 	const emailFrom = appConfig.match(/"AUTH_EMAIL_FROM"\s*:\s*"([^"]+)"/u)?.[1];
 	if (hasEmailBinding || emailFrom) {

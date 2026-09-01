@@ -1,5 +1,5 @@
 import { type Chain } from "viem";
-import { arbitrum, arbitrumSepolia, baseSepolia } from "viem/chains";
+import { arbitrum, arbitrumSepolia, avalancheFuji, baseSepolia } from "viem/chains";
 import {
 	DEFAULT_CHAIN_KEY,
 	type SupportedChainKey,
@@ -13,6 +13,7 @@ import {
 const CHAIN_MAP: Record<SupportedChainKey, Chain> = {
 	"base-sepolia": baseSepolia,
 	"arbitrum-sepolia": arbitrumSepolia,
+	"avalanche-fuji": avalancheFuji,
 	"arbitrum-one": arbitrum,
 };
 
@@ -32,6 +33,7 @@ export function getActiveChain(chainKey?: string): Chain {
 const CHAIN_BY_ID: Record<number, Chain> = {
 	84532: baseSepolia,
 	421614: arbitrumSepolia,
+	43113: avalancheFuji,
 	42161: arbitrum,
 };
 

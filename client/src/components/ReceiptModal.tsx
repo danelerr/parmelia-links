@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { notifyError } from "../lib/notify";
 import Logo from "./Logo";
-import { getExplorerTxUrl } from "../lib/activeNetwork";
+import { getKnownExplorerTxUrl } from "../lib/activeNetwork";
 import { formatAmount, formatDate, formatTime } from "../lib/format";
 import { downloadCard } from "../lib/exportCard";
 import { useDialog } from "../hooks/useDialog";
@@ -36,6 +36,7 @@ export default function ReceiptModal({
 	const hasDate = !Number.isNaN(date.getTime());
 	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
 	const hideBalance = readMigratedStorage("gatopago:hideBalance", "parmelia:hideBalance") === "1";
+	const explorerUrl = tx.txHash ? getKnownExplorerTxUrl(tx.txHash, tx.chainKey) : null;
 
 	return createPortal(
 		<div
@@ -114,15 +115,21 @@ export default function ReceiptModal({
 							<span className="truncate font-mono text-paper-text">{shortHash(tx.txHash)}</span>
 						</div>
 					)}
-					{tx.txHash && (
+					{explorerUrl && (
 						<a
-							href={getExplorerTxUrl(tx.txHash)}
+							href={explorerUrl}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="mt-2 text-center text-[12px] font-semibold text-cat-700 underline underline-offset-2"
 						>
 							{t("receipt.viewOnNetwork")}
 						</a>
+					)}
+					{tx.networkName && (
+						<div className="flex items-center justify-between text-[12px] gap-3">
+							<span className="shrink-0 text-paper-muted">{t("signing.network")}</span>
+							<span className="text-right text-paper-text">{tx.networkName}</span>
+						</div>
 					)}
 					<p className="mt-1 text-center text-[11px] text-paper-muted">GatoPago · Comprobante</p>
 				</div>

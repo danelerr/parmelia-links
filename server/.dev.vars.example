@@ -122,6 +122,16 @@ WEBHOOK_SECRET_ENCRYPTION_KEYS_PREVIOUS={}
 
 CHAIN_KEY=arbitrum-sepolia
 
+# Fase 4A: redes visibles y rails monetarios son listas distintas. Mostrar
+# Avalanche Fuji no autoriza crear cuentas ni enviar operaciones allí. El rail
+# debe permanecer cerrado hasta desplegar/verificar/fondear sus contratos.
+APP_ENABLED_CHAIN_KEYS=arbitrum-sepolia,avalanche-fuji
+APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia
+# JSON chainId -> URLs separadas por coma, o por rol. Las URLs con API keys son
+# secrets. Ejemplo Fuji por rol:
+# {"43113":{"read":"https://rpc-a.example,https://rpc-b.example","write":"https://rpc-a.example","indexer":"https://rpc-b.example","archive":"https://rpc-c.example","bundler":"https://bundler.example"}}
+APP_CHAIN_RPC_URLS=
+
 # Anti-abuso Turnstile. Testnet: opcional (sin definir = se omite).
 # MAINNET: obligatorio — sin el, /account/create y /account/fund fallan cerrado.
 TURNSTILE_SECRET_KEY=
@@ -158,7 +168,8 @@ APP_URL=https://app.parmelia.me
 PASSKEY_RP_ID=localhost
 PASSKEY_ALLOWED_ORIGINS=http://localhost:5173
 
-# Opcional: JSON chainId->RPC para destinos cross-chain (si no, RPCs publicos).
+# Opcional: JSON chainId->RPC para destinos CCTP. APP_CHAIN_RPC_URLS es la
+# fuente canónica del rail App; este mapa queda para compatibilidad cross-chain.
 CCTP_RPC_URLS=
 
 # Kill switches y controles operativos.

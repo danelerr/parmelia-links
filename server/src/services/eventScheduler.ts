@@ -432,7 +432,10 @@ export async function scheduleEventJob(
 		Math.trunc(options.runAt ?? Date.now() + (options.delayMs ?? 0)),
 	);
 	const reason = normalizedReason(options.reason);
-	const partition = normalizedPartition(options.partition ?? "global");
+	const rawPartition = normalizedPartition(options.partition ?? "global");
+	const partition = rawPartition && env.CHAIN_KEY
+		? normalizedPartition(`chain:${env.CHAIN_KEY}:${rawPartition}`)
+		: rawPartition;
 	const targetBlock = normalizedTargetBlock(
 		options.targetBlock === undefined
 			? undefined
@@ -450,7 +453,10 @@ export async function scheduleEventJob(
 	};
 
 	if (env.EVENT_JOB_SCHEDULER) {
-		const schedulerName = `${env.CHAIN_KEY || "default"}:${job}:${partition}`;
+		// `partition` already carries the chain namespace. Keeping the Durable
+		// Object name derived from that single canonical value avoids two subtly
+		// different identities for the same chain/job pair.
+		const schedulerName = `${job}:${partition}`;
 		const result = await env.EVENT_JOB_SCHEDULER.getByName(
 			schedulerName,
 		).schedule(

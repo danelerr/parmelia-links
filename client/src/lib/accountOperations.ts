@@ -21,6 +21,20 @@ export type AccountOperationResponse = {
 	confirmedAt: string | null;
 };
 
+export type AccountOperationGroupResponse = {
+	operationId?: string;
+	kind?: AccountOperationResponse["kind"];
+	status?: AccountOperationStatus;
+	txHash?: string;
+	attemptCount?: number;
+	errorCode?: string | null;
+	createdAt?: string;
+	updatedAt?: string;
+	confirmedAt?: string | null;
+	alreadyComplete?: boolean;
+	operations?: Array<AccountOperationResponse & { chainId?: number; chainKey?: string }>;
+};
+
 function terminalResult(operation: AccountOperationResponse): AccountOperationResponse | null {
 	if (operation.status === "confirmed") return operation;
 	if (operation.status === "failed") {
@@ -68,4 +82,38 @@ export async function waitForAccountOperation(
 			throw error;
 		}
 	}
+}
+
+/** Wait for every chain operation in a coordinated account-security action. */
+export async function waitForAccountOperationGroup(
+	user: User,
+	initial: AccountOperationGroupResponse,
+	options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+): Promise<AccountOperationResponse[]> {
+	if (initial.alreadyComplete && (!initial.operations || initial.operations.length === 0)) {
+		return [];
+	}
+	const operations = initial.operations?.length
+		? initial.operations
+		: initial.operationId && initial.kind && initial.status && initial.txHash &&
+			initial.attemptCount !== undefined && initial.createdAt && initial.updatedAt &&
+			initial.confirmedAt !== undefined
+			? [{
+				operationId: initial.operationId,
+				kind: initial.kind,
+				status: initial.status,
+				txHash: initial.txHash,
+				attemptCount: initial.attemptCount,
+				errorCode: initial.errorCode ?? null,
+				createdAt: initial.createdAt,
+				updatedAt: initial.updatedAt,
+				confirmedAt: initial.confirmedAt,
+			}]
+			: [];
+	if (operations.length === 0) {
+		throw new ApiError(i18n.t("api.genericError"), { status: 500 });
+	}
+	return Promise.all(
+		operations.map((operation) => waitForAccountOperation(user, operation, options)),
+	);
 }

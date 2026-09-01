@@ -98,11 +98,15 @@ export async function getOperationalHealth(
 				(SELECT COUNT(*) FROM account_operations
 				 WHERE status IN ('prepared', 'submitted'))
 				 AS account_operation_active,
-				(SELECT COUNT(*) FROM indexer_wallet_registry_outbox
-				 WHERE status IN ('pending', 'failed'))
+				((SELECT COUNT(*) FROM indexer_wallet_registry_outbox
+				  WHERE status IN ('pending', 'failed')) +
+				 (SELECT COUNT(*) FROM chain_indexer_wallet_registry_outbox
+				  WHERE status IN ('pending', 'failed')))
 				 AS indexer_registry_active,
-				(SELECT COUNT(*) FROM indexer_wallet_registry_outbox
-				 WHERE status = 'failed')
+				((SELECT COUNT(*) FROM indexer_wallet_registry_outbox
+				  WHERE status = 'failed') +
+				 (SELECT COUNT(*) FROM chain_indexer_wallet_registry_outbox
+				  WHERE status = 'failed'))
 				 AS indexer_registry_failed,
 				(SELECT COUNT(*) FROM provider_subscription_state
 				 WHERE status IN ('pending', 'failed'))

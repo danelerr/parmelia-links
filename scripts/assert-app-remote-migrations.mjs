@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
 	APP_D1_SECURITY_EVIDENCE_QUERY,
 	appliedMigrationNamesFromEvidence,
+	assertAppMultichainSchemaEvidence,
 	assertPasskeySecuritySchemaEvidence,
 	d1EvidenceRows,
 } from "./app-d1-security-evidence.mjs";
@@ -92,14 +93,15 @@ export function assertAppRemoteMigrations() {
 		appliedMigrationNamesFromEvidence(evidence),
 	);
 	const schemaResult = assertPasskeySecuritySchemaEvidence(evidence);
-	return { ...migrationResult, ...schemaResult };
+	const multichainSchemaResult = assertAppMultichainSchemaEvidence(evidence);
+	return { ...migrationResult, ...schemaResult, ...multichainSchemaResult };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	try {
 		const result = assertAppRemoteMigrations();
 		console.log(
-			`App remote migration guard passed: ${result.local} local migrations and ${result.schemaEvidence} security schema items are applied.`,
+			`App remote migration guard passed: ${result.local} local migrations, ${result.schemaEvidence} passkey schema items and ${result.multichainSchemaEvidence} multichain schema items are applied.`,
 		);
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : String(error));

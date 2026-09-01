@@ -10,6 +10,9 @@ export interface Transaction {
 	txHash: string;
 	amount: string;
 	currency: string;
+	chainId?: number;
+	chainKey?: string;
+	networkName?: string;
 	/** Destination wallet (set on sent movements). */
 	to?: string;
 	/** Origin wallet — who the money came from (set on received movements). */
@@ -77,6 +80,9 @@ interface RawLedgerRow {
 	kind?: string;
 	counterpartyUsername?: string | null;
 	counterpartyDisplayName?: string | null;
+	chainId?: number;
+	chainKey?: string;
+	networkName?: string;
 }
 
 export interface RawTxPayload {
@@ -94,6 +100,9 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 		txHash: t.txHash ?? "",
 		amount: t.amount ?? "0",
 		currency: t.currency ?? "",
+		chainId: t.chainId,
+		chainKey: t.chainKey,
+		networkName: t.networkName,
 		to: t.to,
 		reference: t.reference,
 		createdAt: t.createdAt ?? "",
@@ -107,6 +116,9 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 		txHash: t.txHash ?? "",
 		amount: t.amount ?? "0",
 		currency: t.currency ?? "",
+		chainId: t.chainId,
+		chainKey: t.chainKey,
+		networkName: t.networkName,
 		// Server sends the origin wallet as `paidBy` on incoming movements.
 		from: t.paidBy,
 		reference: t.reference,
@@ -126,7 +138,7 @@ export function parseTransactions(txData: RawTxPayload | null | undefined): Tran
 	// (kind !== "external") for the more precise label.
 	const byMovement = new Map<string, Transaction>();
 	for (const tx of merged) {
-		const sig = `${tx.type}|${tx.txHash}|${tx.currency}|${tx.amount}`;
+		const sig = `${tx.chainId ?? "unknown"}|${tx.type}|${tx.txHash}|${tx.currency}|${tx.amount}`;
 		const existing = byMovement.get(sig);
 		if (!existing) {
 			byMovement.set(sig, tx);

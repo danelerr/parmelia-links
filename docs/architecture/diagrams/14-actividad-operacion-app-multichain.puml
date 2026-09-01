@@ -1,0 +1,37 @@
+@startuml
+!include _theme.puml
+title App — Actividad de una operación multichain
+
+start
+:Persona elige activo y red;
+if (¿red soportada y visible?) then (sí)
+  if (¿rail monetario habilitado?) then (sí)
+    if (¿cuenta activa y RPC configurado?) then (sí)
+      if (¿seguridad current y versiones iguales?) then (sí)
+        :Preparar en bindings de esa chain;
+        :Mostrar red, monto, destino y firma;
+        :Firmar con passkey;
+        :Enviar UserOperation;
+        :Reconciliar receipt en la misma chain;
+        :Guardar movimiento y balance por chainId;
+      else (no)
+        :Bloquear y enviar a Configuración > Seguridad;
+      endif
+    else (no)
+      :Explicar que la cuenta/red no está lista;
+    endif
+  else (no)
+    :Mostrar capacidad en vista previa;
+    :No preparar ni enviar;
+  endif
+else (no)
+  :Rechazar la red solicitada;
+endif
+stop
+
+note right
+  Nunca hay fallback silencioso a la red hogar.
+  Swap y Earn son capacidades por red, no botones universales.
+end note
+
+@enduml

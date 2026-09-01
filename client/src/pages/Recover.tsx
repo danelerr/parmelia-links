@@ -16,7 +16,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { User } from "../lib/firebase";
 import { ApiError, apiFetch } from "../lib/api";
-import { type AccountOperationResponse, waitForAccountOperation } from "../lib/accountOperations";
+import {
+	type AccountOperationGroupResponse,
+	waitForAccountOperationGroup,
+} from "../lib/accountOperations";
 import {
 	createPasskeyAvailabilityAssertion,
 	createPasskey,
@@ -105,6 +108,7 @@ type Phase =
 
 function phaseFromStatus(status: PasskeyStatus): Phase {
 	if (!status.hasWallet) return "no-wallet";
+	if (status.recoveryPending === null) return "error";
 	if (!status.recoveryPending) return "intro";
 	const executableAt = status.recoveryExecutableAfter
 		? Date.parse(status.recoveryExecutableAfter)
@@ -244,12 +248,12 @@ export default function Recover({ user }: { user: User }) {
 
 		setPhase("proposing");
 		try {
-			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/propose", {
+			const operation = await apiFetch<AccountOperationGroupResponse>("/account/recovery/propose", {
 				user,
 				body: created,
 				headers: { "X-Step-Up-Token": stepUpToken },
 			});
-			await waitForAccountOperation(user, operation);
+			await waitForAccountOperationGroup(user, operation);
 			// Only NOW is this credential the proposed one - promote it.
 			writeStorage(
 				POINTER_KEY,
@@ -300,7 +304,7 @@ export default function Recover({ user }: { user: User }) {
 		}
 		setPhase("executing");
 		try {
-			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/execute", {
+			const operation = await apiFetch<AccountOperationGroupResponse>("/account/recovery/execute", {
 				user,
 				body: {
 					registrationId: pointer.registrationId,
@@ -310,7 +314,7 @@ export default function Recover({ user }: { user: User }) {
 				},
 				headers: { "X-Step-Up-Token": stepUpToken },
 			});
-			await waitForAccountOperation(user, operation);
+			await waitForAccountOperationGroup(user, operation);
 			rememberPasskey(pointer);
 			clearPointer();
 			// The Home "new device?" banner earns a fresh start after a recovery.
@@ -382,8 +386,8 @@ export default function Recover({ user }: { user: User }) {
 		setCancelArmed(false);
 		setPhase("cancelling");
 		try {
-			const operation = await apiFetch<AccountOperationResponse>("/account/recovery/cancel", { user, body: {} });
-			await waitForAccountOperation(user, operation);
+			const operation = await apiFetch<AccountOperationGroupResponse>("/account/recovery/cancel", { user, body: {} });
+			await waitForAccountOperationGroup(user, operation);
 			clearPointer();
 			setPhase("cancelled");
 		} catch (error) {

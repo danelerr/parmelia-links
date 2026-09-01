@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
 import type { PreparedUserOperation } from "../../lib/eip712";
-import { activeNetwork } from "../../lib/activeNetwork";
 import { formatAmount } from "../../lib/format";
 import { formatShortDate, type Transaction } from "../../lib/transactions";
 import BackHeader from "../BackHeader";
@@ -32,6 +31,9 @@ export type ManualConfirm = {
 	wallet: string;
 	amount: string;
 	currency: string;
+	chainKey: string;
+	chainId: number;
+	networkName: string;
 	isAddress: boolean;
 	username?: string;
 	prepared: PreparedUserOperation;
@@ -143,7 +145,7 @@ export function UsernameProfileView({
 				</div>
 				<h1 className="font-display text-[28px] mb-1">{profile.displayName || `@${profile.username}`}</h1>
 				{profile.displayName && <p className="text-[15px] text-text-muted mb-1">@{profile.username}</p>}
-				<p className="text-[14px] text-text-muted">{t("pay.receivesPaymentsOn", { network: activeNetwork.name })}</p>
+				<p className="text-[14px] text-text-muted">{t("pay.receivesPaymentsOn")}</p>
 				{profile.socialUrl && (
 					<a href={profile.socialUrl} target="_blank" rel="noopener noreferrer" className="mt-3 break-all px-6 text-[13px] text-info underline underline-offset-2">
 						{socialLabel(profile.socialUrl)}

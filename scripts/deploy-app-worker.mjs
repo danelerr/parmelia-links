@@ -66,7 +66,7 @@ function deploy(args) {
 	const secrets = assertAppRemoteSecrets();
 	process.stdout.write(
 		`App deploy guards passed at ${commit}: ${migrations.local} migrations, ` +
-		`${migrations.schemaEvidence} schema items and ${secrets.required.length} required secrets verified.\n`,
+		`${migrations.schemaEvidence} passkey schema items, ${migrations.multichainSchemaEvidence} multichain schema items and ${secrets.required.length} required secrets verified.\n`,
 	);
 
 	execFileSync(process.execPath, [wranglerCli, "deploy", "--minify", ...validated.wranglerArguments], {

@@ -8,7 +8,11 @@
 //   4. set CHAIN_KEY to the new key.
 // Nothing else in the codebase hardcodes a chain or an address.
 
-export type SupportedChainKey = "base-sepolia" | "arbitrum-sepolia" | "arbitrum-one";
+export type SupportedChainKey =
+	| "base-sepolia"
+	| "arbitrum-sepolia"
+	| "avalanche-fuji"
+	| "arbitrum-one";
 
 /** On-chain addresses for one deployment of the GatoPago contracts. */
 export type ContractAddresses = {
@@ -128,6 +132,8 @@ export type NetworkConfig = {
 	 * dev (Turnstile, key fallbacks) MUST fail closed when this is false.
 	 */
 	isTestnet: boolean;
+	/** Whether this build implements a full GatoPago smart-account rail. */
+	walletRailEnabled: boolean;
 	explorerBaseUrl: string;
 	faucetUrl: string | null;
 	faucetLabel: string | null;
@@ -168,6 +174,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Base Sepolia",
 		nativeTokenSymbol: "ETH",
 		isTestnet: true,
+		walletRailEnabled: false,
 		explorerBaseUrl: "https://base-sepolia.blockscout.com",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
@@ -194,6 +201,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Arbitrum Sepolia",
 		nativeTokenSymbol: "ETH",
 		isTestnet: true,
+		walletRailEnabled: true,
 		explorerBaseUrl: "https://sepolia.arbiscan.io",
 		faucetUrl: "https://faucet.circle.com",
 		faucetLabel: "Circle Faucet",
@@ -253,6 +261,57 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			aUsdc: "0x460b97BD498E1157530AEb3086301d5225b91216",
 		},
 	},
+	// Phase 4A wallet rail. Account infrastructure is deterministic for the
+	// current Solidity build, but the account address is intentionally stored per
+	// chain: the active Arbitrum factory predates this compiler-pinned build.
+	"avalanche-fuji": {
+		key: "avalanche-fuji",
+		chainId: 43113,
+		name: "Avalanche Fuji",
+		nativeTokenSymbol: "AVAX",
+		isTestnet: true,
+		walletRailEnabled: true,
+		explorerBaseUrl: "https://testnet.snowtrace.io",
+		faucetUrl: "https://core.app/tools/testnet-faucet/?subnet=c&token=c",
+		faucetLabel: "Avalanche Faucet",
+		contracts: {
+			entryPoint: ENTRYPOINT_V09,
+			// Predicted by DeployV2 (solc 0.8.34, salt
+			// parmelia.v2.solc-0.8.34). Runtime activation remains fail-closed
+			// until deployment manifests and bytecode verification exist.
+			factory: "0x7a47D256cA1b52C9C699d3b7eF2Ed7DFd0006313",
+			paymaster: "0x1966B33966a648a70F1D7322b45BB40Eb39847dA",
+			verifier: "0x121D4eca96a0CCA57bDc0A9556508A1728CF21b9",
+			paymentRouter: TODO_DEPLOY,
+			// Predicted by DeployCrosschainRouter (salt
+			// parmelia.v2.crosschainRouter.hardened). The runtime allowlist remains
+			// closed until this address and the account stack are deployed/verified.
+			crosschainRouter: "0x2974d361CA1B72114Aa2737dC2d496846cf3E6fD",
+			usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
+			usdcDecimals: 6,
+		},
+		paymentRouterHasPermit: false,
+		tokens: [
+			{
+				symbol: "AVAX",
+				name: "Avalanche",
+				address: null,
+				decimals: 18,
+				isNative: true,
+				wrappedAddress: "0xd00ae08403B9bbb9124bB305C09058E32C39A48c",
+				coingeckoId: "avalanche-2",
+			},
+			{
+				symbol: "USDC",
+				name: "USD Coin",
+				address: "0x5425890298aed601595a70AB815c96711a31Bc65",
+				decimals: 6,
+				coingeckoId: "usd-coin",
+			},
+		],
+		uniswap: null,
+		aave: null,
+	},
 	// Production target (mainnet).
 	"arbitrum-one": {
 		key: "arbitrum-one",
@@ -260,6 +319,7 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 		name: "Arbitrum One",
 		nativeTokenSymbol: "ETH",
 		isTestnet: false,
+		walletRailEnabled: false,
 		explorerBaseUrl: "https://arbiscan.io",
 		faucetUrl: null,
 		faucetLabel: null,

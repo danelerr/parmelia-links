@@ -88,9 +88,10 @@ compatible con las políticas limitadas de GatoPago.
 
 ## 1. Hechos de partida y estado que condicionan el plan
 
-1. El runtime sigue siendo mono-chain: `CHAIN_KEY` y `VITE_CHAIN_KEY` eligen una
-   única red activa. `getPublicClient`, cuentas, balance, paymaster, indexer y Home
-   dependen de esa red.
+1. El runtime desplegado sigue usando Arbitrum como hogar. El candidato App
+   Fase 4A separa `CHAIN_KEY`, `APP_ENABLED_CHAIN_KEYS` y
+   `APP_WALLET_RAIL_CHAIN_KEYS`, guarda cuentas/balances por chain y agrega Fuji
+   bajo kill switch. Esto no cambia el modelo de settlement del checkout B2B.
 2. `PayPage.tsx` es público para leer el link, pero el botón de pago exige login y
    termina en `/pay/prepare`; la wallet externa no está integrada en el checkout.
 3. Flow B canónico ya usa endpoints públicos de quote/attempt ligados al payer;
@@ -111,9 +112,11 @@ compatible con las políticas limitadas de GatoPago.
    Sepolia, Base Sepolia y Fuji. Esto verifica las integraciones de testnet, no
    equivale a readiness de mainnet ni sustituye una auditoría externa.
 10. `DeploymentRoles` trata Arbitrum, Base y Avalanche mainnet como entornos de
-    roles segregados; Base/Avalanche aún no activan cuenta/paymaster.
-11. Paymaster y smart account permanecen solo en la home chain. Antes de llevarlos
-    a otra red se necesitan parámetros de stake/deposit/cap propios de su moneda.
+    roles segregados; Base/Avalanche mainnet aún no activan cuenta/paymaster.
+11. El runtime promovido mantiene paymaster y smart account sólo en la home
+    chain. El candidato App Fase 4A prepara una cuenta y paymaster satélite
+    exclusivamente en Fuji, con stake/deposit/cap propios de AVAX y un kill
+    switch separado; no está desplegado ni habilitado remotamente.
 12. Gateway resuelve saldo USDC unificado, no el onboarding instantáneo de fondos
     que todavía están en una wallet externa; su integración con smart accounts
     depende hoy de un EOA delegado con allowance completo sobre ese saldo.
@@ -131,7 +134,7 @@ Todo PR de esta iniciativa debe preservar estos invariantes:
 | U5 | Ninguna ruta se ofrece si chain, contratos, fee viva, RPC o gas de relayer no pueden verificarse. |
 | U6 | El backend y el relayer no pueden cambiar payer, merchant, monto, chain, deadline ni fee después de la firma. |
 | U7 | Un burn CCTP siempre conserva recuperación permissionless: `destinationCaller = bytes32(0)` y sin hooks en v1. |
-| U8 | La UI no muestra un saldo agregado ficticio. Home sigue mostrando el saldo real de Arbitrum. |
+| U8 | La UI no muestra un saldo agregado ficticio. Home muestra cada activo con su red y su snapshot real. |
 | U9 | El router no conserva fondos entre transacciones y las transferencias son atómicas. |
 | U10 | El estado de pago sale de evidencia on-chain reconciliada, no de lo que diga el navegador. |
 | U11 | Un refresh o cierre del navegador después del broadcast no puede dejar el pago sin atribuir. |
@@ -312,7 +315,9 @@ Para esta primera salida:
 ### 5.1 Frontera multichain
 
 No reemplazar `CHAIN_KEY` en toda la aplicación. Mantenerlo como **home chain**
-para cuentas, Home, swaps, Earn, UserOperations e indexación de usuarios.
+para settlement, swaps y Earn. La App Fase 4A añade cuentas, UserOperations e
+indexación satélite mediante un scope explícito por chain, sin mutar
+`CHAIN_KEY` global ni cambiar la home chain del checkout.
 
 Crear una frontera separada para pagos externos:
 
@@ -1208,8 +1213,8 @@ hay una razón de negocio concreta:
 5. **Avalanche:** Standard únicamente.
 6. **Fee GatoPago:** `free-default` (0) en toda ruta. Los caps de contrato son
    capacidad preventiva, nunca política ni promesa de cobro.
-7. **Wallet GatoPago:** operativa solo en Arbitrum durante fase 1.
-8. **Base/Avalanche:** rails de aceptación, no saldos agregados.
+7. **Wallet GatoPago:** Arbitrum hogar; Fuji satélite sólo después de pasar sus gates de Fase 4A.
+8. **Base/Avalanche en checkout B2B:** rails de aceptación. La cuenta Fuji de la App personal es un dominio y kill switch distintos.
 9. **CCTP:** directo, relayer propio, caller permissionless, sin Hooks.
 10. **Activación mainnet:** progresiva y feature-flagged.
 11. **Backend Fase 2:** dos Workers públicos, dos D1 físicos y dos Queues; App →
@@ -1237,11 +1242,14 @@ todas las funciones a la vez.
 - Reutilizar el router para “Agregar dinero desde otra wallet”.
 - La UI muestra `USDC`, no tres filas de USDC por chain; la chain vive en los
   detalles de la operación porque el saldo quedó realmente consolidado.
-- AVAX puede conservar Avalanche como home si se incorpora más adelante. El home
-  de ETH se decide con datos; no se agrega virtualmente antes.
+- El candidato Fase 4A ya conserva AVAX físicamente en la cuenta Fuji y lo
+  muestra como fila explícita. No se convierte ni agrega virtualmente.
 - Retiros a una red elegida se expresan como un nuevo intent de salida.
 
 ### Nivel 3 — cuenta GatoPago plenamente multichain
+
+El código y schema iniciales de este nivel existen como candidato Fase 4A para
+Fuji, pero el nivel no está operativo hasta cerrar todos los gates siguientes:
 
 Solo habilitar cuentas/paymaster en Base o Avalanche cuando cada red tenga:
 
@@ -1265,11 +1273,12 @@ preferida para USDC sigue siendo consolidarlo, no esconder fragmentación.
 
 ## 13. Qué queda fuera de esta primera mejora
 
-- ETH/AVAX/otros tokens como input y swap automático a USDC.
+- ETH/AVAX/otros tokens como input del checkout B2B y swap automático a USDC.
 - Fiat, QR bancario, tarjetas, payroll, treasury o subscriptions.
 - ERC-7579/7715, session keys, agentes y pagos delegados.
 - Un settlement executor para output cross-chain exactamente igual al centavo.
-- Saldo universal virtual o full wallet en Base/Avalanche.
+- Saldo universal virtual o full wallet en Base. Fuji sólo existe como cuenta
+  satélite explícita en el candidato App y no implica saldo universal.
 - Depósitos planos desde exchanges en cualquier red con consolidación automática.
 - “Any currency, any chain”.
 

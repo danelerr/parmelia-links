@@ -19,6 +19,7 @@ import { RowSkeletonList } from "../components/Skeleton";
 import SelectMenu from "../components/SelectMenu";
 import { activeNetwork } from "../lib/activeNetwork";
 import { readMigratedStorage } from "../lib/storageMigration";
+import { useChainPortfolio } from "../hooks/useChainPortfolio";
 import {
 	parseTransactions,
 	type RawTxPayload,
@@ -66,6 +67,7 @@ export default function Statement({ user }: { user: User }) {
 	const { t } = useTranslation();
 	const [searchParams, setSearchParams] = useSearchParams();
 	const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+	const { data: portfolio } = useChainPortfolio(user);
 	// Same privacy mode as Home: amounts stay masked while "hide balance" is on.
 	const hideBalance = readMigratedStorage("gatopago:hideBalance", "parmelia:hideBalance") === "1";
 
@@ -77,8 +79,16 @@ export default function Statement({ user }: { user: User }) {
 		: "all";
 	const fromDate = searchParams.get("from") ?? "";
 	const toDate = searchParams.get("to") ?? "";
+	const portfolioAssets = useMemo(() => [...new Set([
+		...activeNetwork.currencies,
+		...(portfolio?.chains.flatMap((chain) => chain.balance.assets.map((entry) => entry.symbol)) ?? []),
+	])], [portfolio]);
 	const assetParam = searchParams.get("asset");
-	const asset = assetParam && activeNetwork.currencies.includes(assetParam) ? assetParam : "all";
+	const asset = assetParam && portfolioAssets.includes(assetParam) ? assetParam : "all";
+	const chainParam = searchParams.get("network");
+	const chain = chainParam && portfolio?.chains.some((item) => item.key === chainParam)
+		? chainParam
+		: "all";
 	const typeParam = searchParams.get("type");
 	const typeFilter: TypeFilter =
 		typeParam === "sent" || typeParam === "received" || typeParam === "swap"
@@ -87,7 +97,7 @@ export default function Statement({ user }: { user: User }) {
 
 	// Write filters TO the URL. Defaults ("all" / empty) are removed so the
 	// default view keeps a clean /statement URL.
-	function setFilter(patch: Partial<Record<"period" | "from" | "to" | "asset" | "type", string>>) {
+	function setFilter(patch: Partial<Record<"period" | "from" | "to" | "asset" | "network" | "type", string>>) {
 		const next = new URLSearchParams(searchParams);
 		for (const [key, value] of Object.entries(patch)) {
 			if (!value || value === "all") next.delete(key);
@@ -146,12 +156,13 @@ export default function Statement({ user }: { user: User }) {
 			if (start && when < start.getTime()) return false;
 			if (end && when > end.getTime()) return false;
 			if (asset !== "all" && t.currency !== asset) return false;
+			if (chain !== "all" && t.chainKey !== chain) return false;
 			if (typeFilter === "sent" && t.type !== "sent") return false;
 			if (typeFilter === "received" && t.type !== "received") return false;
 			if (typeFilter === "swap" && t.kind !== "swap") return false;
 			return true;
 		});
-	}, [transactions, period, fromDate, toDate, asset, typeFilter]);
+	}, [transactions, period, fromDate, toDate, asset, chain, typeFilter]);
 
 	return (
 		<Screen withPrimaryNav>
@@ -197,11 +208,22 @@ export default function Statement({ user }: { user: User }) {
 			<SelectMenu
 				label={t("statement.assetLabel")}
 				value={asset}
-				options={["all", ...activeNetwork.currencies].map((currency) => ({
+				options={["all", ...portfolioAssets].map((currency) => ({
 					value: currency,
 					label: currency === "all" ? t("statement.allAssets") : currency,
 				}))}
 				onChange={(value) => setFilter({ asset: value })}
+				showLabel={false}
+				className="mb-2"
+			/>
+			<SelectMenu
+				label={t("statement.networkLabel")}
+				value={chain}
+				options={[
+					{ value: "all", label: t("statement.allNetworks") },
+					...(portfolio?.chains.map((item) => ({ value: item.key, label: item.name })) ?? []),
+				]}
+				onChange={(value) => setFilter({ network: value })}
 				showLabel={false}
 				className="mb-2"
 			/>

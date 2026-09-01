@@ -1,5 +1,5 @@
 import type { Bindings } from "../middlewares/auth";
-import { getNetworkConfig } from "../../../shared";
+import { DEFAULT_CHAIN_KEY, getNetworkConfig, isSupportedChainKey } from "../../../shared";
 import { runAccountOperationReconciler } from "./accountOperations";
 import { syncAlchemyWebhookAddresses } from "./alchemyWebhookAddresses";
 import { drainBalanceRefreshRequests } from "./balanceReconciler";
@@ -49,6 +49,7 @@ import {
 	paymentsBoundarySyncState,
 } from "./paymentsRpc";
 import { paymentsCutoverState } from "./paymentsCutover";
+import { bindingsForChain } from "./chainScope";
 
 export const SCHEDULED_JOBS_QUEUE_NAME = "parmelia-scheduled-jobs";
 
@@ -387,11 +388,17 @@ async function nextWebhookKeyRotationRun(env: Bindings): Promise<number | null> 
 async function nextIndexerWalletRegistryRun(
 	env: Bindings,
 ): Promise<number | null> {
+	const network = getNetworkConfig(env.CHAIN_KEY);
+	const homeRegistry = network.key === DEFAULT_CHAIN_KEY;
+	const registryTable = homeRegistry
+		? "indexer_wallet_registry_outbox"
+		: "chain_indexer_wallet_registry_outbox";
 	const row = await env.GATOPAGO_DB.prepare(
 		`SELECT MIN(next_attempt_at) AS next_run_at
-		 FROM indexer_wallet_registry_outbox
-		 WHERE status IN ('pending', 'failed')`,
-	).first<NextRunRow>();
+		 FROM ${registryTable}
+		 WHERE status IN ('pending', 'failed')
+		 ${homeRegistry ? "" : "AND chain_id = ?"}`,
+	).bind(...(homeRegistry ? [] : [network.chainId])).first<NextRunRow>();
 	const parsed = timestampMs(row?.next_run_at);
 	return parsed === null ? null : Math.max(Date.now(), parsed);
 }
@@ -706,6 +713,22 @@ export async function recoverEventJobs(env: Bindings): Promise<number> {
 			false,
 		);
 	}
+	const satelliteRegistries = await env.GATOPAGO_DB.prepare(
+		`SELECT DISTINCT chain_key
+		 FROM chain_indexer_wallet_registry_outbox
+		 WHERE status IN ('pending', 'failed')`,
+	).all<{ chain_key: string }>();
+	for (const row of satelliteRegistries.results) {
+		if (!isSupportedChainKey(row.chain_key)) continue;
+		const scopedEnv = bindingsForChain(env, row.chain_key);
+		const runAt = await nextIndexerWalletRegistryRun(scopedEnv);
+		if (runAt !== null && await scheduleEventJob(scopedEnv, "indexer_wallet_registry", {
+			runAt,
+			reason: "event_architecture_satellite_recovery",
+		})) {
+			scheduled++;
+		}
+	}
 	if (await hasPendingPayments(env)) {
 		const pending = await env.GATOPAGO_DB.prepare(
 			`SELECT DISTINCT sender_address
@@ -738,6 +761,15 @@ async function executeEventJob(
 	env: Bindings,
 	message: EventJobMessage,
 ): Promise<"completed" | "already_running"> {
+	const scopedPartition = /^chain:([^:]+):(.+)$/u.exec(message.partition);
+	if (scopedPartition) {
+		const [, requestedChainKey, partition] = scopedPartition;
+		if (!isSupportedChainKey(requestedChainKey)) {
+			throw new Error("Event job chain scope is invalid");
+		}
+		env = bindingsForChain(env, requestedChainKey);
+		message = { ...message, partition };
+	}
 	const leaseKey =
 		`event-job:${env.CHAIN_KEY}:${message.job}:${message.partition}`;
 	const owner = await acquireLease(env, leaseKey, JOB_LEASE_TTL_MS);

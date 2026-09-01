@@ -10,6 +10,7 @@ import { accountWebAuthnV2Abi } from "../../shared";
 const mocks = vi.hoisted(() => ({
 	readContract: vi.fn(),
 	getUserByUid: vi.fn(),
+	listUserChainAccounts: vi.fn(),
 	getActiveAccountOperation: vi.fn(),
 	getAccountOperationById: vi.fn(),
 	submitAccountOperation: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("../src/middlewares/auth", () => ({
 
 vi.mock("../src/services/storage", () => ({
 	getUserByUid: mocks.getUserByUid,
+	listUserChainAccounts: mocks.listUserChainAccounts,
 	createPendingPayment: vi.fn(),
 	getActiveAccountOperation: mocks.getActiveAccountOperation,
 	getAccountOperationById: mocks.getAccountOperationById,
@@ -77,10 +79,33 @@ vi.mock("../src/services/accountOperations", () => ({
 
 import accountRoutes from "../src/routes/account.routes";
 
-const ENV = { CHAIN_KEY: "arbitrum-sepolia" };
+const ENV = {
+	CHAIN_KEY: "arbitrum-sepolia",
+	RPC_READ_URLS: "https://rpc.example",
+	RPC_WRITE_URLS: "https://rpc.example",
+	APP_CHAIN_RPC_URLS: JSON.stringify({
+		"43113": "https://fuji-rpc.example",
+	}),
+};
 const WALLET = "0x000000000000000000000000000000000000beef";
 const TX = "0x" + "ab".repeat(32);
 const NOW = "2026-07-14T00:00:00.000Z";
+const HOME_ACCOUNT = {
+	uid: "user-1",
+	chainId: 421614,
+	chainKey: "arbitrum-sepolia",
+	networkName: "Arbitrum Sepolia",
+	walletAddress: WALLET,
+	isHome: true,
+	status: "active",
+	securityStatus: "current",
+	securityVersionApplied: 1,
+	securityVersionDesired: 1,
+	deploymentTxHash: null,
+	createdAt: NOW,
+	updatedAt: NOW,
+	activatedAt: NOW,
+};
 
 // ERC-7913 signer bytes: verifier(20) || qx(32) || qy(32). The proposal on
 // chain may carry a PREVIOUS verifier generation (redeploy inside the 48h
@@ -113,6 +138,8 @@ function storedOperation(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "operation-1",
 		uid: "user-1",
+		chainId: 421614,
+		chainKey: "arbitrum-sepolia",
 		kind: "recovery_cancel",
 		status: "submitted",
 		txHash: TX,
@@ -129,10 +156,17 @@ function storedOperation(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getUserByUid.mockResolvedValue({ uid: "user-1", walletAddress: WALLET });
+	mocks.listUserChainAccounts.mockResolvedValue([HOME_ACCOUNT]);
 	mocks.getActiveAccountOperation.mockResolvedValue(null);
-	mocks.submitAccountOperation.mockImplementation(async (_env, input) => ({
+	mocks.submitAccountOperation.mockImplementation(async (operationEnv, input) => ({
 		created: true,
-		operation: storedOperation({ kind: input.kind, metadata: input.metadata }),
+		operation: storedOperation({
+			id: operationEnv.CHAIN_KEY === "avalanche-fuji" ? "operation-fuji" : "operation-1",
+			chainId: operationEnv.CHAIN_KEY === "avalanche-fuji" ? 43113 : 421614,
+			chainKey: operationEnv.CHAIN_KEY,
+			kind: input.kind,
+			metadata: input.metadata,
+		}),
 	}));
 	mocks.rateLimitConsume.mockResolvedValue(true);
 	mocks.consumeRecoveryStepUp.mockResolvedValue(true);
@@ -192,6 +226,12 @@ describe("POST /recovery/cancel", () => {
 describe("POST /recovery/execute", () => {
 	// getPendingRecovery -> [executeAfter, signers, threshold]
 	const ready = (signers: Hex[]) => [1n, signers, 1n];
+	function recoveryState(pending: [bigint, Hex[], bigint]) {
+		mocks.readContract
+			.mockResolvedValueOnce(pending)
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(1n);
+	}
 
 	it("400 MISSING_PASSKEY_DATA without qx/qy (old credentialId-only shape)", async () => {
 		const res = await post("/recovery/execute", { credentialId: "cred-1" });
@@ -200,7 +240,7 @@ describe("POST /recovery/execute", () => {
 	});
 
 	it("queues execution and defers credential persistence until confirmation", async () => {
-		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+		recoveryState(ready([PROPOSED_SIGNER]) as [bigint, Hex[], bigint]);
 
 		const res = await post("/recovery/execute", { credentialId: "cred-1", qx: QX, qy: QY });
 		const body = await jsonBody(res);
@@ -219,7 +259,7 @@ describe("POST /recovery/execute", () => {
 	});
 
 	it("403 STEP_UP_REQUIRED before a ready recovery can execute", async () => {
-		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+		recoveryState(ready([PROPOSED_SIGNER]) as [bigint, Hex[], bigint]);
 
 		const res = await post(
 			"/recovery/execute",
@@ -234,7 +274,7 @@ describe("POST /recovery/execute", () => {
 	});
 
 	it("403 STEP_UP_INVALID for a consumed or expired proof", async () => {
-		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+		recoveryState(ready([PROPOSED_SIGNER]) as [bigint, Hex[], bigint]);
 		mocks.consumeRecoveryStepUp.mockResolvedValueOnce(false);
 
 		const res = await post("/recovery/execute", {
@@ -249,7 +289,7 @@ describe("POST /recovery/execute", () => {
 	});
 
 	it("409 RECOVERY_SIGNER_MISMATCH when the key is not the proposed one; nothing executes", async () => {
-		mocks.readContract.mockResolvedValueOnce(ready([PROPOSED_SIGNER]));
+		recoveryState(ready([PROPOSED_SIGNER]) as [bigint, Hex[], bigint]);
 
 		const res = await post("/recovery/execute", { credentialId: "cred-1", qx: OTHER_QX, qy: QY });
 		const body = await jsonBody(res);
@@ -261,7 +301,7 @@ describe("POST /recovery/execute", () => {
 
 	it("409 RECOVERY_NOT_READY inside the 48h timelock", async () => {
 		const future = BigInt(Math.floor(Date.now() / 1000) + 3600);
-		mocks.readContract.mockResolvedValueOnce([future, [PROPOSED_SIGNER], 1n]);
+		recoveryState([future, [PROPOSED_SIGNER], 1n]);
 
 		const res = await post("/recovery/execute", { credentialId: "cred-1", qx: QX, qy: QY });
 		expect(res.status).toBe(409);
@@ -269,7 +309,7 @@ describe("POST /recovery/execute", () => {
 	});
 
 	it("409 RECOVERY_NONE when no recovery was proposed", async () => {
-		mocks.readContract.mockResolvedValueOnce([0n, [], 1n]);
+		recoveryState([0n, [], 1n]);
 
 		const res = await post("/recovery/execute", { credentialId: "cred-1", qx: QX, qy: QY });
 		expect(res.status).toBe(409);
@@ -289,7 +329,7 @@ describe("POST /recovery/propose", () => {
 
 	function recoveryAvailable() {
 		mocks.readContract
-			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce([0n, [], 0n])
 			.mockResolvedValueOnce("0x00000000000000000000000000000000000000aa");
 	}
 
@@ -325,6 +365,51 @@ describe("POST /recovery/propose", () => {
 		expect((await jsonBody(res)).error_code).toBe("STEP_UP_INVALID");
 		expect(mocks.finalizeWebAuthnRegistration).toHaveBeenCalledOnce();
 		expect(mocks.submitAccountOperation).not.toHaveBeenCalled();
+	});
+
+	it("proposes the same recovery key on every active chain", async () => {
+		mocks.listUserChainAccounts.mockResolvedValue([
+			HOME_ACCOUNT,
+			{
+				uid: "user-1",
+				chainId: 43113,
+				chainKey: "avalanche-fuji",
+				networkName: "Avalanche Fuji",
+				walletAddress: "0x000000000000000000000000000000000000f011",
+				isHome: false,
+				status: "active",
+				securityStatus: "current",
+				securityVersionApplied: 1,
+				securityVersionDesired: 1,
+				deploymentTxHash: TX,
+				createdAt: NOW,
+				updatedAt: NOW,
+				activatedAt: NOW,
+			},
+		]);
+		mocks.readContract.mockImplementation(({ functionName }) => {
+			if (functionName === "getPendingRecovery") return Promise.resolve([0n, [], 0n]);
+			if (functionName === "guardian") {
+				return Promise.resolve("0x00000000000000000000000000000000000000aa");
+			}
+			return Promise.reject(new Error(`Unexpected ${String(functionName)}`));
+		});
+
+		const res = await post("/recovery/propose", registrationBody);
+		const body = await jsonBody(res) as { operations?: unknown[] };
+
+		expect(res.status).toBe(202);
+		expect(body.operations).toHaveLength(2);
+		expect(mocks.submitAccountOperation).toHaveBeenCalledTimes(2);
+		expect(mocks.submitAccountOperation.mock.calls.map((call) => call[0].CHAIN_KEY))
+			.toEqual(["avalanche-fuji", "arbitrum-sepolia"]);
+		for (const [, input] of mocks.submitAccountOperation.mock.calls) {
+			const decoded = decodeFunctionData({ abi: accountWebAuthnV2Abi, data: input.data });
+			expect(decoded.functionName).toBe("proposeRecovery");
+			const args = decoded.args as readonly [readonly Hex[], bigint];
+			expect(String(args[0][0]).toLowerCase().endsWith(`${QX.slice(2)}${QY.slice(2)}`))
+				.toBe(true);
+		}
 	});
 });
 

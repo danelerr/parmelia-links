@@ -12,6 +12,7 @@ import BackHeader from "../components/BackHeader";
 import { SettingsPageSkeleton, SettingsSection } from "../components/SettingsSection";
 import MeliRoom from "../components/brand/MeliRoom";
 import { APP_URL } from "../lib/brand";
+import { useChainPortfolio } from "../hooks/useChainPortfolio";
 
 const USER_ICON = (
 	<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -54,6 +55,7 @@ export default function Profile({ user }: { user: User }) {
 
 function ProfileEditor({ user, profile }: { user: User; profile: AccountProfile }) {
 	const { t } = useTranslation();
+	const { data: portfolio } = useChainPortfolio(user);
 	const [username, setUsername] = useState(profile.username || "");
 	const [currentUsername, setCurrentUsername] = useState<string | null>(profile.username);
 	const [displayName, setDisplayName] = useState(profile.displayName || "");
@@ -68,6 +70,17 @@ function ProfileEditor({ user, profile }: { user: User; profile: AccountProfile 
 	const usernameChanged = !!username.trim() && username !== currentUsername;
 	const profileChanged =
 		displayName.trim() !== savedProfile.displayName || socialUrl.trim() !== savedProfile.socialUrl;
+	const chainAccounts = portfolio?.chains.filter((chain) => chain.account?.status === "active") ?? [];
+	const visibleAccounts = chainAccounts.length > 0
+		? chainAccounts
+		: profile.walletAddress
+			? [{
+				key: activeNetwork.key,
+				name: activeNetwork.name,
+				explorerBaseUrl: activeNetwork.explorerBaseUrl,
+				account: { walletAddress: profile.walletAddress },
+			}]
+			: [];
 
 	async function saveUsername() {
 		if (!usernameChanged) return;
@@ -170,19 +183,22 @@ function ProfileEditor({ user, profile }: { user: User; profile: AccountProfile 
 						</div>
 					</SettingsSection>
 
-					{profile.walletAddress ? (
+					{visibleAccounts.length > 0 ? (
 						<SettingsSection title={t("settings.accountTitle")} icon={WALLET_ICON} tone="neutral">
-							<div className="p-5">
-								<div className="flex items-center justify-between gap-3 mb-2">
-									<span className="text-[13px] text-text-muted">{t("settings.address")}</span>
-									<span className="text-[11px] text-text-faint">{activeNetwork.name}</span>
-								</div>
-								<p className="font-mono text-[12px] text-text break-all mb-4">{profile.walletAddress}</p>
-								<div className="flex gap-2.5">
-									<button onClick={() => void navigator.clipboard.writeText(profile.walletAddress!).then(() => notifySuccess(t("settings.addressCopied")))} className="btn btn-ghost btn-sm flex-1">{t("common.copy")}</button>
-									<a href={`${activeNetwork.explorerBaseUrl}/address/${profile.walletAddress}`} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm flex-1">{t("settings.viewExplorer")}</a>
-								</div>
-							</div>
+							{visibleAccounts.map((chain, index) => {
+								const address = chain.account!.walletAddress;
+								return <div key={chain.key} className={`p-5 ${index > 0 ? "border-t border-border" : ""}`}>
+									<div className="flex items-center justify-between gap-3 mb-2">
+										<span className="text-[13px] text-text-muted">{t("settings.address")}</span>
+										<span className="text-[11px] text-text-faint">{chain.name}</span>
+									</div>
+									<p className="font-mono text-[12px] text-text break-all mb-4">{address}</p>
+									<div className="flex gap-2.5">
+										<button onClick={() => void navigator.clipboard.writeText(address).then(() => notifySuccess(t("settings.addressCopied")))} className="btn btn-ghost btn-sm flex-1">{t("common.copy")}</button>
+										<a href={`${chain.explorerBaseUrl}/address/${address}`} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm flex-1">{t("settings.viewExplorer")}</a>
+									</div>
+								</div>;
+							})}
 						</SettingsSection>
 					) : null}
 		</div>

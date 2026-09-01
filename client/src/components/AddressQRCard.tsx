@@ -12,14 +12,17 @@ function shortAddr(a: string) {
 
 export default function AddressQRCard({
 	address,
+	chainId,
 	qrSize = 188,
 	label,
 }: {
 	address: string;
+	chainId?: number;
 	qrSize?: number;
 	label?: string;
 }) {
 	const { t } = useTranslation();
+	const qrValue = chainId ? `eip155:${chainId}:${address}` : address;
 
 	function copy() {
 		navigator.clipboard.writeText(address).then(() => notifySuccess(t("receive.addressCopied")));
@@ -30,7 +33,7 @@ export default function AddressQRCard({
 			{label && <p className="text-[13px] text-text-muted mb-4 text-center">{label}</p>}
 			<div className="flex justify-center mb-5" role="img" aria-label={label ?? t("home.yourAddress")}>
 				<div className="border-2 border-text bg-white p-3 shadow-[6px_6px_0_var(--color-cat-700)]">
-					<QRCodeSVG value={address} size={qrSize} bgColor="#ffffff" fgColor="#0A0A0B" level="M" />
+					<QRCodeSVG value={qrValue} size={qrSize} bgColor="#ffffff" fgColor="#0A0A0B" level="M" />
 				</div>
 			</div>
 			<button

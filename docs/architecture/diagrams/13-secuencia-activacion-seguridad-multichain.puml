@@ -1,0 +1,45 @@
+@startuml
+!include _theme.puml
+title App — Activación y seguridad de una cuenta satélite
+
+actor "Persona" as person
+participant "App Web" as app COLOR_WEB
+participant "App Worker" as worker COLOR_READY
+database "App D1" as d1 COLOR_READY
+participant "RPC Fuji" as rpc COLOR_EXTERNAL
+participant "Factory / Account\nAvalanche Fuji" as chain COLOR_EXTERNAL
+
+person -> app : activar Avalanche Fuji
+app -> worker : POST /account/chains/avalanche-fuji/activate
+worker -> worker : valida enabled + wallet rail + RPC
+worker -> rpc : eth_getCode(factory, verifier, paymaster)
+rpc --> worker : bytecode presente
+worker -> chain : predictAccount(signers actuales)
+worker -> d1 : operation prepared + captured security version
+worker --> app : UserOperation + challenge Fuji
+person -> app : autoriza con passkey
+app -> worker : submit firmado
+worker -> chain : createAccount / handleOps
+chain --> worker : receipt
+worker -> d1 : account active + version aplicada
+worker -> d1 : corrige carrera con desired_version actual
+worker --> app : cuenta Fuji activa o needs_sync
+
+alt cambia una passkey después
+  person -> app : agrega o retira llave
+  app -> worker : operación de seguridad hogar
+  worker -> d1 : desired_version++\nFuji = needs_sync
+  worker --> app : envíos Fuji bloqueados
+  person -> app : sincronizar Fuji
+  app -> worker : UserOperation firmada
+  worker -> chain : reemplaza signer set
+  chain --> worker : receipt canónico
+  worker -> d1 : current sólo si versión esperada sigue vigente
+end
+
+note over worker,chain
+  Ninguna selección explícita de Fuji cae a Arbitrum.
+  Recovery requiere prueba en todas las cuentas activas.
+end note
+
+@enduml

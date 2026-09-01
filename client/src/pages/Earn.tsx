@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router";
 import { apiFetch } from "../lib/api";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
@@ -15,6 +16,7 @@ import { usePaymentStatus } from "../hooks/usePaymentStatus";
 import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork } from "../lib/activeNetwork";
+import { getNetworkConfig, isSupportedChainKey } from "../lib/networks";
 import { notifyError } from "../lib/notify";
 import { track } from "../lib/analytics";
 import { formatNumber } from "../lib/format";
@@ -60,6 +62,13 @@ type PreparedEarn = PreparedUserOperation & {
 
 export default function Earn({ user }: { user: User }) {
 	const { t } = useTranslation();
+	const [searchParams] = useSearchParams();
+	const requestedChainKey = searchParams.get("chainKey");
+	const requestedNetwork = requestedChainKey && isSupportedChainKey(requestedChainKey)
+		? getNetworkConfig(requestedChainKey)
+		: null;
+	const routeMatchesHome = requestedChainKey === null || requestedChainKey === activeNetwork.key;
+	const requestedNetworkName = requestedNetwork?.name ?? requestedChainKey ?? activeNetwork.name;
 	const guideToPasskeys = usePasskeyGuidance();
 	const [config, setConfig] = useState<EarnConfig | null>(null);
 	const [loadFailed, setLoadFailed] = useState(false);
@@ -84,6 +93,7 @@ export default function Earn({ user }: { user: User }) {
 	);
 
 	const loadConfig = useCallback(async (fresh = false): Promise<EarnConfig | null> => {
+		if (!routeMatchesHome) return null;
 		try {
 			if (!fresh) setLoadFailed(false);
 			const data = await apiFetch<EarnConfig>(
@@ -96,22 +106,24 @@ export default function Earn({ user }: { user: User }) {
 			if (!fresh) setLoadFailed(true);
 			return null;
 		}
-	}, [user]);
+	}, [routeMatchesHome, user]);
 
 	useEffect(() => {
+		if (!routeMatchesHome) return;
 		queueMicrotask(() => {
 			void loadConfig().then((loaded) => {
 				if (loaded) void loadConfig(true);
 			});
 		});
-	}, [loadConfig]);
+	}, [loadConfig, routeMatchesHome]);
 
 	// The savings/available split only reflects the operation once it settles.
 	useEffect(() => {
+		if (!routeMatchesHome) return;
 		if (poll.status === "included" || poll.status === "confirmed") {
 			queueMicrotask(() => void loadConfig(true));
 		}
-	}, [poll.status, loadConfig]);
+	}, [poll.status, loadConfig, routeMatchesHome]);
 
 	const sourceBalance = action === "deposit" ? config?.available : config?.savings;
 	const amountNumber = Number(amount || "0");
@@ -127,6 +139,21 @@ export default function Earn({ user }: { user: User }) {
 		signing: t("earn.stageSigning"),
 		sending: t("earn.stageSending"),
 	};
+
+	if (!routeMatchesHome) {
+		return (
+			<Screen>
+				<BackHeader to="/" replace title={t("earn.title")} />
+				<div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+					<MeliSprite name="head-cautious" className="mb-5 w-24" />
+					<p className="font-display text-[22px] text-text">{t("earn.networkUnavailableTitle", { network: requestedNetworkName })}</p>
+					<p className="mt-3 max-w-[300px] text-[13px] leading-relaxed text-text-muted">
+						{t("earn.networkUnavailableBody", { network: requestedNetworkName, homeNetwork: activeNetwork.name })}
+					</p>
+				</div>
+			</Screen>
+		);
+	}
 
 	function pickAction(next: Action) {
 		actionRef.current = next;

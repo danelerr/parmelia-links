@@ -15,12 +15,14 @@
 // a payment that never moved funds; the op's own event is the truth.
 
 import { formatUnits, parseAbiItem, parseEventLogs, type Address, type Hex, type Log } from "viem";
-import { getNetworkConfig, getTokenBySymbol } from "../../../shared";
+import { DEFAULT_CHAIN_KEY, getNetworkConfig, getTokenBySymbol, isSupportedChainKey } from "../../../shared";
 import type { Bindings } from "../middlewares/auth";
-import { getRpcUrls } from "./clients";
+import { getPublicClient, getRpcUrls } from "./clients";
 import {
 	claimPaymentReconcileRequest,
+	completeUserChainSecuritySync,
 	completePaymentReconcileRequest,
+	getActiveChainAccountOwner,
 	getPaymentIntentByLinkId,
 	getPaymentLinkById,
 	getPendingPaymentAnyState,
@@ -47,12 +49,14 @@ import { logError, logInfo, logWarn } from "./logger";
 import { getUserOperationTransport } from "./userOperationTransport";
 import { requestBalanceRefreshBatch } from "./balanceReadModel";
 import { refreshWalletBalancesLatestBatch } from "./balanceReconciler";
+import { bindingsForChain } from "./chainScope";
 
 // Pending ops that are account/DeFi actions rather than payments: they reuse
 // the same sign+submit pipeline but must not be recorded as transfers.
 export const NON_PAYMENT_CURRENCIES = new Set([
 	"PASSKEY_ADD",
 	"PASSKEY_REMOVE",
+	"PASSKEY_SYNC",
 	"SWAP",
 	"CROSSCHAIN",
 	"EARN_DEPOSIT",
@@ -65,6 +69,7 @@ export const NON_PAYMENT_CURRENCIES = new Set([
 const BALANCE_NEUTRAL_CURRENCIES = new Set([
 	"PASSKEY_ADD",
 	"PASSKEY_REMOVE",
+	"PASSKEY_SYNC",
 ]);
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -284,6 +289,23 @@ export async function settlePayment(
 			uid,
 			removedCredentialId: credentialId,
 		});
+	} else if (pending.currency === "PASSKEY_SYNC") {
+		const securityVersion = Number(pending.meta?.securityVersion);
+		if (!Number.isSafeInteger(securityVersion) || securityVersion < 1) {
+			throw new Error("Confirmed passkey sync is missing its security version");
+		}
+		const completed = await completeUserChainSecuritySync(env, {
+			uid,
+			chainId: pending.chainId,
+			expectedVersion: securityVersion,
+		});
+		if (!completed) {
+			logWarn("chain_security_sync_superseded", {
+				uid,
+				chainId: pending.chainId,
+				securityVersion,
+			});
+		}
 	} else if (pending.currency === "CROSSCHAIN") {
 		const meta = pending.meta ?? {};
 		const opId = typeof meta.opId === "string" ? meta.opId : null;
@@ -348,7 +370,16 @@ export async function settlePayment(
 			], opts.chainEvidence),
 		);
 	} else if (!isAccountAction) {
-		const recipient = await getUserByWallet(env, pending.wallet || "");
+		const chainOwner = await getActiveChainAccountOwner(
+				env,
+				pending.chainId,
+				pending.wallet || "",
+			);
+		const recipient = chainOwner ?? (
+			pending.chainKey === DEFAULT_CHAIN_KEY
+				? await getUserByWallet(env, pending.wallet || "")
+				: null
+		);
 		recipientUidForBalanceRefresh = recipient?.uid ?? null;
 		const entries: LedgerEntry[] = [
 			{
@@ -621,7 +652,10 @@ export async function runPaymentReconciler(
 					);
 					continue;
 				}
-				const terminal = await reconcileOne(env, row);
+				const rowEnv = isSupportedChainKey(row.chainKey)
+					? bindingsForChain(env, row.chainKey)
+					: env;
+				const terminal = await reconcileOne(rowEnv, row);
 				if (terminal) {
 					await completePaymentReconcileRequest(
 						env,
@@ -675,6 +709,14 @@ async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<b
 	let txHash = (row.submittedTxHash ?? null) as Hex | null;
 	let success: boolean | null = null;
 	let receiptLogs: Log[] | undefined;
+	let directEvidence: {
+		chainId: number;
+		blockNumber: bigint;
+		blockHash: Hex;
+		transactionIndex: number | null;
+		consistencyLevel: "safe";
+		blockTimestamp: string;
+	} | null = null;
 
 	// Canonical journal projection: the shared watcher scans one bounded window
 	// for every GatoPago account. Reconciliation is therefore O(pending rows) in
@@ -738,17 +780,56 @@ async function reconcileOne(env: Bindings, row: PendingPaymentRecord): Promise<b
 		}
 	}
 
-	if (success === true && txHash && canonical) {
+	// Satellite chains are reconciled through a point receipt plus a safe-head
+	// proof until their provider webhook/indexer stream is enabled. The
+	// UserOperationEvent is still parsed and must match this exact userOpHash.
+	if (!canonical && row.chainKey === "avalanche-fuji") {
+		const transportReceipt = await getUserOperationTransport(env, row.submissionTransport).receipt({
+			userOpHash: row.userOpHash as Hex,
+			transactionHash: txHash,
+		});
+		if (transportReceipt) {
+			const publicClient = getPublicClient(env);
+			const safeBlock = await publicClient
+				.getBlock({ blockTag: "safe", includeTransactions: false })
+				.catch(() => publicClient.getBlock({ blockTag: "finalized", includeTransactions: false }));
+			if (safeBlock.number !== null && safeBlock.number >= transportReceipt.blockNumber) {
+				const receiptBlock = await publicClient.getBlock({
+					blockNumber: transportReceipt.blockNumber,
+					includeTransactions: false,
+				});
+				txHash = transportReceipt.transactionHash;
+				success = transportReceipt.success;
+				receiptLogs = transportReceipt.logs;
+				directEvidence = {
+					chainId: row.chainId,
+					blockNumber: transportReceipt.blockNumber,
+					blockHash: transportReceipt.blockHash,
+					transactionIndex: null,
+					consistencyLevel: "safe",
+					blockTimestamp: new Date(Number(receiptBlock.timestamp) * 1_000).toISOString(),
+				};
+			}
+		}
+	}
+
+	const chainEvidence =
+		directEvidence ??
+		(canonical
+			? {
+					chainId: canonical.chain_id,
+					blockNumber: BigInt(canonical.block_number),
+					blockHash: canonical.block_hash,
+					transactionIndex: canonical.transaction_index,
+					consistencyLevel: canonical.consistency_level,
+					blockTimestamp: canonical.block_timestamp,
+				}
+			: null);
+
+	if (success === true && txHash && chainEvidence) {
 		await settlePayment(env, row, txHash, {
 			receiptLogs,
-			chainEvidence: {
-				chainId: canonical.chain_id,
-				blockNumber: BigInt(canonical.block_number),
-				blockHash: canonical.block_hash,
-				transactionIndex: canonical.transaction_index,
-				consistencyLevel: canonical.consistency_level,
-				blockTimestamp: canonical.block_timestamp,
-			},
+			chainEvidence,
 		});
 		await setPendingPaymentStatus(env, row.userOpHash, "confirmed", txHash);
 		logInfo("payment_reconciled", { userOpHash: row.userOpHash, txHash, uid: row.uid });

@@ -1,6 +1,6 @@
 # Inventario canónico de secretos y configuración
 
-**Última verificación:** 30 de agosto de 2026
+**Última verificación:** 31 de agosto de 2026
 **Alcance:** App Worker (`server`), Payments Worker
 (`gatopago-payments-api`), cliente, dashboard, contratos y credenciales de
 operación  
@@ -126,7 +126,8 @@ service-account JSON, en cambio, sí contiene una private key y es secreto. Véa
 
 | Grupo | Nombres | Cuándo se necesitan y de dónde salen |
 |---|---|---|
-| RPC por rol | `RPC_READ_URLS`, `RPC_WRITE_URLS`, `RPC_INDEXER_URLS`, `RPC_ARCHIVE_URLS` | Del proveedor RPC elegido. Se separan por capacidad; pueden heredar `RPC_URL` mientras no haya un plan dedicado |
+| RPC por rol | `RPC_READ_URLS`, `RPC_WRITE_URLS`, `RPC_INDEXER_URLS`, `RPC_ARCHIVE_URLS` | Del proveedor RPC elegido para la red hogar. Se separan por capacidad; pueden heredar `RPC_URL` mientras no haya un plan dedicado |
+| RPC App multichain | `APP_CHAIN_RPC_URLS` | JSON `chainId -> URLs` o roles `read/write/indexer/archive/bundler`. Se obtiene de los proveedores RPC de cada satélite; va a Secret si cualquier URL contiene API key. No está configurado remotamente y Fuji permanece fuera del rail |
 | Bundler y CCTP | `BUNDLER_RPC_URLS`, `CCTP_RPC_URLS` | Dashboard del bundler ERC-4337 o proveedor RPC. Hoy `RELAYER_MODE=self` y CCTP puede usar RPC público |
 | Roles onchain dedicados | `FAUCET_PRIVATE_KEY`, `RECOVERY_GUARDIAN_PRIVATE_KEY`, `PAYMASTER_SIGNER_PRIVATE_KEY`, `PAYMENT_ROUTER_SIGNER_PRIVATE_KEY` | Keystores/gestor de claves creados por GatoPago. Hoy testnet permite fallback; mainnet exige separación y falla cerrado |
 | Alchemy Address Activity | `ALCHEMY_WEBHOOK_ID`, `ALCHEMY_WEBHOOK_SIGNING_KEY`, `ALCHEMY_ADDRESS_WEBHOOKS_JSON`, `ALCHEMY_NOTIFY_AUTH_TOKEN` | Dashboard Alchemy → Webhooks. Los flags remotos están apagados, por lo que hoy no se usan |
@@ -149,6 +150,28 @@ Passkey Security v2 desplegado agrega dos **vars públicas**, no Secrets:
 |---|---|---|---|
 | `PASSKEY_RP_ID` | `app.parmelia.me` | Es el RP ID de las passkeys existentes y debe permanecer estable. Se obtiene de la decisión de dominio WebAuthn, no de Cloudflare, Vercel ni Firebase | Sí, en `server/wrangler.jsonc` |
 | `PASSKEY_ALLOWED_ORIGINS` | `https://app.parmelia.me` | Origen exacto desde el que la App permite ceremonias WebAuthn. Sólo se amplía después de demostrar compatibilidad con el mismo RP ID | Sí, en `server/wrangler.jsonc` |
+
+Fase 4A agrega tres nombres de configuración. Los dos primeros son públicos; el
+tercero puede ser secreto según las URLs:
+
+| Nombre | Candidato local | Función |
+|---|---|---|
+| `APP_ENABLED_CHAIN_KEYS` | `arbitrum-sepolia,avalanche-fuji` | Redes que la API y la UI pueden describir. No autoriza operaciones. |
+| `APP_WALLET_RAIL_CHAIN_KEYS` | `arbitrum-sepolia` | Kill switch de preparación/envío. Fuji se agrega sólo después de contratos, RPC y E2E reales. |
+| `APP_CHAIN_RPC_URLS` | ausente | Pools por chain y rol. No copiar valores de Payments; cada dominio conserva sus credenciales y límites. |
+
+Ejemplo estructural sin credenciales:
+
+```json
+{
+  "43113": {
+    "read": "https://rpc-a.example,https://rpc-b.example",
+    "write": "https://rpc-a.example",
+    "indexer": "https://rpc-b.example",
+    "archive": "https://rpc-c.example"
+  }
+}
+```
 
 No se debe duplicar el RP ID en `VITE_*`: el Worker lo liga al challenge y lo
 devuelve también con cada operación que requiere firma. `VITE_APP_URL` conserva

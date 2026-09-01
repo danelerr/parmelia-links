@@ -178,13 +178,33 @@ describe("event-driven job orchestration", () => {
 			}),
 		).resolves.toBe(true);
 		expect(getByName).toHaveBeenCalledWith(
-			"arbitrum-sepolia:indexer:global",
+			"indexer:chain:arbitrum-sepolia:global",
 		);
 		expect(schedule).toHaveBeenCalledOnce();
 		expect(schedule.mock.calls[0][0]).toMatchObject({
 			job: "indexer",
-			partition: "global",
+			partition: "chain:arbitrum-sepolia:global",
 			reason: "wallet_registered",
+		});
+	});
+
+	it("preserves the Avalanche scope in the Queue fallback", async () => {
+		const send = vi.fn().mockResolvedValue(undefined);
+		const env = {
+			CHAIN_KEY: "avalanche-fuji",
+			SCHEDULED_JOBS_QUEUE: { send },
+		} as unknown as Bindings;
+
+		await expect(
+			scheduleEventJob(env, "balance_refresh", {
+				reason: "avalanche_balance_requested",
+			}),
+		).resolves.toBe(true);
+		expect(send).toHaveBeenCalledOnce();
+		expect(send.mock.calls[0][0]).toMatchObject({
+			job: "balance_refresh",
+			partition: "chain:avalanche-fuji:global",
+			reason: "avalanche_balance_requested",
 		});
 	});
 
@@ -272,7 +292,7 @@ describe("event-driven job orchestration", () => {
 		expect(schedule).toHaveBeenCalledOnce();
 		expect(schedule.mock.calls[0][0]).toMatchObject({
 			job: "user_operation_watcher",
-			partition: "shard:0",
+			partition: "chain:arbitrum-sepolia:shard:0",
 			reason: "event_job_overlap_retry",
 			targetBlock: "12345",
 		});

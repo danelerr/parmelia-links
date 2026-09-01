@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import { useSearchParams } from "react-router";
 import type { User } from "../lib/firebase";
 import { SERVER_URL, apiFetch } from "../lib/api";
 import { fetchWithAuth } from "../lib/authFetch";
@@ -9,6 +10,7 @@ import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { activeNetwork, getExplorerTxUrl } from "../lib/activeNetwork";
+import { getNetworkConfig, isSupportedChainKey } from "../lib/networks";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
 import { usePaymentStatus } from "../hooks/usePaymentStatus";
@@ -75,14 +77,26 @@ function maxAmountForInput(value: string): string {
 }
 
 export default function Swap({ user }: { user: User }) {
+	const [searchParams] = useSearchParams();
 	const navigate = useViewTransitionNavigate();
 	const guideToPasskeys = usePasskeyGuidance();
 	const { t } = useTranslation();
+	const requestedChainKey = searchParams.get("chainKey");
+	const requestedNetwork = requestedChainKey && isSupportedChainKey(requestedChainKey)
+		? getNetworkConfig(requestedChainKey)
+		: activeNetwork;
+	const requestedAsset = searchParams.get("asset");
+	const swapRouteMatchesHome = !requestedChainKey || requestedChainKey === activeNetwork.key;
+	const initialTokenIn = requestedAsset && activeNetwork.currencies.includes(requestedAsset)
+		? requestedAsset
+		: "USDC";
+	const initialTokenOut = activeNetwork.currencies.find((symbol) => symbol !== initialTokenIn) ?? "ETH";
 	const [tokens, setTokens] = useState<SwapToken[]>([]);
 	const [swapsEnabled, setSwapsEnabled] = useState(true);
+	const routeSwapsEnabled = swapRouteMatchesHome && swapsEnabled;
 	const [balances, setBalances] = useState<Record<string, string>>({});
-	const [tokenIn, setTokenIn] = useState("USDC");
-	const [tokenOut, setTokenOut] = useState("ETH");
+	const [tokenIn, setTokenIn] = useState(initialTokenIn);
+	const [tokenOut, setTokenOut] = useState(initialTokenOut);
 	const [amount, setAmount] = useState("");
 	const [useMax, setUseMax] = useState(false);
 	const [quoteState, setQuoteState] = useState<QuoteState>({
@@ -124,6 +138,7 @@ export default function Swap({ user }: { user: User }) {
 	);
 
 	const loadBalances = useCallback(async (fresh = false): Promise<Record<string, string> | null> => {
+		if (!swapRouteMatchesHome) return null;
 		try {
 			const res = await fetchWithAuth(
 				user,
@@ -138,7 +153,7 @@ export default function Swap({ user }: { user: User }) {
 			/* non-blocking */
 			return null;
 		}
-	}, [user]);
+	}, [swapRouteMatchesHome, user]);
 
 	// The balances only reflect the swap once it settles on-chain.
 	useEffect(() => {
@@ -148,6 +163,7 @@ export default function Swap({ user }: { user: User }) {
 	}, [poll.status, loadBalances]);
 
 	useEffect(() => {
+		if (!swapRouteMatchesHome) return;
 		(async () => {
 			try {
 				const res = await fetchWithAuth(user, `${SERVER_URL}/swap/tokens`);
@@ -160,10 +176,10 @@ export default function Swap({ user }: { user: User }) {
 			}
 		})();
 		queueMicrotask(() => void loadBalances(true));
-	}, [user, loadBalances]);
+	}, [user, loadBalances, swapRouteMatchesHome]);
 
 	const amountNumber = Number(amount);
-	const quoteKey =
+	const quoteKey = swapRouteMatchesHome &&
 		((!useMax && amount && Number.isFinite(amountNumber) && amountNumber > 0) ||
 			(useMax && balanceIn && Number(balanceIn) > 0)) &&
 		tokenIn !== tokenOut
@@ -355,12 +371,12 @@ export default function Swap({ user }: { user: User }) {
 			) : null}
 			<BackHeader title={t("swap.title")} />
 
-			{!swapsEnabled ? (
+			{!routeSwapsEnabled ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
 					<p className="text-[15px] text-text mb-1">{t("swap.disabledTitle")}</p>
 					<p className="text-[13px] text-text-muted max-w-[260px] leading-relaxed">
-						{t("swap.disabledBody", { network: activeNetwork.name })}
+						{t("swap.disabledBody", { network: requestedNetwork.name })}
 					</p>
 				</div>
 			) : (

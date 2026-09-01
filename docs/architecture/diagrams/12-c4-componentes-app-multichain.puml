@@ -1,0 +1,54 @@
+@startuml
+!include _theme.puml
+title GatoPago — C4 nivel 3: App multichain Fase 4A
+
+left to right direction
+
+actor "Persona" as person
+
+package "App Web" {
+  component "Assets first\nHome / Recibir / Enviar" as ui COLOR_WEB
+  component "Seguridad\npasskeys + recovery" as security_ui COLOR_WEB
+}
+
+package "App Worker: server" {
+  component "Chain Portfolio\ncapacidades + cuentas + snapshots" as portfolio COLOR_READY
+  component "Chain Scope\nbindings request-scoped" as scope COLOR_READY
+  component "Execution\nUserOps / CCTP / swaps" as execution COLOR_READY
+  component "Security Coordinator\nversiones + sync" as security COLOR_READY
+  component "Indexer / Reconciler\nfinalidad + balances" as indexer COLOR_READY
+}
+
+database "App D1\nuser_chain_accounts\naccount_security_versions\nbalance_snapshots" as d1 COLOR_READY
+queue "App Jobs\nparticionados por chain" as jobs COLOR_READY
+node "Arbitrum Sepolia\ncuenta hogar\nETH + USDC" as arbitrum COLOR_LIVE
+node "Avalanche Fuji\ncuenta satélite\nAVAX + USDC" as fuji COLOR_READY
+
+person --> ui
+person --> security_ui
+ui --> portfolio : GET /account/chains
+ui --> execution : prepare / submit\ncon chainKey explícita
+security_ui --> security
+portfolio --> d1
+execution --> scope
+security --> d1
+security --> scope
+indexer --> scope
+indexer --> d1
+indexer --> jobs
+scope --> arbitrum : RPC hogar
+scope --> fuji : RPC satélite
+
+note bottom of portfolio
+  No suma saldos entre cadenas.
+  Cada asset conserva chainId,
+  dirección, bloque y frescura.
+end note
+
+note bottom of fuji
+  Código candidato local.
+  Rail remoto cerrado hasta deploy,
+  bytecode y E2E verificables.
+end note
+
+@enduml

@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import { getNetworkConfig, ERR } from "../../../shared";
 import { AppContext, requireAuth } from "../middlewares/auth";
-import { getUserByUid, getUserByUsername, getUserByWallet, saveUser, addPushToken, updateProfileFields, rateLimitConsume } from "../services/storage";
+import { getActiveChainAccountOwner, getUserByUid, getUserByUsername, getUserByWallet, getUserChainAccount, saveUser, addPushToken, updateProfileFields, rateLimitConsume } from "../services/storage";
 import {
 	readBalanceModel,
 } from "../services/homeReadModel";
 import { refreshWalletBalancesLatest } from "../services/balanceReconciler";
 import { requestBalanceRefresh } from "../services/balanceReadModel";
 import { logError } from "../services/logger";
+import { bindingsForChain, resolveAppChainKey } from "../services/chainScope";
 
 const userRoutes = new Hono<AppContext>();
 
@@ -101,9 +102,18 @@ userRoutes.put("/username", requireAuth, async (c) => {
 // Get User Balance
 userRoutes.get("/balance", requireAuth, async (c) => {
 	const user = c.get("user")!;
+	const chainKey = resolveAppChainKey(c.env, c.req.query("chainKey"));
+	if (!chainKey) return c.json({ error: "Red no soportada", error_code: ERR.UNSUPPORTED_CHAIN }, 404);
+	const scopedEnv = bindingsForChain(c.env, chainKey);
+	const network = getNetworkConfig(chainKey);
+	const chainAccount = await getUserChainAccount(c.env, user.sub, network.chainId);
+	const walletOverride = chainKey === c.env.CHAIN_KEY
+		? undefined
+		: chainAccount?.status === "active" ? chainAccount.walletAddress : null;
 	let model = await readBalanceModel(
-		c.env,
+		scopedEnv,
 		user.sub,
+		walletOverride,
 	);
 	const freshRequested = c.req.query("fresh") === "1";
 	const observedAt = model.balance.observedAt
@@ -118,20 +128,19 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 		(await rateLimitConsume(
 			c.env,
 			"interactive-balance-refresh",
-			user.sub,
+			`${user.sub}:${network.chainId}`,
 			30,
 			60,
 		));
 
 	if (freshRequested && freshAllowed && model.walletAddress && !alreadyFresh) {
 		try {
-			const network = getNetworkConfig(c.env.CHAIN_KEY);
-			await refreshWalletBalancesLatest(c.env, {
+			await refreshWalletBalancesLatest(scopedEnv, {
 				uid: user.sub,
 				accountAddress: model.walletAddress,
 				chainId: network.chainId,
 			});
-			model = await readBalanceModel(c.env, user.sub);
+			model = await readBalanceModel(scopedEnv, user.sub, walletOverride);
 		} catch (error) {
 			// Preserve the last known snapshot. Transactional screens can remain
 			// usable during a transient RPC outage without inventing a zero.
@@ -145,8 +154,7 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 	if (!walletAddress) return c.json({ error: "No wallet", error_code: ERR.NO_WALLET }, 404);
 
 	if (needsRefresh) {
-		const network = getNetworkConfig(c.env.CHAIN_KEY);
-		await requestBalanceRefresh(c.env, {
+		await requestBalanceRefresh(scopedEnv, {
 			uid: user.sub,
 			accountAddress: walletAddress,
 			chainId: network.chainId,
@@ -161,6 +169,7 @@ userRoutes.get("/balance", requireAuth, async (c) => {
 		// Compatibility fields during the Home rollout. Missing/stale data stays
 		// null/absent; an RPC failure can never be rendered as a zero balance.
 		eth: balance.tokens.ETH ?? null,
+		avax: balance.tokens.AVAX ?? null,
 		usdc: balance.tokens.USDC ?? null,
 		ethRaw: balance.assets.ETH?.raw ?? null,
 		usdcRaw: balance.assets.USDC?.raw ?? null,
@@ -187,13 +196,23 @@ userRoutes.get("/resolve-wallet/:address", requireAuth, async (c) => {
 		return c.json({ error: "Invalid wallet address", error_code: ERR.INVALID_WALLET }, 400);
 	}
 
-	const profile = await getUserByWallet(c.env, address);
-	const isGatoPago = Boolean(profile?.walletAddress);
+	const chainKey = resolveAppChainKey(c.env, c.req.query("chainKey"));
+	if (!chainKey) {
+		return c.json({ error: "Network not supported", error_code: ERR.UNSUPPORTED_CHAIN }, 404);
+	}
+	const network = getNetworkConfig(chainKey);
+	const chainOwner = await getActiveChainAccountOwner(c.env, network.chainId, address);
+	const profile = !chainOwner && chainKey === c.env.CHAIN_KEY
+		? await getUserByWallet(c.env, address)
+		: null;
+	const isGatoPago = Boolean(chainOwner || profile?.walletAddress);
 	return c.json({
 		isGatoPago,
 		// Read-only compatibility alias for clients that have not updated yet.
 		isParmelia: isGatoPago,
-		username: profile?.username ?? null,
+		username: chainOwner?.username ?? profile?.username ?? null,
+		chainKey,
+		chainId: network.chainId,
 	});
 });
 
@@ -202,10 +221,26 @@ userRoutes.get("/:username", async (c) => {
 	const username = c.req.param("username");
 	const profile = await getUserByUsername(c.env, username);
 	if (!profile) return c.json({ error: "User not found", error_code: ERR.USER_NOT_FOUND }, 404);
+	const chainKey = resolveAppChainKey(c.env, c.req.query("chainKey"));
+	if (!chainKey) return c.json({ error: "Network not supported", error_code: ERR.UNSUPPORTED_CHAIN }, 404);
+	const network = getNetworkConfig(chainKey);
+	const chainAccount = chainKey === c.env.CHAIN_KEY
+		? null
+		: await getUserChainAccount(c.env, profile.uid, network.chainId);
+	const walletAddress = chainKey === c.env.CHAIN_KEY
+		? profile.walletAddress
+		: chainAccount?.status === "active" && chainAccount.securityStatus === "current"
+			? chainAccount.walletAddress
+			: null;
+	if (!walletAddress) {
+		return c.json({ error: "User has no active account on this network", error_code: ERR.NO_WALLET }, 404);
+	}
 
 	return c.json({
 		username: profile.username,
-		walletAddress: profile.walletAddress,
+		walletAddress,
+		chainKey,
+		chainId: network.chainId,
 		displayName: profile.displayName,
 		socialUrl: profile.socialUrl,
 	});

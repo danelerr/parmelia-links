@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	getSignerBlockingAccountOperation: vi.fn(),
 	getUserByReferralCode: vi.fn(),
 	getUserByUsername: vi.fn(),
+	listUserChainAccounts: vi.fn(),
 	listActiveAccountOperations: vi.fn(),
 	markAccountOperationSubmitted: vi.fn(),
 	rateLimitConsume: vi.fn(),
@@ -35,6 +36,8 @@ const mocks = vi.hoisted(() => ({
 	getTransactionCount: vi.fn(),
 	refreshWalletBalancesLatest: vi.fn(),
 	requestBalanceRefresh: vi.fn(),
+	completeRecoveredUserChainSecurity: vi.fn(),
+	readContract: vi.fn(),
 }));
 
 vi.mock("../src/services/storage", () => ({
@@ -49,6 +52,7 @@ vi.mock("../src/services/storage", () => ({
 	getSignerBlockingAccountOperation: mocks.getSignerBlockingAccountOperation,
 	getUserByReferralCode: mocks.getUserByReferralCode,
 	getUserByUsername: mocks.getUserByUsername,
+	listUserChainAccounts: mocks.listUserChainAccounts,
 	listActiveAccountOperations: mocks.listActiveAccountOperations,
 	markAccountOperationSubmitted: mocks.markAccountOperationSubmitted,
 	rateLimitConsume: mocks.rateLimitConsume,
@@ -62,6 +66,7 @@ vi.mock("../src/services/storage", () => ({
 	setInvitedBy: mocks.setInvitedBy,
 	sweepAccountOperations: mocks.sweepAccountOperations,
 	writeLedgerEntries: mocks.writeLedgerEntries,
+	completeRecoveredUserChainSecurity: mocks.completeRecoveredUserChainSecurity,
 }));
 
 vi.mock("../src/services/clients", () => ({
@@ -69,6 +74,7 @@ vi.mock("../src/services/clients", () => ({
 		sendRawTransaction: mocks.sendRawTransaction,
 		getTransactionReceipt: mocks.getTransactionReceipt,
 		getTransactionCount: mocks.getTransactionCount,
+		readContract: mocks.readContract,
 	}),
 	getFaucetAccount: () => ({ address: "0x00000000000000000000000000000000000000dd" }),
 	getFaucetWalletClient: () => ({
@@ -104,10 +110,17 @@ import { SIGNER_LEASE_TTL_MS } from "../src/services/signerLease";
 
 const ENV = {
 	CHAIN_KEY: "arbitrum-sepolia",
+	RPC_READ_URLS: "https://rpc.example.test",
+	APP_CHAIN_RPC_URLS: JSON.stringify({
+		43113: { read: "https://fuji-rpc.example.test" },
+	}),
 } as Bindings;
 const RAW_TRANSACTION = (`0x${"11".repeat(96)}`) as Hex;
 const TX_HASH = keccak256(RAW_TRANSACTION);
 const NOW = "2026-07-14T00:00:00.000Z";
+const RECOVERY_QX = (`0x${"11".repeat(32)}`) as Hex;
+const RECOVERY_QY = (`0x${"22".repeat(32)}`) as Hex;
+const RECOVERY_SIGNER = (`0x${"aa".repeat(20)}${RECOVERY_QX.slice(2)}${RECOVERY_QY.slice(2)}`) as Hex;
 
 function operation(
 	kind: AccountOperationRecord["kind"],
@@ -117,6 +130,8 @@ function operation(
 	return {
 		id: "operation-1",
 		uid: "user-1",
+		chainId: 421614,
+		chainKey: "arbitrum-sepolia",
 		kind,
 		status,
 		txHash: TX_HASH,
@@ -170,6 +185,29 @@ beforeEach(() => {
 	mocks.sendRawTransaction.mockResolvedValue(TX_HASH);
 	mocks.refreshWalletBalancesLatest.mockResolvedValue([]);
 	mocks.requestBalanceRefresh.mockResolvedValue({});
+	mocks.listUserChainAccounts.mockResolvedValue([{
+		uid: "user-1",
+		chainId: 421614,
+		chainKey: "arbitrum-sepolia",
+		networkName: "Arbitrum Sepolia",
+		walletAddress: "0x00000000000000000000000000000000000000cc",
+		isHome: true,
+		status: "active",
+		securityStatus: "current",
+		securityVersionApplied: 1,
+		securityVersionDesired: 1,
+		deploymentTxHash: null,
+		createdAt: NOW,
+		updatedAt: NOW,
+		activatedAt: NOW,
+	}]);
+	mocks.readContract.mockImplementation(({ functionName }) => {
+		if (functionName === "getPendingRecovery") return Promise.resolve([0n, [], 0n]);
+		if (functionName === "getSigners") return Promise.resolve([RECOVERY_SIGNER]);
+		if (functionName === "threshold") return Promise.resolve(1n);
+		return Promise.reject(new Error(`Unexpected contract read ${String(functionName)}`));
+	});
+	mocks.completeRecoveredUserChainSecurity.mockResolvedValue(1);
 	mocks.finishAccountOperation.mockImplementation(async (_env, _id, status, fields = {}) => {
 		if (!persisted || !["prepared", "submitted"].includes(persisted.status)) return false;
 		persisted = {
@@ -208,8 +246,8 @@ describe("durable account operations", () => {
 		persisted = operation("recovery_execute", {
 			walletAddress: "0x00000000000000000000000000000000000000cc",
 			credentialId: "credential-1",
-			qx: "0x11",
-			qy: "0x22",
+			qx: RECOVERY_QX,
+			qy: RECOVERY_QY,
 		});
 		mocks.getTransactionReceipt.mockResolvedValue({ status: "success" });
 		mocks.saveUser.mockResolvedValue(undefined);
@@ -226,8 +264,8 @@ describe("durable account operations", () => {
 		expect(mocks.savePasskey).toHaveBeenCalledWith(ENV, {
 			uid: "user-1",
 			credentialId: "credential-1",
-			qx: "0x11",
-			qy: "0x22",
+			qx: RECOVERY_QX,
+			qy: RECOVERY_QY,
 			registrationSource: "recovery",
 			name: null,
 			transports: [],
@@ -239,6 +277,52 @@ describe("durable account operations", () => {
 			authenticatorAttachment: null,
 		});
 		expect(result?.status).toBe("confirmed");
+	});
+
+	it("does not replace D1 credentials until every active chain proves the recovered signer", async () => {
+		persisted = operation("recovery_execute", {
+			walletAddress: "0x00000000000000000000000000000000000000cc",
+			credentialId: "credential-1",
+			qx: RECOVERY_QX,
+			qy: RECOVERY_QY,
+		});
+		mocks.getTransactionReceipt.mockResolvedValue({ status: "success" });
+		const [homeAccount] = await mocks.listUserChainAccounts();
+		mocks.listUserChainAccounts.mockResolvedValue([
+			homeAccount,
+			{
+				uid: "user-1",
+				chainId: 43113,
+				chainKey: "avalanche-fuji",
+				networkName: "Avalanche Fuji",
+				walletAddress: "0x000000000000000000000000000000000000f011",
+				isHome: false,
+				status: "active",
+				securityStatus: "current",
+				securityVersionApplied: 1,
+				securityVersionDesired: 1,
+				deploymentTxHash: TX_HASH,
+				createdAt: NOW,
+				updatedAt: NOW,
+				activatedAt: NOW,
+			},
+		]);
+		mocks.readContract.mockImplementation(({ address, functionName }) => {
+			if (functionName === "getPendingRecovery") return Promise.resolve([0n, [], 0n]);
+			if (functionName === "threshold") return Promise.resolve(1n);
+			if (functionName === "getSigners") {
+				return Promise.resolve(address.toLowerCase().endsWith("f011") ? [] : [RECOVERY_SIGNER]);
+			}
+			return Promise.reject(new Error(`Unexpected contract read ${String(functionName)}`));
+		});
+
+		const result = await reconcileAccountOperation(ENV, persisted);
+
+		expect(result?.status).toBe("submitted");
+		expect(mocks.revokePasskeysExcept).not.toHaveBeenCalled();
+		expect(mocks.savePasskey).not.toHaveBeenCalled();
+		expect(mocks.completeRecoveredUserChainSecurity).not.toHaveBeenCalled();
+		expect(mocks.recordAccountOperationAttempt).toHaveBeenCalledOnce();
 	});
 
 	it("rebroadcasts a prepared raw transaction under its signer lease", async () => {
@@ -276,8 +360,8 @@ describe("durable account operations", () => {
 		persisted = {
 			...operation("recovery_execute", {
 				credentialId: "credential-1",
-				qx: "0x11",
-				qy: "0x22",
+				qx: RECOVERY_QX,
+				qy: RECOVERY_QY,
 			}),
 			expiresAt: "2020-01-01T00:00:00.000Z",
 		};

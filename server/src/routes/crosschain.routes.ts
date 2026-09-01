@@ -37,6 +37,7 @@ import {
 	createPendingPayment,
 	getCrosschainOpById,
 	getCrosschainOpBySourceTx,
+	getUserChainAccount,
 	getUserByUid,
 	getUserByUsername,
 	getUserByWallet,
@@ -51,6 +52,7 @@ import {
 } from "../services/userOp";
 import { logError, logInfo } from "../services/logger";
 import { selectUserOperationTransport } from "../services/userOperationTransport";
+import { bindingsForChain, resolveAppChainKey } from "../services/chainScope";
 
 const crosschainRoutes = new Hono<AppContext>();
 
@@ -121,6 +123,16 @@ function isEnabled(env: Bindings): boolean {
 	return !!router && router !== ZERO_ADDRESS && !!getCctpChainByChainId(net.chainId);
 }
 
+function sourceScope(env: Bindings, requested: unknown): { env: Bindings; key: string } | null {
+	const key = resolveAppChainKey(env, requested, { requireWalletRail: true });
+	return key ? { env: bindingsForChain(env, key), key } : null;
+}
+
+function modeForSource(raw: unknown, sourceChainId: number): Mode | null {
+	const mode: Mode = raw === "standard" ? "standard" : "fast";
+	return sourceChainId === 43113 && mode === "fast" ? null : mode;
+}
+
 // Inbound does NOT use our router (the external payer calls CCTP's TokenMessenger
 // directly). It only needs the active chain to be a CCTP destination + the relayer
 // (which has gas on Arbitrum) to complete the mint.
@@ -146,13 +158,17 @@ function computeAmounts(crosschainFeeBps: string | undefined, amountRaw: bigint,
 
 // GET /crosschain/config - what the UI may offer.
 crosschainRoutes.get("/config", requireAuth, async (c) => {
-	const net = getNetworkConfig(c.env.CHAIN_KEY);
+	const scope = sourceScope(c.env, c.req.query("sourceChainKey"));
+	if (!scope) {
+		return c.json({ enabled: false, token: "USDC", source: null, destinations: [] });
+	}
+	const net = getNetworkConfig(scope.key);
 	const source = getCctpChainByChainId(net.chainId);
-	const enabled = isEnabled(c.env);
+	const enabled = isEnabled(scope.env);
 	let destinations: { chainId: number; name: string; domain: number }[] = [];
 	if (enabled) {
-		const disabled = disabledChains(c.env);
-		const minGas = minRelayerGas(c.env);
+		const disabled = disabledChains(scope.env);
+		const minGas = minRelayerGas(scope.env);
 		const candidates = Object.values(CCTP_CHAINS).filter(
 			(ch) => ch.chainId !== net.chainId && !disabled.has(ch.chainId),
 		);
@@ -160,7 +176,7 @@ crosschainRoutes.get("/config", requireAuth, async (c) => {
 		// (RPC error) counts as unavailable — honest availability beats optimism
 		// when the source-side action is an irreversible burn.
 		const serviceable = await Promise.all(
-			candidates.map((ch) => relayerGasStatus(c.env, ch.chainId, minGas)),
+			candidates.map((ch) => relayerGasStatus(scope.env, ch.chainId, minGas)),
 		);
 		destinations = candidates
 			.filter((_, i) => serviceable[i] === "ok")
@@ -170,6 +186,8 @@ crosschainRoutes.get("/config", requireAuth, async (c) => {
 		enabled,
 		token: "USDC",
 		source: source ? { chainId: source.chainId, name: source.name, domain: source.domain } : null,
+		sourceChainKey: scope.key,
+		fastSupported: net.chainId !== 43113,
 		destinations,
 	});
 });
@@ -177,16 +195,23 @@ crosschainRoutes.get("/config", requireAuth, async (c) => {
 crosschainRoutes.post("/quote", requireAuth, async (c) => {
 	const requestId = c.get("requestId");
 	try {
-		const net = getNetworkConfig(c.env.CHAIN_KEY);
-		if (!isEnabled(c.env)) {
+		const body = (await c.req.json()) as Record<string, unknown>;
+		const scope = sourceScope(c.env, body.sourceChainKey);
+		if (!scope) {
+			return c.json({ error: "Red origen no soportada.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
+		}
+		const net = getNetworkConfig(scope.key);
+		if (!isEnabled(scope.env)) {
 			return c.json({ error: "Los envíos entre redes no están disponibles.", error_code: ERR.BRIDGE_DISABLED, requestId }, 400);
 		}
-		const body = (await c.req.json()) as Record<string, unknown>;
 		const dest = getCctpChainByChainId(Number(body.destinationChainId));
 		if (!dest || dest.chainId === net.chainId) {
 			return c.json({ error: "Red destino no soportada.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
 		}
-		const mode: Mode = body.mode === "standard" ? "standard" : "fast";
+		const mode = modeForSource(body.mode, net.chainId);
+		if (!mode) {
+			return c.json({ error: "Avalanche usa el modo Standard.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
+		}
 
 		let amountRaw: bigint;
 		try {
@@ -198,8 +223,8 @@ crosschainRoutes.post("/quote", requireAuth, async (c) => {
 			return c.json({ error: "El monto debe ser mayor a 0.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
 
-		const a = computeAmounts(c.env.GATOPAGO_FEES_ENABLED === "true"
-			? c.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
+		const a = computeAmounts(scope.env.GATOPAGO_FEES_ENABLED === "true"
+			? scope.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
@@ -209,6 +234,8 @@ crosschainRoutes.post("/quote", requireAuth, async (c) => {
 			token: "USDC",
 			mode,
 			destinationChainId: dest.chainId,
+			sourceChainId: net.chainId,
+			sourceChainKey: scope.key,
 			amountIn: formatUnits(amountRaw, USDC_DECIMALS),
 			gatoPagoFee,
 			gatoPagoFeeBps,
@@ -230,18 +257,25 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 	const requestId = c.get("requestId");
 	try {
 		const user = c.get("user")!;
-		const net = getNetworkConfig(c.env.CHAIN_KEY);
-		if (!isEnabled(c.env)) {
+		const body = (await c.req.json()) as Record<string, unknown>;
+		const scope = sourceScope(c.env, body.sourceChainKey);
+		if (!scope) {
+			return c.json({ error: "Red origen no soportada.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
+		}
+		const net = getNetworkConfig(scope.key);
+		if (!isEnabled(scope.env)) {
 			return c.json({ error: "Los envíos entre redes no están disponibles.", error_code: ERR.BRIDGE_DISABLED, requestId }, 400);
 		}
 
-		const body = (await c.req.json()) as Record<string, unknown>;
 		const source = getCctpChainByChainId(net.chainId)!;
 		const dest = getCctpChainByChainId(Number(body.destinationChainId));
 		if (!dest || dest.chainId === net.chainId) {
 			return c.json({ error: "Red destino no soportada.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
 		}
-		const mode: Mode = body.mode === "standard" ? "standard" : "fast";
+		const mode = modeForSource(body.mode, net.chainId);
+		if (!mode) {
+			return c.json({ error: "Avalanche usa el modo Standard.", error_code: ERR.UNSUPPORTED_CHAIN, requestId }, 400);
+		}
 
 		const recipient = typeof body.recipient === "string" ? body.recipient.trim() : "";
 		if (!isAddress(recipient)) {
@@ -259,13 +293,18 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		}
 
 		const profile = await getUserByUid(c.env, user.sub);
-		const account = profile?.walletAddress as `0x${string}` | undefined;
+		const sourceChainAccount = await getUserChainAccount(c.env, user.sub, net.chainId);
+		const account = scope.key === c.env.CHAIN_KEY
+			? profile?.walletAddress as `0x${string}` | undefined
+			: sourceChainAccount?.status === "active" && sourceChainAccount.securityStatus === "current"
+				? sourceChainAccount.walletAddress
+				: undefined;
 		if (!account) {
 			return c.json({ error: "Necesitas una cuenta para enviar.", error_code: ERR.NO_WALLET, requestId }, 400);
 		}
 
 		const usdc = net.contracts.usdc;
-		const publicClient = getPublicClient(c.env);
+		const publicClient = getPublicClient(scope.env);
 		const balance = (await publicClient.readContract({
 			address: usdc,
 			abi: erc20Abi,
@@ -283,8 +322,8 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			);
 		}
 
-		const a = computeAmounts(c.env.GATOPAGO_FEES_ENABLED === "true"
-			? c.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
+		const a = computeAmounts(scope.env.GATOPAGO_FEES_ENABLED === "true"
+			? scope.env.GATOPAGO_CROSSCHAIN_FEE_BPS : undefined, amountRaw, mode);
 		if (a.amountOut <= 0n) {
 			return c.json({ error: "El monto no cubre las comisiones.", error_code: ERR.INVALID_AMOUNT, requestId }, 400);
 		}
@@ -292,15 +331,15 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 		// Route guard: hidden chain, or relayer gas on the destination not VERIFIED
 		// ok (fail closed on RPC errors — this route ends in an irreversible burn).
 		if (
-			disabledChains(c.env).has(dest.chainId) ||
-			(await relayerGasStatus(c.env, dest.chainId, minRelayerGas(c.env))) !== "ok"
+			disabledChains(scope.env).has(dest.chainId) ||
+			(await relayerGasStatus(scope.env, dest.chainId, minRelayerGas(scope.env))) !== "ok"
 		) {
 			return c.json({ error: "Esa red no está disponible ahora.", error_code: ERR.CROSSCHAIN_UNAVAILABLE, requestId }, 400);
 		}
 
 		const router = net.contracts.crosschainRouter;
 		if (a.feeBps > 0n) {
-			const configuredTreasury = c.env.GATOPAGO_TREASURY_ADDRESS;
+			const configuredTreasury = scope.env.GATOPAGO_TREASURY_ADDRESS;
 			if (!configuredTreasury || !isAddress(configuredTreasury)) {
 				throw new Error("Cross-chain fee treasury is not configured");
 			}
@@ -341,9 +380,9 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			{ target: router, value: 0n, data: bridgeData },
 		];
 		const executeCalldata = encodeExecuteBatch(calls);
-		const submissionTransport = selectUserOperationTransport(c.env, user.sub);
+		const submissionTransport = selectUserOperationTransport(scope.env, user.sub);
 		const { userOp, userOpHash, rpId, signingPayload, sponsorshipProvider,
-			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(c.env, {
+			sponsorshipPaymasterAddress } = await buildSponsoredUserOp(scope.env, {
 			sender: account,
 			callData: executeCalldata,
 			callGasLimit: CROSSCHAIN_CALL_GAS_LIMIT,
@@ -387,8 +426,10 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			completedAt: null,
 		});
 
-		await createPendingPayment(c.env, {
+		await createPendingPayment(scope.env, {
 			userOpHash,
+			chainId: net.chainId,
+			chainKey: scope.key,
 			linkId: null,
 			uid: user.sub,
 			amount: formatUnits(amountRaw, USDC_DECIMALS),
@@ -424,11 +465,14 @@ crosschainRoutes.post("/prepare", requireAuth, async (c) => {
 			opId,
 			destinationChainId: dest.chainId,
 			mode,
+			sourceChainKey: scope.key,
 		});
 
 		const summaryGatoPagoFee = formatUnits(a.gatoPagoFee, USDC_DECIMALS);
 		return c.json({
 			userOpHash,
+			sourceChainKey: scope.key,
+			sourceChainId: net.chainId,
 			// For GET /crosschain/status/:opId once the burn is submitted.
 			opId,
 			credentialId: profile?.credentialId ?? null,

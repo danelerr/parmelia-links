@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { User } from "../lib/firebase";
 import { QRCodeSVG } from "qrcode.react";
-import { notifySuccess } from "../lib/notify";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { useTranslation } from "react-i18next";
 import Logo from "../components/Logo";
 import Screen from "../components/Screen";
@@ -15,15 +15,66 @@ import { useAccountProfile } from "../hooks/useAccountProfile";
 import NoticeCard from "../components/NoticeCard";
 import { MoneyPanel, SectionLabel } from "../components/finance/FinancialPrimitives";
 import { activeNetwork } from "../lib/activeNetwork";
+import { apiFetch } from "../lib/api";
+import { getNetworkConfig, isSupportedChainKey } from "../lib/networks";
+import { useChainPortfolio, type ChainPortfolio, type ChainPortfolioItem } from "../hooks/useChainPortfolio";
+import NetworkChips from "../components/NetworkChips";
+import TokenSelect from "../components/TokenSelect";
 
-export default function Receive({ user }: { user: User }) {
+export default function Receive({
+	user,
+	previewPortfolio,
+}: {
+	user: User;
+	previewPortfolio?: ChainPortfolio;
+}) {
 	const { t } = useTranslation();
 	const { profile, loading } = useAccountProfile(user);
-	const walletAddress = profile?.walletAddress ?? null;
+	const {
+		data: portfolio,
+		error: portfolioError,
+		isLoading: portfolioLoading,
+		mutate: refreshPortfolio,
+	} = useChainPortfolio(user, previewPortfolio);
 	const username = profile?.username ?? null;
 	const [showCrosschain, setShowCrosschain] = useState(false);
+	const [selectedChainKey, setSelectedChainKey] = useState(activeNetwork.key);
+	const [selectedAsset, setSelectedAsset] = useState("USDC");
+	const [activating, setActivating] = useState(false);
+	const fallbackHome: ChainPortfolioItem = {
+		key: activeNetwork.key,
+		chainId: activeNetwork.chainId,
+		name: activeNetwork.name,
+		nativeTokenSymbol: activeNetwork.nativeTokenSymbol,
+		isTestnet: activeNetwork.isTestnet,
+		walletRailEnabled: true,
+		swapEnabled: true,
+		explorerBaseUrl: activeNetwork.explorerBaseUrl,
+		faucetUrl: activeNetwork.faucetUrl,
+		rpcConfigured: true,
+		account: profile?.walletAddress ? {
+			walletAddress: profile.walletAddress,
+			status: "active",
+			securityStatus: "current",
+			securityVersionApplied: 1,
+			securityVersionDesired: 1,
+		} : null,
+		balance: { assets: [] },
+	};
+	const chains = portfolio?.chains.length ? portfolio.chains : [fallbackHome];
+	const selectedChain = chains.find((chain) => chain.key === selectedChainKey) ?? chains[0] ?? fallbackHome;
+	const selectedNetwork = getNetworkConfig(selectedChain.key);
+	const receiveAsset = selectedNetwork.currencies.includes(selectedAsset)
+		? selectedAsset
+		: selectedNetwork.currencies[0] ?? "USDC";
+	const walletAddress = selectedChain.account?.status === "active"
+		? selectedChain.account.walletAddress
+		: null;
 
-	const ccLink = walletAddress ? `${window.location.origin}/cc/${username || walletAddress}` : "";
+	const homeAddress = chains.find((chain) => chain.key === activeNetwork.key)?.account?.walletAddress
+		?? profile?.walletAddress
+		?? null;
+	const ccLink = homeAddress ? `${window.location.origin}/cc/${username || homeAddress}` : "";
 
 	function copy(text: string, msg: string) {
 		navigator.clipboard.writeText(text).then(() => notifySuccess(msg));
@@ -37,13 +88,43 @@ export default function Receive({ user }: { user: User }) {
 		}
 	}
 
+	async function activateSelectedChain() {
+		if (!isSupportedChainKey(selectedChain.key) || activating) return;
+		setActivating(true);
+		try {
+			await apiFetch(`/account/chains/${encodeURIComponent(selectedChain.key)}/activate`, {
+				user,
+				method: "POST",
+			});
+			await refreshPortfolio();
+			notifySuccess(t("receive.activationStarted"));
+		} catch (error) {
+			notifyError(error, t("receive.activationError"));
+		} finally {
+			setActivating(false);
+		}
+	}
+
 	return (
 		<Screen>
 			<BackHeader title={t("receive.title")} />
 
-			{loading ? (
+			{loading || (portfolioLoading && !portfolio) ? (
 				<DetailPageSkeleton />
-			) : !walletAddress ? (
+			) : portfolioError && !portfolio ? (
+				<div className="flex-1 flex flex-col justify-center px-1">
+					<NoticeCard tone="warning" title={t("receive.portfolioUnavailable")}>
+						{t("receive.portfolioUnavailableDesc")}
+					</NoticeCard>
+					<button
+						type="button"
+						onClick={() => void refreshPortfolio()}
+						className="btn btn-primary btn-block mt-4"
+					>
+						{t("common.retry")}
+					</button>
+				</div>
+			) : !profile?.walletAddress ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center px-6">
 					<Logo className="w-12 mb-5 opacity-40" />
 					<p className="text-[14px] text-text-muted">{t("receive.noWallet")}</p>
@@ -53,23 +134,53 @@ export default function Receive({ user }: { user: User }) {
 					<p className="text-[14px] text-text-muted leading-relaxed mb-5">
 						{t("receive.intro")}
 					</p>
+					<NetworkChips
+						options={chains.map((chain) => ({ id: chain.chainId, label: chain.name }))}
+						selected={selectedChain.chainId}
+						onSelect={(chainId) => {
+							const next = chains.find((chain) => chain.chainId === chainId);
+							if (!next || !isSupportedChainKey(next.key)) return;
+							setSelectedChainKey(next.key);
+							setSelectedAsset(getNetworkConfig(next.key).currencies[0] ?? "USDC");
+							setShowCrosschain(false);
+						}}
+					/>
 
 					<SectionLabel>{t("receive.fromWallet")}</SectionLabel>
 					<MoneyPanel className="mb-3 p-6">
-						<p className="text-[15px] text-text mb-1">{t("receive.arbTitle", { network: activeNetwork.name })}</p>
-						<p className="text-[13px] text-text-muted leading-relaxed mb-5">{t("receive.arbDesc", { network: activeNetwork.name })}</p>
-
-						<AddressQRCard address={walletAddress} />
-
-						<NoticeCard title={t("receive.onlyArb", { network: activeNetwork.name })} className="mt-4">
-							{t("receive.warnOtherNet", { network: activeNetwork.name })}
-						</NoticeCard>
-						<p className="mt-4 text-[12px] leading-relaxed text-text-faint">
-							{t("receive.exchangeHint", { network: activeNetwork.name })}
-						</p>
+						{walletAddress ? (
+							<>
+								<p className="text-[15px] text-text mb-1">{t("receive.assetTitle", { asset: receiveAsset, network: selectedChain.name })}</p>
+								<p className="text-[13px] text-text-muted leading-relaxed mb-4">{t("receive.assetDesc", { asset: receiveAsset, network: selectedChain.name })}</p>
+								<TokenSelect
+									value={receiveAsset}
+									options={selectedNetwork.currencies}
+									onChange={setSelectedAsset}
+									className="mb-5"
+								/>
+								<AddressQRCard address={walletAddress} chainId={selectedChain.chainId} />
+								<NoticeCard title={t("receive.onlyAssetNetwork", { asset: receiveAsset, network: selectedChain.name })} className="mt-4">
+									{t("receive.warnWrongNetwork", { asset: receiveAsset, network: selectedChain.name })}
+								</NoticeCard>
+								<p className="mt-4 text-[12px] leading-relaxed text-text-faint">
+									{t("receive.exchangeAssetHint", { asset: receiveAsset, network: selectedChain.name })}
+								</p>
+							</>
+						) : selectedChain.account?.status === "deploying" ? (
+							<NoticeCard tone="info" title={t("receive.activationPending")}>{t("receive.activationPendingDesc")}</NoticeCard>
+						) : selectedChain.walletRailEnabled ? (
+							<div className="text-center">
+								<p className="mb-4 text-[13px] leading-relaxed text-text-muted">{t("receive.activateNetworkDesc", { network: selectedChain.name })}</p>
+								<button type="button" onClick={() => void activateSelectedChain()} disabled={activating} className="btn btn-primary btn-block">
+									{activating ? t("receive.activating") : t("receive.activateNetwork", { network: selectedChain.name })}
+								</button>
+							</div>
+						) : (
+							<NoticeCard tone="warning" title={t("receive.networkUnavailable")}>{t("receive.networkUnavailableDesc", { network: selectedChain.name })}</NoticeCard>
+						)}
 					</MoneyPanel>
 
-					<MoneyPanel className="mt-6">
+					{selectedChain.key === activeNetwork.key && ccLink ? <MoneyPanel className="mt-6">
 						<div className="flex items-center gap-2 mb-1">
 							<p className="text-[14px] text-text">{t("receive.advTitle")}</p>
 							<span className="meli-chip bg-surface-2 text-text-faint">
@@ -102,7 +213,7 @@ export default function Receive({ user }: { user: User }) {
 								</div>
 							</div>
 						) : null}
-					</MoneyPanel>
+					</MoneyPanel> : null}
 
 					<div className="flex-1" />
 				</>

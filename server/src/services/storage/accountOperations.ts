@@ -1,4 +1,5 @@
 import type { Bindings } from "../../middlewares/auth";
+import { getNetworkConfig } from "../../../../shared";
 import { scheduleEventJob } from "../eventScheduler";
 import { d1All, d1First, d1Run, didWrite, nowIso } from "./core";
 
@@ -19,6 +20,8 @@ export type AccountOperationStatus =
 export type AccountOperationRecord = {
 	id: string;
 	uid: string;
+	chainId: number;
+	chainKey: string;
 	kind: AccountOperationKind;
 	status: AccountOperationStatus;
 	txHash: `0x${string}`;
@@ -37,6 +40,8 @@ export type AccountOperationRecord = {
 type AccountOperationRow = {
 	id: string;
 	uid: string;
+	chain_id: number;
+	chain_key: string;
 	kind: AccountOperationKind;
 	status: AccountOperationStatus;
 	tx_hash: `0x${string}`;
@@ -54,11 +59,13 @@ type AccountOperationRow = {
 };
 
 const ACCOUNT_OPERATION_COLUMNS =
-	"id, uid, kind, status, tx_hash, raw_transaction, signer_address, nonce, metadata, attempt_count, last_error, error_code, created_at, updated_at, confirmed_at, expires_at";
+	"id, uid, chain_id, chain_key, kind, status, tx_hash, raw_transaction, signer_address, nonce, metadata, attempt_count, last_error, error_code, created_at, updated_at, confirmed_at, expires_at";
 function mapAccountOperationRow(row: AccountOperationRow): AccountOperationRecord {
 	return {
 		id: row.id,
 		uid: row.uid,
+		chainId: row.chain_id,
+		chainKey: row.chain_key,
 		kind: row.kind,
 		status: row.status,
 		txHash: row.tx_hash,
@@ -91,13 +98,15 @@ export async function createAccountOperation(
 	const result = await d1Run(
 		env,
 		`INSERT OR IGNORE INTO account_operations (
-			id, uid, kind, status, tx_hash, raw_transaction, signer_address, nonce,
+			id, uid, chain_id, chain_key, kind, status, tx_hash, raw_transaction, signer_address, nonce,
 			metadata, attempt_count, last_error, error_code, created_at, updated_at,
 			confirmed_at, expires_at
-		) VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?)`,
+		) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?)`,
 		[
 			operation.id,
 			operation.uid,
+			operation.chainId,
+			operation.chainKey,
 			operation.kind,
 			operation.txHash,
 			operation.rawTransaction,
@@ -128,13 +137,15 @@ export async function getActiveAccountOperation(
 	env: Bindings,
 	uid: string,
 	kind: AccountOperationKind,
+	chainId = getNetworkConfig(env.CHAIN_KEY).chainId,
 ): Promise<AccountOperationRecord | null> {
 	const row = await d1First<AccountOperationRow>(
 		env,
 		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations
-		 WHERE uid = ? AND kind = ? AND status IN ('prepared', 'submitted', 'needs_review')
+		 WHERE uid = ? AND kind = ? AND chain_id = ?
+		   AND status IN ('prepared', 'submitted', 'needs_review')
 		 ORDER BY created_at DESC LIMIT 1`,
-		[uid, kind],
+		[uid, kind, chainId],
 	);
 	return row ? mapAccountOperationRow(row) : null;
 }
@@ -160,9 +171,9 @@ export async function getSignerBlockingAccountOperation(
 	const row = await d1First<AccountOperationRow>(
 		env,
 		`SELECT ${ACCOUNT_OPERATION_COLUMNS} FROM account_operations
-		 WHERE signer_address = ? AND status IN ('prepared', 'needs_review')
+		 WHERE signer_address = ? AND chain_id = ? AND status IN ('prepared', 'needs_review')
 		 ORDER BY updated_at ASC LIMIT 1`,
-		[signerAddress.toLowerCase()],
+		[signerAddress.toLowerCase(), getNetworkConfig(env.CHAIN_KEY).chainId],
 	);
 	return row ? mapAccountOperationRow(row) : null;
 }

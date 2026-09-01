@@ -1,8 +1,8 @@
 # Arquitectura visual de GatoPago
 
-**Fecha de corte:** 30 de agosto de 2026
-**Estado:** Fase 3 App promovida con Google + Email Link y Passkey Security v2;
-ejecución monetaria desactivada
+**Fecha de corte:** 31 de agosto de 2026
+**Estado:** Fase 3 App promovida; Fase 4A multichain implementada localmente,
+todavía no migrada ni desplegada
 **Propósito:** explicar el sistema con un único vocabulario y separar con claridad
 lo que está desplegado, lo que está listo en código y lo que sólo es futuro.
 
@@ -54,7 +54,8 @@ que ve el operador en Cloudflare.
 | Cliente Vercel | `parmelia` sirve `https://app.parmelia.me`; el checkout usa únicamente el provider EIP-1193 que una extensión o el navegador integrado de la propia wallet ya expone. No integra proveedores externos de conexión. |
 | Dashboard Vercel | `https://dashboard.parmelia.me` es accesible anónimamente y muestra el login de GatoPago; Vercel SSO está desactivado. |
 | Routers de pago | Desplegados y verificados en testnets soportadas. No se activó mainnet. |
-| Autenticación App candidata | Google + Firebase Email Link pasan localmente. `0035`, la nueva ruta y la CSP que habilita `apis.google.com` siguen pendientes en remoto; no usa Resend, SMTP ni OTP numérico. |
+| Autenticación App | Google + Firebase Email Link están promovidos; `0035`–`0037` y Passkey Security v2 están activos. No usa Resend, SMTP ni OTP numérico. Las ceremonias WebAuthn reales de aceptación siguen requiriendo gesto del usuario. |
+| Fase 4A App multichain | Candidato local: Arbitrum hogar + Avalanche Fuji satélite, AVAX/USDC, seguridad versionada y migración `0038`. Fuji no tiene contratos desplegados/verificados ni rail remoto habilitado. |
 
 ## Orden de lectura
 
@@ -93,6 +94,15 @@ que ve el operador en Cloudflare.
     — Google, Turnstile, solicitud/consumo de Email Link y recovery de un solo
     uso sin proveedor de correo adicional.
     ![Secuencia de magic link de la App](./rendered/11-secuencia-magic-link-app.svg)
+12. [C4 nivel 3: App multichain](./diagrams/12-c4-componentes-app-multichain.puml)
+    — portfolio explícito, scope por request, seguridad e indexación por red.
+    ![C4 App multichain](./rendered/12-c4-componentes-app-multichain.svg)
+13. [Activación y seguridad multichain](./diagrams/13-secuencia-activacion-seguridad-multichain.puml)
+    — bytecode gate, despliegue de la satélite y sincronización de passkeys.
+    ![Secuencia de seguridad multichain](./rendered/13-secuencia-activacion-seguridad-multichain.svg)
+14. [Actividad de una operación multichain](./diagrams/14-actividad-operacion-app-multichain.puml)
+    — capacidades, rail, cuenta y seguridad fallan cerrado sin fallback.
+    ![Actividad multichain](./rendered/14-actividad-operacion-app-multichain.svg)
 
 Las decisiones y fundamentos de esta corrección están en
 [CORRECCIONES.md](./CORRECCIONES.md). El procedimiento operativo está en el
@@ -125,8 +135,9 @@ promoción vigente del modelo de llaves usa el
   backend verifica receipt, payer, router y evento.
 - Cada transición económica y su evento/outbox se escriben atómicamente en
   Payments DB. No se simula una transacción entre dos D1.
-- El comercio recibe USDC de test en Arbitrum Sepolia durante el primer corte.
-  Base Sepolia y Fuji son redes de origen de pago, no copias completas de la App.
+- En Payments, el comercio recibe USDC de test en Arbitrum Sepolia durante el
+  primer corte y Base/Fuji son redes de origen. Esa decisión B2B no impide que
+  la App personal tenga una cuenta Fuji satélite bajo un kill switch distinto.
 - `free-default` mantiene la comisión de plataforma en cero. El coste de red se
   registra aparte.
 

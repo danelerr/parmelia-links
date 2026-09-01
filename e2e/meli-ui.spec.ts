@@ -66,6 +66,52 @@ test("Home exposes an explicit balance refresh without background RPC polling", 
 	await expectNoWcagViolations(page);
 });
 
+test("Home keeps AVAX on Avalanche explicit and routes actions through that account", async ({ page }, testInfo) => {
+	await openPreview(page, testInfo);
+
+	await page.getByRole("button", { name: /Elegir moneda|Choose currency/i }).click();
+	const assetDialog = page.getByRole("dialog", { name: /Elegir moneda|Choose currency/i });
+	await assetDialog.getByRole("option", { name: /AVAX/i }).click();
+
+	await expect(page.getByText(/AVAX · Avalanche Fuji/i)).toBeVisible();
+	await expect(page.getByText("3.75", { exact: false })).toBeVisible();
+	const send = page.getByRole("link", { name: /^(Enviar|Send)$/i });
+	await expect(send).toHaveAttribute("href", "/send?chainKey=avalanche-fuji&asset=AVAX");
+	await expect(page.getByRole("button", { name: /^(Cambiar|Swap)$/i })).toBeDisabled();
+
+	await page.getByRole("button", { name: /Cuenta personal|Personal account/i }).click();
+	const accountDialog = page.getByRole("dialog", {
+		name: /Detalles técnicos|Detalles de la cuenta|Technical details|Account details/i,
+	});
+	await expect(accountDialog.getByText("Arbitrum Sepolia", { exact: true })).toBeVisible();
+	await expect(accountDialog.getByText("Avalanche Fuji", { exact: true })).toBeVisible();
+	const width = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
+	expect(width.document).toBeLessThanOrEqual(width.viewport + 1);
+	await expectNoWcagViolations(page);
+});
+
+test("Grow opened from Avalanche fails closed without loading the Arbitrum product", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
+	let configRequests = 0;
+	await page.route("**/earn/config**", async (route) => {
+		configRequests += 1;
+		await route.abort();
+	});
+	await page.goto("/__design/meli?view=earn-network-blocked&chainKey=avalanche-fuji", {
+		waitUntil: "domcontentloaded",
+	});
+	const desktopNotice = page.getByRole("dialog");
+	if (await desktopNotice.isVisible().catch(() => false)) {
+		await desktopNotice.getByRole("button").click();
+	}
+
+	await expect(page.getByText(/Crecer no está disponible en Avalanche Fuji|Grow isn't available on Avalanche Fuji/i)).toBeVisible();
+	await expect(page.getByText(/No cambiaremos tu red|We won't switch networks/i)).toBeVisible();
+	await expect.poll(() => configRequests).toBe(0);
+	await expect(page.getByRole("button", { name: /Continuar|Continue/i })).toHaveCount(0);
+	await expectNoWcagViolations(page);
+});
+
 test("Home launches the native PWA prompt and then exposes reload", async ({ page }, testInfo) => {
 	await openPreview(page, testInfo);
 	await page.evaluate(() => {

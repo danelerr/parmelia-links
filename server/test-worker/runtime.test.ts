@@ -7,16 +7,19 @@ import {
 	createCrosschainOp,
 	createPendingPayment,
 	finishAccountOperation,
+	getActiveChainAccountOwner,
 	getActiveAccountOperation,
 	getCrosschainOpById,
 	getSyncCursor,
 	listLedgerPageByUid,
+	listActiveChainAccountOwnersByWalletAddresses,
 	listPasskeysByUid,
 	markPasskeyVerified,
 	releaseLease,
 	renewLease,
 	setSyncCursor,
 	updateCrosschainOp,
+	upsertUserChainAccount,
 	writeLedgerEntries,
 	type PendingPaymentRecord,
 } from "../src/services/storage";
@@ -344,6 +347,7 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"0035_firebase_email_links.sql",
 			"0036_passkey_security_metadata.sql",
 			"0037_webauthn_authentication.sql",
+			"0038_app_multichain_accounts.sql",
 		]);
 	});
 
@@ -391,6 +395,9 @@ describe.sequential("Cloudflare Worker runtime", () => {
 			"auth_step_up_sessions",
 			"auth_email_link_challenges",
 			"webauthn_authentication_challenges",
+			"account_security_versions",
+			"user_chain_accounts",
+			"chain_indexer_wallet_registry_outbox",
 		]) {
 			expect(strictByName.get(table), `${table} must remain STRICT`).toBe(1);
 		}
@@ -791,6 +798,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const pending = (currency: string, meta: Record<string, unknown>): PendingPaymentRecord => ({
 			userOpHash: `0x${(currency === "PASSKEY_ADD" ? "71" : "72").repeat(32)}`,
 			uid,
+			chainId: 421614,
+			chainKey: "arbitrum-sepolia",
 			linkId: null,
 			paymentAttemptId: null,
 			wallet,
@@ -1859,6 +1868,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const createdAt = new Date().toISOString();
 		const base = {
 			uid: "runtime-operation-user",
+			chainId: 421614,
+			chainKey: "arbitrum-sepolia",
 			kind: "recovery_cancel" as const,
 			txHash: `0x${"31".repeat(32)}` as `0x${string}`,
 			rawTransaction: `0x${"41".repeat(64)}` as `0x${string}`,
@@ -1963,6 +1974,128 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		);
 	});
 
+	it("marks every active satellite stale when the passkey set changes", async () => {
+		const uid = "runtime-multichain-passkey-version";
+		const now = new Date().toISOString();
+		const homeAddress = "0x1111111111111111111111111111111111111138";
+		const fujiAddress = "0x2222222222222222222222222222222222222238";
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
+				"INSERT INTO users (uid, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?)",
+			).bind(uid, homeAddress, now, now),
+			env.GATOPAGO_DB.prepare(
+				"INSERT INTO account_security_versions (uid, desired_version, updated_at) VALUES (?, 1, ?)",
+			).bind(uid, now),
+			env.GATOPAGO_DB.prepare(
+				`INSERT INTO user_chain_accounts (
+					uid, chain_id, chain_key, network_name, wallet_address, is_home,
+					status, security_status, security_version_applied,
+					created_at, updated_at, activated_at
+				 ) VALUES (?, 421614, 'arbitrum-sepolia', 'Arbitrum Sepolia', ?, 1,
+					'active', 'current', 1, ?, ?, ?)`,
+			).bind(uid, homeAddress, now, now, now),
+			env.GATOPAGO_DB.prepare(
+				`INSERT INTO user_chain_accounts (
+					uid, chain_id, chain_key, network_name, wallet_address, is_home,
+					status, security_status, security_version_applied,
+					created_at, updated_at, activated_at
+				 ) VALUES (?, 43113, 'avalanche-fuji', 'Avalanche Fuji', ?, 0,
+					'active', 'current', 1, ?, ?, ?)`,
+			).bind(uid, fujiAddress, now, now, now),
+		]);
+		await env.GATOPAGO_DB.prepare(
+			`INSERT INTO passkeys (
+				credential_id, uid, qx, qy, registration_source,
+				transports_json, created_at, last_used_at
+			 ) VALUES (?, ?, ?, ?, 'backup', '[]', ?, ?)`,
+		).bind(
+			"runtime-multichain-credential",
+			uid,
+			`0x${"11".repeat(32)}`,
+			`0x${"22".repeat(32)}`,
+			now,
+			now,
+		).run();
+
+		const version = await env.GATOPAGO_DB.prepare(
+			"SELECT desired_version FROM account_security_versions WHERE uid = ?",
+		).bind(uid).first<{ desired_version: number }>();
+		const accounts = await env.GATOPAGO_DB.prepare(
+			`SELECT chain_id, security_status, security_version_applied
+			 FROM user_chain_accounts WHERE uid = ? ORDER BY chain_id`,
+		).bind(uid).all<{
+			chain_id: number;
+			security_status: string;
+			security_version_applied: number;
+		}>();
+		const satelliteRegistry = await env.GATOPAGO_DB.prepare(
+			`SELECT chain_id, chain_key, wallet_address, status
+			 FROM chain_indexer_wallet_registry_outbox WHERE uid = ?`,
+		).bind(uid).all<{
+			chain_id: number;
+			chain_key: string;
+			wallet_address: string;
+			status: string;
+		}>();
+		const fujiOwner = await getActiveChainAccountOwner(env, 43113, fujiAddress);
+		const fujiOwners = await listActiveChainAccountOwnersByWalletAddresses(
+			env,
+			43113,
+			[fujiAddress.toUpperCase(), "not-an-address"],
+		);
+
+		expect(version?.desired_version).toBe(2);
+		expect(accounts.results).toEqual([
+			{ chain_id: 43113, security_status: "needs_sync", security_version_applied: 1 },
+			{ chain_id: 421614, security_status: "current", security_version_applied: 2 },
+		]);
+		expect(satelliteRegistry.results).toEqual([
+			{
+				chain_id: 43113,
+				chain_key: "avalanche-fuji",
+				wallet_address: fujiAddress,
+				status: "pending",
+			},
+		]);
+		expect(fujiOwner).toEqual({ uid, username: null });
+		expect(fujiOwners).toEqual([{ uid, walletAddress: fujiAddress }]);
+		await env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid).run();
+	});
+
+	it("does not mark a satellite current when its deployment used an older passkey version", async () => {
+		const uid = "runtime-stale-satellite-activation";
+		const now = new Date().toISOString();
+		const homeAddress = "0x3333333333333333333333333333333333333338";
+		const fujiAddress = "0x4444444444444444444444444444444444444438";
+		await env.GATOPAGO_DB.batch([
+			env.GATOPAGO_DB.prepare(
+				"INSERT INTO users (uid, wallet_address, created_at, updated_at) VALUES (?, ?, ?, ?)",
+			).bind(uid, homeAddress, now, now),
+			env.GATOPAGO_DB.prepare(
+				"INSERT INTO account_security_versions (uid, desired_version, updated_at) VALUES (?, 2, ?)",
+			).bind(uid, now),
+		]);
+
+		await upsertUserChainAccount(env, {
+			uid,
+			chainId: 43113,
+			chainKey: "avalanche-fuji",
+			networkName: "Avalanche Fuji",
+			walletAddress: fujiAddress,
+			isHome: false,
+			status: "active",
+			securityStatus: "current",
+			securityVersionApplied: 1,
+		});
+
+		const row = await env.GATOPAGO_DB.prepare(
+			`SELECT security_status, security_version_applied
+			 FROM user_chain_accounts WHERE uid = ? AND chain_id = 43113`,
+		).bind(uid).first<{ security_status: string; security_version_applied: number }>();
+		expect(row).toEqual({ security_status: "needs_sync", security_version_applied: 1 });
+		await env.GATOPAGO_DB.prepare("DELETE FROM users WHERE uid = ?").bind(uid).run();
+	});
+
 	it("enforces the request body limit before route processing", async () => {
 		const response = await exports.default.fetch(
 			new Request("https://worker.test/links", {
@@ -2027,6 +2160,8 @@ describe.sequential("Cloudflare Worker runtime", () => {
 		const pending: PendingPaymentRecord = {
 			userOpHash: `0x${"11".repeat(32)}`,
 			uid: "runtime-user",
+			chainId: 421614,
+			chainKey: "arbitrum-sepolia",
 			linkId: null,
 			paymentAttemptId: null,
 			wallet: "0x0000000000000000000000000000000000000002",

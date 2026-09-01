@@ -7,6 +7,7 @@ import { signInWithGoogle, type User } from "../lib/firebase";
 import { signWithPasskey } from "../lib/webauthn";
 import { submitUserOp } from "../lib/submit";
 import { activeNetwork } from "../lib/activeNetwork";
+import { DEFAULT_CHAIN_KEY, getNetworkConfig, isSupportedChainKey } from "../lib/networks";
 import { userOperationChallenge, type PreparedUserOperation } from "../lib/eip712";
 import { useViewTransitionNavigate } from "../hooks/useNav";
 import { usePasskeyGuidance } from "../hooks/usePasskeyGuidance";
@@ -23,6 +24,9 @@ import ConfirmSheet from "../components/ConfirmSheet";
 import SigningDetails from "../components/SigningDetails";
 import { MoneyPanel, PanelActions, SectionLabel, TransactionActions } from "../components/finance/FinancialPrimitives";
 import TokenSelect from "../components/TokenSelect";
+import NetworkChips from "../components/NetworkChips";
+import NoticeCard from "../components/NoticeCard";
+import { useChainPortfolio } from "../hooks/useChainPortfolio";
 import { parsePaymentError } from "../lib/paymentErrors";
 import ExternalWalletCheckout from "../features/checkout/ExternalWalletCheckout";
 import PaymentMethodSelector, { type CheckoutPaymentMethod } from "../features/checkout/PaymentMethodSelector";
@@ -56,7 +60,30 @@ function PayPageContent({ user }: { user: User | null }) {
 	const navigate = useViewTransitionNavigate();
 	const guideToPasskeys = usePasskeyGuidance();
 	const { t } = useTranslation();
+	const {
+		data: chainPortfolio,
+		error: chainPortfolioError,
+		isLoading: chainPortfolioLoading,
+	} = useChainPortfolio(user);
+	const linkId = searchParams.get("id");
+	const amountParam = searchParams.get("amount");
+	const currencyParam = searchParams.get("currency") || "USDC";
+	const refParam = searchParams.get("ref");
+	const walletParam = searchParams.get("wallet");
+	const recipientParam = searchParams.get("recipient");
 	const withdrawIntent = searchParams.get("intent") === "withdraw";
+	const requestedChainKey = searchParams.get("chainKey");
+	// A stored checkout settles through its own contract rail. Query-string
+	// chain hints only apply to direct/user transfers and must never reroute a
+	// checkout behind the merchant's back.
+	const explicitRequestedChainKey = !linkId && requestedChainKey && isSupportedChainKey(requestedChainKey)
+		? requestedChainKey
+		: null;
+	const hasExplicitChainRequest = !linkId && requestedChainKey !== null;
+	const initialChainKey = hasExplicitChainRequest
+		? requestedChainKey ?? DEFAULT_CHAIN_KEY
+		: DEFAULT_CHAIN_KEY;
+	const [selectedChainKey, setSelectedChainKey] = useState(initialChainKey);
 	const [linkData, setLinkData] = useState<LinkData | null>(null);
 	const [checkout, setCheckout] = useState<CheckoutResponse | null>(null);
 	const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -81,19 +108,36 @@ function PayPageContent({ user }: { user: User | null }) {
 	// Payment history with this recipient (derived client-side from the ledger's
 	// to/from wallets). Signed-in users on the username profile page only.
 	const [payHistory, setPayHistory] = useState<{ count: number; last: Transaction | null } | null>(null);
+	const availableChains = chainPortfolio?.chains.filter((chain) =>
+		chain.walletRailEnabled &&
+		chain.rpcConfigured &&
+		chain.account?.status === "active" &&
+		chain.account.securityStatus === "current" &&
+		chain.account.securityVersionApplied === chain.account.securityVersionDesired,
+	) ?? [];
+	const selectedChain = availableChains.find((chain) => chain.key === selectedChainKey)
+		?? (hasExplicitChainRequest
+			? null
+			: availableChains.find((chain) => chain.key === DEFAULT_CHAIN_KEY)
+				?? availableChains[0])
+		?? null;
+	const effectiveChainKey = selectedChain?.key
+		?? (isSupportedChainKey(selectedChainKey) ? selectedChainKey : DEFAULT_CHAIN_KEY);
+	const selectedNetwork = getNetworkConfig(effectiveChainKey);
+	const requestedNetworkLabel = explicitRequestedChainKey
+		? getNetworkConfig(explicitRequestedChainKey).name
+		: hasExplicitChainRequest
+			? requestedChainKey
+			: selectedNetwork.name;
+	const selectedCurrency = selectedNetwork.currencies.includes(payCurrency)
+		? payCurrency
+		: selectedNetwork.currencies[0] ?? "USDC";
 
 	const stageCopy: Record<Exclude<PayStage, "idle">, string> = {
 		preparing: t("pay.stagePreparing"),
 		signing: t("pay.stageSigning"),
 		securing: t("pay.stageSecuring"),
 	};
-
-	const linkId = searchParams.get("id");
-	const amountParam = searchParams.get("amount");
-	const currencyParam = searchParams.get("currency") || "USDC";
-	const refParam = searchParams.get("ref");
-	const walletParam = searchParams.get("wallet");
-	const recipientParam = searchParams.get("recipient");
 
 	useEffect(() => {
 		// Slow-connection hint scoped to the INITIAL fetch only: armed when a
@@ -142,10 +186,13 @@ function PayPageContent({ user }: { user: User | null }) {
 			}
 		}
 
-		async function fetchByUsername(uname: string) {
+	async function fetchByUsername(uname: string) {
 			armSlowHint();
 			try {
-				const res = await fetch(`${SERVER_URL}/user/${uname}`, { signal: controller.signal });
+				const lookupChain = requestedChainKey && isSupportedChainKey(requestedChainKey)
+					? requestedChainKey
+					: DEFAULT_CHAIN_KEY;
+				const res = await fetch(`${SERVER_URL}/user/${uname}?chainKey=${encodeURIComponent(lookupChain)}`, { signal: controller.signal });
 				if (!res.ok) throw new Error("Usuario no encontrado");
 				const data = await res.json();
 				if (cancelled) return;
@@ -203,23 +250,26 @@ function PayPageContent({ user }: { user: User | null }) {
 		};
 		// Depend on the parsed primitives only - searchParams is a fresh object
 		// each render and would re-run this fetch effect unnecessarily.
-	}, [linkId, username, amountParam, currencyParam, refParam, walletParam, recipientParam, t]);
+	}, [linkId, username, amountParam, currencyParam, refParam, walletParam, recipientParam, requestedChainKey, t]);
 
 	// Balance for the "tu saldo" line (non-blocking).
 	useEffect(() => {
-		if (!user) return;
+		if (!user || !selectedChain) return;
 		(async () => {
 			try {
-				const data = await apiFetch<{ tokens?: Record<string, string>; usdc?: string; eth?: string }>(
-					"/user/balance",
+				const data = await apiFetch<{ tokens?: Record<string, string>; usdc?: string; eth?: string; avax?: string }>(
+					`/user/balance?chainKey=${encodeURIComponent(effectiveChainKey)}`,
 					{ user },
 				);
-				setBalances(data.tokens || { USDC: data.usdc ?? "", ETH: data.eth ?? "" });
+				setBalances(data.tokens || {
+					USDC: data.usdc ?? "",
+					[selectedNetwork.nativeTokenSymbol]: data.avax ?? data.eth ?? "",
+				});
 			} catch {
 				/* non-blocking */
 			}
 		})();
-	}, [user]);
+	}, [effectiveChainKey, selectedChain, selectedNetwork.nativeTokenSymbol, user]);
 
 	// History with this recipient - "3 pagos, último el martes" turns the empty
 	// profile page into a relationship (non-blocking enhancement).
@@ -259,19 +309,34 @@ function PayPageContent({ user }: { user: User | null }) {
 		})();
 	}, [user, manualMode]);
 
-	type PaymentParams = { linkId: string; wallet: string; amount: string; currency: string };
+	type PaymentParams = { linkId: string; wallet: string; amount: string; currency: string; chainKey: string };
 
 	/** Prepare first so the review sheet can show the exact EIP-712 document. */
 	async function preparePay(params: PaymentParams, recipient: { isAddress: boolean; username?: string }) {
 		if (!user) return;
+		const executionChain = availableChains.find((chain) => chain.key === params.chainKey);
+		if (!executionChain) {
+			const network = getNetworkConfig(params.chainKey);
+			const message = t("pay.networkNotReadyDesc");
+			notifyWarning(t("pay.networkNotReady", { network: network.name }), message);
+			setError(message);
+			return;
+		}
 		setPaying(true);
 		setError("");
 		setPayStage("preparing");
 		const paySlowTimer = setTimeout(() => setSlowConnection(true), 6000);
 		try {
 			const prepared = await apiFetch<PreparedUserOperation>("/pay/prepare", { user, body: params });
-			userOperationChallenge(prepared, activeNetwork.chainId);
-			setConfirmTx({ ...params, ...recipient, prepared });
+			const network = getNetworkConfig(params.chainKey);
+			userOperationChallenge(prepared, network.chainId);
+			setConfirmTx({
+				...params,
+				...recipient,
+				chainId: network.chainId,
+				networkName: network.name,
+				prepared,
+			});
 		} catch (err) {
 			reportPayError(err, () => void preparePay(params, recipient));
 		} finally {
@@ -291,7 +356,7 @@ function PayPageContent({ user }: { user: User | null }) {
 		try {
 			setPayStage("signing");
 			const assertion = await signWithPasskey(
-				userOperationChallenge(tx.prepared, activeNetwork.chainId),
+				userOperationChallenge(tx.prepared, tx.chainId),
 				tx.prepared.credentialId,
 				tx.prepared.rpId,
 			);
@@ -300,6 +365,7 @@ function PayPageContent({ user }: { user: User | null }) {
 			const to = tx.username || tx.wallet;
 			track("payment_sent", { currency: tx.currency, via: tx.linkId });
 			const q = new URLSearchParams({ amount: tx.amount, currency: tx.currency, to });
+			q.set("chainKey", tx.chainKey);
 			if (submit.txHash) q.set("tx", submit.txHash);
 			if (!submit.confirmed) {
 				q.set("pending", "1");
@@ -358,7 +424,13 @@ function PayPageContent({ user }: { user: User | null }) {
 			return;
 		}
 		await preparePay(
-			{ linkId: linkData.id, wallet: linkData.wallet, amount, currency },
+			{
+				linkId: linkData.id,
+				wallet: linkData.wallet,
+				amount,
+				currency,
+				chainKey: isStoredLink ? DEFAULT_CHAIN_KEY : effectiveChainKey,
+			},
 			{ isAddress: !linkData.username, username: linkData.username },
 		);
 	}
@@ -374,7 +446,9 @@ function PayPageContent({ user }: { user: User | null }) {
 			}
 			setResolvingUsername(true);
 			try {
-				const res = await fetch(`${SERVER_URL}/user/${manualWallet.trim().toLowerCase()}`);
+				const res = await fetch(
+					`${SERVER_URL}/user/${manualWallet.trim().toLowerCase()}?chainKey=${encodeURIComponent(effectiveChainKey)}`,
+				);
 				if (!res.ok) throw new Error();
 				const data = await res.json();
 				if (!data.walletAddress) throw new Error();
@@ -392,7 +466,13 @@ function PayPageContent({ user }: { user: User | null }) {
 		}
 
 		await preparePay(
-			{ linkId: "manual", wallet: targetWallet, amount: payAmount, currency: payCurrency },
+			{
+				linkId: "manual",
+				wallet: targetWallet,
+				amount: payAmount,
+				currency: selectedCurrency,
+				chainKey: effectiveChainKey,
+			},
 			{
 				isAddress: destType === "address",
 				username: destType === "username" ? manualWallet.trim().toLowerCase() : undefined,
@@ -420,7 +500,7 @@ function PayPageContent({ user }: { user: User | null }) {
 				onCancel={() => setConfirmTx(null)}
 			>
 				<ConfirmPayDestination tx={confirmTx} />
-				<SigningDetails payload={confirmTx.prepared.signingPayload} networkName={activeNetwork.name} />
+				<SigningDetails payload={confirmTx.prepared.signingPayload} networkName={confirmTx.networkName} />
 			</ConfirmSheet>
 		);
 	}
@@ -440,6 +520,17 @@ function PayPageContent({ user }: { user: User | null }) {
 
 	const bigInput =
 		"w-full max-w-[260px] bg-transparent text-center font-display text-[56px] leading-none text-text placeholder:text-text-faint tabular";
+	const chainReadinessNotice = user && !chainPortfolio ? (
+		<NoticeCard tone={chainPortfolioError ? "warning" : "info"} title={t("pay.networkNotReady", { network: selectedNetwork.name })} className="mb-5">
+			{chainPortfolioLoading && !chainPortfolioError
+				? t("pay.networkLoading")
+				: t("pay.networkNotReadyDesc")}
+		</NoticeCard>
+	) : user && !selectedChain ? (
+		<NoticeCard tone="warning" title={t("pay.networkNotReady", { network: requestedNetworkLabel })} className="mb-5">
+			{t("pay.networkNotReadyDesc")}
+		</NoticeCard>
+	) : null;
 
 	if (loading) {
 		return <PayLoadingView slowConnection={slowConnection} />;
@@ -474,13 +565,27 @@ function PayPageContent({ user }: { user: User | null }) {
 						onChange={setPayAmount}
 						className={bigInput}
 					/>
-					<TokenSelect value={payCurrency} options={activeNetwork.currencies} balances={balances} onChange={setPayCurrency} className="mt-4" />
-					{user && balances[payCurrency] !== undefined && (
+					<TokenSelect value={selectedCurrency} options={selectedNetwork.currencies} balances={balances} onChange={setPayCurrency} className="mt-4" />
+					{user && balances[selectedCurrency] !== undefined && (
 						<p className="text-[12px] text-text-faint mt-3">
-							{t("pay.yourBalance", { balance: formatAmount(balances[payCurrency], payCurrency), currency: payCurrency })}
+							{t("pay.yourBalance", { balance: formatAmount(balances[selectedCurrency], selectedCurrency), currency: selectedCurrency })}
 						</p>
 					)}
 				</MoneyPanel>
+
+				{availableChains.length > 1 ? (
+					<NetworkChips
+						options={availableChains.map((chain) => ({ id: chain.chainId, label: chain.name }))}
+						selected={selectedChain?.chainId ?? null}
+						onSelect={(chainId) => {
+							const next = availableChains.find((chain) => chain.chainId === chainId);
+							if (!next || !isSupportedChainKey(next.key)) return;
+							setSelectedChainKey(next.key);
+							setPayCurrency(getNetworkConfig(next.key).currencies[0] ?? "USDC");
+						}}
+					/>
+				) : null}
+				{chainReadinessNotice}
 
 				{/* One-tap destinations: contacts pay without typing (UX_DESIGN §4.3). */}
 				{user && contacts.length > 0 && (
@@ -490,7 +595,7 @@ function PayPageContent({ user }: { user: User | null }) {
 							{contacts.map((c) => (
 								<LinkButton
 									key={c.id}
-									to={`/${c.username}`}
+									to={`/${c.username}?chainKey=${encodeURIComponent(effectiveChainKey)}`}
 									className="flex flex-col items-center gap-1.5 shrink-0 w-16"
 								>
 									<span className="flex h-12 w-12 items-center justify-center border border-text bg-cat-500 font-display text-[18px] uppercase text-on-cat shadow-[3px_3px_0_var(--color-cat-700)]">
@@ -539,12 +644,12 @@ function PayPageContent({ user }: { user: User | null }) {
 					<p className="mt-3 text-[12px] leading-relaxed text-text-muted">
 						{destType === "username"
 							? t("pay.gatoPagoDestinationHint")
-							: t("pay.walletDestinationHint", { network: activeNetwork.name })}
+							: t("pay.walletDestinationHint", { network: selectedNetwork.name })}
 					</p>
 					{destType === "address" ? (
 						<div className="mt-4 flex items-center justify-between border border-border bg-surface-2 px-3.5 py-3 text-[12px]">
 							<span className="text-text-faint">{t("pay.sendNetwork")}</span>
-							<span className="text-text">{activeNetwork.name}</span>
+							<span className="text-text">{selectedNetwork.name}</span>
 						</div>
 					) : null}
 				</MoneyPanel>
@@ -563,7 +668,7 @@ function PayPageContent({ user }: { user: User | null }) {
 					) : (
 						<button
 							onClick={handleManualPay}
-							disabled={paying || resolvingUsername || !manualWallet || manualAmountInvalid}
+							disabled={paying || resolvingUsername || !manualWallet || manualAmountInvalid || !selectedChain}
 							className="btn btn-primary btn-block"
 						>
 							{resolvingUsername ? t("pay.searchingUser") : withdrawIntent ? t("pay.withdrawAction") : t("pay.sendAction")}
@@ -625,7 +730,7 @@ function PayPageContent({ user }: { user: User | null }) {
 
 	// Payment form (fixed link, open link, or username transfer)
 	const isOpenAmount = !hasFixedAmount;
-	const payingCurrency = isStoredLink || hasFixedAmount ? linkData.currency : payCurrency;
+	const payingCurrency = isStoredLink || hasFixedAmount ? linkData.currency : selectedCurrency;
 	const selectedAmount = hasFixedAmount ? linkData.amount : payAmount;
 
 	return (
@@ -655,8 +760,8 @@ function PayPageContent({ user }: { user: User | null }) {
 							className={bigInput}
 						/>
 						<TokenSelect
-							value={isStoredLink ? linkData.currency : payCurrency}
-							options={activeNetwork.currencies}
+							value={isStoredLink ? linkData.currency : selectedCurrency}
+							options={isStoredLink ? activeNetwork.currencies : selectedNetwork.currencies}
 							balances={balances}
 							onChange={setPayCurrency}
 							disabled={isStoredLink}
@@ -687,6 +792,7 @@ function PayPageContent({ user }: { user: User | null }) {
 			{isStoredLink && checkout && user ? (
 				<PaymentMethodSelector value={paymentMethod} onChange={setPaymentMethod} />
 			) : null}
+			{user && (!isStoredLink || paymentMethod === "balance") ? chainReadinessNotice : null}
 
 			{isStoredLink && checkout && (!user || paymentMethod === "external") ? (
 				<ExternalWalletCheckout key={checkout.link.id} checkout={checkout} amount={selectedAmount} onPaid={handleExternalPaid} />
@@ -700,7 +806,7 @@ function PayPageContent({ user }: { user: User | null }) {
 						<button
 							type="button"
 							onClick={handlePay}
-							disabled={paying || (isOpenAmount && !payAmount)}
+							disabled={paying || (isOpenAmount && !payAmount) || !selectedChain}
 							className="btn btn-money btn-block"
 						>
 							{t("common.pay")}

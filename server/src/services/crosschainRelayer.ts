@@ -50,6 +50,7 @@ const MESSAGE_TRANSMITTER_ABI = [
 const DEFAULT_RPC_BY_CHAIN: Record<number, string> = {
 	421614: "https://sepolia-rollup.arbitrum.io/rpc",
 	84532: "https://sepolia.base.org",
+	43113: "https://api.avax-test.network/ext/bc/C/rpc",
 	42161: "https://arb1.arbitrum.io/rpc",
 	8453: "https://mainnet.base.org",
 };
