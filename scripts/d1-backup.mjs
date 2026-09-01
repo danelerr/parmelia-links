@@ -55,6 +55,17 @@ const appRequiredTables = [
 	"users",
 	"webhook_deliveries",
 ];
+const appMultichainTables = new Set([
+	"account_security_versions",
+	"chain_indexer_wallet_registry_outbox",
+	"user_chain_accounts",
+]);
+// Remote backups must remain verifiable immediately before an additive
+// migration. The exact remote table set is frozen in each new manifest; this
+// baseline only prevents accepting an empty or unrelated App database.
+const appBackupBaselineTables = appRequiredTables.filter(
+	(table) => !appMultichainTables.has(table),
+);
 const paymentsRequiredTables = [
   "api_keys",
   "events",
@@ -162,6 +173,38 @@ function queryLocal(cwd, sql) {
     throw new Error(`D1 query failed: ${JSON.stringify(payload)}`);
   }
   return payload[0].results;
+}
+
+function remoteTableNames(remote) {
+  const output = wrangler(
+    [
+      "d1",
+      "execute",
+      remote.binding,
+      "--remote",
+      "--config",
+      remote.configPath,
+      "--command",
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      "--json",
+    ],
+    { capture: true },
+  );
+  const payload = parseWranglerJson(output);
+  const operations = Array.isArray(payload) ? payload : [payload];
+  const names = operations
+    .flatMap((operation) => Array.isArray(operation?.results) ? operation.results : [])
+    .map((row) => row?.name)
+    .filter((name) => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  return [...new Set(names)].sort();
+}
+
+function assertRequiredTablesPresent(tables, requiredTables, label) {
+  const present = new Set(tables);
+  const missing = requiredTables.filter((table) => !present.has(table));
+  if (missing.length > 0) {
+    throw new Error(`${label} is missing required tables: ${missing.join(", ")}`);
+  }
 }
 
 function parseEncryptionKey(value) {
@@ -398,8 +441,8 @@ async function runDrill() {
 
 async function runRemoteBackup(outputArg, profile = "app") {
   const remote = profile === "payments"
-    ? { binding: "PAYMENTS_DB", configPath: paymentsRemoteConfigPath, requiredTables: paymentsRequiredTables }
-    : { binding: database, configPath: remoteConfigPath, requiredTables: appRequiredTables };
+    ? { binding: "PAYMENTS_DB", configPath: paymentsRemoteConfigPath, baselineTables: paymentsRequiredTables }
+    : { binding: database, configPath: remoteConfigPath, baselineTables: appBackupBaselineTables };
   const key = parseEncryptionKey(process.env.D1_BACKUP_ENCRYPTION_KEY);
   const keyId = process.env.D1_BACKUP_ENCRYPTION_KEY_ID;
   if (!keyId || !/^[A-Za-z0-9._-]{1,64}$/.test(keyId)) {
@@ -419,6 +462,8 @@ async function runRemoteBackup(outputArg, profile = "app") {
   const workDir = await makeTempDir("remote");
   let complete = false;
   try {
+    const sourceTables = remoteTableNames(remote);
+    assertRequiredTablesPresent(sourceTables, remote.baselineTables, `Remote ${remote.binding}`);
     const plaintext = join(workDir, "remote.sql");
     const bookmarkOutput = wrangler(
       ["d1", "time-travel", "info", remote.binding, "--config", remote.configPath, "--json"],
@@ -444,7 +489,7 @@ async function runRemoteBackup(outputArg, profile = "app") {
     await decryptFile(output, decrypted, key, checksums);
     const verification = await verifyRestore(decrypted, {
       expectFixture: false,
-      requiredTables: remote.requiredTables,
+      requiredTables: sourceTables,
     });
     const manifest = {
       format: backupFormat,
@@ -456,7 +501,7 @@ async function runRemoteBackup(outputArg, profile = "app") {
       keyId,
       ...checksums,
       timeTravel,
-      verification,
+      verification: { ...verification, sourceTables },
     };
     writeFileSync(`${output}.manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`, {
       flag: "wx",
@@ -503,9 +548,15 @@ async function verifyExistingBackup(inputArg, outputArg) {
       throw new Error("Decrypted backup output must end in .sql");
     }
     await decryptFile(input, decrypted, key, manifest);
-    const requiredTables = manifest.profile === "payments" || manifest.database === "PAYMENTS_DB"
+    const baselineTables = manifest.profile === "payments" || manifest.database === "PAYMENTS_DB"
       ? paymentsRequiredTables
-      : appRequiredTables;
+      : appBackupBaselineTables;
+    const savedSourceTables = Array.isArray(manifest.verification?.sourceTables)
+      ? manifest.verification.sourceTables.filter(
+          (table) => typeof table === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(table),
+        )
+      : [];
+    const requiredTables = [...new Set([...baselineTables, ...savedSourceTables])];
     const verification = await verifyRestore(decrypted, { expectFixture: false, requiredTables });
     console.log(
       `Encrypted D1 backup verified (${verification.tableCount} tables, integrity and FK checks OK).`,
