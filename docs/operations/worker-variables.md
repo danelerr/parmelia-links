@@ -157,7 +157,7 @@ tercero puede ser secreto según las URLs:
 | Nombre | Candidato local | Función |
 |---|---|---|
 | `APP_ENABLED_CHAIN_KEYS` | `arbitrum-sepolia,avalanche-fuji` | Redes que la API y la UI pueden describir. No autoriza operaciones. |
-| `APP_WALLET_RAIL_CHAIN_KEYS` | `arbitrum-sepolia` | Kill switch de preparación/envío. Fuji se agrega sólo después de contratos, RPC y E2E reales. |
+| `APP_WALLET_RAIL_CHAIN_KEYS` | `arbitrum-sepolia,avalanche-fuji` | Kill switch de preparación/envío. Fuji está abierto en testnet para la prueba real de cuenta, passkey y AVAX/USDC; si falla un gate se retira de esta lista y se redespliega App Worker. |
 | `APP_CHAIN_RPC_URLS` | ausente | Pools por chain y rol. No copiar valores de Payments; cada dominio conserva sus credenciales y límites. |
 
 Ejemplo estructural sin credenciales:

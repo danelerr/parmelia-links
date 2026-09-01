@@ -34,7 +34,7 @@
     "AUTH_EMAIL_FROM": "acceso@parmelia.me",
     "CHAIN_KEY": "arbitrum-sepolia",
 	"APP_ENABLED_CHAIN_KEYS": "arbitrum-sepolia,avalanche-fuji",
-	"APP_WALLET_RAIL_CHAIN_KEYS": "arbitrum-sepolia",
+	"APP_WALLET_RAIL_CHAIN_KEYS": "arbitrum-sepolia,avalanche-fuji",
     "PAYMENTS_CUTOVER_MODE": "payments",
     // Remains false through target deploy and data import. Enable only while
     // cutover mode is frozen/payments after Payments bootstrap is complete.

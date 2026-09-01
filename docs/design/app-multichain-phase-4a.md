@@ -78,7 +78,7 @@ cadenas.
 ```text
 CHAIN_KEY=arbitrum-sepolia
 APP_ENABLED_CHAIN_KEYS=arbitrum-sepolia,avalanche-fuji
-APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia
+APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia,avalanche-fuji
 APP_CHAIN_RPC_URLS={"43113":{"read":"...","write":"...","indexer":"..."}}
 ```
 
@@ -109,10 +109,12 @@ EntryPoint v0.9, owner, firmante y tesorería coinciden con la configuración; e
 paymaster tiene `0.05 AVAX` de depósito, `0.001 AVAX` de stake con espera de 24
 horas y un tope de `0.01 AVAX` por operación patrocinada.
 
-El rail Fuji permanece cerrado durante el cutover. La apertura todavía exige
-RPCs independientes, App Worker/Web saludables, activación de una cuenta
-satélite con passkey real, una operación patrocinada y un envío AVAX/USDC real
-con evidencia de recibo y rollback ensayado.
+El rail Fuji se abre sólo en testnet para ejecutar el cierre real de la Fase 4A.
+Contratos, RPCs independientes y App Worker/Web ya pasaron sus gates. La fase
+no se declara completa hasta probar una cuenta satélite con passkey real, una
+operación patrocinada y un envío AVAX/USDC con evidencia de recibo. Si falla
+uno de esos gates, el rollback es retirar `avalanche-fuji` del kill switch y
+redesplegar App Worker; la lectura del portfolio permanece disponible.
 
 ## Evidencia local del candidato
 
@@ -146,11 +148,12 @@ AVAX/USDC remoto.
 3. Desplegar y verificar la infraestructura Fuji, sin habilitar el rail.
 4. Crear backup cifrado de App D1 y aplicar únicamente las migraciones App
    pendientes, incluida `0038`.
-5. Desplegar App Worker con Fuji visible pero
-   `APP_WALLET_RAIL_CHAIN_KEYS=arbitrum-sepolia`.
+5. Desplegar App Worker con Fuji visible pero el rail cerrado.
 6. Desplegar App Web y comprobar Home, Recibir, historial y fail-closed.
-7. Ejecutar activación, firma, envío AVAX/USDC, cambio de passkey, sync y
-   recovery con evidencia real.
-8. Sólo después, agregar `avalanche-fuji` al kill switch del rail.
+7. Agregar `avalanche-fuji` al kill switch de testnet y ejecutar activación,
+   firma, envío AVAX/USDC, cambio de passkey, sync y recovery con evidencia
+   real. Revertir el kill switch inmediatamente si algún gate falla.
+8. Declarar la fase completa sólo con recibos y estados D1/on-chain
+   reconciliados.
 
 Ningún paso de este documento autoriza una mutación remota por sí mismo.
