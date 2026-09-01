@@ -90,6 +90,22 @@ test("Home keeps AVAX on Avalanche explicit and routes actions through that acco
 	await expectNoWcagViolations(page);
 });
 
+test("Receive deep link selects inactive Avalanche Fuji and exposes activation", async ({ page }, testInfo) => {
+	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
+	await page.goto(
+		"/__design/meli?view=receive&chainKey=avalanche-fuji&asset=AVAX&inactiveFuji=1",
+		{ waitUntil: "domcontentloaded" },
+	);
+	const desktopNotice = page.getByRole("dialog");
+	if (await desktopNotice.isVisible().catch(() => false)) {
+		await desktopNotice.getByRole("button").click();
+	}
+
+	await expect(page.getByRole("button", { name: /Activar Avalanche Fuji|Activate Avalanche Fuji/i })).toBeVisible();
+	await expect(page.getByText(/AVAX|Avalanche Fuji/i).first()).toBeVisible();
+	await expectNoWcagViolations(page);
+});
+
 test("Grow opened from Avalanche fails closed without loading the Arbitrum product", async ({ page }, testInfo) => {
 	test.skip(testInfo.project.name.startsWith("dashboard"), "Meli UI lives in the client app");
 	let configRequests = 0;

@@ -173,6 +173,12 @@ const previewPortfolio: ChainPortfolio = {
 	],
 };
 
+const inactiveFujiPreviewPortfolio: ChainPortfolio = {
+	chains: previewPortfolio.chains.map((chain) =>
+		chain.key === "avalanche-fuji" ? { ...chain, account: null } : chain,
+	),
+};
+
 function ProfilePreview() {
 	const [ready, setReady] = useState(false);
 
@@ -191,6 +197,7 @@ function ProfilePreview() {
 
 function ReceivePreview() {
 	const [ready, setReady] = useState(false);
+	const inactiveFuji = new URLSearchParams(window.location.search).get("inactiveFuji") === "1";
 
 	useEffect(() => {
 		let active = true;
@@ -203,7 +210,7 @@ function ReceivePreview() {
 	}, []);
 
 	return ready
-		? <Receive user={previewUser} previewPortfolio={previewPortfolio} />
+		? <Receive user={previewUser} previewPortfolio={inactiveFuji ? inactiveFujiPreviewPortfolio : previewPortfolio} />
 		: <AccountLaunchScreen />;
 }
 

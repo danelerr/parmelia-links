@@ -21,6 +21,22 @@ import { useChainPortfolio, type ChainPortfolio, type ChainPortfolioItem } from 
 import NetworkChips from "../components/NetworkChips";
 import TokenSelect from "../components/TokenSelect";
 
+function readInitialSelection() {
+	const params = new URLSearchParams(window.location.search);
+	const requestedChainKey = params.get("chainKey");
+	const chainKey = requestedChainKey && isSupportedChainKey(requestedChainKey)
+		? requestedChainKey
+		: activeNetwork.key;
+	const network = getNetworkConfig(chainKey);
+	const requestedAsset = params.get("asset")?.toUpperCase() ?? null;
+	return {
+		chainKey,
+		asset: requestedAsset && network.currencies.includes(requestedAsset)
+			? requestedAsset
+			: network.currencies[0] ?? "USDC",
+	};
+}
+
 export default function Receive({
 	user,
 	previewPortfolio,
@@ -38,8 +54,9 @@ export default function Receive({
 	} = useChainPortfolio(user, previewPortfolio);
 	const username = profile?.username ?? null;
 	const [showCrosschain, setShowCrosschain] = useState(false);
-	const [selectedChainKey, setSelectedChainKey] = useState(activeNetwork.key);
-	const [selectedAsset, setSelectedAsset] = useState("USDC");
+	const [initialSelection] = useState(readInitialSelection);
+	const [selectedChainKey, setSelectedChainKey] = useState(initialSelection.chainKey);
+	const [selectedAsset, setSelectedAsset] = useState(initialSelection.asset);
 	const [activating, setActivating] = useState(false);
 	const fallbackHome: ChainPortfolioItem = {
 		key: activeNetwork.key,
