@@ -280,13 +280,13 @@ export const NETWORKS: Record<SupportedChainKey, NetworkConfig> = {
 			// parmelia.v2.solc-0.8.34). Runtime activation remains fail-closed
 			// until deployment manifests and bytecode verification exist.
 			factory: "0x7a47D256cA1b52C9C699d3b7eF2Ed7DFd0006313",
-			paymaster: "0x1966B33966a648a70F1D7322b45BB40Eb39847dA",
+			paymaster: "0x5e10256DA2DFA684846D2E695aC32e77C7885535",
 			verifier: "0x121D4eca96a0CCA57bDc0A9556508A1728CF21b9",
 			paymentRouter: TODO_DEPLOY,
 			// Predicted by DeployCrosschainRouter (salt
 			// parmelia.v2.crosschainRouter.hardened). The runtime allowlist remains
 			// closed until this address and the account stack are deployed/verified.
-			crosschainRouter: "0x2974d361CA1B72114Aa2737dC2d496846cf3E6fD",
+			crosschainRouter: "0x64424C87E70F3973AAcA3F3Ab40593B994A52d06",
 			usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
 			usdcDecimals: 6,
 		},

@@ -150,7 +150,7 @@ describe("POST /pay/prepare native Avalanche transfer", () => {
 			rpId: "app.parmelia.me",
 			signingPayload: { digest: USER_OP_HASH },
 			sponsorshipProvider: "parmelia",
-			sponsorshipPaymasterAddress: "0x1966B33966a648a70F1D7322b45BB40Eb39847dA",
+			sponsorshipPaymasterAddress: "0x5e10256DA2DFA684846D2E695aC32e77C7885535",
 		}));
 		mocks.createPendingPayment.mockResolvedValue(undefined);
 	});

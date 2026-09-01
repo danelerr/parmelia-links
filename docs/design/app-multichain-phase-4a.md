@@ -98,8 +98,8 @@ son evidencia de despliegue:
 | Verifier | `0x121D4eca96a0CCA57bDc0A9556508A1728CF21b9` |
 | Implementation | `0x249f65e909D056D314BD083400a25C563B625c1f` |
 | Factory | `0x7a47D256cA1b52C9C699d3b7eF2Ed7DFd0006313` |
-| Paymaster | `0x1966B33966a648a70F1D7322b45BB40Eb39847dA` |
-| Crosschain router | `0x2974d361CA1B72114Aa2737dC2d496846cf3E6fD` |
+| Paymaster | `0x5e10256DA2DFA684846D2E695aC32e77C7885535` |
+| Crosschain router | `0x64424C87E70F3973AAcA3F3Ab40593B994A52d06` |
 
 El rail Fuji permanece cerrado. Abrirlo exige deploy autorizado, receipt y
 manifest reproducible, bytecode verificado, owner/roles comprobados, depósito y
