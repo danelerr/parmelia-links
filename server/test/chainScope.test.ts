@@ -77,6 +77,19 @@ describe("App chain scope", () => {
 		expect(fuji?.assets.map((asset) => asset.symbol)).toEqual(["AVAX", "USDC"]);
 	});
 
+	it("reports the home RPC as configured when production uses the RPC_URL secret", () => {
+		const root = env({
+			RPC_READ_URLS: undefined,
+			RPC_WRITE_URLS: undefined,
+			RPC_URL: "https://arb-production-secret.example",
+		});
+		expect(
+			appChainCapabilities(root).find(
+				(chain) => chain.key === "arbitrum-sepolia",
+			)?.rpcConfigured,
+		).toBe(true);
+	});
+
 	it("enables the implemented Fuji rail only through its explicit allowlist", () => {
 		const root = env({
 			APP_WALLET_RAIL_CHAIN_KEYS: "arbitrum-sepolia,avalanche-fuji",

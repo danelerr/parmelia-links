@@ -124,7 +124,9 @@ export function appChainCapabilities(env: Bindings) {
 				decimals: token.decimals,
 				isNative: Boolean(token.isNative),
 			})),
-			rpcConfigured: Boolean(scoped.RPC_READ_URLS?.trim()),
+			rpcConfigured: Boolean(
+				scoped.RPC_READ_URLS?.trim() || scoped.RPC_URL?.trim(),
+			),
 		};
 	});
 }
