@@ -185,7 +185,7 @@ function remoteTableNames(remote) {
       "--config",
       remote.configPath,
       "--command",
-      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND substr(name, 1, 4) <> '_cf_' ORDER BY name",
       "--json",
     ],
     { capture: true },
