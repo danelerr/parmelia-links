@@ -1,8 +1,13 @@
-# Universal Checkout deployment manifests
+# GatoPago deployment manifests
 
 Only successful, source-checked deployments belong here. A dry-run is evidence
 for preflight and deterministic address prediction, but it is not a deployment
 manifest.
+
+`<chain-id>/account-stack-v2.json` records the account implementation,
+factory, WebAuthn verifier and paymaster as one atomic wallet-rail release. It
+also freezes the paymaster deposit, stake, limits, roles, transaction hashes,
+runtime bytecode hashes and public source-verification URLs.
 
 `testnet-smoke-evidence.json` freezes the post-deployment closure proof: source
 and destination receipts, consumed intent/attempt/op identifiers, completed

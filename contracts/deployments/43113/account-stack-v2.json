@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "gatopago-account-stack-v2",
+  "chainId": 43113,
+  "network": "Avalanche Fuji",
+  "deployer": "0x75464f762bc50d0a0b127ab5a085504bf102bb88",
+  "source": {
+    "commit": "4161cd66001874dea44c9fa8c323dd6bd1907031",
+    "broadcastFile": "contracts/broadcast/Deploy.s.sol/43113/run-1788227033087.json",
+    "verificationProvider": "Sourcify",
+    "verificationStatus": "exact_match"
+  },
+  "contracts": {
+    "verifier": {
+      "name": "ERC7913WebAuthnVerifier",
+      "address": "0x121d4eca96a0cca57bdc0a9556508a1728cf21b9",
+      "transactionHash": "0x31829f3a9e0126bcbd3493e855fff5bd05336e5535af49d5027d4ec72886c2bb",
+      "blockNumber": 58106527,
+      "runtimeBytecodeHash": "0xaf0be3902894a92e3d99aebcbf701d4e3b89807c1612f3640267041d9153ae79",
+      "verificationUrl": "https://sourcify.dev/server/v2/contract/43113/0x121D4eca96a0CCA57bDc0A9556508A1728CF21b9"
+    },
+    "implementation": {
+      "name": "AccountWebAuthnV2",
+      "address": "0x249f65e909d056d314bd083400a25c563b625c1f",
+      "transactionHash": "0x51d5cc00397aa14ad23b988cdf5244d6b126981bcc684f1093c4ebd9b1faf3a9",
+      "blockNumber": 58106528,
+      "runtimeBytecodeHash": "0x377524a996daec60a69d0e0d1f9367b79760c1f8943af1240836ab7ef9c7ada5",
+      "verificationUrl": "https://sourcify.dev/server/v2/contract/43113/0x249f65e909D056D314BD083400a25C563B625c1f"
+    },
+    "factory": {
+      "name": "AccountFactoryV2",
+      "address": "0x7a47d256ca1b52c9c699d3b7ef2ed7dfd0006313",
+      "implementation": "0x249f65e909d056d314bd083400a25c563b625c1f",
+      "transactionHash": "0xe9578c8f9cf798c800d502a892326ec097496379e213988b9add1dac787353a5",
+      "blockNumber": 58106528,
+      "runtimeBytecodeHash": "0x59a829916854e7503cde2b4214a1647d456e521206975f5fc9e809ae96dba71b",
+      "verificationUrl": "https://sourcify.dev/server/v2/contract/43113/0x7a47D256cA1b52C9C699d3b7eF2Ed7DFd0006313"
+    },
+    "paymaster": {
+      "name": "ParmeliaPaymaster",
+      "address": "0x5e10256da2dfa684846d2e695ac32e77c7885535",
+      "transactionHash": "0x73006df5b3a91f8e1fb9046a3b08f5fc8036f44e926da895c48c3ee477031678",
+      "blockNumber": 58106528,
+      "runtimeBytecodeHash": "0x94030adf431db401c40563ca9dc3648e3a5d5e1eb67b1c645b20e10509c35027",
+      "entryPoint": "0x433709009b8330fda32311df1c2afa402ed8d009",
+      "owner": "0x75464f762bc50d0a0b127ab5a085504bf102bb88",
+      "pendingOwner": "0x0000000000000000000000000000000000000000",
+      "sponsorSigner": "0x75464f762bc50d0a0b127ab5a085504bf102bb88",
+      "depositWei": "50000000000000000",
+      "stakeWei": "1000000000000000",
+      "unstakeDelaySeconds": 86400,
+      "maxSponsoredGasCostWei": "10000000000000000",
+      "setupTransactions": {
+        "stake": "0xa7cadca55ef21c5e34159d10dc6f7f07970b139c9796397ec9797ac7c1d7e721",
+        "deposit": "0x8026e87b68172bbbd55feeccfec53de8411030f1b993e9e7de0602438ac6210c",
+        "gasCostCap": "0x6d9a9acfc1cff49d5a5d9d36e985b24e22ae60307bf8e670fbe18fec690244dc"
+      },
+      "verificationUrl": "https://sourcify.dev/server/v2/contract/43113/0x5e10256DA2DFA684846D2E695aC32e77C7885535"
+    }
+  },
+  "compiler": {
+    "solc": "0.8.34",
+    "viaIr": true,
+    "evmVersion": "cancun",
+    "optimizer": true,
+    "optimizerRuns": 1000000
+  },
+  "deployedAt": "2026-09-01T01:43:54.000Z"
+}

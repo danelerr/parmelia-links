@@ -90,10 +90,11 @@ rails fuera de la lista visible, RPC ausente y bundler ausente cuando
 
 ## Estado de Avalanche Fuji
 
-Las siguientes direcciones son predicciones deterministas del build actual; no
-son evidencia de despliegue:
+La infraestructura de cuenta de la Fase 4A se desplegó en Fuji el 31 de agosto
+de 2026 desde el commit `4161cd66001874dea44c9fa8c323dd6bd1907031`.
+Los cinco contratos tienen bytecode y verificación `exact_match` en Sourcify:
 
-| Componente | Dirección predicha |
+| Componente | Dirección desplegada |
 |---|---|
 | Verifier | `0x121D4eca96a0CCA57bDc0A9556508A1728CF21b9` |
 | Implementation | `0x249f65e909D056D314BD083400a25C563B625c1f` |
@@ -101,10 +102,17 @@ son evidencia de despliegue:
 | Paymaster | `0x5e10256DA2DFA684846D2E695aC32e77C7885535` |
 | Crosschain router | `0x64424C87E70F3973AAcA3F3Ab40593B994A52d06` |
 
-El rail Fuji permanece cerrado. Abrirlo exige deploy autorizado, receipt y
-manifest reproducible, bytecode verificado, owner/roles comprobados, depósito y
-stake del paymaster, gas operativo, RPCs independientes, fork/E2E real y
-rollback ensayado.
+Los manifests reproducibles están en
+`contracts/deployments/43113/account-stack-v2.json` y
+`contracts/deployments/43113/crosschain-router.json`. Factory, implementation,
+EntryPoint v0.9, owner, firmante y tesorería coinciden con la configuración; el
+paymaster tiene `0.05 AVAX` de depósito, `0.001 AVAX` de stake con espera de 24
+horas y un tope de `0.01 AVAX` por operación patrocinada.
+
+El rail Fuji permanece cerrado durante el cutover. La apertura todavía exige
+RPCs independientes, App Worker/Web saludables, activación de una cuenta
+satélite con passkey real, una operación patrocinada y un envío AVAX/USDC real
+con evidencia de recibo y rollback ensayado.
 
 ## Evidencia local del candidato
 
