@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@simplewebauthn/server": "13.3.2",
-    "hono": "^4.13.3",
-    "jose": "^6.2.10",
+    "hono": "^4.13.8",
+    "jose": "^6.2.12",
     "viem": "^2.55.19"
   },
   "devDependencies": {
@@ -29,6 +29,6 @@
     "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.11",
     "wrangler": "4.125.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   }
 }
